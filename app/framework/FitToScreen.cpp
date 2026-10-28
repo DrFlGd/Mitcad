@@ -7,10 +7,14 @@
 #include <QEvent>
 #include <QGuiApplication>
 #include <QLayout>
+#include <QLatin1String>
+#include <QObject>
+#include <QPointer>
 #include <QRect>
 #include <QScreen>
 #include <QScrollBar>
 #include <QWidget>
+#include <QWindow>
 
 namespace mitcad {
 namespace {
@@ -32,6 +36,23 @@ const QScreen* screenOf(const QWidget* window) {
   const QScreen* screen = window->screen();
   return screen != nullptr ? screen : QGuiApplication::primaryScreen();
 }
+
+// A shown window's frame moved up or left (or down or right) into the
+// available area; the frame as it is now.
+void moveInside(QWidget* window, const QRect& available) {
+  if (!window->isVisible()) {
+    return;
+  }
+  const QRect frame = window->frameGeometry();
+  const int x = std::clamp(frame.x(), available.left(), std::max(available.left(), available.right() + 1 - frame.width()));
+  const int y = std::clamp(frame.y(), available.top(), std::max(available.top(), available.bottom() + 1 - frame.height()));
+  if (x != frame.x() || y != frame.y()) {
+    window->move(x, y);
+  }
+}
+
+// The name of keepWindowOnScreen's connections' context, a child of the window.
+const char* const kKeptOnScreen = "mitcadKeptOnScreen";
 
 } // namespace
 
@@ -74,7 +95,7 @@ QSize fittedWindowSize(const QSize& hint, const QSize& available, const QSize& f
                std::min(hint.height(), std::max(0, available.height() - frame.height())));
 }
 
-void fitWindowToContents(QWidget* window, FitMode mode) {
+void fitWindowToContents(QWidget* window, FitMode mode, const QSize& preferred) {
   if (window == nullptr) {
     return;
   }
@@ -86,24 +107,59 @@ void fitWindowToContents(QWidget* window, FitMode mode) {
   // or hidden) count in the hint.
   QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
   const QRect available = screen->availableGeometry();
-  QSize target = fittedWindowSize(window->sizeHint().expandedTo(window->minimumSize()), available.size(),
-                                  frameOf(window));
+  QSize wanted = window->sizeHint().expandedTo(window->minimumSize());
+  if (preferred.isValid()) {
+    wanted = wanted.expandedTo(preferred);
+  }
+  QSize target = fittedWindowSize(wanted, available.size(), frameOf(window));
   if (mode == FitMode::GrowOnly) {
     target = target.expandedTo(window->size());
   }
   if (target != window->size()) {
     window->resize(target);
   }
-  if (!window->isVisible()) {
+  // The frame as it is now, inside the available area.
+  moveInside(window, available);
+}
+
+void capWindowToScreen(QWidget* window) {
+  if (window == nullptr || !window->isVisible()) {
     return;
   }
-  // The frame as it is now, inside the available area.
-  const QRect frame = window->frameGeometry();
-  const int x = std::clamp(frame.x(), available.left(), std::max(available.left(), available.right() + 1 - frame.width()));
-  const int y = std::clamp(frame.y(), available.top(), std::max(available.top(), available.bottom() + 1 - frame.height()));
-  if (x != frame.x() || y != frame.y()) {
-    window->move(x, y);
+  const QScreen* screen = screenOf(window);
+  if (screen == nullptr) {
+    return;
   }
+  const QRect available = screen->availableGeometry();
+  const QSize target = fittedWindowSize(window->size(), available.size(), frameOf(window));
+  if (target != window->size()) {
+    window->resize(target);
+  }
+  moveInside(window, available);
+}
+
+void keepWindowOnScreen(QWidget* window) {
+  if (window == nullptr || !window->isWindow() || window->windowHandle() == nullptr ||
+      window->findChild<QObject*>(QLatin1String(kKeptOnScreen), Qt::FindDirectChildrenOnly) != nullptr) {
+    return;
+  }
+  // The connections end with the window, their context's parent.
+  auto* context = new QObject(window);
+  context->setObjectName(QLatin1String(kKeptOnScreen));
+  const QPointer<QWidget> guard(window);
+  const auto refit = [guard] {
+    if (guard != nullptr && !guard->testAttribute(Qt::WA_DontShowOnScreen)) {
+      capWindowToScreen(guard);
+    }
+  };
+  QObject::connect(window->windowHandle(), &QWindow::screenChanged, context, refit);
+  const auto watch = [context, refit](QScreen* screen) {
+    QObject::connect(screen, &QScreen::availableGeometryChanged, context, refit);
+  };
+  for (QScreen* screen : QGuiApplication::screens()) {
+    watch(screen);
+  }
+  QObject::connect(qGuiApp, &QGuiApplication::screenAdded, context, watch);
 }
 
 } // namespace mitcad

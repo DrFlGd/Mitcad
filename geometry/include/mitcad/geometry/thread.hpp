@@ -121,7 +121,10 @@ struct ThreadSpec {
 //
 // The work is local: only the body's faces near the thread take part, so
 // a thread on a body of thousands of faces takes about as long as on a
-// small one.
+// small one. The tools of faces far apart from each other are built at
+// once on all cores and applied together (mitcad#843,
+// geometry/src/thread_options.hpp); the result is the one made face by
+// face.
 ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec);
 
 } // namespace mitcad::geometry

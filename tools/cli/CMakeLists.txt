@@ -365,6 +365,16 @@ if(BUILD_TESTING)
     COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d" --retry-bodies ask)
   set_tests_properties(cli.import_f3d_retry_bodies_refused PROPERTIES FIXTURES_REQUIRED cli_f3d
     PASS_REGULAR_EXPRESSION "--retry-bodies needs keep or replace")
+  # The own-start time scale (mitcad#847): taken with a factor, refused
+  # without one above 0.
+  add_test(NAME cli.import_f3d_own_start_time_scale
+    COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d" --own-start-time-scale 3)
+  set_tests_properties(cli.import_f3d_own_start_time_scale PROPERTIES FIXTURES_REQUIRED cli_f3d
+    PASS_REGULAR_EXPRESSION "bodies\\.f3d: 0 timeline items")
+  add_test(NAME cli.import_f3d_own_start_time_scale_refused
+    COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d" --own-start-time-scale 0)
+  set_tests_properties(cli.import_f3d_own_start_time_scale_refused PROPERTIES FIXTURES_REQUIRED cli_f3d
+    PASS_REGULAR_EXPRESSION "--own-start-time-scale needs a factor greater than 0")
   # A rounding whose result deviates from the file's (mitcad#379): a
   # synthetic design (a cube whose history bevels an edge, its timeline a
   # dump with a rounding of that edge) comes in with the file's bevel and
@@ -656,15 +666,24 @@ if(BUILD_TESTING)
   # and reading the file and applying its appearances take less time than
   # the replay, and a design with a time limit (seconds in a release build,
   # three times that in a debug build) opens within it (mitcad#642);
-  # skipped without the designs.
+  # skipped without the designs. The designs run at once, each in a child
+  # process (mitcad#832); the imports try an item from its own start, the
+  # first route, SLOWER times as long too (--own-start-time-scale,
+  # mitcad#847), so that a debug build's item started beside the rest of
+  # the corpus step does not run out of that time (a debug build's path
+  # pattern of b832916a takes 18 s by itself, the route 30 s).
   if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     set(f3d_designs_slower 3)
   else()
     set(f3d_designs_slower 1)
   endif()
+  # The designs one after another (no RUNNER): at once, in the Linux
+  # release's build root under the full check's load, db73863f's Fillet4 ran
+  # out of its item time (0.32.0-rc2) although it passed so on the host.
   add_test(NAME f3d.corpus_designs
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/f3d-designs"
-            "-DSLOWER=${f3d_designs_slower}" -P "${CMAKE_CURRENT_SOURCE_DIR}/f3d-designs.cmake")
+            "-DSLOWER=${f3d_designs_slower}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/f3d-designs.cmake")
   set_tests_properties(f3d.corpus_designs PROPERTIES SKIP_REGULAR_EXPRESSION "f3d designs: skipped")
 
   # .f3d designs driven by their user parameters (mitcad#641), found by

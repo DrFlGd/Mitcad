@@ -30,7 +30,10 @@
 // delete goes to the window through the signals (MainWindow, in
 // projects/MainWindowProjectsPanel.cpp), which runs the core's commands
 // and calls refresh(). New Design, New Folder and Rename are named in place;
-// a drag moves designs and folders within their project.
+// a drag moves designs and folders within their project. The AppKit
+// frontend presents the same rows natively (mitcad#816): its outline's
+// keys, its own name editor and its drags come back through treeKey,
+// setNativeEditor and dropRow to the same actions.
 //
 // The names get the width (mitcad#529): the state column holds compact
 // marks (ProjectRowText.hpp: "v2*", a lock, a cloud with a check) with the
@@ -54,6 +57,7 @@
 #include "ProjectsTree.hpp"
 
 class QAction;
+class QModelIndex;
 class QTimer;
 class QToolBar;
 class QTreeWidgetItem;
@@ -111,6 +115,30 @@ public:
   // Closes an open name editor without taking the name (Esc); false when
   // none is open.
   bool cancelEditing();
+
+  // An AppKit presentation of the panel (mitcad#816) gives its rows the
+  // same keys, names and drags as the tree, through these. The tree's own
+  // keys on the current row: Return opens (a folder or project folds), F2
+  // renames, Delete deletes (on macOS also Backspace); true when the key
+  // is the tree's.
+  bool treeKey(int key);
+  // Its own name editor, shown in its row in place of the hidden tree's:
+  // `openRow` starts it on the row of `index` with `text` (false: it could
+  // not, the naming is cancelled), `closeRow` ends it without a result.
+  void setNativeEditor(std::function<bool(const QModelIndex&, const QString&)> openRow,
+                       std::function<void()> closeRow);
+  // That editor ended: `text` taken (Return, Tab, the editor left) or not
+  // (Esc), as the tree's editor's end.
+  void finishNativeEditing(const QString& text, bool accepted);
+  // Its row drags, with the tree's rules: a design or a folder moves onto a
+  // folder, a project or a design (its folder) of the same project.
+  // dropRow takes the drop as a release does, a refused one with its
+  // feedback (`over` invalid: outside the rows); while `dragged` is
+  // dragged, the rows read wait as for the tree's own drag.
+  bool canDragRow(const QModelIndex& index) const;
+  bool canDropRow(const QModelIndex& dragged, const QModelIndex& over) const;
+  void dropRow(const QModelIndex& dragged, const QModelIndex& over);
+  void setNativeDragging(const QModelIndex& dragged, bool dragging);
 
   // The selected row's project ("" none) and folder in it (relative: a
   // folder's own path, a design's folder, "" for the project's top).
@@ -271,6 +299,14 @@ private:
   QString m_revealDesignRoot;
   QString m_revealDesignPath;
   void selectRevealedDesign();
+  // The AppKit presentation's name editor and drag (mitcad#816).
+  std::function<bool(const QModelIndex&, const QString&)> m_openNativeEditor;
+  std::function<void()> m_closeNativeEditor;
+  bool m_nativeEditing = false;  // its editor is open
+  bool m_nativeDragging = false; // it drags a row
+  bool m_marksWaiting = false;   // marks changed under its editor
+  // Rows read now wait (a name typed, a row dragged).
+  bool rowsHeld() const;
 };
 
 } // namespace mitcad

@@ -25,6 +25,8 @@ class QWidget;
 namespace mitcad {
 
 class AppearanceDialog;
+class ConfigurationBar;
+class ConfigurationsDialog;
 class FindDialog;
 class DocumentHost;
 class ParametersDialog;
@@ -74,12 +76,22 @@ public:
   // Its window once opened, else null (mitcad#564: back to the edit when
   // it closes).
   ParametersDialog* parametersDialog() const;
+  // Configurations (mitcad#807): the configuration table's window
+  // (Options, Rows, Rules); the window follows the model.
+  void openConfigurations();
+  ConfigurationsDialog* configurationsDialog() const;
+  // The Configuration bar at the top of the browser (mitcad#807).
+  ConfigurationBar* configurationBar() const { return m_configurationBar; }
   // Edit Appearances (mitcad#46); Assign gives the targets (bodies, and
   // faces: mitcad#53) the selected appearance.
   void openAppearances(const Selection& targets);
   // Design Policy (mitcad#220) of a component (C0 the root): its seven
   // settings, presets and violations; OK sets it as one undo step.
   void openPolicy(const QString& component);
+  // Edit Options… (mitcad#810) of an inserted component (its uid): its
+  // options chosen or bound to the design's parameters; OK keeps them as
+  // one undo step (`set_component_parameters`).
+  void editOptions(const QString& component, const QString& name);
   // Property Sets (mitcad#496) of a body, an occurrence and its component
   // (the window follows the model; another target replaces the shown one).
   void openPropertySets(const PropertyTarget& target);
@@ -136,6 +148,15 @@ public:
   // row) or the command.
   QToolButton* findButton() const { return m_findButton; }
   void openFind();
+  // Bindings (mitcad#809; Bindings.hpp): Suppress When… of a feature, Show
+  // When… of a body or an occurrence (its path, "O1/O4"), and Follow
+  // Option… of the appearance of bodies or faces (the targets as
+  // Appearance… takes them) or of the material of bodies. Each sets the
+  // expression the dialog gives (one undo step), or removes it.
+  void suppressWhen(const QString& feature);
+  void showBodyWhen(const QString& body);
+  void showOccurrenceWhen(const QString& path);
+  void followOption(const Selection& targets, bool material);
 
 protected:
   // Logs where the magnifier button is, for UI tests.
@@ -241,6 +262,8 @@ private:
   QToolButton* m_failures = nullptr;
   QToolButton* m_warnings = nullptr;
   QPointer<ParametersDialog> m_parameters;
+  QPointer<ConfigurationsDialog> m_configurations; // mitcad#807
+  ConfigurationBar* m_configurationBar = nullptr;   // mitcad#807
   QPointer<AppearanceDialog> m_appearances;
   QPointer<PropertySetsDialog> m_propertySets;
   QPointer<MaterialsDialog> m_materials;     // mitcad#655

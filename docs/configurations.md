@@ -2,7 +2,13 @@
 # Configurations and configuration rules (design note)
 
 Design note for configurable designs (mitcad#797). Status: **agreed with
-the owner on 2026-10-27**; nothing here is implemented yet. It builds on
+the owner on 2026-10-27**. The model of options, rows and rules (the
+`values` limit, open and closed tables, the migration, the cascade,
+`configure` and Check Rules) is implemented (mitcad#798, mitcad#799;
+[commands.md](../core/model-api/src/commands.md#configurations-options-rows-and-rules)),
+and so are the options of inserted components (mitcad#801,
+[commands.md](../core/model-api/src/commands.md#options-of-inserted-components));
+the rest is not yet. It builds on
 the configuration tables (mitcad#64), text parameters (mitcad#664),
 parameter limits (mitcad#665), the parameters CSV (mitcad#666) and the
 table lookups (mitcad#667, [table-lookups.md](table-lookups.md), whose

@@ -104,7 +104,7 @@ pub struct LibrarySource {
     pub authors: Vec<String>,
     /// The component's path, name, standard, licence and designation
     /// pattern (`{standard} {config}`; `{name}`, `{config}` and the
-    /// selectors' names in braces are replaced).
+    /// options' names in braces are replaced).
     pub path: String,
     pub name: String,
     pub standard: String,
@@ -160,14 +160,21 @@ pub fn link_resolver() -> Option<Arc<dyn LinkResolver>> {
     RESOLVER.read().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
-/// The designation of a part: the row's own, else the pattern with
-/// `{standard}`, `{name}`, `{config}` and `{<selector>}` replaced; without
-/// a pattern `{standard} {config}` (or the name for `{standard}` when there
-/// is no standard). Spaces are folded.
+/// The designation of a part made from a design in the state `state`
+/// (its row applied, mitcad#798): the row of the combination its options
+/// have (`row` when the parameters have its values, else the first that
+/// matches) gives its own designation, else the pattern with
+/// `{standard}`, `{name}`, `{config}` (the row's name, empty when the
+/// combination is no row) and `{<option>}` (the option's value as text)
+/// replaced; without a pattern `{standard} {config}` (or the name for
+/// `{standard}` when there is no standard). Spaces are folded.
 pub(crate) fn designation(
     source: &LibrarySource,
+    state: &crate::DocState,
     row: Option<&crate::configurations::ConfigurationRow>,
 ) -> String {
+    let table = &state.configurations;
+    let row = table.combination_row(&state.parameters, row.map(|r| r.name.as_str()));
     if let Some(own) = row.and_then(|r| r.designation.as_ref()) {
         return own.clone();
     }
@@ -184,10 +191,8 @@ pub(crate) fn designation(
         .replace("{standard}", &source.standard)
         .replace("{name}", &source.name)
         .replace("{config}", row.map_or("", |r| r.name.as_str()));
-    if let Some(row) = row {
-        for (selector, value) in &row.select {
-            text = text.replace(&format!("{{{selector}}}"), value);
-        }
+    for (option, value) in table.designation_values(&state.parameters) {
+        text = text.replace(&format!("{{{option}}}"), &value);
     }
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
@@ -214,4 +219,91 @@ pub fn encode_base64(data: &[u8]) -> String {
 /// Reads standard base64.
 pub fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
     crate::base64::decode(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::Document;
+    use crate::configurations::{ConfigurationRow, Configurations, OptionValue};
+    use crate::expr::Unit;
+    use crate::testing::MockKernel;
+
+    fn source(pattern: &str) -> LibrarySource {
+        LibrarySource {
+            text: String::new(),
+            store: MemoryStore::new(),
+            rev: String::new(),
+            label: String::new(),
+            library: "test".to_owned(),
+            url: String::new(),
+            library_name: String::new(),
+            component: "screw".to_owned(),
+            authors: Vec::new(),
+            path: "screw.mitcad".to_owned(),
+            name: "Screw".to_owned(),
+            standard: "ISO 4762".to_owned(),
+            license: String::new(),
+            designation: pattern.to_owned(),
+            supplier: None,
+            part_number: None,
+            supplier_url: None,
+            build: None,
+        }
+    }
+
+    fn row(name: &str, size: &str, length: &str, own: Option<&str>) -> ConfigurationRow {
+        ConfigurationRow {
+            name: name.to_owned(),
+            values: BTreeMap::from([
+                ("Size".to_owned(), format!("'{size}'")),
+                ("Length".to_owned(), length.to_owned()),
+            ]),
+            designation: own.map(str::to_owned),
+            ..ConfigurationRow::default()
+        }
+    }
+
+    /// mitcad#798: an open table's combination that is no row takes the
+    /// pattern with the option values in braces.
+    #[test]
+    fn a_combination_that_is_no_row_takes_the_pattern() {
+        let mut doc = Document::new(MockKernel::default());
+        doc.add_parameter_expression("Size", "'M5'", None, "")
+            .unwrap();
+        doc.add_parameter_expression("Length", "16 mm", Some(Unit::MM), "")
+            .unwrap();
+        doc.set_configurations(Configurations {
+            options: vec!["Size".to_owned(), "Length".to_owned()],
+            rows: vec![
+                row("M5x16", "M5", "16 mm", None),
+                row("M5x20", "M5", "20 mm", Some("Screw M5x20 special")),
+            ],
+            ..Configurations::default()
+        })
+        .unwrap();
+        let pattern = source("{standard} {Size}x{Length} ({config})");
+        let named = doc.configurations().row("M5x16").cloned();
+        assert_eq!(
+            designation(&pattern, doc.state(), named.as_ref()),
+            "ISO 4762 M5x16 (M5x16)"
+        );
+        // 25 mm: no row; the pattern with the options and no row name.
+        let values = BTreeMap::from([("Length".to_owned(), OptionValue::Number(25.0))]);
+        let outcome = doc.configure(&values).unwrap();
+        assert!(outcome.refused.is_none() && outcome.row.is_none());
+        assert_eq!(
+            designation(&pattern, doc.state(), named.as_ref()),
+            "ISO 4762 M5x25 ()"
+        );
+        // A row's own designation wins.
+        let values = BTreeMap::from([("Length".to_owned(), OptionValue::Number(20.0))]);
+        doc.configure(&values).unwrap();
+        assert_eq!(
+            designation(&pattern, doc.state(), None),
+            "Screw M5x20 special"
+        );
+    }
 }

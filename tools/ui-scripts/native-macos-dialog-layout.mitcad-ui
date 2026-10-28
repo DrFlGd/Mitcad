@@ -1,0 +1,168 @@
+# SPDX-License-Identifier: MIT
+# Native dialog sizing contract and macOS button order (mitcad#812, #817).
+# Synthetic presenters first, then the audited dialogs at the normal and a
+# narrow document size, each also at its narrowest dialog size: visible
+# input/slider bounds, labels, real pointer and keyboard focus, left-to-right
+# button bounds, Return and Escape. Nothing is created, inserted or rendered.
+native-appearance '${MITCAD_TEST_APPEARANCE}'
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+sleep 800
+native-resize 1280 820
+mark
+expect-native-layout-contract
+expect-log 'Native layout contract: widths, stretch, spans, alignment and hiding verified'
+expect-log 'Native button order contract: role order, gaps, keys, helpers and changes verified'
+focus-main
+
+# Parameters: Search after Only limited keeps its shared 180-point minimum.
+mark
+native-action solid.parameters
+expect-log 'Parameters dialog opened'
+focus-dialog '^Parameters$'
+expect-native-bounds parametersLimitedOnly 60
+expect-native-bounds parametersFilter 180
+# The Parameters tab keeps its helpers in its own row; OK has the dialog's
+# row below the tabs (mitcad#667).
+expect-native-button-order '^Import' '^Export' '^Edit Formula'
+expect-native-button-order '^OK$'
+native-pointer-click parametersFilter
+expect-native-control-focus parametersFilter
+type 'zz'
+expect-native-text parametersFilter '^zz$'
+key Ctrl+a
+key Backspace
+screenshot '${MITCAD_TEST_WORK}/parameters-${MITCAD_TEST_APPEARANCE}.png'
+native-dialog-resize 400 300
+expect-native-bounds parametersFilter 180
+expect-native-button-order '^Import' '^Export' '^Edit Formula'
+expect-native-button-order '^OK$'
+screenshot '${MITCAD_TEST_WORK}/parameters-narrow-${MITCAD_TEST_APPEARANCE}.png'
+native-pointer-button '^OK$'
+expect-native-dialog-gone '^Parameters$'
+focus-main
+
+# New Project: Author's name and email share their row; Tab moves from one
+# to the other. Return with Create unavailable keeps the dialog; Escape
+# cancels without creating a project.
+mark
+native-action file.new_project
+focus-dialog '^New Project$'
+expect-native-button-order '^Cancel$' '^Create$'
+expect-native-bounds projectFolder 300 '^Folder:$'
+expect-native-bounds projectDisplayName 100 '^Display name:$'
+expect-native-bounds projectAuthorName 100 '^Author:$'
+expect-native-bounds projectAuthorEmail 100 '^Author:$'
+native-pointer-click projectAuthorName
+expect-native-control-focus projectAuthorName
+key Ctrl+a
+type 'Layout Tester'
+key Tab
+expect-native-control-focus projectAuthorEmail
+key Ctrl+a
+type 'layout@example.invalid'
+key Tab
+expect-native-text projectAuthorName '^Layout Tester$'
+expect-native-text projectAuthorEmail '^layout@example\.invalid$'
+screenshot '${MITCAD_TEST_WORK}/new-project-${MITCAD_TEST_APPEARANCE}.png'
+native-dialog-resize 400 400
+expect-native-bounds projectAuthorName 100 '^Author:$'
+expect-native-bounds projectAuthorEmail 100 '^Author:$'
+expect-native-button-order '^Cancel$' '^Create$'
+screenshot '${MITCAD_TEST_WORK}/new-project-narrow-${MITCAD_TEST_APPEARANCE}.png'
+native-pointer-click projectAuthorName
+key Ctrl+a
+key Backspace
+sleep 400
+key Return
+sleep 400
+focus-dialog '^New Project$' 2
+key Escape
+expect-native-dialog-gone '^New Project$'
+focus-main
+
+# Settings > Navigation: both columns of speed sliders keep a usable track,
+# take a real drag to their end and reset through their own button.
+mark
+command tools.preferences.navigation
+focus-dialog '^Settings$'
+expect-native-bounds navigationOrbitSpeed 70 '^Orbit speed:$'
+expect-native-bounds navigationPanSpeed 70 '^Pan speed:$'
+expect-native-bounds navigationZoomSpeed 70 '^Zoom speed:$'
+expect-native-bounds navigationTrackpadSpeed 70 '^Trackpad scroll speed:$'
+native-pointer-drag navigationZoomSpeed 0.5 1.5
+expect-widget-property navigationZoomSpeed value 400
+native-pointer-click navigationZoomSpeedReset
+expect-widget-property navigationZoomSpeed value 100
+screenshot '${MITCAD_TEST_WORK}/settings-navigation-${MITCAD_TEST_APPEARANCE}.png'
+native-dialog-resize 400 400
+expect-native-bounds navigationOrbitSpeed 70 '^Orbit speed:$'
+expect-native-bounds navigationTrackpadSpeed 70 '^Trackpad scroll speed:$'
+native-pointer-drag navigationTrackpadSpeed 0.5 -0.5
+expect-widget-property navigationTrackpadSpeed value 10
+native-pointer-click navigationTrackpadSpeedReset
+expect-widget-property navigationTrackpadSpeed value 100
+screenshot '${MITCAD_TEST_WORK}/settings-navigation-narrow-${MITCAD_TEST_APPEARANCE}.png'
+key Ctrl+w
+expect-native-dialog-gone '^Settings$'
+focus-main
+
+# Insert from Library: helpers on the left, Close and Insert on the right.
+mark
+command insert.library_component
+focus-dialog '^Insert from Library$'
+expect-native-button-order '^Libraries' '^Update$' '^Get Library$' '^Close$' '^Insert$'
+screenshot '${MITCAD_TEST_WORK}/insert-${MITCAD_TEST_APPEARANCE}.png'
+native-dialog-resize 400 300
+expect-native-button-order '^Libraries' '^Update$' '^Get Library$' '^Close$' '^Insert$'
+key Escape
+expect-native-dialog-gone '^Insert from Library$'
+focus-main
+
+# Render Image: Cancel and Save on the left, Close and Render on the right.
+mark
+command file.render_image
+focus-dialog '^Render Image$'
+expect-native-button-order '^Cancel$' '^Save' '^Close$' '^Render$'
+screenshot '${MITCAD_TEST_WORK}/render-${MITCAD_TEST_APPEARANCE}.png'
+native-pointer-button '^Close$'
+expect-native-dialog-gone '^Render Image$'
+focus-main
+
+# Library Parts: its helpers left of Update, and its own Close row.
+mark
+command tools.library_parts
+focus-dialog '^Library Parts$'
+expect-native-button-order '^Check for Newer Versions$' '^Get Missing Libraries$' '^Show Changes$' '^Update$'
+expect-native-button-order '^Close$'
+screenshot '${MITCAD_TEST_WORK}/library-parts-${MITCAD_TEST_APPEARANCE}.png'
+native-pointer-button '^Close$'
+expect-native-dialog-gone '^Library Parts$'
+focus-main
+
+# The same sheets over a narrow document window.
+native-resize 900 640
+mark
+native-action solid.parameters
+focus-dialog '^Parameters$'
+expect-native-bounds parametersFilter 180
+expect-native-button-order '^Import' '^Export' '^Edit Formula'
+expect-native-button-order '^OK$'
+native-pointer-button '^OK$'
+expect-native-dialog-gone '^Parameters$'
+focus-main
+native-action file.new_project
+focus-dialog '^New Project$'
+expect-native-bounds projectAuthorName 100 '^Author:$'
+expect-native-bounds projectAuthorEmail 100 '^Author:$'
+expect-native-button-order '^Cancel$' '^Create$'
+native-pointer-button '^Cancel$'
+expect-native-dialog-gone '^New Project$'
+focus-main
+command insert.library_component
+focus-dialog '^Insert from Library$'
+expect-native-button-order '^Libraries' '^Update$' '^Get Library$' '^Close$' '^Insert$'
+native-pointer-button '^Close$'
+expect-native-dialog-gone '^Insert from Library$'
+focus-main
+native-resize 1280 820
+expect-never 'Inserted component|Updated library parts|Render image preview'

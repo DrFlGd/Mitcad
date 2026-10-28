@@ -18,13 +18,17 @@ namespace mitcad::geometry {
 // The shape as bytes: a header with a format version, OCCT's binary B-rep
 // (BinTools, format version 4) without the triangulations of faces with
 // surfaces (they are made again for display), the names of the faces in
-// TopExp order, the notes, and the measured properties and bounding box
-// when the shape has them (the accurate volume of curved faces is costly).
+// TopExp order, the names and faces of the edges and vertices (worked out
+// from the faces' names, which is costly to do again for every shape read
+// back, mitcad#841), the notes, and the measured properties and bounding
+// box when the shape has them (the accurate volume of curved faces is
+// costly).
 std::string serialize_shape(const Shape& shape);
 
-// A shape from serialize_shape's bytes. Throws std::runtime_error when the
-// data is not such a shape or its faces do not match their names (the
-// bytes are then of no use: what reads them computes the shape anew).
+// A shape from serialize_shape's bytes, with the edge and vertex names
+// stored with it. Throws std::runtime_error when the data is not such a
+// shape or its faces do not match their names (the bytes are then of no
+// use: what reads them computes the shape anew).
 ShapePtr deserialize_shape(std::string_view data);
 
 // What results stored by this build must have been stored by: the format

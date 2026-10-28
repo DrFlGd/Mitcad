@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-model-tests-imports"
+description = "Tests of the Mitcad imports that need the whole model and its JSON api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+doctest = false
+
+[dev-dependencies]
+mitcad-model = { workspace = true, features = ["testing"] }
+mitcad-model-api = { path = "../../model-api" }
+serde_json.workspace = true
+# The .ipt reader's test designs, replayed by the .f3d import's replay.
+mitcad-ipt = { path = "../../ipt" }
+mitcad-import = { path = "../../import" }
+# The IFC reader's test building and its import.
+mitcad-ifc = { path = "../../ifc" }
+mitcad-import-ifc = { path = "../../import-ifc" }
+# The .solidcraft reader and its import.
+mitcad-solidcraft = { path = "../../solidcraft" }
+mitcad-import-solidcraft = { path = "../../import-solidcraft" }

@@ -660,7 +660,7 @@ void report_files(const std::vector<std::string>& files, const std::vector<std::
       ++t.files_failed;
     }
     std::fflush(stdout);
-  }, weights);
+  }, weights, files);
 }
 
 } // namespace

@@ -15,6 +15,7 @@
 #include "../files/Libraries.hpp"
 #include "../framework/Command.hpp"
 #include "../framework/Json.hpp"
+#include "../library/PartOptions.hpp"
 
 namespace mitcad::build {
 namespace {
@@ -79,6 +80,9 @@ QVector<Part> partsOf(const QJsonObject& component) {
   QVector<Part> parts;
   const QJsonObject configurations = component.value(QStringLiteral("configurations")).toObject();
   const QJsonArray rows = configurations.value(QStringLiteral("rows")).toArray();
+  // An open table's options are chosen in the picker (mitcad#810); its rows
+  // stay tiles of their own, presets of the options.
+  part.table = configurations;
   // The default row: the table names it, else the first (docs/libraries.md).
   QString defaultRow = text(configurations, "default");
   if (defaultRow.isEmpty() && !rows.isEmpty()) {
@@ -168,7 +172,30 @@ double millimetres(const QJsonValue& value) {
   return amount;
 }
 
+QString optionsKey(const QString& tileKey, const QString& row, const QJsonObject& parameters) {
+  const QString prefix = keyPrefix(baseKey(tileKey));
+  return QStringLiteral("%1|%2?%3").arg(prefix, row, QString::fromUtf8(compactJson(parameters)));
+}
+
+QString baseKey(const QString& key) { return key.section(QLatin1Char('?'), 0, 0); }
+
+QJsonObject keyOptions(const QString& key) {
+  const int at = static_cast<int>(key.indexOf(QLatin1Char('?')));
+  if (at < 0) {
+    return {};
+  }
+  return QJsonDocument::fromJson(key.mid(at + 1).toUtf8()).object();
+}
+
+QString keyPrefix(const QString& key) {
+  const QString base = baseKey(key);
+  const int bar = static_cast<int>(base.lastIndexOf(QLatin1Char('|')));
+  return bar < 0 ? base : base.left(bar);
+}
+
 QString Part::role() const { return text(build, "role"); }
+
+bool Part::openTable() const { return isOpenTable(table); }
 
 QString Part::systemText() const {
   const auto one = [](const QJsonObject& system) {
@@ -261,6 +288,14 @@ QString Part::label() const {
   if (!config.isEmpty()) {
     about << config;
   }
+  // The options chosen (mitcad#810): "Black, 800 mm".
+  if (!parameters.isEmpty()) {
+    QStringList values;
+    for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+      values << valueOfExpression(it.value().toString());
+    }
+    about << values.join(QStringLiteral(", "));
+  }
   // A profiled board's cover width (mitcad#477): "cover 112".
   if (joinedCover() > 0.0) {
     about << QObject::tr("cover %1").arg(joinedCover(), 0, 'g', 6);
@@ -291,6 +326,10 @@ QJsonObject Part::ref() const {
   }
   if (!config.isEmpty()) {
     part.insert(QStringLiteral("config"), config);
+  }
+  // An open table's options (mitcad#810, derived_part.parameters).
+  if (!parameters.isEmpty()) {
+    part.insert(QStringLiteral("parameters"), parameters);
   }
   return part;
 }
@@ -471,7 +510,39 @@ bool Catalog::find(const QString& key, Part& part) const {
       }
     }
   }
-  return false;
+  // An options key (mitcad#810): the component's part (the tile of the
+  // key's row, else any of its tiles) with the options and the row.
+  if (!key.contains(QLatin1Char('?'))) {
+    return false;
+  }
+  const QString base = baseKey(key);
+  const QString prefix = keyPrefix(base);
+  const Part* found = nullptr;
+  for (const QVector<Part>& parts : m_byRole) {
+    for (const Part& one : parts) {
+      if (one.key == base) {
+        found = &one;
+        break;
+      }
+      if (found == nullptr && keyPrefix(one.key) == prefix) {
+        found = &one;
+      }
+    }
+  }
+  if (found == nullptr) {
+    return false;
+  }
+  part = *found;
+  part.key = key;
+  part.config = base.mid(prefix.size() + 1);
+  part.parameters = keyOptions(key);
+  // The tile's build block; its own picture and default mark only for its
+  // own row.
+  if (part.config != found->config) {
+    part.ownPreview = false;
+    part.defaultRow = false;
+  }
+  return true;
 }
 
 QString Catalog::problem(const QString& role) const {
@@ -562,8 +633,31 @@ QStringList Catalog::rowsOf(const QString& key) const {
 }
 
 Choices partChoices(const QVector<Part>& parts, const QString& words, const QString& system, const QString& current) {
+  // A part with options chosen (mitcad#810) stands in place of its tile:
+  // the tile of its row, else the component's first.
+  int optionsAt = -1;
+  if (current.contains(QLatin1Char('?'))) {
+    const QString base = baseKey(current);
+    for (int i = 0; i < parts.size(); ++i) {
+      if (parts[i].key == base) {
+        optionsAt = i;
+        break;
+      }
+      if (optionsAt < 0 && keyPrefix(parts[i].key) == keyPrefix(base)) {
+        optionsAt = i;
+      }
+    }
+  }
   Choices choices;
-  for (const Part& part : parts) {
+  for (int i = 0; i < parts.size(); ++i) {
+    const Part& part = parts[i];
+    if (i == optionsAt) {
+      Part withOptions = part;
+      withOptions.config = baseKey(current).mid(keyPrefix(current).size() + 1);
+      withOptions.parameters = keyOptions(current);
+      choices.append({current, withOptions.label()});
+      continue;
+    }
     const bool chosen = part.key == current;
     if (chosen || (part.matches(words) && (system.isEmpty() || part.systemText().contains(system)))) {
       choices.append({part.key, part.label()});

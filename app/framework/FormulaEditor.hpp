@@ -14,6 +14,9 @@ class QPlainTextEdit;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QShowEvent;
+class QDialogButtonBox;
+class QListWidget;
+class QListWidgetItem;
 
 namespace mitcad {
 
@@ -30,6 +33,7 @@ public:
 
 protected:
   void showEvent(QShowEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
   void updateHelp();
@@ -54,6 +58,32 @@ private:
   QCheckBox* m_strict = nullptr;
   QJsonObject m_originalLimits;
   bool m_canLimit = false;
+
+  // Completion of what is typed (mitcad#667): a name offers the
+  // parameters, the tables (`Screws.`) and the functions (`XLOOKUP(`)
+  // that start with it; after `Screws.` the table's columns. Up and Down
+  // choose, Enter or Tab puts the choice in place of the name typed, Esc
+  // closes the list only.
+  void loadCompletions();
+  // mayOpen: what was typed opens the list; otherwise only a list shown
+  // follows (Backspace) or closes.
+  void updateCompletions(bool mayOpen);
+  void complete(QListWidgetItem* item);
+  void hideCompletions();
+  QListWidget* m_completions = nullptr;
+  // OK and Cancel, whose places are logged for UI tests.
+  QDialogButtonBox* m_buttons = nullptr;
+  void logButtons();
+  QStringList m_parameterNames;
+  QStringList m_functionNames;
+  std::vector<SuggestedTable> m_tables;
+  int m_completionStart = 0;
+  int m_completionLength = 0;
+  bool m_completing = false;
+  // What the key being handled does to the text: 1 types, 2 erases, 0
+  // neither (a caret move closes the list, never opens it).
+  int m_typing = 0;
+  QString m_loggedCompletions;
 };
 
 QString formulaSignatureHtml(const QJsonObject& signature);

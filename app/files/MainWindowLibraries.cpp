@@ -128,7 +128,8 @@ void MainWindow::insertFromLibrary(bool community) {
   // frame to a face, a hole or a grid and Enter drops it in as below.
   const QVector<MountFrameInfo> frames = mountFramesOf(choice.mounts);
   if (!frames.isEmpty()) {
-    *m_mountPart = MountPart{library, choice.name, choice.version, choice.license, choice.link, choice.mounts};
+    *m_mountPart =
+        MountPart{library, choice.name, choice.version, choice.license, choice.link, choice.mounts, choice.parameters};
     QStringList names;
     for (const MountFrameInfo& frame : frames) {
       names << mountFrameLabel(frame);
@@ -139,14 +140,29 @@ void MainWindow::insertFromLibrary(bool community) {
     return;
   }
   QJsonObject result;
-  const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("insert_component")},
-                            {QStringLiteral("library"), library},
-                            {QStringLiteral("link"), choice.link}};
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("insert_component")},
+                      {QStringLiteral("library"), library},
+                      {QStringLiteral("link"), choice.link}};
+  // An open table's options as the component's own (mitcad#810).
+  if (!choice.parameters.isEmpty()) {
+    command.insert(QStringLiteral("parameters"), choice.parameters);
+  }
   if (runModelCommand(command, &result)) {
     qInfo().noquote() << QStringLiteral("Inserted component %1 (%2) from %3 %4, licence %5")
                              .arg(result.value(QStringLiteral("name")).toString(),
                                   choice.link ? QStringLiteral("linked") : QStringLiteral("copy"), choice.library,
                                   choice.version, choice.license.isEmpty() ? QStringLiteral("none") : choice.license);
+    if (!choice.parameters.isEmpty()) {
+      QStringList options;
+      for (auto it = choice.parameters.begin(); it != choice.parameters.end(); ++it) {
+        options << QStringLiteral("%1 = %2").arg(it.key(), it.value().toString());
+      }
+      qInfo().noquote() << QStringLiteral("Inserted component %1 with options %2 (%3)")
+                               .arg(result.value(QStringLiteral("name")).toString(),
+                                    options.join(QStringLiteral(", ")),
+                                    choice.config.isEmpty() ? QStringLiteral("no row")
+                                                            : QStringLiteral("row %1").arg(choice.config));
+    }
     showHint(tr("Inserted %1 from %2 %3.")
                  .arg(result.value(QStringLiteral("name")).toString(), choice.library, choice.version));
     m_viewer->fitAll();

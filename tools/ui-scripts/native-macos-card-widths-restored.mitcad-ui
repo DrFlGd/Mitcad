@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+# After a relaunch the native side cards open as wide as they were left
+# (mitcad#818); run by ui-macos-native-card-widths-test.sh.
+expect-ever 'Native card widths: projects 700, browser 600, inspector 340 \(remembered\)'
+wait-log 'Projects panel: 1 project' 30
+sleep 800
+native-resize 1280 820
+expect-native-visible native.projectsCard true
+expect-native-card-width native.projectsCard 700
+expect-native-card-width native.sidebar 600
+expect-native-name-fits '^Synthetic project with a long name$' true
+expect-native-name-fits '^Synthetic body with a deliberately long name for width checks$' true
+expect-native-layout
+mark
+native-action solid.box
+expect-log 'Command Box started'
+expect-native-visible native.inspectorCard true
+expect-native-card-width native.inspectorCard 340
+native-click commandCancel
+expect-log 'Command Box cancelled' 30

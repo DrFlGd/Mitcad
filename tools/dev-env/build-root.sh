@@ -19,11 +19,12 @@
 #     HOME. The root's /usr, /etc and /var are read-only; <home>, every
 #     --bind folder (at the same path), /tmp, the user's runtime folder
 #     (systemd-run --user, which check-all's memory scope uses) and the
-#     network are the host's. The environment is cleared but for the
-#     MITCAD_* variables and the build parallelism (CMAKE_BUILD_PARALLEL_LEVEL,
-#     CARGO_BUILD_JOBS, VCPKG_MAX_CONCURRENCY), which pass in; a MITCAD_*
-#     path outside the bound folders is reported, as the root would not
-#     see it.
+#     network are the host's, and so is the test runner's history
+#     (<home>/.mitcad is the user's own ~/.mitcad). The environment is
+#     cleared but for the MITCAD_* variables and the build parallelism
+#     (CMAKE_BUILD_PARALLEL_LEVEL, CARGO_BUILD_JOBS, VCPKG_MAX_CONCURRENCY),
+#     which pass in; a MITCAD_* path outside the bound folders is reported,
+#     as the root would not see it.
 #   build-root.sh setup [--bind <dir>]... <root> <home> <checkout>
 #     As the user, once: copies <checkout> to <home>/src/mitcad and runs
 #     setup-user.sh (Rust, vcpkg, Qt, the render worker's libraries with
@@ -145,6 +146,16 @@ bwrap_args() {
   for dir in "$@"; do
     ARGS+=(--bind "$dir" "$dir")
   done
+  # The test runner's history (~/.mitcad: each test's time and memory, the
+  # failure scores, the UI tests' cap; tools/testrun/README.md) is the
+  # host user's own folder, shared both ways: a new root starts from what
+  # the host's runs learnt, its runs add to it, and neither side goes back
+  # to an older copy. The runner's lock file beside the history is shared
+  # with it, so runs inside and outside the root add one at a time.
+  if [ -d "$HOME/.mitcad" ] && [ "$(readlink -f "$HOME")" != "$(readlink -f "$home")" ]; then
+    mkdir -p "$home/.mitcad"
+    ARGS+=(--bind "$HOME/.mitcad" "$home/.mitcad")
+  fi
   ARGS+=(--setenv HOME "$home" --setenv USER "$(id -un)" --setenv LOGNAME "$(id -un)"
     --setenv PATH /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     --setenv LANG C.UTF-8 --setenv TERM "${TERM:-dumb}")

@@ -27,7 +27,7 @@ param(
 # of Body1's top face in the isometric view (XZ at y = 0 between it and the
 # eye) and are the picks there; seen from the top, XZ and YZ are edge-on and
 # XY lies behind the face.
-Ui-Init $App $Out $QtBin @{ 'view.top' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'view.top' = 'F7' } -StepPause 0
 if (-not $Cli) {
   $Cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
     ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1

@@ -22,6 +22,11 @@ mod monitor_tests;
 mod parameter_limits_tests;
 mod preview_placement_tests;
 mod store_tests;
+mod tables_tests;
 mod text_parameter_tests;
 mod ui_gaps_tests;
 mod view_file_tests;
+// Configurations: options, rows and rules (mitcad#797).
+mod configurations_tests;
+// Tables in configurations (mitcad#806).
+mod configuration_tables_tests;

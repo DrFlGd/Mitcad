@@ -30,6 +30,7 @@
 //!                | text
 //!                | constant [ "(" ")" ]
 //!                | name
+//!                | column  (only as an argument, rule 31)
 //!                | function "(" [ expression { sep expression } ] ")"
 //!                | "let" "(" name sep expression { sep name sep expression }
 //!                  sep expression ")"
@@ -40,6 +41,7 @@
 //!                  [ ( "e" | "E" ) [ "+" | "-" ] digits ] ;
 //! point          = "." | "," ;  (a comma only as described below)
 //! name           = ( letter | "_" ) { letter | digit | "_" } ;
+//! column         = name "." name ;  (no spaces around the dot)
 //! constant       = "PI" | "E" ;
 //! unit           = "um" | "micron" | "µm" | "mm" | "cm" | "m" | "km"
 //!                | "in" | "inch" | "ft" | "foot" | "yd" | "mi" | "mil"
@@ -56,7 +58,8 @@
 //!                | "sum" | "average" | "product" | "median" | "clamp"
 //!                | "ifs" | "switch" | "choose" | "iferror"
 //!                | "radians" | "degrees"
-//!                | "concat" | "text" | "left" | "right" | "len" ;
+//!                | "concat" | "text" | "left" | "right" | "len"
+//!                | "xlookup" | "match" | "index" ;
 //! text           = "'" { character other than "'" | "''" } "'"
 //!                | '"' { character other than '"' | '""' } '"' ;
 //! ```
@@ -268,6 +271,52 @@
 //!     names, so parameters named `Text`, `Left` or `len` keep their names.
 //! 30. A text is at most [`MAX_TEXT_BYTES`] bytes long.
 //!
+//! Table lookups (mitcad#667, `docs/table-lookups.md`): a design keeps
+//! named tables of constants, which [`Lookup::column`] gives column by
+//! column ([`TableColumn`]).
+//!
+//! 31. `Table.Column` is a column reference, a list of cells; no spaces
+//!     stand around the dot, and the column's name may be a reserved word
+//!     (`T.in`). It is accepted only where rules 32 to 35 take a column;
+//!     anywhere else it is an error ("Screws.dk is a column: look a value
+//!     up with XLOOKUP or INDEX").
+//! 32. `xlookup(key; keys; results; [if_not_found]; [mode])` is the cell of
+//!     `results` in the row where `keys` matches `key`; `keys` and
+//!     `results` are columns of one table. `match(key; keys; [mode])` is
+//!     that row's number, counting from 1, unitless. `index(column; row)`
+//!     is the cell of `column` in row `row` (a fraction is cut off; a row
+//!     outside the column is an error, as `choose` treats an index).
+//! 33. Rows are searched from the top, empty key cells skipped; of several
+//!     matching rows the first wins. The mode is exact by default (0 of
+//!     both); exact, else the next smaller (the largest cell below the
+//!     key) is `-1` of `xlookup` and `1` of `match`; exact, else the next
+//!     larger is `1` of `xlookup` and `-1` of `match`. The approximate
+//!     modes look at every row, so the column need not be sorted. Wildcard
+//!     matching (`xlookup` mode 2) and `xlookup`'s sixth argument (the
+//!     search order) are not supported.
+//! 34. A number key needs a number column of its dimension (a unitless key
+//!     or column read in the default unit, as rule 3 promotes), and is
+//!     equal to a cell as `==` compares (rule 10). A text key needs a text
+//!     column and is equal to a cell of the same characters, case included
+//!     (rule 28); the approximate modes need a number key. A text key in a
+//!     number column, or a number key in a text column, is an error (rule
+//!     27).
+//! 35. `min`, `max`, `sum`, `average` and `median` take number columns
+//!     beside values: a column gives its non-empty cells (`max(T.d)` alone
+//!     is accepted). A column of only empty cells makes `sum` zero and the
+//!     others an error.
+//! 36. A cell is a value of its column's unit: `5.5` in an `mm` column is
+//!     5.5 mm, `0.25` in an `in` column 6.35 mm; a unitless column gives a
+//!     number, a text column a text. From there rules 3, 4 and 27 apply.
+//! 37. No matching row is a value error (`no row of Screws.Size is 'M7'`),
+//!     and so are an empty cell looked up and an `index` row outside the
+//!     column: `iferror` catches them. `xlookup`'s `if_not_found` is used
+//!     instead of no match; as with `if` (rule 11) it is evaluated anyway,
+//!     a value error in it counts only when it is used, and it must agree
+//!     with `results` in kind and dimension. `xlookup`, `match` and
+//!     `index` are functions only before `(` (as rule 29), so parameters
+//!     named `Index` or `Match` keep their names.
+//!
 //! Not supported: `random()` (not reproducible), and the constants
 //! `Gravity` and `SpeedOfLight` (no time dimension), which .f3d
 //! expressions have. Their names are reserved and give a clear error.
@@ -290,7 +339,7 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::fmt;
 
-pub use ast::{Arity, BinaryOp, Constant, Expr, Function, Node, NodeKind};
+pub use ast::{Arity, BinaryOp, ColumnPlace, Constant, Expr, Function, Node, NodeKind};
 pub use eval::{EvalContext, EvalError, Lookup, MAX_TEXT_BYTES, Value};
 pub use format::{
     DEFAULT_DECIMALS, format_number, format_number_exact, format_value, text_literal,
@@ -300,10 +349,16 @@ pub use parser::{ParseError, ParseErrorKind};
 pub use table::replace_references;
 pub use table::{ChangeSet, ParamId, ParamKind, ParamSpec, Parameter, ParameterTable, TableError};
 pub use units::{AngleUnit, DimensionError, Dims, LengthUnit, Quantity, Ratio, Unit};
+// The document's tables beside the parameters (mitcad#667).
+pub use table::{TableSource, replace_table_references};
 
 // Parameter limits: minimum, maximum, step and strictness (mitcad#665).
 mod limits;
 pub use limits::{Bounds, LimitError, Limited, ParamLimits};
+
+// Table lookups: `Table.Column`, xlookup, match and index (mitcad#667).
+mod lookups;
+pub use lookups::{ColumnError, MatchMode, TableCell, TableColumn};
 
 /// Byte range in an expression's source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -400,7 +455,15 @@ pub fn rename_names(text: &str, renamed: &HashMap<String, String>) -> String {
                 tokens[i - 1].tok,
                 lexer::Tok::Number(_) | lexer::Tok::Ident | lexer::Tok::RParen
             );
-        if token.tok != lexer::Tok::Ident || unit_place || units::is_unit_name(name) {
+        // Nor are the names of a column reference, `Screws.Max`
+        // (mitcad#667).
+        let dot = |at: Option<usize>| {
+            at.and_then(|at| tokens.get(at))
+                .is_some_and(|t| t.tok == lexer::Tok::Dot)
+        };
+        let column_place = dot(i.checked_sub(1)) || dot(Some(i + 1));
+        if token.tok != lexer::Tok::Ident || unit_place || column_place || units::is_unit_name(name)
+        {
             continue;
         }
         if let Some(new) = renamed.get(name) {

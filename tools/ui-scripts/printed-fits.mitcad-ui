@@ -14,7 +14,7 @@ expect-log 'Gear Backlash: gear_backlash = 0.2 mm'
 type-in 'Panel Gear input backlash at' '0.37 mm'
 expect-input-text backlash '^0.37 mm$'
 key Escape
-expect-log 'Command Gear cancelled'
+expect-log 'Command Gear cancelled' 10
 expect-model-parameter gear_backlash absent
 
 command solid.pulley

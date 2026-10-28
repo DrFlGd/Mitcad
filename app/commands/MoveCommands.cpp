@@ -19,7 +19,9 @@
 
 #include "../framework/Appearances.hpp"
 #include "CommandFactories.hpp"
+#include "../framework/ModelShapes.hpp"
 #include "CommandSupport.hpp"
+#include "MoveDragMotion.hpp"
 #include "MoveFaceText.hpp"
 
 namespace mitcad::cmd {
@@ -59,15 +61,7 @@ std::optional<gp_Pnt> pivotOf(const CommandState& state, const CommandContext& c
 }
 
 // The rotation of a free move: about X, then Y, then Z.
-gp_Trsf rotationOf(double rx, double ry, double rz) {
-  gp_Trsf x;
-  x.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(1, 0, 0)), rx);
-  gp_Trsf y;
-  y.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), ry);
-  gp_Trsf z;
-  z.SetRotation(gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), rz);
-  return z * y * x;
-}
+gp_Trsf rotationOf(double rx, double ry, double rz) { return freeRotation(rx, ry, rz); }
 
 // The occurrence path ("O1/O4") of an occurrence given by its uid or path.
 QString occurrencePath(const QString& occurrence, const CommandContext& context) {
@@ -632,6 +626,70 @@ InputDef moveComponentInput() {
   return textInput(kMoveComponent, QObject::tr("Component")).withVisible([](const CommandState&) { return false; });
 }
 
+// Where the coordinates of the component a move works in are in the
+// design: the placement of its first occurrence (the identity in the root).
+gp_Trsf moveFrame(const CommandState& state, const CommandContext& context) {
+  const QString component = state.text(kMoveComponent);
+  if (component.isEmpty() || component == QStringLiteral("C0")) {
+    return gp_Trsf();
+  }
+  std::function<std::optional<gp_Trsf>(const QJsonArray&)> find =
+      [&component, &find](const QJsonArray& tree) -> std::optional<gp_Trsf> {
+    for (const QJsonValue& value : tree) {
+      const QJsonObject node = value.toObject();
+      if (node.value(QStringLiteral("component")).toString() == component) {
+        return trsfOf(node.value(QStringLiteral("world")).toArray());
+      }
+      if (const auto inside = find(node.value(QStringLiteral("children")).toArray())) {
+        return inside;
+      }
+    }
+    return std::nullopt;
+  };
+  try {
+    const auto placed = find(context.queryObject({{QStringLiteral("query"), QStringLiteral("components")}})
+                                 .value(QStringLiteral("occurrences"))
+                                 .toArray());
+    return placed ? *placed : gp_Trsf();
+  } catch (const std::exception&) {
+    return gp_Trsf();
+  }
+}
+
+// Move/Copy's provisional drag motion (CommandDef::dragMotion, mitcad#838):
+// Free Move's handles turn about the pivot the exact preview had, and
+// Free Move's and Translate's arrows move; the bodies or components follow
+// a drag at once, the exact preview after it.
+std::optional<DragMotion> moveDragMotion(const CommandState& state, const CommandContext& context) {
+  const QString type = state.choice(QStringLiteral("type"));
+  gp_Pnt pivot;
+  if (type == QStringLiteral("free")) {
+    const auto middle = pivotOf(state, context);
+    if (!middle) {
+      return std::nullopt;
+    }
+    pivot = *middle;
+  } else if (type != QStringLiteral("translate")) {
+    return std::nullopt;
+  }
+  DragMotion motion;
+  motion.of = [pivot](const CommandState& inputs) { return moveMotion(inputs, pivot); };
+  motion.frame = moveFrame(state, context);
+  // What moves: the occurrences, the bodies, or their copies.
+  if (state.choice(QStringLiteral("move_type")) == QStringLiteral("components")) {
+    for (const SelectionItem& item : state.items(QStringLiteral("components"))) {
+      motion.occurrences << item.occurrence;
+    }
+  } else if (state.checked(QStringLiteral("copy"))) {
+    motion.made = true;
+  } else {
+    for (const SelectionItem& item : state.items(QStringLiteral("bodies"))) {
+      motion.bodies << item.owner;
+    }
+  }
+  return motion;
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -738,6 +796,8 @@ CommandDef moveCommand(const CommandContext& context) {
   def.canEdit = [&context](const QJsonObject& feature) {
     return transformEditable(feature.value(QStringLiteral("transform")).toObject(), context);
   };
+  // The bodies or components follow a handle's drag at once (mitcad#838).
+  def.dragMotion = moveDragMotion;
 
   def.describe = [](const CommandState& state, const CommandContext&) {
     return QStringLiteral("%1 %2 %3 (%4)")

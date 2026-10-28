@@ -36,6 +36,8 @@ mod print_fits;
 pub use mitcad_model_base::profile;
 pub use mitcad_print_keys as print_keys;
 mod recompute;
+// Features found by uid without a search (mitcad#841).
+mod feature_index;
 pub mod sheet;
 // The general sketch, a crate below the core (mitcad#780).
 pub use mitcad_model_base::topo;
@@ -92,6 +94,9 @@ pub use kernel::{DraftSpec, FilletSet, FilletSize, ShellSpec, ToolInput};
 // Construction geometry, analysis and body attributes (F5).
 pub use datum::{Datum, DatumAxis, DatumKind, DatumPlane, DatumPoint, OriginDatum};
 pub use document::{BodyAttributes, DatumView, DeletedAppearance, FaceAppearance};
+// Appearance, material, suppression and visibility from expressions
+// (mitcad#800).
+pub use document::{BindingKind, Bindings};
 pub use features::geom_ref::{GeomRef, PathRef};
 // Sweeps, lofts, pipes, coils, ribs and webs (F3).
 pub use mitcad_model_base::sweeps;
@@ -137,8 +142,8 @@ pub mod joints;
 // Configuration tables and library components (mitcad#64, mitcad#63).
 pub use mitcad_model_base::configurations;
 pub mod library;
-pub use configurations::{ConfigurationRow, Configurations};
-pub use document::{LibraryChange, LibraryPart, PartsListRow};
+pub use configurations::{ConfigurationRow, ConfigurationRule, Configurations, RuleAction};
+pub use document::{ConfigurationsSet, LibraryChange, LibraryPart, PartsListRow};
 pub use library::{LibraryRef, LibraryRequest, LibrarySource, LinkResolver, set_link_resolver};
 
 // Geometry of other components in sketches (mitcad#100).
@@ -283,3 +288,22 @@ pub use document::{
     CalibrationPoint, EmbeddedImage, ImageEdit, ImageReference, ImageSize, ImageSource, ImageTarget,
 };
 pub use mitcad_model_base::image_header;
+// The user presets of an installed Bambu-family slicer: what a ticked
+// preset of a name the target has does (mitcad#830).
+pub use document::{PresetChoice, SameName};
+// Options of inserted components: library parts, linked designs and BUILD
+// parts as expressions of the design's parameters (mitcad#801).
+pub mod part_options;
+pub use document::{ComponentOptions, OptionsChange, OptionsChanged};
+// Tables of data that parameter expressions look values up in
+// (mitcad#667, `docs/table-lookups.md`).
+pub mod tables;
+pub use tables::{Table, TableCell, TableColumn, Tables};
+#[cfg(test)]
+mod tables_tests;
+// A table of the design as CSV: one file per table, units in the header
+// (mitcad#804).
+pub mod tables_csv;
+pub use document::{TableCsvChange, TableCsvFailure, TableCsvImport};
+#[cfg(test)]
+mod tables_csv_tests;

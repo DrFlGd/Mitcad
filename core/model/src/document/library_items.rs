@@ -32,7 +32,7 @@ use crate::kernel::Kernel;
 use crate::material::{self, Material, MaterialChange, material_class};
 use crate::print_library::{ItemData, ItemKind, Libraries, LibraryItem, LibraryKind};
 use crate::print_profile::{
-    PROFILE_KEY, PrintProfile, ProfileChange, ProfileKind, free_id, new_item_name, slug,
+    PROFILE_KEY, PrintProfile, ProfileChange, ProfileKind, copy_name, free_id, new_item_name, slug,
 };
 use crate::properties::{PropertyOwner, PropertyValue, same_name};
 
@@ -190,7 +190,7 @@ fn copied_from(origin: Option<&material::MaterialOrigin>, library: LibraryKind, 
 
 /// `name`, else `name 2`, `name 3`, ... the first that `taken` does not
 /// hold.
-fn free_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+pub(super) fn free_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
     if !taken(name) {
         return name.to_owned();
     }
@@ -660,8 +660,8 @@ impl<K: Kernel> Document<K> {
 
     /// Makes a material in the user's or the project's library (version
     /// 1): from `based_on` (a material of the design or built in, or a
-    /// library's item) or empty (1 g/cm³), named `<name> 2` after the one
-    /// it is based on, else `New Material` (`… 2`), its id the name's when not
+    /// library's item) or empty (1 g/cm³), named `<name> (copy)` after the
+    /// one it is based on (mitcad#828), else `Material 1` (`… 2`), its id the name's when not
     /// given. Returns the id, the file written and the version. The design
     /// does not change: the file is an undo step of its own.
     pub fn create_library_material(
@@ -723,7 +723,7 @@ impl<K: Kernel> Document<K> {
             .collect();
         let taken = |name: &str| names.iter().any(|n| n.eq_ignore_ascii_case(name));
         new.name = match &change.based_on {
-            Some(_) => free_name(&new.name, taken),
+            Some(_) => copy_name(&new.name, taken),
             None => (1..)
                 .map(|n| new_item_name("Material", n))
                 .find(|name| !taken(name))
@@ -967,8 +967,9 @@ impl<K: Kernel> Document<K> {
 
     /// Makes a printer or process profile in the user's or the project's
     /// library (version 1): from `based_on` (a profile of the design, or a
-    /// library's item) or empty of `kind`, named `<name> 2` after the one
-    /// it is based on, else `Printer<n>` or `Process<n>`, its id the
+    /// library's item) or empty of `kind`, named `<name> (copy)` after the
+    /// one it is based on (mitcad#828), else `Printer 1` or `Process 1`
+    /// (`… 2`), its id the
     /// name's when not given. Returns the id, the file written and the
     /// version. The design does not change: the file is an undo step of
     /// its own.
@@ -1037,7 +1038,7 @@ impl<K: Kernel> Document<K> {
             .collect();
         let taken = |name: &str| names.iter().any(|n| n.eq_ignore_ascii_case(name));
         new.name = match &change.based_on {
-            Some(_) => free_name(&new.name, taken),
+            Some(_) => copy_name(&new.name, taken),
             None => {
                 let title = match kind {
                     ProfileKind::Printer => "Printer",

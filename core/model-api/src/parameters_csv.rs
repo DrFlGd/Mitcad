@@ -63,7 +63,13 @@ impl<K: Kernel> ParametersCsvOps<K> for Document<K> {
     ) -> Result<Value, ApiError> {
         Ok(match command {
             ParametersCsvCommand::ImportParametersCsv { csv } => {
-                outcome_json(&self.import_parameters_csv(&csv)?)
+                let revision = self.revision();
+                let mut answer = outcome_json(&self.import_parameters_csv(&csv)?);
+                // The cascade of configuration rules (mitcad#799).
+                if self.revision() != revision && !self.configuration_moves().is_empty() {
+                    answer["moves"] = super::configurations::moves_json(self.configuration_moves());
+                }
+                answer
             }
         })
     }
@@ -106,7 +112,7 @@ mod tests {
         let csv = exported["csv"].as_str().unwrap().to_owned();
         assert!(
             csv.starts_with(
-                "name,kind,unit,expression,value,comment,favorite,min,max,step,strict\r\n"
+                "name,kind,unit,expression,value,comment,favorite,min,max,step,strict,values\r\n"
             ),
             "{csv}"
         );

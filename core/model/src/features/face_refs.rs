@@ -292,7 +292,7 @@ pub(crate) fn missing_face<K: Kernel>(
         );
     }
     for feature in face.features() {
-        let state = match ctx.env.history.iter().find(|r| r.uid == feature) {
+        let state = match ctx.env.result_of(feature) {
             Some(r) => match r.status {
                 FeatureStatus::Ok => continue,
                 FeatureStatus::Failed(_) => "failed",

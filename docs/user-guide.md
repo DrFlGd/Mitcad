@@ -426,7 +426,10 @@ also shows the extrusion at once in see-through amber with dashed edges:
 a provisional shape, drawn while the exact preview of that value is still
 computed, which replaces it when it is ready. The automatic operation and
 the bodies it affects follow the exact preview; OK always keeps the exact
-result of the last value. Typing a value keeps the precision you enter.
+result of the last value. Dragging a handle of Move/Copy's Free Move or
+Translate moves the bodies or components with the pointer at once; the
+exact preview is computed when you stop for a moment or release the
+button, and OK keeps it. Typing a value keeps the precision you enter.
 A preview that fails shows in red, and OK does not accept it. Enter is
 OK, and Esc is Cancel. While you edit a feature, the timeline rolls
 back to before the feature.
@@ -602,6 +605,7 @@ submenus.
 - Edit Materials ([Materials](#materials))
 - Change Parameters ([Parameters and
   expressions](#parameters-and-expressions))
+- Configurations ([Configurations](#configurations))
 
 Fillet, Chamfer, Shell, Draft and Replace Face obey the *Tangent Chain*
 option ([Tangent Chain](#tangent-chain)).
@@ -1257,6 +1261,24 @@ area and its volume. The values update after edits and after undo.
 The card lists up to eight items. Hover over the text to show their
 full geometry references.
 
+**Section Analysis** cuts the bodies at a plane and shows the area and
+the outline length of the cut. Pick a planar face or a plane under
+*Faces/Plane*. *Distance* moves the cut along the normal of the plane,
+and *Flip* cuts away the other side. To cut at a slant, pick an *Axis*
+(a straight edge, a sketch line, a construction axis or an origin axis)
+and type an *Angle*, or drag the ring around the axis. The plane turns
+about the axis by that angle, and Distance then moves the turned plane
+along its own normal. You do not need a construction plane for a
+slanted cut. An Angle needs an Axis, and the axis must not be along the
+normal of the plane. OK keeps the section in the Analysis folder of the
+browser; Edit Section Analysis opens it again with its axis and angle.
+A design with a turned section needs this version of MitCad.
+
+When the Distance puts the Section Analysis plane past every body, the
+panel shows a warning instead of the zero area: "it cuts them all away"
+when the view no longer shows the bodies, "it cuts nothing" when it shows
+them whole. Change Distance, or turn on Flip to keep the other side.
+
 **Section Analysis** draws a cap over every cut face. **Hide Above
 Sketch** draws the same caps. Thin parallel lines at 45 degrees cover a
 cap. A cap has the colour of the component that owns its body. This is
@@ -1282,13 +1304,13 @@ the top of the view says so. The banner stays until you select a plane
 or a planar face, or until you press Esc. While **Create Sketch** waits,
 other actions also say so.
 
-The view shows the origin planes for the pick when the design has no
-other component than the active one, and the root has no bodies of its
-own. Otherwise the view shows them only when the eye of the Origin
-folder in the Browser is on. When the view does not show them, the
-Browser opens its Origin folder for the pick. Click **XY**, **XZ** or
-**YZ** there to start the sketch on that plane. When the pick ends, the
-folder is open or closed again as before. Its eye does not change.
+The view always shows the origin planes for the pick, also when the eye
+of the Origin folder in the Browser is off. The eye does not change:
+when the pick ends, the view shows the origin as the eye says. The
+planes lie behind the bodies for the pick. Where a face is in front of a
+plane, or a plane runs through a body, a click selects the face. A click
+on a plane where there is no face selects the plane. You can also click
+**XY**, **XZ** or **YZ** in the Origin folder of the Browser.
 
 Some faces cannot take a sketch: a cylinder, a thread or another curved
 surface, or a face that the design policy leaves out. If you click such
@@ -1361,6 +1383,10 @@ constrained. Fully constrained curves and centre lines have a thin
 outline in the background's tone: dark under light lines, light under
 dark lines. Thus they stay readable where they cross a body's face. When
 you drag a point or a curve, it moves as far as the constraints permit.
+When you drag one of several selected curves or points, the whole
+selection moves together and keeps its shape, as far as fixed geometry
+and constraints to other geometry permit. A drag that starts on geometry that is not selected moves only
+that geometry. The drag is one undo step.
 
 While a tool is active, the pointer is a slim cross with the tool's
 icon. A small square in the centre gap of the cross shows that the
@@ -1442,6 +1468,21 @@ A closed spline is one curve without ends. It is smooth where it closes,
 with no corner. It is one profile, so you can extrude it. Offset makes a
 closed curve around it, and Trim keeps the rest of it between the curves
 that cross it.
+
+**Insert Point on a spline.** To add a point to a spline, right-click
+the spline where the point must go and choose **Insert Point**. You can
+also select the spline and then double-click it at that place. This is
+one step that Undo takes back.
+
+- A Fit Point Spline gets a new fit point at that place, between its two
+  neighbours along the curve. The curve still goes through all its fit
+  points. Between the neighbours of the new point, the curve can change
+  its shape a little.
+- A Control Point Spline gets a new control point, and its shape does
+  not change. The control points next to the new one move a little to
+  keep the shape. The shape changes only when you drag a point.
+- Closed splines work the same way. The existing points keep their
+  constraints and dimensions.
 
 **Extend** (Modify) extends a curve at one end. The extended end obeys
 these rules:
@@ -2000,10 +2041,10 @@ it. The eye has priority over this automatic behaviour.
 The eye of the Origin folder shows the design's origin in the view: its
 point, its X, Y and Z axes and the XY, XZ and YZ planes. The design
 saves the eye. A new design starts with it off. You do not need the
-origin to start a sketch: Create Sketch shows the origin planes for the
-pick when the design has no other components (refer to
-[Sketch mode](#sketch-mode)), and every sketch shows its own origin and
-axes, whatever the eye of the Origin folder says.
+origin to start a sketch: Create Sketch always shows the origin planes
+for the pick (refer to [Sketch mode](#sketch-mode)), and every sketch
+shows its own origin and axes, whatever the eye of the Origin folder
+says.
 
 When you edit a feature, the view shows the sketches that the feature
 uses, also hidden sketches. A hidden sketch is a little lighter. You can
@@ -2073,7 +2114,9 @@ and **Rows**. Refer to [Layouts](#layouts).
 component that was active when the design was saved makes no
 difference. This also applies to a version, a copy, a recovered
 design and an import. This is not an Undo step, and it does not mark
-the design as modified.
+the design as modified. A new design that you make with New Design in
+a project opens with its Component1 active, so its first sketch and
+feature go into Component1.
 
 When the Browser tree is longer than the Browser, the design opens with
 the root open. Every row under the root is folded. Thus the components
@@ -2111,6 +2154,11 @@ its component. A failed feature is red, and the icon shows its error. A
 feature with a warning is yellow, and its tooltip shows the warning.
 The tooltip also shows what an import says about a feature. Refer to
 [Reading an imported timeline](#reading-an-imported-timeline).
+
+When the features do not fit, a scroll bar shows under them. Turn the
+mouse wheel over the timeline to scroll it: down moves to the newer
+features on the right, up to the older ones on the left. A sideways
+swipe on a trackpad scrolls it too.
 
 Hover over a feature to preview its geometry in light blue without changing
 selection. A folded group's cell previews its active members. Dashed boundaries
@@ -2505,6 +2553,93 @@ Change Parameters and in the lists at once. In a sketch, Undo takes it
 back. In a feature panel it stays when you cancel the panel. The
 right-click menu of a value field has the same actions.
 
+#### Tables
+
+A table keeps data that formulas look up, for example the sizes of
+screws from a standard. Each column has a name and a unit, and each row
+is one size:
+
+| Size | d (mm) | dk (mm) | k (mm) |
+|---|---|---|---|
+| M3 | 3 | 5.5 | 3 |
+| M4 | 4 | 7 | 4 |
+| M5 | 5 | 8.5 | 5 |
+
+A formula names a column as `Table.Column`, for example `Screws.dk`, and
+looks a value up with a function:
+
+- `XLOOKUP(Size; Screws.Size; Screws.dk)` finds the row whose `Size` is
+  the value of the parameter `Size` (for example the text `'M5'`) and
+  gives its `dk`: 8.5 mm. A fourth value is used when no row matches,
+  for example `XLOOKUP(Size; Screws.Size; Screws.dk; 6 mm)`. A fifth
+  value `-1` takes the next smaller row when no row matches exactly, `1`
+  the next larger one.
+- `MATCH(Size; Screws.Size)` gives the number of the row, and
+  `INDEX(Screws.k; 3)` the cell of row 3, so
+  `INDEX(Screws.k; MATCH(Size; Screws.Size))` gives `k` of the size.
+- `MIN`, `MAX`, `SUM`, `AVERAGE` and `MEDIAN` also take a column of
+  numbers: `MAX(Screws.dk)`.
+
+A match is exact by default, and a text matches only with the same
+capital and small letters: `'m5'` does not find `M5`. When no row
+matches, the formula is an error, unless you give the value for that
+case or use `IFERROR`. A number in a table has the unit of its column, so
+a value from an `in` column comes into a millimetre parameter in
+millimetres.
+
+**Make and edit tables.** In **Change Parameters**, click the **Tables**
+tab. The list at the left shows the tables of the design:
+
+- **New** makes a table. Give it a name, for example `Screws`. A table
+  cannot have the name of a parameter. The new table has a column `Key`
+  for texts, a column `Value` for lengths and one empty row.
+- In the header of the grid, each column has its name and a unit box.
+  Type a new name and press Enter: the formulas that use the column
+  follow. Open the unit box and choose a length, an angle, **no unit**
+  or **Text**; the mouse wheel and the arrow keys do not change it. When
+  you change from one length unit to another, the numbers change so that
+  the values stay the same: 25.4 mm becomes 1 in. The status bar says
+  so, and Undo brings the old numbers back.
+- Click a cell and type. A cell of a number column takes a number in the
+  unit of the column, or a number with another unit of its kind: `0.25 in`
+  in a millimetre column is kept as 6.35. Enter keeps the cell, Enter
+  again goes to the cell below, and Delete empties a cell. A cell
+  that MitCad cannot take, for example a text in a column of numbers,
+  stays in red with the reason, and the table does not change.
+- **Add Row**, **Remove Row**, **Add Column**, **Remove Column** and the
+  arrow buttons add, remove and move the rows and columns.
+- **Rename** renames the table; the formulas follow. **Delete** deletes
+  it. MitCad does not delete a table, or remove a column, that a
+  parameter uses. The line **Used by** under the grid shows the
+  parameters that use the table.
+
+Each change is one step to undo. When you change a cell, the parameters
+that use it and the design follow at once. MitCad refuses a change that
+would make a formula fail, for example a row removed that a formula
+looks up, and says which parameter would fail.
+
+**Tables as CSV files.** **Export CSV…** writes the selected table to a
+CSV file. The header has the name of each column with its unit in
+brackets, for example `Size [Text],d [mm],dk [mm]`; `[]` is a number
+without a unit. **Import CSV…** reads a CSV file into a table, for
+example one that you saved from a spreadsheet. Before anything changes,
+the **Import Table** window shows the table's name (the file's name;
+you can change it), the columns with their units, the rows, the cells
+that MitCad cannot take, and the parameters whose values change. A table
+of that name is made, or replaced whole. A column without a unit in
+brackets is a column of texts, or of numbers when all its cells are
+numbers. A cell such as `0.25 in` in a millimetre column is kept in
+millimetres. MitCad does not import a file with a cell that it cannot
+take, or a file that would make a formula fail. Click **Import** to
+import, or **Cancel** to keep the design as it is. The import is one
+step to undo.
+
+**Type a table's columns.** When you type the name of a table in a value
+field, the suggestions list it with the parameters. Choose it, and the
+list goes on with its columns after `Screws.`. The Formula Editor does
+the same as you type, and it lists XLOOKUP, MATCH and INDEX with the
+other functions.
+
 ### Formula Editor
 
 The **fx** list includes searchable functions with descriptions and examples,
@@ -2518,7 +2653,11 @@ Choose **Edit Formula…** in the fx list or a value field's context menu for a
 larger, multiline editor. In **Change Parameters**, select a parameter and
 choose **Edit Formula…**. The function search includes names, descriptions
 and examples. **Indent LET** adds whitespace to make a long formula easier
-to read; it does not change the formula's meaning.
+to read; it does not change the formula's meaning. As you type a name, the
+editor lists the parameters, tables and functions that start with it, and
+after a table's name and a dot its columns: Up and Down choose, Enter or
+Tab puts the choice in, Esc closes the list. Ctrl+Enter is the same as
+**OK**.
 
 Templates insert ordinary formula text: **How many fit** inserts
 `FLOOR(length / pitch)`, **Spacing for N items** inserts `length / (count - 1)`,
@@ -2581,6 +2720,217 @@ unknown name, a wrong unit, a circular reference), MitCad uses the number
 in the `Value` column and says why. Click **Import** to import, or
 **Cancel** to keep the design as it is. The import is one step to undo.
 You cannot import while a sketch or a command panel is open.
+
+### Values that follow parameters
+
+A body's appearance and material, the appearance of a face, whether a
+feature is suppressed, and whether a body or a component is shown can
+follow parameters. One text parameter, for example `Color`, can then
+switch the whole design between its variants: change it in Change
+Parameters (or apply a configuration) and the looks, the materials and the
+features follow.
+
+- **Follow Option** (in the context menu of a body in the browser, and of
+  bodies and faces in the view): **Appearance…** or **Material…**. Choose
+  the parameter to follow (**Option**). Its allowed values are listed;
+  **Add Value** adds another. For each value, choose or type an appearance
+  (or a material) by its name, for example `Paint - Black`. **Other
+  values** is what every other value gives. **Formula Editor…** edits the
+  expression as text, for example `if(Length > 1 m; 'paint_red';
+  'paint_white')`. A name that no appearance or material has gives the
+  body a warning (in its tooltip in the browser), and the body then has
+  its default look.
+- **Suppress When…** (in the context menu of a feature in the timeline
+  and the browser): a condition, for example `Holes = 'No'` or `Length <
+  500 mm`. The feature is suppressed while it holds.
+- **Show When…** (in the context menu of a body or a component): the body
+  or the component is shown while the condition holds.
+
+A body, a component or a feature that follows parameters has a small
+*fx* on its icon in the browser and the timeline, and its tooltip shows
+the expression. Setting the value by hand (Appearance…, Material…, Hide,
+Suppress Features) ends it. **Remove Expression** or **Remove Condition**
+in the dialog ends it too and keeps the value it gave. Each change is one
+step to undo. A parameter that is followed cannot be deleted; renaming it
+changes the expressions.
+## Configurations
+
+A configurable design stands for a family of products: a shelf in three
+colours and any length from 300 to 2000 mm, a screw in its sizes. You
+choose a value for each **option** (Color, Length, Size). **Rules** take
+away the values and combinations that are not allowed, and named **rows**
+are presets of option values. A configuration only sets parameters: an
+option is a user parameter, and everything that follows it (dimensions,
+other parameters through their expressions) changes with it.
+
+Open **Configurations…** from the Modify group of the Solid tab (beside
+**Change Parameters**) or from **Edit › Configurations…**. The window has
+three tabs: **Options**, **Rows** and **Rules**. Every change in it is one
+step to undo. A change that MitCad refuses stays in its cell in red, and
+the cell's tooltip and the line under the tabs say why. You cannot change
+the configuration while a sketch or a command panel is open.
+
+### Options
+
+The **Options** tab lists the options in their order. The order matters:
+when a change makes a later option's value not allowed, MitCad moves the
+later options first (see *Rules and the cascade* below), and the choosers
+show the options in this order. Drag an option to its place, or select it
+and click **Move Up** or **Move Down**.
+
+- **Add Option…** makes a user parameter an option. Choose one of the
+  user parameters, or **New Parameter** and give its name, unit and value
+  (unit `Text` for a text such as a colour name).
+- **Remove Option** takes the option out of the configuration and out of
+  the rows. The parameter stays in the design.
+- **Domain** is what the option can be before the rules: a **list** of
+  values (`Black`, `White`; `300 mm`, `500 mm`, `800 mm`), a **range**
+  (a minimum, a maximum and a step), a **table column**, or **free**.
+  Double-click the cell or click **Edit Domain…**. A text option is a
+  list, a table column or free. The domain is stored as the parameter's
+  limits, so Change Parameters shows it too.
+- A **table column** domain takes the option's values from a column of
+  one of the design's tables (Change Parameters, Tables): choose **Table
+  Column** and the column, such as `Screws.Size`. The option can then be
+  each value in the column, and the Domain cell shows the column with its
+  values (`Screws.Size: M3, M4, M5`). A text option takes a text column, a
+  number option a number column. When you edit the table (or import it
+  from CSV) and the option's value is no longer in the column, the option
+  moves to the nearest value (for a text, to the default row's value or
+  the column's first), and the status bar says so.
+- **Default** is the option's own value: what the design has before a row
+  or a chooser changes it. Double-click it to change it.
+- **Comment** is the parameter's comment.
+- **Driven** marks an option whose expression is a formula of other
+  parameters. Nothing chooses a driven option, and the rules never move
+  it.
+
+### Rows
+
+The **Rows** tab is a sheet with one row per preset: its **Name**, a
+column for each option, and **Designation**, **Part Number** and
+**Supplier URL** for the parts list. Double-click a cell to edit it. Type
+a text without quotes (`Black`) and a number with or without its unit
+(`800` is `800 mm` for a length).
+
+- **Add Row** adds a row with the options' values as they are now.
+- **Generate Rows from Table…** adds a row for each value of a table's key
+  column, named by the value, that sets an option to it: choose the table,
+  its **Key column** and the **Option** (an option, or a user parameter
+  that becomes one), and click **Generate**. MitCad offers first the
+  column that an option's values come from, and that option. Running it
+  again after the table changed updates the rows of the same name instead
+  of adding them twice, and keeps what you typed in them (designation,
+  part number, other values). It is one step to undo.
+- **Delete Row** deletes the selected row.
+- **Set as Default** makes the selected row the default (shown in bold):
+  a library component is inserted with it.
+- **Apply** sets the options to the selected row's values. When the rules
+  move other options, the line under the tabs and the status bar say so.
+- **Closed** allows only the rows' combinations. An open configuration
+  (the default) allows any combination that the rules allow; a row is then
+  only a preset.
+
+A value that a rule does not allow is not written: the cell stays red,
+and its tooltip names the rule. A row that breaks a rule (for example
+because a rule was added later) is marked in yellow in the cells the rule
+is about, with the rule in the tooltip. The line above the sheet names the
+row that the options match now.
+
+### Rules and the cascade
+
+A rule says, for example, "when Color is Black, Length is at most
+1000 mm", or forbids a combination. Rules only narrow: they take values
+away, and they never set a computed parameter. They can also be set with
+the `set_configurations` command (from an AI assistant over MCP, or with
+`mitcad-cli run`).
+
+The **Rules** tab has the list of rules on the left: each rule's name,
+a check that turns it on or off, and a warning mark with the reason in
+its tooltip. **Add** makes a new rule and lets you type its name at once
+(double-click a name, or press F2, to rename it), **Duplicate** copies the
+selected rule and **Delete** removes it.
+
+On the right, the selected rule is built from blocks:
+
+- The **palette** has four groups. **Rule**: *when … then* gives the rule
+  a condition, *then (always)* takes it away (the rule always applies), and
+  *else* adds actions for when the condition does not hold. **Logic**:
+  *and*, *or*, *not*, *compare* (=, ≠, <, ≤, >, ≥) and *is one of*.
+  **Values**: an *option* or another *parameter*, a *number with unit*, a
+  *text*, a *table column* and a *formula*. **Actions**: *allow only*,
+  *exclude*, *min*, *max*, *step*, *require*, *forbid* and *combination in
+  table*.
+- *Combination in table* requires the options to be a row of a table:
+  with the table Made of colours and lengths, only the combinations it
+  lists are allowed, and each chooser offers only what the rows allow with
+  the options before it. When you put the block, type the table's name
+  (MitCad completes the names of the design's tables); each option is then
+  matched to the table's column of the same name. Click its columns to
+  choose another column of the table for an option.
+- Drag a block from the palette onto the rule. The place where it would
+  go lights up on the way: a value or logic block fits only an empty
+  socket (or replaces a value), an action fits only between or after the
+  actions of *then* or *else*. Drag a block within the rule to move it, or
+  onto the palette to delete it.
+- A new name, number or text block asks for its value at once; Enter
+  confirms it and Esc cancels. Double-click a block (or click a field, such
+  as an action's option or a comparison's operator) to change it. A
+  formula block opens the **Formula Editor**; any part of a condition that
+  has no block of its own is shown as a formula block, so every rule can
+  be opened and nothing is lost.
+- With the keyboard: Alt+P goes to the palette, where the arrow keys or
+  the first letters choose a block and Enter puts it at the rule's focus
+  (an empty socket, or after the focused action). Alt+B goes to the rule:
+  the arrow keys move the focus, Enter edits it, Delete removes it, and the
+  menu key or Shift+F10 opens its menu (Edit, Edit as Formula…, Move Up,
+  Move Down, Delete; on the rule itself Add When, Apply Always, Add Else,
+  Remove Else).
+
+Each change is saved at once, as one step to undo. A rule with an empty
+socket, or an *else* without an action, is not saved yet: the list marks
+it, and it is saved as soon as it is complete (Ctrl+Z in the tab takes
+back such changes one by one). **View as Text** shows the selected rule in
+the expression language, such as `when Color == 'Black'` and `then Length
+max 1000 mm`. **Check Rules** goes through the combinations of the options
+and reports values that are never allowed, rules that never apply, rows
+that break a rule and combinations that cannot be repaired.
+
+When you change an option, MitCad goes through the options in their
+order. An option keeps its value when it is still allowed. Otherwise it
+moves to the nearest allowed value (to the only one, when only one is
+left). The change and its moves are one step to undo, and MitCad tells
+you what moved and why, for example *Length 1500 mm → 1000 mm: Black is
+short*. When a rule cannot be met by moving later options, the change is
+refused and the message names the rule.
+
+### The Configuration bar
+
+At the top of the browser, the **Configuration** bar chooses the options
+without opening the window. It shows while the design has options or
+rows.
+
+- The first box chooses a **row**. It says **No row** when the options
+  match none.
+- Below it is a chooser for each option, in the options' order: a list
+  for an option with a list of values, a field and a slider for a range,
+  and a field for a free option. A driven option shows its value only.
+- The choosers offer only what the rules allow now. When a rule narrows a
+  range, the slider ends at the new limit.
+- When your choice moves other options, a notice under the choosers (and
+  the status bar) lists the moves with the rules that made them.
+
+Each choice is one step to undo, and the design is computed again at
+once.
+
+### Options in Change Parameters
+
+In **Change Parameters**, an option has the configurations icon before
+its name, and its tooltip says that it is an option. When rules narrow an
+option's range now, the narrowed minimum, maximum and step show in grey in
+the **Min**, **Max** and **Step** columns, as a feature's own limits do,
+and their tooltips name the rules. A value that you type there for an
+option goes through the same rules as a chooser.
 
 ## Appearances and rendering
 
@@ -2681,7 +3031,8 @@ OK button. Undo takes back the change, also in your library.
 class first and starts a metal at steel's density and a plastic at
 PLA's; for another material it asks for the density. Duplicate makes
 your own copy of a material, with its class, named after it (for
-example "PLA Plastic 2"). New and Duplicate make the material in this
+example "PLA Plastic (copy)", then "PLA Plastic (copy 2)"); New names
+it "Material 1". New and Duplicate make the material in this
 design and select it: **Assign** gives it to the bodies.
 
 A material of yours stays in this design until you click **Save to My
@@ -2745,9 +3096,10 @@ The **Printer** and **Process** rows show the design's printer and
 process. Choose another one in the box: it is set at once, as one Undo
 step. **Slicer default**, always at the top of the box, takes the
 design's printer or process away: the slicer then uses its own.
-**New printer…** or **New process…**, at the bottom of the box, makes a
-new one in this design, sets it for the design and opens it to edit
-(Save to puts it in a library). **Materials** shows the materials of
+**New printer…** or **New process…**, at the bottom of the box below a
+line, makes a new one in this design (named Printer 1 or Process 1, then
+Printer 2, ...), sets it for the design and opens it to edit (Save to
+puts it in a library). **Materials** shows the materials of
 the bodies on one line, with a count where several bodies have one (for
 example "PETG, PLA ×2"; a body without a material of its own "Default
 (Steel)"); its pencil opens the Materials window for them.
@@ -2766,7 +3118,11 @@ or process in this design and set it for the design, as one Undo step.
 Built-in ones cannot be changed: Duplicate one. **Save to My library**,
 **Delete** and a change in another design work as for materials.
 Deleting the design's own printer or process asks first, and the
-design then has none: the slicer uses its own.
+design then has none: the slicer uses its own. **Import from Slicer…**
+at the top works as Import from slicer… in 3D Print (below): the
+printer and the process read come into the design, which uses them,
+and the list shows them selected; **Details…** beside the line shows
+the whole report, and one Undo takes the import back.
 
 **Import from a slicer.** **Import from slicer…**, the first print row
 of 3D Print, above Printer and Process, reads a
@@ -2791,7 +3147,12 @@ component can have process settings of its own, as an object has in a
 slicer. **Property Sets...** sums up under **Print settings** what the
 selected one prints with: the printer, the process and the material,
 and where a value comes from (for a value of its own, its name, such as
-"Body1"). The pencil beside Process opens the process. Below the root
+"Body1"). The pencil beside Process opens the process, the one beside
+Printer the printer and the one beside Material the Materials window; a
+long name is shortened so its pencil stays in sight, and the whole name
+shows as a tooltip. Click the name of the printer or the process itself
+to choose another from a drop-down; Escape or a click elsewhere closes
+it without a change. Below the root
 component, the process shows its own values only, and **Own settings**
 names the values of its own, for example "Walls", with them listed
 under it and who sets each; its pencil opens them in the same tabs as a process, in a
@@ -2845,7 +3206,7 @@ built-in ones under **Built-in**, and the settings of the selected one
 on the right. **New**, **Duplicate** and **Delete** are under the list.
 New and Duplicate make the item in your library. To start from a
 built-in material, printer or process, select it and click
-**Duplicate**: the copy is yours (for example "PLA Plastic 2"), and you
+**Duplicate**: the copy is yours (for example "PLA Plastic (copy)"), and you
 can rename it and change its values. Each value is saved when you press
 Enter or leave the field. **Delete** asks first and removes the item from
 your library.
@@ -2858,6 +3219,24 @@ preset, as Import from slicer… in 3D Print does, but into the library
 shown: its printer, its process and a material for each filament. A
 short line beside the button says what came in; **Details…** shows the
 whole report.
+
+**Presets of an installed slicer.** When Bambu Studio, OrcaSlicer or
+QIDI Studio is installed, the button is **Import from Slicer ▾**: choose
+**From a file…**, or **Presets of Bambu Studio…** to take the printers,
+processes and filaments you made in that slicer, without exporting them
+first. The **Import Presets** window lists them under **Printers**,
+**Processes** and **Filaments**; tick the ones to import (a group's box
+ticks all of it or none). If several slicers are installed, choose one
+at the top. A preset whose name the library already has is shown in
+another colour; point at it to see what it meets, for example "My
+library has a process of this name". These are not ticked at first.
+Beside each one, choose **Copy** to import it as a new item ("Fine 2"),
+or **Override** to update the existing item; **Same name** above the
+list sets them all. **Import** brings in the ticked presets with the
+values they take from the slicer's own presets filled in. MitCad only
+reads the slicer's files; it never changes them. **Import from Slicer**
+in the Printers and Processes window offers the same, into the design,
+as one Undo step.
 
 The open design does not change. A design that uses an item you changed
 here asks once, as for a change in another design: **Use the changes**
@@ -5400,6 +5779,49 @@ picker (refer to [Part picker](#part-picker)). To insert a component:
    read-only. A copy is editable and has its history.
 
 MitCad shows the licence and the attribution before you insert the component.
+
+#### Components with options
+
+Some components are configurable: they have **options** (for example
+**Color** and **Length**) and **rules** that limit the combinations
+(refer to [docs/configurations.md](configurations.md)). For such a
+component, **Insert from Library** shows a chooser per option instead of
+the size, in the options' order:
+
+- A list of values is a drop-down list. It shows only the values that
+  the rules allow with the options before it.
+- A length or another number is a field. You can type any value between
+  its smallest and largest allowed value, in its steps.
+
+When you change an option, the options after it keep their values if the
+rules allow them. Otherwise they move to the nearest allowed value, and a
+note under the choosers names the rule. For example, with the rule
+*Black is short*, the choice **Black** moves **Length** from 1200 mm to
+1000 mm, and the field then allows at most 1000 mm. A combination that a
+rule forbids is not taken, and the note says why.
+
+The component is inserted with the values that you chose. If the values
+are the same as a named row of the component (for example **Standard**),
+the component gets that row's designation and part number.
+
+A component whose table is **closed** has only its rows. You select it
+by its sizes as before.
+
+**Edit Options...** in the context menu of an inserted component (in the
+browser) changes its options later. The options belong to the
+component, so all its occurrences change. For each option you can:
+
+- Select a value in its chooser.
+- Type an expression of the design's parameters in its expression field,
+  for example `Shelf_W - 2 * Wall`. The **fx** button opens the Formula
+  Editor. The option then follows the parameters: when you change
+  **Shelf_W** in **Change Parameters**, the component changes too.
+
+Select **OK** to keep the options. This is one undo step.
+
+The Build tab's part picker shows the options of a configurable part
+under the grid. Click the tile, then change the options. The part that
+you place has these options.
 
 On a new installation, the list of components is empty until you press
 **Update**. **Update** fetches all enabled libraries and searches again.

@@ -438,6 +438,11 @@ target_sources(mitcad PRIVATE
   commands/ExtrudeDragProxy.cpp
   commands/ExtrudeDragProxy.hpp
   view/ProvisionalMesh.cpp)
+# A dragged Move/Copy's bodies or components follow the handle at once
+# (mitcad#838): their meshes moved, the exact preview after the drag.
+target_sources(mitcad PRIVATE
+  commands/MoveDragMotion.cpp
+  commands/MoveDragMotion.hpp)
 
 if(WIN32)
   # wglGetCurrentDC() in OcctViewer.cpp
@@ -474,12 +479,27 @@ if(APPLE)
       platform/NativeForms.hpp platform/macos/NativeForms.mm
       platform/NativeDialogs.hpp platform/macos/NativeDialogs.mm
       platform/NativeInlineEditor.hpp platform/macos/NativeInlineEditor.mm
-      platform/NativeTestInput.hpp platform/macos/NativeTestInput.mm)
+      platform/NativeTestInput.hpp platform/macos/NativeTestInput.mm
+      platform/macos/NativeTableCells.hpp platform/macos/NativeTableCells.mm)
     set_source_files_properties(
       platform/macos/NativeMacWindow.mm platform/macos/NativeForms.mm
       platform/macos/NativeDialogs.mm platform/macos/NativeTestInput.mm
       platform/macos/NativeInlineEditor.mm
+      platform/macos/NativeTableCells.mm
       PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+    # The native Projects outline's name editor (mitcad#816).
+    target_sources(mitcad PRIVATE platform/macos/NativeProjects.hpp platform/macos/NativeProjects.mm)
+    set_source_files_properties(platform/macos/NativeProjects.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+    # Tiles and expression tools shared by forms and dialogs (mitcad#815).
+    target_sources(mitcad PRIVATE platform/macos/NativeControls.hpp platform/macos/NativeControls.mm)
+    set_source_files_properties(platform/macos/NativeControls.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+    # Tile grids, catalogues, split panes and utility panels of the generic
+    # presenter bridge (mitcad#813, mitcad#819).
+    target_sources(mitcad PRIVATE platform/macos/NativeCollection.hpp platform/macos/NativeCollection.mm)
+    set_source_files_properties(platform/macos/NativeCollection.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+    # The shared layout sizing contract and dialog button order (mitcad#812, #817).
+    target_sources(mitcad PRIVATE platform/macos/NativeLayout.hpp platform/macos/NativeLayout.mm)
+    set_source_files_properties(platform/macos/NativeLayout.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
   endif()
 endif()
 
@@ -612,6 +632,22 @@ target_sources(mitcad PRIVATE
   browser/DecimalAlignDelegate.cpp
   browser/DecimalAlignDelegate.hpp)
 
+# Follow Option, Suppress When and Show When (mitcad#809).
+target_sources(mitcad PRIVATE
+  browser/Bindings.cpp
+  browser/Bindings.hpp)
+# Configurations (mitcad#807): the Configurations window, the
+# Configuration bar in the browser and the configurations' JSON; the Rules
+# page is mitcad#808's (browser/ConfigurationRulesPage.cpp).
+target_sources(mitcad PRIVATE
+  browser/ConfigurationBar.cpp
+  browser/ConfigurationBar.hpp
+  browser/ConfigurationRulesPage.cpp
+  browser/ConfigurationsData.cpp
+  browser/ConfigurationsData.hpp
+  browser/ConfigurationsDialog.cpp
+  browser/ConfigurationsDialog.hpp)
+
 if(BUILD_TESTING)
   # Unit tests of the application's own helpers, on Qt's offscreen platform
   # (no window); Qt's DLLs are not next to the test on Windows.
@@ -714,6 +750,10 @@ if(BUILD_TESTING)
   # A scroll area as tall as its contents and a dialog sized to them within
   # the screen (mitcad#631): plain Qt Widgets.
   target_sources(test_app PRIVATE tests/fit_to_screen.cpp framework/FitToScreen.cpp framework/FitToScreen.hpp)
+  # The configurations' JSON as the application reads and sends it
+  # (mitcad#807): plain Qt Core.
+  target_sources(test_app PRIVATE tests/configurations_data.cpp browser/ConfigurationsData.cpp
+                 browser/ConfigurationsData.hpp)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
@@ -756,11 +796,12 @@ if(BUILD_TESTING)
   add_executable(test_preview_meshing tests/preview_meshing.cpp framework/DisplayMeshes.cpp)
   target_include_directories(test_preview_meshing PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_preview_meshing PRIVATE Qt6::Core mitcad_ffi mitcad_geometry mitcad_geometry_io
-    TKMesh TKTopAlgo TKBRep TKV3d mitcad_warnings)
+    TKMesh TKPrim TKTopAlgo TKBRep TKV3d mitcad_warnings)
   # A dragged Extrude's provisional tool (mitcad#636): the owned mesh copy,
-  # its stretches and moves, and Extrude's rules, without a window.
+  # its stretches and moves, and Extrude's rules, without a window; Move/
+  # Copy's provisional motion (mitcad#838).
   add_executable(test_drag_proxy tests/drag_proxy.cpp framework/DragProxy.cpp commands/ExtrudeDragProxy.cpp
-    framework/Command.cpp)
+    framework/Command.cpp commands/MoveDragMotion.cpp)
   target_include_directories(test_drag_proxy PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_drag_proxy PRIVATE Qt6::Core Qt6::Gui mitcad_geometry TKMesh TKPrim TKTopAlgo TKBRep
     mitcad_warnings)
@@ -813,7 +854,7 @@ target_sources(mitcad PRIVATE
   render/RenderImageDialog.cpp
   render/RenderImageDialog.hpp)
 # The browser's light bulbs in every mode, outside a command's undo range
-# (mitcad#295), and Create Sketch's origin planes (mitcad#294).
+# (mitcad#295), and Create Sketch's origin planes (mitcad#844).
 target_sources(mitcad PRIVATE
   framework/CommandSessionVisibility.cpp
   MainWindowVisibility.cpp)
@@ -1182,6 +1223,19 @@ endif()
 target_sources(mitcad PRIVATE
   library/PartPicker.cpp
   library/PartPicker.hpp)
+# Options of configurable components in the pickers and Edit Options…
+# (mitcad#810): the `configure` answers read and the JSON sent (plain Qt
+# Core), and the choosers.
+target_sources(mitcad PRIVATE
+  library/EditOptionsDialog.cpp
+  library/EditOptionsDialog.hpp
+  library/OptionChooser.cpp
+  library/OptionChooser.hpp
+  library/PartOptions.cpp
+  library/PartOptions.hpp)
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/part_options.cpp library/PartOptions.cpp library/PartOptions.hpp)
+endif()
 # The web viewer's pages (mitcad#423, app/web, app/COMMANDS.md "Web
 # page"): a design as one self-contained HTML file, File > Export > Web
 # page. The viewer's files (app/web/viewer, its libraries in
@@ -1567,6 +1621,14 @@ target_sources(mitcad PRIVATE
   print/PrintItemsHost.hpp
   print/MyLibraryDialog.cpp
   print/MyLibraryDialog.hpp)
+# Import from Slicer (mitcad#829): the one import of 3D Print, Printers
+# and Processes and My Library, its file dialog, line and Details…; the
+# presets of an installed slicer to tick (mitcad#830).
+target_sources(mitcad PRIVATE
+  print/SlicerImport.cpp
+  print/SlicerImport.hpp
+  print/SlicerPresetsDialog.cpp
+  print/SlicerPresetsDialog.hpp)
 if(BUILD_TESTING)
   # The import's line and report (plain Qt Core); the key table's layout
   # and values, and the settings form's rows (Qt Widgets).
@@ -1676,4 +1738,50 @@ if(BUILD_TESTING)
   # The query's entries, points on an image and on its plane, the log
   # line and the calibration's distance: plain Qt Core.
   target_sources(test_app PRIVATE tests/image_references.cpp view/ImageReferences.cpp view/ImageReferences.hpp)
+endif()
+
+# The rule block editor of the Configurations window (mitcad#808,
+# app/COMMANDS.md "The rule block editor"): a rule's blocks and their JSON,
+# the native canvas and palette, and the Rules page that
+# browser/ConfigurationRulesPage.cpp puts in the window.
+target_sources(mitcad PRIVATE
+  configurations/RuleBlocks.cpp
+  configurations/RuleBlocks.hpp
+  configurations/RuleCanvas.cpp
+  configurations/RuleCanvas.hpp
+  configurations/RulesPage.cpp
+  configurations/RulesPage.hpp)
+if(BUILD_TESTING)
+  # The expression <-> block round trip, the edits, and the page on a design
+  # of the test's own: Qt Widgets on the offscreen platform.
+  target_sources(test_app PRIVATE tests/rule_blocks.cpp
+                 configurations/RuleBlocks.cpp configurations/RuleBlocks.hpp
+                 configurations/RuleCanvas.cpp configurations/RuleCanvas.hpp
+                 configurations/RulesPage.cpp configurations/RulesPage.hpp
+                 framework/FormulaEditor.cpp framework/FormulaEditor.hpp
+                 framework/ParameterField.cpp framework/ParameterField.hpp
+                 framework/ParameterSuggest.cpp framework/ParameterSuggest.hpp)
+endif()
+
+# The document snapshot's feature lookup by uid (mitcad#833): read() from a
+# model's answers, the command context's interface.
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/document_snapshot.cpp browser/DocumentSnapshot.cpp
+                 browser/DocumentSnapshot.hpp)
+endif()
+
+# Tables of a design (mitcad#667, docs/table-lookups.md): the Tables tab of
+# Change Parameters.
+target_sources(mitcad PRIVATE browser/TablesPage.cpp browser/TablesPage.hpp)
+
+# Card widths and windows within the visible screen (mitcad#818): the test
+# steps of both frontends, and in the AppKit frontend the cards' width
+# handles and the secondary windows' scrolling body and screen fitting.
+target_sources(mitcad PRIVATE framework/TestDriverWindowFit.cpp)
+if(APPLE AND MITCAD_MACOS_NATIVE_UI)
+  target_sources(mitcad PRIVATE
+    platform/macos/NativeCardWidths.hpp platform/macos/NativeCardWidths.mm
+    platform/macos/NativeWindowFit.hpp platform/macos/NativeWindowFit.mm)
+  set_source_files_properties(platform/macos/NativeCardWidths.mm platform/macos/NativeWindowFit.mm
+    PROPERTIES COMPILE_OPTIONS -fobjc-arc)
 endif()

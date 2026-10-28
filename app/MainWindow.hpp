@@ -600,17 +600,14 @@ private:
   QString refreshSketchSupports();
   // Why a sketch cannot be made on this plane or face; empty when it can.
   QString sketchSupportRefusal(const SelectionItem& item) const;
-  // Create Sketch's plane pick (MainWindowVisibility.cpp): whether the
-  // origin planes are shown for it by themselves (mitcad#294: while the
-  // design has no component but the active one and a root without bodies),
-  // and with MITCAD_LOG_PICKS the faces a click picks, logged again after a
-  // light bulb changed what is shown (mitcad#295).
-  bool sketchShowsOrigin() const;
+  // Create Sketch's plane pick (MainWindowVisibility.cpp): with
+  // MITCAD_LOG_PICKS the faces a click picks, logged again after a light
+  // bulb changed what is shown (mitcad#295).
   void logSketchPicks();
   // While Create Sketch waits for a plane (mitcad#474): the text of the
   // view's banner and of the MCP's hint, the banner shown while the mode
-  // lasts (and the origin planes startSketch offered in the browser taken
-  // back when it ends, mitcad#694), and why a face or plane picked cannot
+  // lasts (and the view's pick order for the origin planes put back when it
+  // ends, mitcad#844), and why a face or plane picked cannot
   // take the sketch (a face that is not planar, or what the design policy
   // leaves out), shown and logged as "Create Sketch: refused pick ...".
   QString pickPlaneText() const;
@@ -1182,6 +1179,10 @@ private:
   // Open Read-Only is opening a design: the lock controller takes no edit
   // lock on it, and the window is read-only.
   bool m_openingReadOnly = false;
+  // New Design in a project is opening the design it made (mitcad#844): it
+  // opens with the component its file stores as active (Component1), not
+  // with the root as every other design (mitcad#426).
+  bool m_openingNewDesign = false;
   // The open design's edit lock and the read-only mode (mitcad#89).
   LockController* m_locks = nullptr;
   // Save as New Version writes a read-only window's file all the same, and
@@ -1410,6 +1411,9 @@ private:
   void openParameterTable();
   void parameterTableClosed();
   void addParametersButton(CommandPanel& panel, const CommandDef& def);
+#ifdef MITCAD_MACOS_NATIVE_UI
+  void addParametersButton(NativeCommandForm& form, const CommandDef& def);
+#endif
   void logSketchDimensions(const QString& why);
 
   // The wait cursor (mitcad#268, MainWindowJobs.cpp): its idle recovery

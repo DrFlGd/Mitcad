@@ -1,0 +1,62 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a stripe is under another one's ball (patch 0700) only where its
+edges lie on the ball's side of that blend's other face, not past it
+(mitcad#840).
+
+The case: a wall with a slot whose floor is flush with the top of a ledge
+in front of the wall; at each corner where the slot's side wall meets the
+wall's front face, the slot floor's edge along the side wall and the
+ledge's edge along the wall's front (2.25 long) are rounded with 1, the
+convex edge between the side wall and the front left sharp. The bodies
+stored in the file have both roundings running on past the corner by the
+radius, the two quarter cylinders cut by each other.
+
+0700's JoinOverNarrowFaces drops a stripe whose edges all lie under
+another stripe's ball (edgesUnderBlend): each point of its edges within 4
+radii of that blend's contact on the common face, inside one of its pieces,
+on the side of the contact toward the blend's other contact. The slot
+floor's rounding runs on over the ledge's top for its corner (its analytic
+piece's contact up to the end of the face), and the ledge's edge lies 1 to
+3.25 from that contact, on its side toward the side wall, but past the side
+wall's plane: no point of the region the blend fills. Its stripe was
+dropped, its rounding missing, and the slot's rounding ended at the wall's
+front face by its one-stripe corner (1.349 mm3 of material short at the
+design's four such corners).
+
+- edgesUnderBlend: a point counts only where it lies on the ball's side of
+  the blend's other face's tangent plane at the other contact, within a
+  hundredth of the radius (the ball of the section through the point's
+  projection on the contact, ballAt). The region a blend fills lies between
+  its contacts and the corner of its two faces; the edges of a narrow face
+  under a ball rolling over it (0700's case) lie there.
+
+Upstream: new (fixes Mitcad's patch 0700).
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_Trim.cxx
+@@ -392,6 +392,23 @@ bool edgesUnderBlend(const TopOpeBRepDS_DataStructure&     DStr,
+           }
+           const gp_Vec toN(P, DStr.Curve(FN.LineIndex()).Curve()->Value(tn));
+           found = gp_Vec(P, Q).Dot(toN) > 0.;
++          // (And not past the other face: Q on the ball's side of that
++          // face's tangent plane at the other contact. Beyond it, as where
++          // the other face ends at a corner and the blend runs on past it
++          // for the corner, Q is no point of the region the blend fills.)
++          if (found)
++          {
++            const occ::handle<Geom_Surface> So =
++              BRep_Tool::Surface(TopoDS::Face(DStr.Shape(D->Index(s))));
++            const occ::handle<Geom_Surface> Sn =
++              BRep_Tool::Surface(TopoDS::Face(DStr.Shape(D->Index(3 - s))));
++            gp_Pnt Pc, Po, Pn;
++            double tb = 0.;
++            if (ballAt(DStr, FI, So, FN, Sn, R, t, Pc, Po, Pn, tb))
++            {
++              found = gp_Vec(Pn, Q).Dot(gp_Vec(Pn, Pc)) >= -0.01 * R * R;
++            }
++          }
+           if (found)
+           {
+             Pieces.Add(j);

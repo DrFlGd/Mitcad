@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include <functional>
+
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QString>
+#include <QWidget>
+
+#include "PrintImportSummary.hpp"
+
+class QHBoxLayout;
+class QLabel;
+class QPushButton;
+
+namespace mitcad {
+
+class PrintItemsHost;
+
+// Import from Slicer (mitcad#829): one implementation for 3D Print's
+// panel, Printers and Processes and My Library. The file dialog (a
+// slicer's 3MF, preset, bundle or .ini; the import folder remembered),
+// `import_print_profile` with `into` (`design`, whose root then chooses
+// the printer and process read in the same undo step, `user` or
+// `project`), the summary for the line and Details…, and the log:
+//   "Imported print settings from <file>: printers: …" (into the design),
+//   "<log> imported into <library>: <kind name, …>" (into a library),
+//   "<log> import: <line>", or "<log> import refused: <error>".
+// The presets of an installed slicer (mitcad#830, SlicerPresetsDialog)
+// come in the same way through `import_slicer_presets`.
+
+// Asks for a slicer's file; empty when the dialog was cancelled.
+QString chooseSlicerFile(QWidget* parent);
+
+// What one import did.
+struct SlicerImportResult {
+  QString file;               // what was imported: the file's name, "3 presets"
+  QString into;               // design, user or project
+  QJsonObject answer;         // the import command's answer
+  PrintImportSummary summary; // the line and the report behind Details…
+};
+
+// Runs an import command (`import_print_profile`, `import_slicer_presets`)
+// into `into` through `host` (the command gets `into` and the project),
+// `file` naming what it imports in the line and the report, `log` heading
+// the log lines ("3D Print", "Profiles", "My Library"). False when the
+// model refused it or it was cancelled: `error` (if given) then has the
+// refusal in plain words, empty for a cancel.
+bool runPrintImport(PrintItemsHost& host, QJsonObject command, const QString& file, const QString& into,
+                    const QString& log, SlicerImportResult* result, QString* error = nullptr);
+
+// Imports the slicer's file `path` (runPrintImport of
+// `import_print_profile`).
+bool runSlicerImport(PrintItemsHost& host, const QString& path, const QString& into, const QString& log,
+                     SlicerImportResult* result, QString* error = nullptr);
+
+// The installed Bambu-family slicers with their user presets
+// (`slicer_presets`), each preset with the item of its name `into` has;
+// empty when there are none or the query failed.
+QJsonArray installedSlicers(PrintItemsHost& host, const QString& into);
+
+// The row of a print window (My Library, Printers and Processes): the last
+// import's line, Details… beside it once an import has a report, and
+// Import from Slicer…. With an installed Bambu-family slicer found
+// (mitcad#830) the button is "Import from Slicer ▾", a menu of "From a
+// file…" and "Presets of <slicer>…" for each slicer found, which opens
+// SlicerPresetsDialog on that slicer's presets. Logs its buttons' places
+// as "<log> import at x,y" and "<log> details at x,y" (the main window's
+// coordinates) and the menu as "<log> import menu: <entry> | <entry>".
+class SlicerImportBar : public QWidget {
+  Q_OBJECT
+
+public:
+  SlicerImportBar(PrintItemsHost& host, const QString& logName, QWidget* parent = nullptr);
+  ~SlicerImportBar() override;
+
+  // Where an import goes now: `design`, `user` or `project`.
+  std::function<QString()> target;
+  // Hides the line and Details… (My Library's place changed).
+  void clear();
+  // The row's layout, for a widget of the window before the line (My
+  // Library's place).
+  QHBoxLayout* row() const { return m_row; }
+
+signals:
+  // An import changed the model or a library; `result` says what.
+  void imported(const SlicerImportResult& result);
+
+protected:
+  void showEvent(QShowEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
+
+private:
+  QString into() const;
+  // Looks for installed slicers again: the button's text follows.
+  void findSlicers();
+  void importClicked();
+  void importFile();
+  // Opens the presets of the slicer `index` of m_slicers and imports
+  // those ticked.
+  void importPresets(int index);
+  // Shows an import's outcome.
+  void showImported(const SlicerImportResult& result);
+  void showRefusal(const QString& error);
+  void scheduleLogPlaces();
+  void logPlaces();
+
+  PrintItemsHost& m_host;
+  QString m_log;
+  QHBoxLayout* m_row = nullptr;
+  QLabel* m_line = nullptr;
+  QPushButton* m_details = nullptr;
+  QPushButton* m_import = nullptr;
+  PrintImportSummary m_summary;
+  QJsonArray m_slicers; // installedSlicers when last looked
+  QString m_loggedPlaces;
+};
+
+} // namespace mitcad

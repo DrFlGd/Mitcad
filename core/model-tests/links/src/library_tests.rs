@@ -190,7 +190,8 @@ fn configuration_tables_are_checked_and_applied() {
         json!({"cmd": "apply_configuration", "name": "M10x20"}),
     )
     .unwrap();
-    assert_eq!(changed["changed"], json!(["L", "d"]));
+    // The options Size and Length are parameters since mitcad#798.
+    assert_eq!(changed["changed"], json!(["L", "Length", "Size", "d"]));
     assert_eq!(doc.undo_label(), Some("Apply M10x20"));
     assert_eq!(
         query(&doc, json!({"query": "configurations"}))["current"],

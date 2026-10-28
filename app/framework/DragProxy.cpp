@@ -138,4 +138,31 @@ std::optional<DragProxy> applyDragProxy(const ProxyMesh& mesh, const DragProxyRu
   return std::nullopt;
 }
 
+gp_Trsf draggedPlacement(const gp_Trsf& placement, MotionSide side, const gp_Trsf& from, const gp_Trsf& to,
+                         const gp_Trsf& frame) {
+  // The change: back from where the exact preview put it, then where the
+  // dragged value puts it.
+  const gp_Trsf change = to * from.Inverted();
+  switch (side) {
+  case MotionSide::Shape:
+    return placement * change;
+  case MotionSide::Occurrence:
+    return frame * change * frame.Inverted() * placement;
+  case MotionSide::None:
+    break;
+  }
+  return placement;
+}
+
+bool sameMotion(const gp_Trsf& a, const gp_Trsf& b, double tolerance) {
+  for (int row = 1; row <= 3; ++row) {
+    for (int column = 1; column <= 4; ++column) {
+      if (std::abs(a.Value(row, column) - b.Value(row, column)) > tolerance) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 } // namespace mitcad

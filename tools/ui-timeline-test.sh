@@ -13,6 +13,8 @@
 #     dialog: Cancel, then Delete All), undo.
 #   - A warning (P9): a rib's full round built 0.1 % smaller is yellow, its
 #     tooltip and its panel's preview say why.
+#   - The mouse wheel over a timeline longer than the window scrolls it
+#     sideways and stops at both ends (mitcad#826).
 #   - Timeline groups (P9): a Shift+click run grouped, folded into one
 #     cell and opened again, renamed, saved.
 #   - The faces features made (mitcad#28): a click on a fillet highlights
@@ -260,8 +262,11 @@ ui_stop_app
 echo "--- A warning (P9)"
 # A rib 2 mm wide with a full round on all four top edges: OCCT cannot take
 # the top face away at the rib's ends, so the fillet is built 0.1 % smaller
-# and succeeds with a warning (tools/cli/tests/p9_warnings.json).
-cat > "$WORK/rib.json" << 'EOF'
+# and succeeds with a warning (tools/cli/tests/p9_warnings.json). 60
+# planes after it make the timeline longer than the window, for the wheel
+# (mitcad#826).
+{
+  cat << 'EOF'
 [
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 2, "height": 40},
@@ -273,8 +278,13 @@ cat > "$WORK/rib.json" << 'EOF'
               "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c2[c1,c3])}",
               "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c3[c2,c4])}",
               "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F2:side(c4[c3,c1])}"], "radius": 1}}
-]
 EOF
+  for i in $(seq 1 60); do
+    printf ',\n  {"cmd": "add_feature", "def": {"type": "construction_plane",'
+    printf ' "definition": {"type": "offset", "plane": "xy", "distance": %d}}}' "$((20 + i))"
+  done
+  printf '\n]\n'
+} > "$WORK/rib.json"
 "$CLI" run "$WORK/rib.json" --save "$WORK/rib.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 ui_start_app --open "$WORK/rib.mitcad"
 ui_step "fit (F6)"                       ui_key F6
@@ -288,6 +298,33 @@ ui_step "double-click Fillet1"           ui_double_click_logged "Timeline Fillet
 ui_expect_new "Editing F3 with Fillet" "editing Fillet1"
 ui_expect_new "Preview Fillet: ok, warning: the fillet is built 0.1 % smaller" "the panel tells" 30
 ui_step "cancel (Esc)"                   ui_key Escape
+
+echo "--- The wheel scrolls the timeline (mitcad#826)"
+# wheel_strip up|down notches: turns the wheel over the strip, where Plane1
+# was before it scrolled; prints the value and the maximum of the last
+# "Timeline wheel: scrolled to V of M" since the mark.
+wheel_strip() {
+  xdotool mousemove "$wheel_x" "$wheel_y" click --repeat "$2" --delay 20 "$([ "$1" = up ] && echo 4 || echo 5)"
+  ui_sync > /dev/null
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Timeline wheel: scrolled to " | tail -1 |
+    sed -n 's/.* to \([0-9]*\) of \([0-9]*\)$/\1 \2/p'
+}
+ui_wait_idle
+read -r wheel_x wheel_y <<< "$(ui_logged_at "Timeline Plane1")"
+ui_mark
+read -r value maximum <<< "$(wheel_strip down 3)"
+[ -n "$maximum" ] && [ "$maximum" -gt 0 ] ||
+  ui_fail "the wheel did not scroll the timeline (scrolled to '$value' of '$maximum')"
+[ "$value" -gt 0 ] && [ "$value" -lt "$maximum" ] || ui_fail "three notches down scrolled to $value of $maximum"
+echo "ok   three notches down scrolled it to the right, to $value of $maximum"
+ui_mark
+read -r value maximum <<< "$(wheel_strip down 100)"
+[ "$value" = "$maximum" ] || ui_fail "100 notches down scrolled to $value of $maximum, not to the end"
+echo "ok   down to the end ($value) and it stops there"
+ui_mark
+read -r value maximum <<< "$(wheel_strip up 120)"
+[ "$value" = 0 ] || ui_fail "120 notches up scrolled to $value of $maximum, not to the start"
+echo "ok   up to the start and it stops there"
 ui_stop_app
 
 echo "--- The faces features made (mitcad#28)"

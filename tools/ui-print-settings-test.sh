@@ -19,6 +19,12 @@
 #      it and the outcome; Use in this design takes Standard again. Another
 #      design changes Standard in My library: Printers and Processes asks
 #      once, and Keep this design's settings keeps the design's values.
+#      Its Import from Slicer… (mitcad#829) brings a Bambu Studio project's
+#      printer and process into the design, selected, with Details…; one
+#      undo takes the import back.
+#      3D Print's New process… twice makes Process 1 and Process 2,
+#      listed above a separator and the action; Up from the action skips
+#      the separator (mitcad#828); undone again.
 #   3. Edit Materials: Duplicate of PLA makes the user's own copy in this
 #      design (Save to offered), its name and its nozzle temperature
 #      typed; Material… of Body1 assigns it.
@@ -27,7 +33,13 @@
 #      Body1's own settings in the settings form, where Walls typed is the
 #      body's own (Source: Body1) and its ↺ clears it. On the design's
 #      Property Sets a right click on Process's ↺ runs nothing, and the
-#      next left click on Material opens Materials (mitcad#761).
+#      next left click on Material opens Materials (mitcad#761). In a
+#      narrower window the pencils of Printer, Process, Material and Own
+#      settings lie inside the Value column, after the names as shown;
+#      Material's pencil opens Materials, Process's Printers and Processes
+#      and no drop-down; Process's drop-down closed with Escape ends its
+#      editor, and a second process made there (New › Process, undone after)
+#      leaves Standard to choose: it is set and ends the editor (mitcad#827).
 #   5. Show Build Volume, and 3D Print to a (fake) QIDI Studio sends a 3MF
 #      with QIDI Studio's print settings.
 #   6. A Bambu Studio project whose two filaments are slowed for cooling on
@@ -55,6 +67,25 @@ expect_file() {
   actual=$(jq -c "$1" "$FILE") || ui_fail "$3: cannot read $FILE"
   [ "$actual" = "$2" ] || ui_fail "$3: $1 is '$actual', expected '$2'"
   echo "ok   $3"
+}
+
+# value_column: the Value column of Property Sets as last logged, "from to"
+# in the main window's coordinates (mitcad#827).
+value_column() {
+  grep -F "Property sets value column from " "$UI_LOG" | tail -1 |
+    sed -n 's/.* from \(-\{0,1\}[0-9]*\) to \(-\{0,1\}[0-9]*\)$/\1 \2/p'
+}
+
+# expect_in_value_column "logged name" description: the glyph last logged
+# under that name lies whole inside the Value column (mitcad#827).
+expect_in_value_column() {
+  local from to px
+  read -r from to <<< "$(value_column)"
+  px=$(grep -F "$1 at " "$UI_LOG" | tail -1 | sed -n 's/.* at \(-\{0,1\}[0-9]*\),.*/\1/p')
+  [ -n "$from" ] && [ -n "$to" ] && [ -n "$px" ] || ui_fail "$2: no place of '$1' or of the Value column logged"
+  [ $((px - 8)) -ge "$from" ] && [ $((px + 8)) -le "$to" ] ||
+    ui_fail "$2: '$1' at x $px lies outside the Value column ($from to $to)"
+  echo "ok   $2"
 }
 
 # Ctrl+S is the main window's shortcut: not one of a print window's.
@@ -279,8 +310,93 @@ ui_expect_new "Profiles changed elsewhere: keep" "the design keeps its values"
 ui_expect_new "Profile Standard: decline_print_library_update" "kept, one undo step"
 ui_expect_new "Profile Standard value layer_height = 0.2 mm" "the design's layer height stays"
 ui_focus_dialog '^Printers and Processes$'
+
+echo "--- 2d. Printers and Processes: Import from Slicer… into the design, one undo step (mitcad#829)"
+ui_expect_log "Profiles import at" "Import from Slicer… has its place"
+ui_mark
+ui_step "Import from Slicer…"              ui_click_logged "Profiles import"
+ui_type_path "Import from Slicer" "$WORK/mount.3mf"
+ui_expect_new "Imported print settings from mount.3mf: printers: Bench Mini 0.4 nozzle; processes: Extra Fine" \
+  "the project's printer and process came into the design"
+ui_expect_new "Profiles import: mount.3mf imported" "the line names the file"
+ui_expect_new "Profile selected: process Extra Fine (design)" "the process read is selected"
+ui_expect_new "Extra Fine (design), the design's" "the design's process now"
+ui_expect_new "Bench Mini 0.4 nozzle (design), the design's" "and its printer"
+ui_expect_new "Profiles details at" "Details… beside the line"
+ui_focus_dialog '^Printers and Processes$'
+ui_mark
+ui_step "Details…"                         ui_click_logged "Profiles details"
+ui_expect_new "Import details: Imported mount.3mf (Bambu Studio) into this design." "the import's report"
+ui_focus_dialog '^Import Details$'
+ui_step "close the report (Esc)"           ui_key Escape
+ui_expect_new "Import details closed" "the report closed"
+ui_focus_dialog '^Printers and Processes$'
 ui_step "close"                            ui_click_logged "Profiles close"
 ui_focus_main
+ui_mark
+ui_step "undo"                             ui_key ctrl+z
+ui_expect_new "Undo: Import Print Settings mount.3mf" "one undo step takes the import back"
+
+echo "--- 2e. 3D Print: New process… twice makes Process 1 and Process 2, the action below a separator (mitcad#828)"
+# new_process n: New process…, the box's last entry (Down past every
+# profile and the separator), makes Process n, the design's at once, and
+# opens it in Printers and Processes, which is closed again.
+new_process() {
+  ui_mark
+  ui_step "New process…"                   ui_choose "Panel 3D Print input process" 30
+  ui_expect_new "3D Print process new: Process $1 (" "New process… made Process $1"
+  ui_expect_new "Printers and processes opened" "and opened it"
+  ui_focus_dialog '^Printers and Processes$'
+  ui_step "close"                          ui_click_logged "Profiles close"
+  ui_focus_main
+}
+ui_mark
+ui_command "3D Print"
+ui_expect_new "Panel 3D Print input process at" "the Process row"
+new_process 1
+new_process 2
+# The box: the profiles by name, then a separator line, then the action.
+listed=""
+for _ in $(seq 1 30); do
+  listed=$(grep -F "Panel 3D Print options process: " "$UI_LOG" | tail -1)
+  case "$listed" in *"| Process 1 | Process 2 "*"| --- | New process…") break ;; esac
+  sleep 0.2
+done
+case "$listed" in
+  *"| Process 1 | Process 2 "*"| --- | New process…") echo "ok   Process 1 and Process 2 listed above the separator and New process…" ;;
+  *) ui_fail "the Process box lists '${listed#*: }'" ;;
+esac
+case "$listed" in *"New Process"*) ui_fail "a new profile named New Process: '${listed#*: }'" ;; esac
+# The keyboard skips the separator: one up from New process… is the last
+# profile, chosen at once (no window opens, no separator chosen).
+ui_mark
+ui_click_logged "Panel 3D Print input process"
+ui_sync
+xdotool key --delay 80 --repeat 30 Down
+xdotool key --delay 80 Up
+ui_key Return
+ui_expect_new "3D Print process: " "one up from New process… is chosen at once"
+ui_sync
+chosen=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "3D Print process: " | tail -1)
+chosen=${chosen#*3D Print process: }
+case "$chosen" in
+  __*|*" "*|"") ui_fail "Up from New process… chose '$chosen', not a profile" ;;
+  */*) ;;
+  *) ui_fail "Up from New process… chose '$chosen', not a profile" ;;
+esac
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Printers and processes opened"; then
+  ui_fail "Up from New process… ran New process… again"
+fi
+echo "ok   the separator is skipped: $chosen chosen"
+ui_mark
+ui_step "close the panel (Esc)"            ui_key Escape
+ui_expect_new "Command 3D Print cancelled" "the panel closed"
+# Back to the design as it was: the choice and the two new processes.
+ui_step "undo the choice"                  ui_key ctrl+z
+ui_step "undo Process 2"                   ui_key ctrl+z
+ui_expect_new "Undo: Create Profile Process 2" "Process 2 was one undo step"
+ui_step "undo Process 1"                   ui_key ctrl+z
+ui_expect_new "Undo: Create Profile Process 1" "Process 1 too"
 
 echo "--- 3. Materials: Duplicate of PLA in this design, its name and nozzle temperature; Material… assigns it"
 ui_mark
@@ -353,6 +469,7 @@ ui_focus_dialog '^Property Sets$'
 ui_step "go to Own settings (type-ahead)"  xdotool type --delay 40 "Own settings"
 ui_sync
 ui_expect_new "Property sets print Print Process/own_settings edit at" "the pencil of Own settings"
+expect_in_value_column "Property sets print Print Process/own_settings edit" "Own settings' pencil in the Value column"
 ui_mark
 ui_step "Own settings' pencil"             ui_click_logged "Property sets print Print Process/own_settings edit"
 ui_expect_new "Own settings opened: Body1 · Own settings" "Body1's own process settings in the settings form"
@@ -392,11 +509,33 @@ ui_step "choose Property Sets..."          ui_menu_choose "Property Sets..."
 ui_expect_new "Property sets row: print Print Process/profile = Standard (chosen on" \
   "the design's own process choice"
 ui_focus_dialog '^Property Sets$'
+# A Value column of about 150 pixels elides the printer's long name: the
+# pencils follow the name as shown and stay inside the column (mitcad#827).
+read -r from to <<< "$(value_column)"
+[ -n "$from" ] && [ -n "$to" ] || ui_fail "the Value column's place is not logged"
+if [ $((to - from)) -gt 150 ]; then
+  dialog=$(xdotool search --onlyvisible --name '^Property Sets$' | head -1)
+  width=$(xdotool getwindowgeometry --shell "$dialog" | sed -n 's/^WIDTH=//p')
+  height=$(xdotool getwindowgeometry --shell "$dialog" | sed -n 's/^HEIGHT=//p')
+  ui_mark
+  ui_step "a narrower window"              xdotool windowsize "$dialog" $((width - (to - from - 150) * UI_SCALE)) "$height"
+  ui_sync
+  ui_expect_new "Property sets value column from " "the places logged again"
+fi
+ui_mark
+ui_step "go to Printer (type-ahead)"       xdotool type --delay 40 "Printer"
+ui_sync
+ui_expect_log "Property sets print Print Printer/profile edit at" "the pencil after the design's printer"
+expect_in_value_column "Property sets print Print Printer/profile edit" "Printer's pencil in the Value column"
+# The type-ahead's next word starts afresh.
+sleep 0.5
 # Below the levels, out of sight where the window is short: the type-ahead
 # brings the Process row into view (its glyphs are logged again then).
 ui_step "go to Process (type-ahead)"       xdotool type --delay 40 "Process"
 ui_sync
-ui_expect_new "Property sets print Print Process/profile clear at" "↺ after the design's process"
+ui_expect_log "Property sets print Print Process/profile clear at" "↺ after the design's process"
+expect_in_value_column "Property sets print Print Process/profile edit" "Process's pencil in the Value column"
+expect_in_value_column "Property sets print Print Process/profile clear" "Process's ↺ in the Value column"
 ui_mark
 ui_step "right-click ↺"                    ui_click_logged "Property sets print Print Process/profile clear" 3
 ui_sync
@@ -420,6 +559,85 @@ ui_expect_new "Materials opened" "the next left click opens Materials"
 ui_expect_new "Materials close at" "Materials laid out"
 ui_focus_dialog '^Materials$'
 ui_step "close"                            ui_click_logged "Materials close"
+ui_focus_dialog '^Property Sets$'
+# Each pencil does its own action, where the log places it (mitcad#827).
+expect_in_value_column "Property sets print Print Filament/material edit" "Material's pencil in the Value column"
+ui_mark
+ui_step "Material's pencil"                ui_click_logged "Property sets print Print Filament/material edit"
+ui_expect_new "Property sets print Print Filament/material edit" "the pencil's click"
+ui_expect_new "Materials opened" "Material's pencil opens Materials"
+ui_focus_dialog '^Materials$'
+ui_step "close"                            ui_click_logged "Materials close"
+ui_focus_dialog '^Property Sets$'
+sleep 0.5
+ui_step "go to Process (type-ahead)"       xdotool type --delay 40 "Process"
+ui_sync
+ui_mark
+ui_step "Process's pencil"                 ui_click_logged "Property sets print Print Process/profile edit"
+ui_expect_new "Printers and processes opened" "Process's pencil opens Printers and Processes"
+ui_expect_new "Profile selected: process Standard" "on the design's process"
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Editing property print Print Process/profile"; then
+  ui_fail "the pencil also opened the drop-down"
+fi
+echo "ok   the pencil opened no drop-down"
+# A second process of this section's own for the drop-down to offer
+# (whatever the sections before left): New › Process, the design's at once,
+# one undo step.
+ui_focus_dialog '^Printers and Processes$'
+ui_mark
+ui_step "New"                              ui_click_logged "Profiles new"
+ui_expect_new "Profiles new menu: Printer | Process" "a printer or a process"
+ui_key Down Down Return
+ui_expect_new "Profile created: process " "a second process in this design"
+ui_expect_new "Profile shown: process " "the window shows it"
+second=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Profile shown: process " | tail -1 |
+  sed 's/.*Profile shown: process \(.*\) (design).*/\1/')
+[ -n "$second" ] || ui_fail "no name of the second process"
+ui_expect_new "Property sets row: print Print Process/profile = $second" "Property Sets shows it as the design's"
+ui_focus_dialog '^Printers and Processes$'
+ui_step "close"                            ui_click_logged "Profiles close"
+ui_focus_dialog '^Property Sets$'
+ui_sync
+# Process's drop-down (mitcad#827): closed without a change, the editor
+# ends; another process chosen is set and ends it too.
+ui_mark
+ui_step "Process's value"                  ui_click_logged "Property sets print Print Process/profile value"
+ui_expect_new "Property sets profile list: " "the drop-down of the processes"
+ui_step "close the list (Esc)"             ui_key Escape
+ui_expect_new "Property sets profile list closed" "closed without a change, the editor ends"
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Property print Print Process/profile set: "; then
+  ui_fail "closing the list set a process"
+fi
+echo "ok   and nothing was set"
+list=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Property sets profile list: " | tail -1 |
+  sed 's/.*Property sets profile list: //')
+index=${list##*"(current "}
+index=${index%")"}
+mapfile -t processes < <(sed 's/ | /\n/g' <<< "${list% "(current "*}")
+# The nearest process of another name, below the current one or above it.
+step=0
+for ((i = index + 1; i < ${#processes[@]}; i++)); do
+  [ "${processes[$i]}" != "${processes[$index]}" ] && { step=$((i - index)); break; }
+done
+if [ "$step" -eq 0 ]; then
+  for ((i = index - 1; i >= 0; i--)); do
+    [ "${processes[$i]}" != "${processes[$index]}" ] && { step=$((i - index)); break; }
+  done
+fi
+[ "$step" -ne 0 ] || ui_fail "no other process to choose: $list"
+other=${processes[$((index + step))]}
+ui_mark
+ui_step "choose $other"                    ui_choose "Property sets print Print Process/profile value" "$step"
+ui_expect_new "Property sets profile list closed" "the list closed, the editor ends"
+ui_expect_new "Property print Print Process/profile set: $other" "the process chosen is set"
+# Back to the design as it was: the choice and the second process.
+ui_focus_main
+ui_mark
+ui_step "undo the choice"                  ui_key ctrl+z
+ui_expect_new "Undo: " "the choice was one undo step"
+ui_mark
+ui_step "undo the second process"          ui_key ctrl+z
+ui_expect_new "Undo: " "the second process was one undo step"
 ui_focus_dialog '^Property Sets$'
 ui_step "close"                            ui_click_logged "Property sets close"
 ui_focus_main

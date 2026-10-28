@@ -57,6 +57,7 @@ pub fn spawn(spec: &Spec) -> io::Result<Process> {
     };
     command
         .args(&spec.args)
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(errors)

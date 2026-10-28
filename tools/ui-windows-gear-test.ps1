@@ -32,7 +32,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'solid.gear' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'solid.gear' = 'F7' } -StepPause 0
 
 # The shaft of part 3, made by mitcad-cli.
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |

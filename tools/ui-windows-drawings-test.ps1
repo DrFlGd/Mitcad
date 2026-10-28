@@ -34,7 +34,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'file.create_drawing' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'file.create_drawing' = 'F9' } -StepPause 0
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
@@ -78,6 +78,21 @@ function Sheet-Click([double]$X, [double]$Y) {
 function View-Y([int]$Id) {
   $at = Ui-LoggedAt "Drawing view $Id"
   return $at[1]
+}
+
+# Settled "logged place": waits until the place logged last for it stays
+# the same over a sync and a short wait, as the Linux test's settled (a
+# panel or a tab bar just built is laid out again once; a click must not
+# use the place it had before).
+function Settled([string]$Text) {
+  for ($i = 0; $i -lt 20; $i++) {
+    $before = Ui-LastLineWith "$Text at "
+    Ui-Sync
+    Start-Sleep -Milliseconds 300
+    $after = Ui-LastLineWith "$Text at "
+    if ($after -and $before -eq $after) { return }
+  }
+  Ui-Fail "the place of '$Text' did not settle"
 }
 
 Ui-StartApp 'drawings' @('--open', $design)
@@ -144,6 +159,7 @@ Ui-Step '+ (a sheet)'                     { Ui-ClickLogged 'Drawing Add Sheet' }
 Ui-ExpectNew '"cmd":"add_drawing_sheet"' 'a sheet asked for'
 Ui-ExpectNew 'Drawing Sheet tab 2 at' 'its tab'
 Ui-Mark
+Settled 'Drawing Sheet tab 1'
 Ui-Step 'the first sheet again'           { Ui-ClickLogged 'Drawing Sheet tab 1' }
 Ui-ExpectNew 'Drawing sheet tab pressed: 1' 'the press on its tab, as Qt finds it (mitcad#725)'
 Ui-ExpectNew 'Drawing sheet 1 shown' 'the first sheet shown'
@@ -152,6 +168,7 @@ if (Ui-LogLines | Where-Object { $_.Contains('Drawing command refused') }) { Ui-
 # A dimension of the block's height, picked on the front view's bottom and
 # top edges (y 100 and 140 on the sheet at 2:1) and placed by a click.
 Ui-Mark
+Settled 'Drawing tool Dimension'
 Ui-Step 'Dimension'                       { Ui-ClickLogged 'Drawing tool Dimension' }
 Ui-ExpectNew 'Drawing tool: Dimension' 'the dimension tool is on'
 Ui-Step 'the bottom edge'                 { Sheet-Click 95 100.5 }
@@ -228,6 +245,7 @@ if ($head -ne 'AC1015') { Ui-Fail "$dwg is no R2000 DWG" }
 if (-not (Test-Path (Join-Path $work 'drawing-2.dwg'))) { Ui-Fail 'no DWG file of the second sheet' }
 Write-Host "ok   $dwg is an R2000 DWG, a file per sheet"
 Ui-Mark
+Settled 'Drawing Add Revision'
 Ui-Step 'Add Revision'                    { Ui-ClickLogged 'Drawing Add Revision' }
 Ui-ExpectNew 'Drawing revision dialog opened: Add Revision' 'its dialog'
 Ui-Step 'its description'                 { Ui-FocusDialog '^Add Revision$'; Ui-Type 'First release'; Ui-Key 'Return'; Ui-FocusMain }
@@ -274,10 +292,12 @@ Ui-Mark
 Ui-Step 'end the tool (Esc)'              { Ui-Key 'Escape' }
 Ui-ExpectNew 'Drawing tool: selection' 'back to the selection'
 Ui-Mark
+Settled 'Drawing tool Parts List'
 Ui-Step 'Parts List'                      { Ui-ClickLogged 'Drawing tool Parts List' }
 Ui-ExpectNew 'Drawing tool: Parts List' 'the parts list tool is on'
 # Its balloons off (on by default, mitcad#725): the balloon by hand below.
 Ui-ExpectNew 'Drawing panel drawingOption_balloons at' 'its Balloons option'
+Settled 'Drawing panel drawingOption_balloons'
 Ui-Step 'Balloons off'                    { Ui-ClickLogged 'Drawing panel drawingOption_balloons' }
 Ui-ExpectNew 'Drawing option balloons: off' 'no balloons'
 Ui-Step 'the front view'                  { Ui-ClickLogged 'Drawing view 1' }
@@ -286,6 +306,7 @@ Ui-Step 'where the list goes'             { Sheet-Click 150 190 }
 Ui-ExpectNew '"type":"parts_list"' 'a parts list asked for'
 Ui-ExpectNew '1 = 1 Component1 x2; 2 Component2 x1' 'sorted, numbered and counted'
 Ui-Mark
+Settled 'Drawing tool Balloon'
 Ui-Step 'Balloon'                         { Ui-ClickLogged 'Drawing tool Balloon' }
 Ui-ExpectNew 'Drawing tool: Balloon' 'the balloon tool is on'
 Ui-Step "Component1:2's right side"       { Sheet-Click 154.8 117.5 }

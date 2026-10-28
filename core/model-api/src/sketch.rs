@@ -341,7 +341,12 @@ named_enum! {
         },
         "sketch.drag" => Drag {
             sketch: FeatureUid,
-            entity: Ref,
+            #[serde(default)]
+            entity: Option<Ref>,
+            /// A selection dragged together by `by` (mitcad#837), instead
+            /// of one `entity`.
+            #[serde(default)]
+            entities: Option<Vec<Ref>>,
             #[serde(default)]
             to: Option<[f64; 2]>,
             #[serde(default)]
@@ -603,6 +608,14 @@ named_enum! {
         },
         // Redefine Sketch Plane (mitcad#787, `sketch_plane.rs`).
         "sketch.redefine_plane" => RedefinePlane(super::sketch_plane::RedefinePlane),
+        // Insert Point on a spline (mitcad#836): a fit point, or a control
+        // point by knot insertion that keeps the shape.
+        "sketch.insert_spline_point" => InsertSplinePoint {
+            sketch: FeatureUid,
+            #[serde(with = "mitcad_model::internal::ids::curve_serde")]
+            curve: EntityUid,
+            at: [f64; 2],
+        },
     }
 }
 
@@ -1656,6 +1669,7 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                     "Deactivate in {sketch}"
                 },
             ),
+            C::InsertSplinePoint { sketch, .. } => (*sketch, "Insert Spline Point in {sketch}"),
             C::Create { .. }
             | C::AddRectangle { .. }
             | C::AddCircle { .. }
@@ -2168,13 +2182,42 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                     entities, fixed, ..
                 } => edit.set_fixed(&entities, fixed)?,
                 C::Drag {
+                    entity: None,
+                    entities: Some(entities),
+                    to: None,
+                    by: Some(by),
+                    radius: None,
+                    ..
+                } => {
+                    // A selection dragged together (mitcad#837): every
+                    // point of it pulled by the offset, a point shared by
+                    // several of the entities once, in one solve.
+                    if entities.is_empty() {
+                        return Err("\"entities\" is empty".to_owned());
+                    }
+                    edit.drag_together(&entities, by)?;
+                }
+                C::Drag {
                     entity,
+                    entities,
                     to,
                     by,
                     radius,
                     ..
                 } => {
-                    let target = match (entity, to, by, radius) {
+                    let single = match (entity, entities) {
+                        (Some(entity), None) => entity,
+                        (Some(_), Some(_)) => {
+                            return Err("give \"entity\" or \"entities\", not both".to_owned());
+                        }
+                        (None, Some(_)) => {
+                            return Err("drag \"entities\" \"by\" an offset".to_owned());
+                        }
+                        (None, None) => {
+                            return Err("give \"entity\" or \"entities\"".to_owned());
+                        }
+                    };
+                    let target = match (single, to, by, radius) {
                         (Ref::Point(p), Some(to), None, None) => DragTarget::Point(p, to),
                         (Ref::Curve(c), None, Some(by), None) => DragTarget::By(c, by),
                         (Ref::Curve(c), None, None, Some(r)) => DragTarget::Radius(c, r),
@@ -2444,6 +2487,10 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                         }
                     }
                     made_ref.extend(changed.iter().map(ToString::to_string));
+                }
+                C::InsertSplinePoint { curve, at, .. } => {
+                    let p = edit.insert_spline_point(curve, at)?;
+                    made_ref.push(Ref::Point(p).to_string());
                 }
                 C::Create { .. }
                 | C::AddRectangle { .. }

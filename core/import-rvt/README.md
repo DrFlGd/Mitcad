@@ -19,6 +19,6 @@ IFC import of links and references) and `mitcad-import-base` (the
 progress, the default geometric tolerance), not on the `.f3d` replay.
 
 Tests: `cargo test -p mitcad-import-rvt` (ctest `core.import-rvt`): the
-unit tests in `src/`, and `tests/rvt_corpus.rs`, `tests/rvt_rails.rs`,
-`tests/rvt_mullion_trims.rs`, which read `MITCAD_RVT_CORPUS` and skip
+unit tests in `src/`, and `tests/corpus/` (one test binary: `rvt_corpus.rs`, `rvt_rails.rs`,
+`rvt_mullion_trims.rs`), which read `MITCAD_RVT_CORPUS` and skip
 without it.

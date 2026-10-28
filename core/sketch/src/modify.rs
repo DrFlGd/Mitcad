@@ -618,6 +618,17 @@ impl SketchEdit<'_> {
         self.drag_goals(&goals)
     }
 
+    /// Drags a selection together by an offset (mitcad#837): every point
+    /// of the entities, the points of their curves included, is pulled by
+    /// `by` as far as the constraints allow, in one solve as a single
+    /// drag. A point shared by several of them (a selected end of a
+    /// selected curve) is pulled once; constraints among them hold, so the
+    /// set moves rigidly unless fixed geometry or a constraint to geometry
+    /// outside it holds it back.
+    pub fn drag_together(&mut self, entities: &[Ref], by: P2) -> Result<(), String> {
+        self.move_entities(entities, &Map2::translation(by))
+    }
+
     fn drag_goals(&mut self, goals: &[Goal]) -> Result<(), String> {
         let params = &*self.params;
         let solved = self

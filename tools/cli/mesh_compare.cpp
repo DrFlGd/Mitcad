@@ -31,9 +31,10 @@
 #include "import.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad/io/mesh_compare.hpp"
-// The planes' variants: the view's final tier (viewMeshOptions), as it was
-// before mitcad#644 (defaultPlaneMeshOptions), and the interactive tier's
-// planes (previewMeshOptions), as the application meshes them (mitcad#635).
+// The planes' variants: the view's final tier (defaultPlaneMeshOptions),
+// mitcad#644's checked Delabella (checkedPlaneMeshOptions), and the
+// interactive tier's planes (previewMeshOptions), as the application meshes
+// them (mitcad#635).
 #include "view/ViewTessellation.hpp"
 
 namespace mitcad::cli {
@@ -48,11 +49,11 @@ const char* const kMeshCompareUsage =
       final tier meshes them (commit, opening a design), with the view's
       deviation, angle and face bound, (a) and (b) each one of three
       variants for the planes: "default" (the default insertion: the final
-      tier before mitcad#644; (a)'s default), "delabella" (OCCT's Delabella
-      triangulation unchecked: the interactive preview tier's planes; (b)'s
-      default) or "checked" (Delabella, a plane left without a
-      triangulation or with its area off its boundary's made again by the
-      default: the final tier now). Compares them face by face:
+      tier; (a)'s default), "delabella" (OCCT's Delabella triangulation
+      unchecked: the interactive preview tier's planes; (b)'s default) or
+      "checked" (Delabella, a plane left without a triangulation or with
+      its area off its boundary's made again by the default: mitcad#644's
+      final tier, held back by mitcad#846). Compares them face by face:
       surface kind, triangles, the deviation of triangle centroids and edge
       midpoints from the surface, the triangulated area against the face's
       own (BRepGProp), triangles folded over others, faces left without a
@@ -156,7 +157,7 @@ bool variant_options(const std::string& name, io::MeshOptions& options) {
   } else if (name == "delabella") {
     options = previewMeshOptions();
   } else if (name == "checked") {
-    options = viewMeshOptions();
+    options = checkedPlaneMeshOptions();
   } else {
     return false;
   }

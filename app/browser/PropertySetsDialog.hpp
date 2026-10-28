@@ -88,6 +88,10 @@ private:
   // that gives it; a click on a value opens the settings form's field
   // (SettingField) and sets that level's own value, shown bold with ↺ after
   // it. Add a setting… under Printer and Process adds a key of that set.
+  // Edit and ↺ follow the value as shown, elided to leave them room inside
+  // the Value column; a click on one does its action only, never also the
+  // value's (mitcad#827). The profile drop-down is opaque and ends when its
+  // list closes, with a choice or without one.
   void addPrintSettings(const QJsonArray& levels, const QSet<QString>& folded, const QString& current,
                         QStringList& rows);
   // Opens a print value's field (the delegate's editor).
@@ -120,7 +124,6 @@ private:
   QString m_loggedRows; // the properties as shown
   PrintKeyTable m_keys;     // print_keys (mitcad#655)
   QString m_addedKey;       // a key Add a setting… added, shown until it is set
-  bool m_glyphClicked = false; // a click on Edit or ↺, not on the value
   // The print block's widgets by the name their place is logged under.
   QList<QPair<QString, QPointer<QWidget>>> m_printWidgets;
 };

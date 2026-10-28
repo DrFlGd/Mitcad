@@ -36,6 +36,7 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../framework/WindowStyle.hpp"
+#include "Bindings.hpp"
 
 namespace mitcad {
 namespace {
@@ -877,6 +878,10 @@ void BrowserPanel::setRowsBackground(bool rows) {
   }
   m_rows = rows;
   m_tree->setRows(rows);
+  if (m_topBar != nullptr) {
+    // No card behind it: a box of the window's colour.
+    m_topBar->setAutoFillBackground(rows);
+  }
   queueRowsRegion();
   // The place beside the rows is logged, or logged out of sight.
   TestSync::singleShot(0, this, [this] { logLayout(); });
@@ -905,7 +910,20 @@ QRegion BrowserPanel::rowsRegion() const {
       region += child->geometry().translated(origin);
     }
   }
+  // The bar above the rows (mitcad#807), on its own box.
+  if (m_topBar != nullptr && m_topBar->isVisible()) {
+    region += m_topBar->geometry();
+  }
   return region;
+}
+
+void BrowserPanel::setTopBar(QWidget* bar) {
+  m_topBar = bar;
+  static_cast<QVBoxLayout*>(layout())->insertWidget(0, bar);
+  // Shown, hidden or resized: the card's height and the Rows background's
+  // boxes follow it.
+  bar->installEventFilter(this);
+  bar->setAutoFillBackground(m_rows);
 }
 
 void BrowserPanel::queueRowsRegion() {
@@ -924,6 +942,23 @@ void BrowserPanel::queueRowsRegion() {
 }
 
 bool BrowserPanel::eventFilter(QObject* watched, QEvent* event) {
+  if (m_topBar != nullptr && watched == m_topBar) {
+    switch (event->type()) {
+    case QEvent::Show:
+    case QEvent::Hide:
+    case QEvent::LayoutRequest: // its height changes (a notice shown)
+      emit contentHeightChanged();
+      queueRowsRegion();
+      TestSync::singleShot(0, this, [this] { logLayout(); }); // the rows moved
+      break;
+    case QEvent::Resize:
+      queueRowsRegion();
+      break;
+    default:
+      break;
+    }
+    return QWidget::eventFilter(watched, event);
+  }
   if (watched == m_tree->viewport()) {
     switch (event->type()) {
     case QEvent::Resize:
@@ -1084,6 +1119,23 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
   return QString();
 }
 
+namespace {
+
+// A row whose item follows expressions (mitcad#809): an fx badge on its
+// icon, the expressions in its tooltip, and a log line for the UI tests
+// ("Browser fx Root/Bodies/Body1: appearance = switch(...)").
+void markBound(QTreeWidgetItem* row, const QString& icon, const QString& path, const QStringList& lines) {
+  if (lines.isEmpty()) {
+    return;
+  }
+  row->setIcon(0, boundIcon(themeIcon(icon)));
+  const QString tip = row->toolTip(0);
+  row->setToolTip(0, (tip.isEmpty() ? QString() : tip + QLatin1Char('\n')) + lines.join(QLatin1Char('\n')));
+  qDebug().noquote() << QStringLiteral("Browser fx %1: %2").arg(path, lines.join(QStringLiteral("; ")));
+}
+
+} // namespace
+
 QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode& node,
                                       const QString& icon, const QString& tooltip) {
   auto* item = parent != nullptr ? new QTreeWidgetItem(parent) : new QTreeWidgetItem(m_tree);
@@ -1169,6 +1221,24 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
       }
       QTreeWidgetItem* row = addRow(bodies, node, QStringLiteral("body"), tip);
       gray(row, shown && body.visible);
+      // Bindings (mitcad#809).
+      if (body.bound()) {
+        QStringList lines;
+        if (!body.appearanceExpr.isEmpty()) {
+          lines << tr("Appearance = %1").arg(body.appearanceExpr);
+        }
+        if (!body.materialExpr.isEmpty()) {
+          lines << tr("Material = %1").arg(body.materialExpr);
+        }
+        if (!body.visibleWhen.isEmpty()) {
+          lines << tr("Shown when %1").arg(body.visibleWhen);
+        }
+        for (auto face = body.faceAppearanceExprs.begin(); face != body.faceAppearanceExprs.end(); ++face) {
+          lines << tr("Appearance of face %1 = %2").arg(face.key(), face.value().toString());
+        }
+        lines << body.warnings;
+        markBound(row, QStringLiteral("body"), m_nodes.value(row).path, lines);
+      }
       addSheetRows(row, snapshot, node, shown && body.visible);
     }
   }
@@ -1385,6 +1455,11 @@ void BrowserPanel::addFeatureRows(QTreeWidgetItem* parent, const DocumentSnapsho
       row->setForeground(kName, kFailedText);
     } else if (off || !shown) {
       row->setForeground(kName, kHiddenText);
+    }
+    // Suppressed when a condition holds (mitcad#809).
+    if (!feature->suppressedWhen.isEmpty()) {
+      markBound(row, featureIcon(feature->type), m_nodes.value(row).path,
+                {tr("Suppressed when %1").arg(feature->suppressedWhen)});
     }
   }
 }
@@ -1607,6 +1682,11 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
             item->setForeground(kName, kHiddenText);
           }
           item->setData(kName, kRadioRole, snapshot.activeComponent == occurrence.component);
+          // Shown when a condition holds (mitcad#809).
+          if (!occurrence.visibleWhen.isEmpty()) {
+            markBound(item, occurrence.grounded ? QStringLiteral("component-grounded") : QStringLiteral("component"),
+                      m_nodes.value(item).path, {tr("Shown when %1").arg(occurrence.visibleWhen)});
+          }
           addComponentRows(item, snapshot, occurrence.component, occurrence.path, visible, uses);
           place(item, occurrence.children, visible);
         }
@@ -1783,56 +1863,7 @@ void BrowserPanel::styleOriginRows(QTreeWidgetItem* folder) {
   };
   style(folder, !m_originShown);
   for (int i = 0; i < folder->childCount(); ++i) {
-    QTreeWidgetItem* row = folder->child(i);
-    const bool plane = datumKind(nodeOf(row).uid) == SelectKind::Plane;
-    style(row, !m_originShown && !(m_originOffered && plane));
-  }
-}
-
-void BrowserPanel::offerOriginPlanes(bool offer) {
-  if (offer == m_originOffered) {
-    return;
-  }
-  m_originOffered = offer;
-  QTreeWidgetItem* folder = nullptr;
-  for (auto it = m_nodes.cbegin(); it != m_nodes.cend(); ++it) {
-    if (it.value().type == BrowserNode::Type::Origin) {
-      folder = it.key();
-      break;
-    }
-  }
-  BrowserNode origin;
-  origin.type = BrowserNode::Type::Origin;
-  const QString key = keyOf(origin);
-  if (offer) {
-    m_originWasExpanded = folder != nullptr ? folder->isExpanded() : m_expanded.value(key, false);
-  }
-  // Open for the pick, then as it was; remembered so, as a rebuild meanwhile
-  // keeps it.
-  const bool open = offer || m_originWasExpanded;
-  m_expanded.insert(key, open);
-  QString path = QStringLiteral("Origin");
-  if (folder != nullptr) {
-    path = nodeOf(folder).path;
-    const bool wasBuilding = m_building;
-    m_building = true; // the signals below remember nothing
-    folder->setExpanded(open);
-    m_building = wasBuilding;
-    styleOriginRows(folder);
-    if (offer && folder->childCount() > 0) {
-      // The planes in sight, the folder's row too when they fit.
-      m_tree->scrollToItem(folder->child(folder->childCount() - 1));
-      m_tree->scrollToItem(folder);
-    }
-    emit contentHeightChanged();
-    TestSync::singleShot(0, this, [this] { logLayout(); });
-  }
-  const QString state = open ? QStringLiteral("open") : QStringLiteral("folded");
-  if (offer) {
-    qDebug().noquote() << QStringLiteral("Browser offers the origin planes: %1 %2; XY, XZ, YZ pickable")
-                              .arg(path, state);
-  } else {
-    qDebug().noquote() << QStringLiteral("Browser no longer offers the origin planes: %1 %2").arg(path, state);
+    style(folder->child(i), !m_originShown);
   }
 }
 
@@ -1932,7 +1963,11 @@ int BrowserPanel::rowHeight() const {
 int BrowserPanel::contentHeight() const {
   // The rows in sight: those whose parents are all open.
   const int rows = shownRows();
-  return (rows > 0 ? rows * rowHeight() : 0) + 2 * m_tree->frameWidth();
+  // The bar above the rows (mitcad#807) while it is shown.
+  const int bar = m_topBar != nullptr && !m_topBar->isHidden()
+                      ? m_topBar->sizeHint().height() + std::max(0, layout()->spacing())
+                      : 0;
+  return bar + (rows > 0 ? rows * rowHeight() : 0) + 2 * m_tree->frameWidth();
 }
 
 void BrowserPanel::showSelection(const Selection& items, const QStringList& features, bool scroll) {

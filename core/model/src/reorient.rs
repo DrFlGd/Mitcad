@@ -719,15 +719,23 @@ fn joint_origins_mut(def: &mut FeatureDef) -> Vec<&mut JointOrigin> {
 pub(crate) fn turn_analysis(def: &mut AnalysisDef, ctx: &Turned<'_>) -> bool {
     match def {
         AnalysisDef::Section(section) => {
-            let component = match &section.occurrence {
+            let end = |occurrence: &Option<OccurrencePath>| match occurrence {
                 Some(path) => ctx
                     .end(ComponentUid::ROOT, path)
                     .unwrap_or(ComponentUid::ROOT),
                 None => ComponentUid::ROOT,
             };
-            let turned = ctx.of(component).reference(&section.plane);
-            let changed = turned != section.plane;
+            let turned = ctx.of(end(&section.occurrence)).reference(&section.plane);
+            let mut changed = turned != section.plane;
             section.plane = turned;
+            // The axis the plane turns about (mitcad#823), in its own
+            // occurrence's component.
+            let component = end(&section.axis_occurrence);
+            if let Some(axis) = &mut section.axis {
+                let turned = ctx.of(component).reference(axis);
+                changed |= turned != *axis;
+                *axis = turned;
+            }
             changed
         }
         // A bed face is a face by its name, which a turn keeps.

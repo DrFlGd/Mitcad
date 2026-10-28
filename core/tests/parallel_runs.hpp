@@ -90,8 +90,29 @@ std::string executable_path(const char* argv0);
 // command), the heaviest start first. At the end a line on standard error
 // tells how many ran at once, their memory limit, the largest peak memory
 // and the longest time of a child.
+//
+// With `keys` (one per command: the file it imports, a stable name), the
+// files' own profiles order the start (mitcad#832): MITCAD_CORPUS_FILES
+// names a table of the files' last times (a line each: key, seconds, peak
+// bytes, tab-separated; the test runner writes it from its profiles), and
+// the longest files start first (start_order). Each child's time and peak
+// are appended to the table MITCAD_CORPUS_RECORD names (key, seconds, peak
+// bytes, "ok" or "failed"), which the runner adds to its profiles.
 void run_all(const std::vector<Command>& commands, const Settings& settings,
-             const std::function<void(std::size_t, const Outcome&)>& done, const std::vector<double>& weights = {});
+             const std::function<void(std::size_t, const Outcome&)>& done, const std::vector<double>& weights = {},
+             const std::vector<std::string>& keys = {});
+
+// A table of MITCAD_CORPUS_FILES: each key's seconds (empty when the file
+// cannot be read; malformed lines are left out).
+std::map<std::string, double> read_file_times(const std::string& path);
+
+// What orders the start of the commands, the largest first: a command's
+// file's own seconds where `known` has its key; else its weight times the
+// median seconds per weight of the known files with a weight; else the
+// longest known time, so that a file without a profile starts among the
+// first. Without keys or known times: the weights as given.
+std::vector<double> start_order(const std::vector<std::string>& keys, const std::vector<double>& weights,
+                                const std::map<std::string, double>& known);
 
 // A file's size as its weight (0 when it cannot be read).
 double file_weight(const std::string& path);

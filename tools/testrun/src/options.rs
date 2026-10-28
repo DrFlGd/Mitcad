@@ -64,6 +64,12 @@ Options:
                         (default 1)
   --changed FILE        the changed files, a path a line (git diff
                         --name-only): their tests join the lane
+  --corpus-children     each corpus test with a history of its files gets
+                        its children at once (MITCAD_CORPUS_JOBS) and their
+                        memory limit (MITCAD_CORPUS_MEMORY) from it, all
+                        of them within the cores and the budget; the others
+                        keep the caller's (the files' times are recorded
+                        and handed back either way)
   --margin F            the predicted peak memory's margin (default 1.25)
   --limit-factor F      schedule: each test's hard memory limit as a multiple
                         of its history's p90 peak or its kind's guess, at
@@ -162,6 +168,9 @@ pub struct Options {
     pub lane_share: f64,
     pub lane_score: f64,
     pub changed: Option<PathBuf>,
+    /// Plans the corpus tests' children from their files' history
+    /// (`corpus`).
+    pub corpus_children: bool,
     /// The bound of the UI entries at once (`concurrency::bound`).
     pub ui_max: Option<usize>,
     /// Prints the learnt UI entries at once and runs nothing.
@@ -199,6 +208,7 @@ impl Default for Options {
             lane_share: 0.2,
             lane_score: 1.0,
             changed: None,
+            corpus_children: false,
             ui_max: None,
             ui_cap: false,
             record_ui: None,
@@ -293,6 +303,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             "--lane-share" => o.lane_share = number(value()?, name)?,
             "--lane-score" => o.lane_score = number(value()?, name)?,
             "--changed" => o.changed = Some(PathBuf::from(value()?)),
+            "--corpus-children" => o.corpus_children = true,
             "--ui-max" => o.ui_max = Some(number(value()?, name)?),
             "--ui-cap" => o.ui_cap = true,
             "--record-ui" => o.record_ui = Some(PathBuf::from(value()?)),
@@ -395,7 +406,10 @@ mod tests {
         assert_eq!(o.sensitive, ["app.ui-*"]);
         let o = parse(&args("--build b --memory-floor 2G")).unwrap();
         assert_eq!(o.memory_floor, 2 << 30);
+        assert!(!o.corpus_children);
         assert_eq!(o.mode, Mode::Measure);
+        let o = parse(&args("--build b --schedule --corpus-children")).unwrap();
+        assert!(o.corpus_children);
         assert!(parse(&args("--schedule")).is_err());
         assert!(parse(&args("--build b --frobnicate")).is_err());
         assert!(parse(&args("--build b -j")).is_err());

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "platform/NativeMacWindow.hpp"
 #include "NativeKeys.hpp"
+#include "NativeCardWidths.hpp"
+#include "NativeProjects.hpp"
 #include "framework/Icons.hpp"
 #include "framework/Theme.hpp"
 #include "browser/TimelinePresentation.hpp"
@@ -116,6 +118,15 @@ struct NativeMacWindowState;
 
 @implementation MITCADInspectorDocumentView
 - (BOOL)isFlipped { return YES; }
+@end
+
+// The inspector's scrolled document. A change of its content's height (the
+// selection card's text and Create row filled in after the card is shown)
+// lays the cards out again, so the card follows its content (mitcad#815).
+@interface MITCADInspectorContentView : MITCADInspectorDocumentView {
+@public
+  mitcad::mac::NativeMacWindowState* state;
+}
 @end
 
 @interface MITCADTreeNode : NSObject
@@ -427,6 +438,9 @@ struct NativeMacWindowState {
   qint64 historyAppearancePaletteKey = 0;
   QPointer<QWidget> gestureReceiver;
   unsigned gestureKinds = 0;
+  // The side cards' widths, dragged by their inner edges (mitcad#818).
+  NativeCardWidths cardWidths;
+  NSArray<NSView*>* __strong cardWidthHandles = nil;
 
   NSEvent* __strong lastShortcutEvent = nil;
   bool lastShortcutHandled = false;
@@ -463,6 +477,8 @@ struct NativeMacWindowState {
   NSScrollView* __strong inspectorScroll = nil;
   NSView* __strong inspectorContent = nil;
   MITCADInspectorDocumentView* __strong inspectorDocument = nil;
+  NSView* __strong inspectorFooter = nil;        // under the scrolling inspector (mitcad#815)
+  NSView* __strong inspectorFooterContent = nil; // a command form's OK and Cancel
   NSTextField* __strong status = nil;
   NSPopover* __strong searchPopover = nil;
   NSSearchField* __strong searchField = nil;
@@ -504,10 +520,13 @@ struct NativeMacWindowState {
     ((MITCADDocumentWindow*)window)->state = nullptr;
     viewportHost->state = nullptr;
     canvasRoot->state = nullptr;
+    if ([inspectorDocument isKindOfClass:MITCADInspectorContentView.class])
+      ((MITCADInspectorContentView*)inspectorDocument)->state = nullptr;
     tree->state = nullptr;
     history->state = nullptr;
     historyMarkerButton->state = nullptr;
     for (MITCADHistoryFeatureButton* button in historyButtons.allValues) button->state = nullptr;
+    for (NSView* handle in cardWidthHandles) detachCardWidthHandle(handle);
     [searchPopover close];
     window.delegate = nil;
     window.toolbar.delegate = nil;
@@ -616,11 +635,17 @@ struct NativeMacWindowState {
   bool dispatchShortcut(NSEvent* event) {
     ++shortcutDispatchCount;
     if (event.type != NSEventTypeKeyDown || event.window != window ||
-        closing || nativeModalBlocked() || QApplication::activeModalWidget() || textEditing()) return false;
+        closing || nativeModalBlocked() || QApplication::activeModalWidget()) return false;
+    // A Projects name in its row editor ends on Return or Escape before any
+    // button's key equivalent; other text keeps its keys (mitcad#816).
+    if (projectsNameEditorKey(event)) return true;
+    if (textEditing()) return false;
     const QKeySequence pressed = keySequence(event);
     if (pressed.isEmpty()) return false;
     NSResponder* focus = window.firstResponder;
     const bool browserFocus = focus == tree;
+    const bool projectsFocus = projectsContent != nil && [focus isKindOfClass:NSOutlineView.class] &&
+                               [(NSView*)focus isDescendantOf:projectsContent];
     const bool historyFocus = focus == history || [focus isKindOfClass:MITCADHistoryFeatureButton.class];
     const bool inHistory = [focus isKindOfClass:NSView.class] && [(NSView*)focus isDescendantOf:history];
     const auto combination = pressed[0];
@@ -628,6 +653,10 @@ struct NativeMacWindowState {
     // reaches the outline. Browser activation must win at that stage too.
     if (browserFocus && combination.keyboardModifiers() == Qt::NoModifier &&
         (combination.key() == Qt::Key_Return || combination.key() == Qt::Key_Enter) && activateBrowserSelection()) return true;
+    // The focused Projects outline's Return, F2 and Delete belong to the
+    // shared panel, as the default tree's keys do (mitcad#816).
+    if (projectsFocus && combination.keyboardModifiers() == Qt::NoModifier && callbacks.projectsKey &&
+        callbacks.projectsKey(int(combination.key()))) return true;
     // Other document shortcuts still require the active key window.
     if (NSApp.keyWindow != window) return false;
     if ((browserFocus || historyFocus || inHistory) && pressed == QKeySequence(QKeySequence::Find)) {
@@ -1288,9 +1317,48 @@ struct NativeMacWindowState {
     inspectorHost.accessibilityLabel = @"Inspector";
     inspectorHost.accessibilityIdentifier = @"native.inspector";
     inspectorScroll = scroll(nil);
-    fill(inspectorScroll, inspectorHost);
+    buildInspectorFooter();
     fill(inspectorHost, inspectorCard.body);
+    addCardWidthHandles();
     layoutOverlays();
+  }
+
+  // A command form's OK and Cancel stay in view under its inputs, which
+  // scroll above them, as the shared panel's page keeps them (mitcad#655,
+  // mitcad#815). Without a form's footer the footer is empty and has no
+  // height, and the scroll view fills the inspector.
+  void buildInspectorFooter() {
+    inspectorFooter = [[NSView alloc] initWithFrame:NSZeroRect];
+    inspectorFooter.translatesAutoresizingMaskIntoConstraints = NO;
+    inspectorFooter.accessibilityIdentifier = @"native.inspectorFooter";
+    [inspectorHost addSubview:inspectorScroll];
+    [inspectorHost addSubview:inspectorFooter];
+    NSLayoutConstraint* empty = [inspectorFooter.heightAnchor constraintEqualToConstant:0];
+    empty.priority = NSLayoutPriorityDefaultLow;
+    [NSLayoutConstraint activateConstraints:@[
+      [inspectorScroll.leadingAnchor constraintEqualToAnchor:inspectorHost.leadingAnchor],
+      [inspectorScroll.trailingAnchor constraintEqualToAnchor:inspectorHost.trailingAnchor],
+      [inspectorScroll.topAnchor constraintEqualToAnchor:inspectorHost.topAnchor],
+      [inspectorScroll.bottomAnchor constraintEqualToAnchor:inspectorFooter.topAnchor],
+      [inspectorFooter.leadingAnchor constraintEqualToAnchor:inspectorHost.leadingAnchor],
+      [inspectorFooter.trailingAnchor constraintEqualToAnchor:inspectorHost.trailingAnchor],
+      [inspectorFooter.bottomAnchor constraintEqualToAnchor:inspectorHost.bottomAnchor],
+      empty
+    ]];
+  }
+
+  // The inspector's content height at the card's actual width, with a
+  // command form's footer: AppKit wraps text to that width, which the
+  // content's own fittingSize does not (mitcad#815).
+  CGFloat inspectorContentHeight() {
+    if (!inspectorContent) return 180;
+    // Wrapping labels take their width in the first pass, their height in
+    // the second.
+    [inspectorHost layoutSubtreeIfNeeded];
+    [inspectorHost layoutSubtreeIfNeeded];
+    const CGFloat content = inspectorDocument ? NSHeight(inspectorDocument.frame) : inspectorContent.fittingSize.height;
+    const CGFloat footer = inspectorFooterContent ? inspectorFooterContent.fittingSize.height : 0;
+    return std::ceil(content + footer);
   }
 
   void layoutOverlays() {
@@ -1301,6 +1369,9 @@ struct NativeMacWindowState {
     constexpr CGFloat gap = 8;
     const CGFloat width = canvasRoot.bounds.size.width;
     const CGFloat height = canvasRoot.bounds.size.height;
+    // The side cards' widths as dragged, within the canvas (mitcad#818).
+    const NativeCardPlacement cards = cardWidths.place(width, !projectsCard.hidden, !sidebarCard.hidden,
+                                                       !inspectorCard.hidden);
     ribbon.frame = NSMakeRect(0, 0, width, ribbonHeight);
     layoutRibbon(width);
     viewportHost.frame = NSMakeRect(0, ribbonHeight, width, std::max(CGFloat(1), height - ribbonHeight));
@@ -1327,30 +1398,31 @@ struct NativeMacWindowState {
       const int rows = std::min(capacity, std::max(2, int(outline.numberOfRows)));
       const CGFloat projectHeight = projectsCollapsed ? 30 : chromeHeight + rows * rowHeight;
       const bool resized = projectsCard.frame.size.height != projectHeight;
-      projectsCard.frame = NSMakeRect(margin, top, 260, projectHeight);
+      projectsCard.frame = NSMakeRect(margin, top, cards.projects, projectHeight);
       [projectsCard layoutSubtreeIfNeeded];
+      fitCardOutline(projectsCard, outline); // its names take the card's width (mitcad#818)
       if (resized && !projectsCollapsed && outline.selectedRow >= 0)
         [outline scrollRowToVisible:outline.selectedRow];
       top += projectHeight + gap;
     }
     const CGFloat leftHeight = std::min(std::max(CGFloat(100), tree.numberOfRows * tree.rowHeight + 50 + (browserIssues.hidden ? 0 : 28)),
                                        std::max(CGFloat(100), std::min(canvasHeight * 0.55, floor - top)));
-    sidebarCard.frame = NSMakeRect(margin, top, 260, browserCollapsed ? (browserIssues.hidden ? 30 : 60) : leftHeight);
+    sidebarCard.frame = NSMakeRect(margin, top, cards.browser, browserCollapsed ? (browserIssues.hidden ? 30 : 60) : leftHeight);
+    fitCardOutline(sidebarCard, tree);
     CGFloat rightTop = ribbonHeight + 190;
     CGFloat available = std::max(CGFloat(1), floor - rightTop);
-    inspectorCard.frame = NSMakeRect(width - margin - 300, rightTop, 300, available);
-    [inspectorHost layoutSubtreeIfNeeded];
-    const CGFloat formHeight = inspectorContent ? inspectorContent.fittingSize.height : 180;
+    inspectorCard.frame = NSMakeRect(width - margin - cards.inspector, rightTop, cards.inspector, available);
+    const CGFloat formHeight = inspectorContentHeight();
     // Like the shared floating layout, a long form first grows above the
     // orientation cube before it needs a scrollbar.
     if (formHeight + 4 > available) {
       rightTop = ribbonHeight + margin;
       available = std::max(CGFloat(1), floor - rightTop);
     }
-    inspectorCard.frame = NSMakeRect(width - margin - 300, rightTop, 300,
+    inspectorCard.frame = NSMakeRect(width - margin - cards.inspector, rightTop, cards.inspector,
                                      std::min(available, std::max(CGFloat(160), formHeight + 4)));
     const CGFloat statusWidth = std::min(std::max(CGFloat(120), status.intrinsicContentSize.width + 24),
-                                         std::max(CGFloat(120), width - 2 * (300 + margin + gap)));
+                                         std::max(CGFloat(120), width - 2 * (std::max({cards.projects, cards.browser, cards.inspector}) + margin + gap)));
     statusCard.frame = NSMakeRect((width - statusWidth) / 2, floor - 34, statusWidth, 34);
     if (callbacks.viewportOverlays) {
       std::vector<QRect> covered;
@@ -1361,7 +1433,8 @@ struct NativeMacWindowState {
                              int(std::lround(rect.size.width)), int(std::lround(rect.size.height)));
       }
       const int bottom = historyCard.hidden ? 0 : int(std::lround(height - floor));
-      const int cubeRight = !inspectorCard.hidden && rightTop < ribbonHeight + 190 ? 320 : 0;
+      const int cubeRight = !inspectorCard.hidden && rightTop < ribbonHeight + 190
+                              ? int(std::lround(cards.inspector + margin + gap)) : 0;
       callbacks.viewportOverlays(QMargins(0, 0, cubeRight, bottom), covered);
     }
     syncViewport();
@@ -1385,6 +1458,25 @@ struct NativeMacWindowState {
     }
     card.hidden = !shown;
     layoutOverlays();
+  }
+
+  // Width handles along the side cards' inner edges (mitcad#818): a drag
+  // places the card at once, a release remembers its width.
+  void addCardWidthHandles() {
+    const auto handle = [this](NSView* card, NativeCard which) {
+      return addCardWidthHandle(card, which, [this, which](CGFloat width, bool finished) {
+        dragCardWidth(which, width, finished);
+      });
+    };
+    cardWidthHandles = @[handle(projectsCard, NativeCard::Projects), handle(sidebarCard, NativeCard::Browser),
+                         handle(inspectorCard, NativeCard::Inspector)];
+  }
+
+  void dragCardWidth(NativeCard card, CGFloat width, bool finished) {
+    const CGFloat chosen = cardWidths.drag(card, width, canvasRoot.bounds.size.width, !projectsCard.hidden,
+                                           !sidebarCard.hidden, !inspectorCard.hidden);
+    layoutOverlays();
+    if (finished && callbacks.cardWidthChosen) callbacks.cardWidthChosen(nativeCardName(card), int(std::lround(chosen)));
   }
 
   void embedViewport() {
@@ -1611,6 +1703,17 @@ struct NativeMacWindowState {
         } else {
           [target addItem:menuAction(item)];
         }
+      }
+      if (title == QStringLiteral("Edit")) {
+        // AppKit text fields take Cut, Copy, Paste and Select All (and
+        // their Command keys) only from the menu bar; Qt's editors handle
+        // them themselves. After the shared Edit commands, which keep their
+        // order; the canvas's own shortcuts are offered to the window first.
+        [menu addItem:NSMenuItem.separatorItem];
+        addResponderItem(menu, @"Cut", @selector(cut:), @"x");
+        addResponderItem(menu, @"Copy", @selector(copy:), @"c");
+        addResponderItem(menu, @"Paste", @selector(paste:), @"v");
+        addResponderItem(menu, @"Select All", @selector(selectAll:), @"a");
       }
     }
     NSApp.mainMenu = mainMenu;
@@ -1896,16 +1999,23 @@ struct NativeMacWindowState {
     return row >= 0 ? [tree itemAtRow:row] : nil;
   }
 
-  void installInspector(NSView* content) {
-    if (inspectorContent == content) return;
+  void installInspector(NSView* content, NSView* footer = nil) {
+    if (inspectorContent == content && inspectorFooterContent == footer) return;
+    [inspectorFooterContent removeFromSuperview];
+    inspectorFooterContent = footer;
+    if (footer) fill(footer, inspectorFooter);
     inspectorScroll.documentView = nil;
     [inspectorContent removeFromSuperview];
     inspectorContent = content;
+    if ([inspectorDocument isKindOfClass:MITCADInspectorContentView.class])
+      ((MITCADInspectorContentView*)inspectorDocument)->state = nullptr;
     inspectorDocument = nil;
     if (content) {
       // A flipped document starts long command forms at their heading and
       // first input, rather than at the bottom of AppKit's scroll range.
-      inspectorDocument = [[MITCADInspectorDocumentView alloc] initWithFrame:NSZeroRect];
+      MITCADInspectorContentView* document = [[MITCADInspectorContentView alloc] initWithFrame:NSZeroRect];
+      document->state = this;
+      inspectorDocument = document;
       inspectorDocument.translatesAutoresizingMaskIntoConstraints = NO;
       fill(content, inspectorDocument);
       inspectorScroll.documentView = inspectorDocument;
@@ -2156,7 +2266,28 @@ void NativeMacWindow::setProjectsView(void* view, bool shown) {
   m_state->setCardVisible(m_state->projectsCard, shown);
   m_state->layoutOverlays();
   [m_state->projectsCard setNeedsDisplay:YES];
+  checkProjectsNameEditor();
 }
+
+bool NativeMacWindow::editProjectsRow(const QString& identifier, const QString& text,
+                                      std::function<void(const QString&, bool)> finished) {
+  if (m_state->closing || m_state->projectsCard.hidden || !m_state->projectsContent) return false;
+  if (m_state->projectsCollapsed) {
+    // A name typed in place needs its row in sight: disclose the content.
+    for (NSView* child in m_state->projectsCard.body.subviews) {
+      if ([child isKindOfClass:NSButton.class] && [child.accessibilityIdentifier isEqualToString:@"native.projects.disclosure"]) {
+        [m_state->delegate collapseProjects:child];
+        break;
+      }
+    }
+    if (m_state->projectsCollapsed) return false;
+    [m_state->projectsCard layoutSubtreeIfNeeded];
+  }
+  NSOutlineView* outline = outlineIn(m_state->projectsContent);
+  return outline != nil && beginProjectsNameEditor(outline, identifier, text, std::move(finished));
+}
+
+void NativeMacWindow::closeProjectsEditor() { closeProjectsNameEditor(); }
 
 void NativeMacWindow::setBrowserIssues(const QString& failures, const QString& failureDetails,
                                       const QString& warnings, const QString& warningDetails) {
@@ -2249,7 +2380,9 @@ void NativeMacWindow::setInspectorText(const QString& title, const QString& text
   [message.widthAnchor constraintEqualToAnchor:content.widthAnchor constant:-32].active = YES;
   m_state->installInspector(content);
 }
-void NativeMacWindow::setInspectorView(void* view) { m_state->installInspector((__bridge NSView*)view); }
+void NativeMacWindow::setInspectorView(void* view, void* footer) {
+  m_state->installInspector((__bridge NSView*)view, (__bridge NSView*)footer);
+}
 void NativeMacWindow::showInspector(bool shown) { m_state->setCardVisible(m_state->inspectorCard, shown); }
 void NativeMacWindow::showSidebar(bool shown) { m_state->setCardVisible(m_state->sidebarCard, shown); }
 void NativeMacWindow::showHistory(bool shown) { m_state->setCardVisible(m_state->historyCard, shown); }
@@ -2284,6 +2417,12 @@ void NativeMacWindow::restoreTimelineSearchScroll() {
 }
 void* NativeMacWindow::nativeWindow() const { return (__bridge void*)m_state->window; }
 void* NativeMacWindow::nativeInspectorHost() const { return (__bridge void*)m_state->inspectorHost; }
+void NativeMacWindow::setCardWidth(const QString& card, int width) {
+  NativeCard which = NativeCard::Projects;
+  if (!nativeCardNamed(card, which) || width <= 0) return;
+  m_state->cardWidths.restore(which, width);
+  m_state->layoutOverlays();
+}
 
 bool nativeWindowRefreshContract(void* nativeWindow, QString& error) {
   MITCADDocumentWindow* window = (__bridge MITCADDocumentWindow*)nativeWindow;
@@ -2445,6 +2584,16 @@ using namespace mitcad::mac;
 - (void)viewDidChangeBackingProperties {
   [super viewDidChangeBackingProperties];
   if (state) state->syncViewport();
+}
+@end
+
+@implementation MITCADInspectorContentView
+- (void)setFrameSize:(NSSize)size {
+  const bool resized = std::abs(size.height - self.frame.size.height) > 0.5;
+  [super setFrameSize:size];
+  // layoutOverlays measures after its own layout pass; any other change of
+  // the content's height asks for one.
+  if (resized && state && !state->layingOut && state->canvasRoot) state->canvasRoot.needsLayout = YES;
 }
 @end
 

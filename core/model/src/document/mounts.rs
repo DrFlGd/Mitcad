@@ -75,6 +75,10 @@ pub struct Inserted {
     pub joint: Option<FeatureUid>,
     pub frames: Vec<MountFrame>,
     pub plan: Option<MountPlan>,
+    /// Inserted with options (mitcad#801): the constants the source's rules
+    /// moved, and the rule a bound value breaks (the part fails with it).
+    pub moves: Vec<crate::part_options::OptionMove>,
+    pub broken: Option<crate::part_options::BrokenRule>,
 }
 
 /// Where `insert_component`'s `mount` places the part: by its frame

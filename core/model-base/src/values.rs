@@ -92,10 +92,34 @@ pub fn resolve_value(
     comment: &str,
     old: Option<&ParamId>,
 ) -> Result<(ParamId, Option<String>), ModelError> {
-    let unit = match slot_unit(slot) {
+    resolve_value_as(params, slot, None, value, owner, comment, old)
+}
+
+/// [`resolve_value`] with the slot's unit given (`unit`) instead of read
+/// from its name: a derived part's `parameters.<name>` slot takes the
+/// unit of its source's parameter (mitcad#801), a text, an angle or a
+/// count. None: the slot's own unit ([`slot_unit`]).
+#[doc(hidden)]
+pub fn resolve_value_as(
+    params: &mut Parameters,
+    slot: &str,
+    unit: Option<Unit>,
+    value: &ValueInput,
+    owner: FeatureUid,
+    comment: &str,
+    old: Option<&ParamId>,
+) -> Result<(ParamId, Option<String>), ModelError> {
+    let unit = match unit.unwrap_or_else(|| slot_unit(slot)) {
         Unit::MM => Unit::of_length(params.context().default_length_unit),
         unit => unit,
     };
+    if unit.is_text()
+        && let ValueInput::Number(number) = value
+    {
+        return Err(invalid(format!(
+            "{slot}: the value is a text, not the number {number}"
+        )));
+    }
     let own = old.copied().filter(|id| params.owner(*id) == Some(owner));
     let in_slot = |e: ParameterError| invalid(format!("{slot}: {e}"));
     let expression = match value {

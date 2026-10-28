@@ -90,6 +90,7 @@ fn write_node(f: &mut fmt::Formatter<'_>, node: &Node) -> fmt::Result {
         NodeKind::Reference(name) | NodeKind::Local(name) => f.write_str(name),
         NodeKind::UnitText(unit) => write!(f, "\"{unit}\""),
         NodeKind::Text(text) => f.write_str(&text_literal(text)),
+        NodeKind::Column { table, column } => write!(f, "{table}.{column}"),
         NodeKind::Neg(x) => {
             f.write_str("-")?;
             let parens = x.precedence() < PREC_UNARY || matches!(x.kind, NodeKind::Neg(_));

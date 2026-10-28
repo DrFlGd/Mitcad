@@ -95,6 +95,9 @@ bool CommandSession::scriptInputs(const QJsonObject& inputs, const ItemReader& r
       QStringList offered;
       bool known = false;
       for (const auto& option : input.choicesIn(scopeOf(*slot))) {
+        if (isChoiceSeparator(option.first)) {
+          continue; // a line between the options, no choice (mitcad#828)
+        }
         offered << option.first;
         known = known || option.first == chosen;
       }

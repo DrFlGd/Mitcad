@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use super::{Document, ModelError, invalid};
 use crate::analysis;
-use crate::datum::{DatumPlane, Vec3};
+use crate::datum::{ANGULAR, DatumAxis, DatumPlane, Vec3};
 use crate::features::geom_ref::GeomRef;
 use crate::features::{OccurrencePath, is_false};
 use crate::ids::{BodyUid, ComponentUid};
@@ -288,10 +288,36 @@ pub struct SectionAnalysis {
     /// reversed.
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip: bool,
+    /// How far the plane is turned about `axis` before the offset, in
+    /// radians, right-handed about the axis' direction (mitcad#823).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub angle: f64,
+    /// A line reference the plane turns about: a straight edge, a sketch
+    /// line, a construction axis or an origin axis. Needed for an angle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis: Option<GeomRef>,
+    /// The axis' occurrence, from the design root, as `occurrence` is the
+    /// plane's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub axis_occurrence: Option<OccurrencePath>,
 }
 
 fn is_zero(value: &f64) -> bool {
     *value == 0.0
+}
+
+impl SectionAnalysis {
+    /// Why the angle cannot be kept, if it cannot (not its geometry): not
+    /// finite, or not zero without an axis to turn about.
+    fn check_angle(&self) -> Result<(), String> {
+        if !self.angle.is_finite() {
+            return Err("the angle must be a finite angle".to_owned());
+        }
+        if self.angle != 0.0 && self.axis.is_none() {
+            return Err("an angle needs an axis to turn the plane about".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// A section's plane in the design's coordinates: a point on it and the
@@ -313,6 +339,9 @@ impl Analysis {
                 if !section.offset.is_finite() {
                     return Err(format!("{}: the offset must be a finite length", self.name));
                 }
+                section
+                    .check_angle()
+                    .map_err(|e| format!("{}: {e}", self.name))?;
             }
             AnalysisDef::Print(print) => {
                 print.check().map_err(|e| format!("{}: {e}", self.name))?;
@@ -345,21 +374,63 @@ impl<K: Kernel> Document<K> {
         reference: &GeomRef,
         occurrence: Option<&OccurrencePath>,
     ) -> Result<OccurrencePath, String> {
+        self.analysis_occurrence(reference, occurrence, "section plane")
+    }
+
+    /// Resolve a section's axis reference in design coordinates
+    /// (mitcad#823), through its occurrence as [`Self::analysis_plane`].
+    #[doc(hidden)]
+    pub fn analysis_axis(
+        &self,
+        reference: &GeomRef,
+        occurrence: Option<&OccurrencePath>,
+    ) -> Result<DatumAxis, String> {
+        let axis = self.resolve_axis(reference)?;
+        let path = self.analysis_axis_occurrence(reference, occurrence)?;
+        let transform = self.path_transform(&path.0);
+        let direction = mitcad_vec3::unit(transform.apply_vector(axis.direction))
+            .ok_or_else(|| "the axis has no direction".to_owned())?;
+        Ok(DatumAxis {
+            origin: transform.apply_point(axis.origin),
+            direction,
+        })
+    }
+
+    #[doc(hidden)]
+    pub fn analysis_axis_occurrence(
+        &self,
+        reference: &GeomRef,
+        occurrence: Option<&OccurrencePath>,
+    ) -> Result<OccurrencePath, String> {
+        self.analysis_occurrence(reference, occurrence, "section axis")
+    }
+
+    /// The occurrence a section's plane or axis (`what`) is in: the given
+    /// path when it owns the reference, else the owner's only placement,
+    /// else the root for references of no component.
+    fn analysis_occurrence(
+        &self,
+        reference: &GeomRef,
+        occurrence: Option<&OccurrencePath>,
+        what: &str,
+    ) -> Result<OccurrencePath, String> {
         let owner = match reference {
-            GeomRef::Face { body, .. } => self.body_component(*body),
-            GeomRef::Datum(uid) => self.feature(*uid).map(|f| f.component),
+            GeomRef::Face { body, .. } | GeomRef::Edge { body, .. } => self.body_component(*body),
+            GeomRef::Datum(uid) | GeomRef::SketchCurves { sketch: uid, .. } => {
+                self.feature(*uid).map(|f| f.component)
+            }
             _ => None,
         };
         let path = if let Some(path) = occurrence {
             let component = path_component(self.assembly(), ComponentUid::ROOT, &path.0)?;
             if owner.is_some_and(|owner| owner != component) {
-                return Err("the selected occurrence does not own the section plane".to_owned());
+                return Err(format!("the selected occurrence does not own the {what}"));
             }
             path.0.clone()
         } else if let Some(owner) = owner {
             let paths = self.assembly().paths_to(owner);
             if paths.len() != 1 {
-                return Err("select an occurrence for the section plane's component".to_owned());
+                return Err(format!("select an occurrence for the {what}'s component"));
             }
             paths[0].clone()
         } else {
@@ -378,9 +449,23 @@ impl<K: Kernel> Document<K> {
         if !section.offset.is_finite() {
             return Err("the section offset must be finite".to_owned());
         }
+        section.check_angle()?;
         let plane = self.analysis_plane(&section.plane, section.occurrence.as_ref())?;
-        let n = plane.normal();
-        let origin = [0, 1, 2].map(|i| plane.origin[i] + n[i] * section.offset);
+        let (base, n) = match self.section_axis(section)? {
+            // Turned rigidly about the axis, then moved along the turned
+            // normal (mitcad#823).
+            Some(axis) => {
+                let normal = plane.normal();
+                if mitcad_vec3::norm(mitcad_vec3::cross(axis.direction, normal)) < ANGULAR {
+                    return Err("the axis is along the plane's normal".to_owned());
+                }
+                let turn = Transform::rotation(axis.origin, axis.direction, section.angle)
+                    .ok_or_else(|| "the axis has no direction".to_owned())?;
+                (turn.apply_point(plane.origin), turn.apply_vector(normal))
+            }
+            None => (plane.origin, plane.normal()),
+        };
+        let origin = [0, 1, 2].map(|i| base[i] + n[i] * section.offset);
         // No -0 in the normal.
         let normal = n.map(|c| {
             if c == 0.0 {
@@ -392,6 +477,19 @@ impl<K: Kernel> Document<K> {
             }
         });
         Ok(SectionPlane { origin, normal })
+    }
+
+    /// A section's axis in design coordinates at the marker, None without
+    /// one, or why it cannot be found.
+    pub fn section_axis(&self, section: &SectionAnalysis) -> Result<Option<DatumAxis>, String> {
+        section
+            .axis
+            .as_ref()
+            .map(|axis| {
+                self.analysis_axis(axis, section.axis_occurrence.as_ref())
+                    .map_err(|e| format!("the axis: {e}"))
+            })
+            .transpose()
     }
 
     /// The `analyses` query: each analysis in its file form, with a

@@ -21,7 +21,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'file.export_drawing' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'file.export_drawing' = 'F9' } -StepPause 0
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
@@ -76,6 +76,7 @@ Ui-Step 'sheet A3 (wheel)' {
 Ui-ExpectNew 'Drawing dialog: sheet = A3' 'A3 chosen'
 Ui-Step 'OK' {
   $at = Dialog-At 'OK'
+  Ui-Apart $script:UiTarget $at[0] $at[1]
   [UiInput]::Move($script:UiTarget, $at[0], $at[1], 0)
   Start-Sleep -Milliseconds 80
   [UiInput]::Button($script:UiTarget, 0x201, $at[0], $at[1], 1)

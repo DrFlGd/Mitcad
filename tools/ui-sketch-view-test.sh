@@ -562,24 +562,18 @@ expect_centred() {
 }
 
 # sketch_on_origin plane: Create Sketch on an origin plane, clicked in the
-# view when Create Sketch shows the origin planes there, else in the
-# browser's Origin folder, which offers them (mitcad#694): New Design opens
-# with the root active beside its Component1 (mitcad#426), which keeps the
-# planes out of the view (mitcad#294).
+# view: Create Sketch shows the origin planes in every design (mitcad#844),
+# also after New Design, which opens with the root active beside its
+# Component1 (mitcad#426).
 sketch_on_origin() {
   local plane=$1 before
   before=$(grep -c "Sketch started on $plane" "$UI_LOG")
   ui_mark
   ui_command "Create Sketch"
-  ui_expect_new "Create Sketch: origin planes " "Create Sketch says where the origin planes are" > /dev/null
+  ui_expect_new "Create Sketch: origin planes shown" "Create Sketch shows the origin planes" > /dev/null
+  ui_expect_new "Datum $plane at" "the ${plane^^} plane can be picked" > /dev/null
   ui_sync
-  if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Create Sketch: origin planes shown"; then
-    ui_click_logged "Datum $plane"
-  else
-    ui_expect_new "Browser Root/Origin/${plane^^} at" "the browser offers ${plane^^}" > /dev/null
-    ui_sync
-    ui_click_logged "Browser Root/Origin/${plane^^}"
-  fi
+  ui_click_logged "Datum $plane"
   for _ in $(seq 1 25); do
     [ "$(grep -c "Sketch started on $plane" "$UI_LOG")" -gt "$before" ] && return 0
     sleep 0.2

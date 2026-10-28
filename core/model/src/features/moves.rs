@@ -434,10 +434,14 @@ pub(crate) fn place_bodies<K: Kernel>(
             feature: ctx.uid,
             index: 1,
         });
-        let moved = ctx
-            .kernel
-            .transform_shape(&shape, transform, instance)
-            .map_err(|e| e.to_string())?;
+        // A rigid motion moves the body as a location on its own shape, its
+        // faces keeping their display meshes (mitcad#838); a scale copies.
+        let moved = if transform.is_rigid() {
+            ctx.kernel.move_shape(&shape, transform, instance)
+        } else {
+            ctx.kernel.transform_shape(&shape, transform, instance)
+        }
+        .map_err(|e| e.to_string())?;
         let uid = if copy {
             BodyUid::new(ctx.uid, j as u32)
         } else {

@@ -201,6 +201,12 @@ feature of their own, `elements.rs` references.
   through the axis, swept by a `helix` from a pitch above the top as deep
   as FreeCAD's thread runs, then the hole; then as a modelled `thread`
   (#57's profile with the bore as the minor diameter).
+- A hole is drilled at its sketch's circle and arc centres, or, without
+  any, at its points: each drawn point once, in the sketch's order, and no
+  construction point (FreeCAD's sketch shape leaves those out). Coincident
+  points are one MitCad point and one hole; listing it twice made the
+  hole's tools overlap and the cut gave no solid (mitcad#835, reference
+  model `pd_hole_points`).
 - Datum planes: attached flat with only a normal offset → `offset`
   plane; attached to an origin plane and turned a quarter (or not), with
   the offset along its normal → `offset` from the parallel origin plane;

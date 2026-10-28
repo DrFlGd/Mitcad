@@ -2723,6 +2723,11 @@ right-handed), `point_to_point` (`from`, `to`), `point_to_position`
 (`point`, `x`, `y`, `z`). A moved body keeps its id and face names; with
 `copy` the moved copies are new bodies `<move>.b<j>` with faces
 `<move>:inst1(<face>)` (a copy that does not move is a copy and paste).
+A rotation and a translation (a `move` or an `align`) place the body as
+a location on its own shape (mitcad#838, `Kernel::move_shape`): its faces
+keep their geometry and the display meshes they have, so the view meshes
+nothing again; the body before the move is not changed. A mirror or a
+scale makes a transformed copy.
 
 A point or an axis may be geometry of another component, picked where an
 occurrence shows it (mitcad#699): `from_occurrence`, `to_occurrence`,
@@ -3099,7 +3104,7 @@ results](#failed-features-in-command-results)).
 | `add_feature` | `def`, `name` (optional), `component` (optional: a component's uid or name; the active component when left out), `after` or `index` (optional: where in the timeline, see [Adding a feature in the middle of the timeline](#adding-a-feature-in-the-middle-of-the-timeline)) | `uid`, `name`, `parameters` (created); for a new-component operation placed beside a component that takes no components `placed_in`, `instead_of`, `placement_warning` ([Design policy](#design-policy)) |
 | `edit_feature` | `uid`, `def` (same type) | `parameters` (created); when the edit makes a new component placed beside a component that takes no components `placed_in`, `instead_of`, `placement_warning` ([Design policy](#design-policy)) |
 | `delete_feature` | `uid`, `dependents` (default false) | `deleted`: uids in timeline order |
-| `suppress_feature` | `uid`, `suppressed` (default true) | |
+| `suppress_feature` | `uid`, `suppressed` (default true), or `expression` (a condition the suppression follows; [Bindings](#bindings-values-from-expressions)) | |
 | `reorder_feature` | `uid`, `index` (new timeline index) | |
 | `rename_feature` | `uid`, `name` | |
 | `rename_body` | `uid` (body), `name` | |
@@ -3197,9 +3202,9 @@ results](#failed-features-in-command-results)).
 | Command | Fields | Result |
 |---|---|---|
 | `set_feature_visible` | `uid` (a sketch or a construction plane, axis or point), `visible` | undo step `Show Sketch1` / `Hide Plane1` unless nothing changes; nothing recomputed |
-| `set_body_visible` | `uid`, `visible` | |
-| `set_body_material` | `uid`, `material` (a built-in id below or one of the design's [materials](#materials), or null: its component's default, steel when none is set), `appearance` (`replace`: the material's appearance becomes the body's; `keep`: the body keeps its own; left out: replace unless the body's appearance was set by hand, see [Materials](#materials)) | undo step `Set Material of Body1` (material and appearance together); nothing recomputed |
-| `set_body_appearance` | `uid`, `appearance` (an id of the library or the document, see [Appearances](#appearances), or null for the default look) | |
+| `set_body_visible` | `uid`, `visible`, or `expression` (a condition; [Bindings](#bindings-values-from-expressions)) | |
+| `set_body_material` | `uid`, `material` (a built-in id below or one of the design's [materials](#materials), or null: its component's default, steel when none is set), `appearance` (`replace`: the material's appearance becomes the body's; `keep`: the body keeps its own; left out: replace unless the body's appearance was set by hand, see [Materials](#materials)), or `expression` (a text naming the material; [Bindings](#bindings-values-from-expressions)) | undo step `Set Material of Body1` (material and appearance together); nothing recomputed |
+| `set_body_appearance` | `uid`, `appearance` (an id of the library or the document, see [Appearances](#appearances), or null for the default look), or `expression` (a text naming the appearance; [Bindings](#bindings-values-from-expressions)) | |
 | `set_origin_visible` | `visible` | the root's Origin folder shown; undo step `Show Origin` / `Hide Origin` unless nothing changes; nothing recomputed |
 | `set_isolation` | `items`: `{"body": "F3.b0", "occurrence": "O1"}` (a body, in the occurrence that places it, none for the root's) or `{"occurrence": "O1/O4"}` (an occurrence by its path); none: unisolate | undo step `Isolate 2 item(s)` / `Unisolate`; an occurrence that is not there is refused |
 
@@ -3283,6 +3288,25 @@ design coordinates.
 "offset":-5,"flip":false}` resolves the same definition without adding an
 analysis. It returns design-space `origin`, `normal`, and the resolved
 `occurrence`; the optional fields have the same defaults as an analysis.
+
+A section can be turned by an angle about an axis (mitcad#823): `angle`
+(radians, default 0, not written when 0), `axis` (a line reference: a
+straight edge, a sketch line, a construction axis or an origin axis) and
+`axis_occurrence` (the axis' UID path from the design root, as
+`occurrence` is the plane's; inferred and checked the same way). The
+picked plane is first turned rigidly by `angle` about the axis,
+right-handed about the axis' direction, in design coordinates after both
+occurrence paths; then it is moved by `offset` along the turned normal;
+`flip` then reverses only the normal. An axis with angle 0 leaves the
+plane as it is. `add_analysis` and `edit_analysis` refuse a non-zero
+`angle` without an `axis`, and an axis along the plane's normal; an
+analysis whose axis cannot be found at the marker gets the `analyses`
+query's `error` and cuts nothing, as a plane that cannot be found. The
+`section_plane` query takes the same three fields and then also returns
+`axis` (`{"origin", "direction"}` in design coordinates) and the resolved
+`axis_occurrence`. Analyses without an angle are written as before; a
+MitCad older than mitcad#823 refuses a design with these fields. Drawing
+section views cut by a Section Analysis follow its angle.
 
 The `analyses` query lists them in the order added: `name`, `type`,
 `visible`, the `def`'s fields, and `section`: {`origin`, `normal`} (the
@@ -3370,7 +3394,7 @@ painted face, a rubber pad.
 
 | Command | Fields | Result |
 |---|---|---|
-| `set_face_appearance` | `uid` (body), `faces` (topological names of faces of the body at the marker, `F2:side(c1[c4,c2])`), `appearance` (an id, or null: the faces show the body's again) | undo step `Set Appearance of Face of Body1` / `Set Appearance of 2 Faces of Body1` / `Clear Appearance of Face of Body1` unless nothing changes; faces that are not there and names that are no face names are refused |
+| `set_face_appearance` | `uid` (body), `faces` (topological names of faces of the body at the marker, `F2:side(c1[c4,c2])`), `appearance` (an id, or null: the faces show the body's again), or `expression` ([Bindings](#bindings-values-from-expressions)) | undo step `Set Appearance of Face of Body1` / `Set Appearance of 2 Faces of Body1` / `Clear Appearance of Face of Body1` unless nothing changes; faces that are not there and names that are no face names are refused |
 | `clear_face_appearances` | `uid` | undo step `Clear Face Appearances of Body1` unless the body has none |
 
 - A face appearance names its face as assigned (the canonical text of
@@ -3696,7 +3720,7 @@ The `faces` and `edges` queries tell where each face and edge is
 | `properties` | `bodies` (default all), `density`, `densities` {uid: g/cm³} | `bodies`: `uid`, `name`, `material`, `density`, `volume`, `area`, `mass`, `center_of_mass`, `inertia` (3 × 3, at the centre of mass), `principal_moments`, `principal_axes`; `total`: `volume`, `area`, `mass`, `center_of_mass`, `inertia` |
 | `measure` | `a`, `b` (optional) selections | `a`, `b`: `kind` and `volume`, `area`, `length`, `point`, `circle` {`center`, `axis`, `radius`, `sweep`}, `axis` {`origin`, `direction`} (*Measure with axes*), `plane` {`origin`, `normal`} of a planar face or a datum plane (the middle of the face on its plane, the normal out of the material; mitcad#714) as they apply; with `b` also `between`: `distance`, `on_a`, `on_b`, `inside`, `angle` (null unless both have a normal, a direction or an axis), `offset` (only for two parallel planes, *Measure in the design*), `axis_distance`, `axis_points`, `center_distance` (*Measure with axes*) |
 | `interference` | `bodies` (default all), `min_volume` (mm³, default 1e-6) | `bodies` (count), `pairs`: `a`, `b`, `names`, `volume` |
-| `section` | `plane`, `bodies` (default all), `world` (default false) | `plane`, per body `edges`, `faces`, `length`, `area`, and the totals |
+| `section` | `plane`, `bodies` (default all), `world` (default false) | `plane`, per body `edges`, `faces`, `length`, `area`, `clip`, and the totals with `cut`, `kept` and `removed` ([Section Analysis past every body](#section-analysis-past-every-body-mitcad824)) |
 | `compare_step` | `file`, `bodies`, `step_body` (name or index), `samples`, `fuzzy`, `max_deviation`, `max_relative` | `step_bodies`, `volume`, `step_volume`, `volume_only_mitcad`, `volume_only_step`, `relative_difference`, `max_deviation`, `mitcad_to_step` and `step_to_mitcad` {`max`, `rms`, `at`, `samples`}, `bounds_difference`; with limits `pass` and `exceeded` |
 
 - Units: mm, mm², mm³, g/cm³, kg, kg mm², radians. Density:
@@ -3799,6 +3823,25 @@ all); a body the plane passes and keeps is its own shape, as with
 Both stop when the running thread's geometry is told to
 (`geometry/cancel.hpp`): the bodies not started by then fail as
 cancelled.
+
+### Section Analysis past every body (mitcad#824)
+
+The `section` query's answer also tells what the clip of the view does
+with each body: each body's `clip` is `cut`, `kept` (whole: its box lies
+behind the plane, touching it at most) or `removed` (whole: its box lies
+on the plane's normal side, touching it at most), told from the body's
+box as the `clip` shape and `analysis_clips` tell it without a boolean
+(`analysis::clip_side`, within `Precision::Confusion`; a body without a
+box counts as cut). `cut`, `kept` and `removed` count them; with `world`
+they count the visible occurrences the query measures, a body once per
+occurrence. A plane that cuts none of the bodies (`cut` 0) leaves the
+view empty (all `removed`) or shows the bodies uncut (all `kept`), with a
+zero `area` and `length`; a plane on a face of a body behind it keeps the
+body (`kept`) while its section is that face. `prepare_query` answers the
+same: the boxes are read when it is prepared. The text answer
+(`Document::analysis`, `mitcad-cli`) adds `The plane cuts no body: <n>
+kept whole, <m> removed whole` then. Section Analysis' panel shows a
+warning instead of the zero totals in that case (`app/COMMANDS.md`).
 
 ## Preview
 
@@ -3925,10 +3968,11 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.set_construction` | `curves`, `construction` (default true) | |
 | `sketch.set_centerline` | `lines`, `centerline` (default true) | |
 | `sketch.set_fixed` | `entities`, `fixed` (default true) | |
-| `sketch.drag` | `entity`: a point with `to` [x, y], or a curve with `by` [dx, dy] or `radius` | pulls as far as the constraints allow; a derived offset's curve or point pulls its source chain by as much |
+| `sketch.drag` | `entity`: a point with `to` [x, y], or a curve with `by` [dx, dy] or `radius`; or `entities` (points and curves) with `by` | pulls as far as the constraints allow; a derived offset's curve or point pulls its source chain by as much; `entities` drags a selection together (see [Dragging a selection](#dragging-a-selection)) |
 | `sketch.move` | `entities`, `by` [dx, dy] or `rotate` {`center` (point input), `angle`}, `copy` | a move keeps the constraints (the points are dragged); a copy copies the constraints among the entities; a derived offset's curves move their source chain, their copies are ordinary curves; `made` lists the copies |
 | `sketch.trim` | `curve`, `at` [x, y] | removes the piece around `at` between the curves crossing it; a curve nothing crosses is deleted; of a closed spline the rest becomes a spline by control points (mitcad#783); refused for a projected curve (linked or not: `sketch.convert_projected` first, mitcad#357, also for `sketch.extend`, `sketch.fillet` and `sketch.chamfer`) and for a curve a derived offset computes; a trim or an extension that ends on a derived offset's curve ends in a plain point, since its curves take no constraints (mitcad#361) |
 | `sketch.extend` | `curve`, `at` | extends the end nearest `at` (a line or an arc) to the next curve; an arc extended all the way round becomes a circle; reaching an existing point joins it (a shared end; a projected or computed point holds the end with a point-to-point `coincident` instead), elsewhere the end lies on the curve; result `joined`: the point reached, when it joined one (see [Points that become one](#points-that-become-one)) |
+| `sketch.insert_spline_point` | `curve` (a spline), `at` [x, y] | a point on the spline where it is nearest `at`: a fit point between its neighbours, or a control point by knot insertion that keeps the shape exactly; result `made`: the new point; see [Insert Point on a spline](#insert-point-on-a-spline) (mitcad#836) |
 | `sketch.fillet` | `a`, `b` (lines), `radius` (value) | a tangent arc with a radius dimension; the corner stays as a point on both lines, and a length dimension of either line becomes a distance to it, so dimensions keep their meaning |
 | `sketch.chamfer` | `a`, `b`, `distance`, and `distance2` or `angle` (values) | a line and its distance (and distance or angle) dimensions from the kept corner |
 | `sketch.offset` | `curves` (a chain of joined curves, or one closed curve), `distance` (value) | to the right of the chain direction (a closed curve: positive is out); one parameter for the distance; an `offsets` record (derived with ellipses and splines); result `constraints` [the offset's id] and `warnings`; a curve the same as another counts once, see [Projected outlines and their offsets](#projected-outlines-and-their-offsets) |
@@ -4234,6 +4278,59 @@ outline was no chain for `sketch.offset` (mitcad#741). Now:
   picked one lies on when the picked one joins nothing and that one
   does.
 
+### Insert Point on a spline
+
+`sketch.insert_spline_point` (mitcad#836, `sketch/spline_points.rs`):
+`sketch`, `curve` (a `spline` or a `fitted_spline`), `at` [x, y] (a place
+on or near the curve). One undo step, `Insert Spline Point in <sketch>`;
+result `made`: the new point.
+
+- **Fitted spline:** a new fit point where the curve is nearest to `at`,
+  listed between its two neighbours in the curve's order (in a closed
+  spline after the last point when the place is on the stretch back to
+  the first). The curve still passes through every fit point; between the
+  new point's neighbours it may change shape a little, as the cubic now
+  interpolates one more point. Refused on an existing fit point.
+- **Spline by control points:** a knot inserted once at the parameter
+  nearest to `at` (Boehm's algorithm; rational splines too): one more
+  control point and the same curve, exactly, at every parameter. The
+  `knots` (and `weights`) are written out in full. The control points
+  next to the new one move to keep the shape (`degree - 1` of them, fewer
+  where the knot is there already); they keep their ids. Refused at the
+  ends of the curve (a closed spline: where it closes), where the knot is
+  there `degree` times already (the curve passes through a control point
+  there), and when a point that would move is listed twice in `control`.
+- Closed splines work alike: a closed fitted spline, and a spline by
+  control points whose ends are one point (or whose knots are unclamped).
+- Every existing point keeps its id, its constraints and its dimensions;
+  a constraint on a control point that moved may then pull the curve when
+  the sketch solves. Refused for a projected curve and for a curve a
+  derived offset computes, as Trim is.
+
+### Dragging a selection
+
+`sketch.drag` with `entities` (points and curves, mitcad#837) and `by`
+[dx, dy] drags them together, as sketch mode does when the press is on
+one of several selected curves or points:
+
+```json
+{"cmd": "sketch.drag", "sketch": "F1", "entities": ["c1", "c4", "p3"], "by": [5, 3]}
+```
+
+- Every point of the entities (a curve's ends, centre and control
+  points) is pulled by the offset from where it is now, as far as the
+  constraints allow; a point that several of them share, such as a
+  selected end of a selected curve, is pulled once. All of it is one
+  solve, as a single drag's, and one undo step `Drag in Sketch1`.
+- Constraints and dimensions hold: those among the entities keep the set
+  rigid, fixed geometry holds and geometry constrained to something
+  outside the set pulls back as the solver decides, and geometry outside
+  the set follows its constraints and shared points.
+- A derived offset's curve or point pulls its source chain, as in a
+  single drag.
+- `entities` takes `by` only, and not together with `entity`; an empty
+  list is refused.
+
 ## Components and occurrences
 
 The design is a root component (`C0`, named `Root` until renamed); other
@@ -4316,12 +4413,12 @@ Examples: `tools/cli/tests/f6_*.json`.
 | `activate_component` | `component` (uid or name; `C0` the root), `opening` (default false: one undo step; true: as the document opens, mitcad#426, with no undo step and no new revision, so the document stays as modified as it was and nothing is recomputed; the application activates the root of every design it opens) | `component`; with `opening` also `previous`, the component that was active |
 | `rename_component` | `component`, `name` (unique) | `renamed_body`: `uid`, `name` of the body renamed with it, or null |
 | `ground_occurrence` | `occurrence`, `grounded` (default true) | |
-| `set_occurrence_visible` | `occurrence`, `visible` | |
+| `set_occurrence_visible` | `occurrence`, `visible`, or `expression` (a condition; [Bindings](#bindings-values-from-expressions)) | |
 | `set_occurrence_transform` | `occurrence`, `transform`, `capture` (default false) | `feature`: the capture, or null |
 | `copy_occurrence` | `occurrence`, `transform` (optional) | `occurrence`, `name` |
 | `paste_new` | `occurrence`, `transform` (optional) | `component`, `occurrence`, `name` |
 | `delete_occurrence` | `occurrence` | `deleted`: features |
-| `insert_component` | `path` or `library` ([Component libraries](#library-parts)), `link` (default true), `transform`, `name`, `base` (directory of relative paths), `mount` (placed by a mount frame instead of `transform`, [Mount frames](#mount-frames)) | `component`, `occurrence`, `name`, `bodies` (the new component's), `frames` (its mount frames: `name`, `kind`, `joint`, `pitch`, `cells`, `footprint`, `feature` (the joint origin), `occurrence`), `joint` and `joint_name` (a mount placement's, else null), `mount` (what the placement did, as `mount_preview` answers) |
+| `insert_component` | `path` or `library` ([Component libraries](#library-parts)), `link` (default true), `transform`, `name`, `base` (directory of relative paths), `mount` (placed by a mount frame instead of `transform`, [Mount frames](#mount-frames)), `parameters` (linked with options, [Options of inserted components](#options-of-inserted-components)) | `component`, `occurrence`, `name`, `bodies` (the new component's), `frames` (its mount frames: `name`, `kind`, `joint`, `pitch`, `cells`, `footprint`, `feature` (the joint origin), `occurrence`), `joint` and `joint_name` (a mount placement's, else null), `mount` (what the placement did, as `mount_preview` answers); with `parameters` also `moves` and `refused` |
 | `update_links` | `base` (optional) | `messages` |
 | `reparent_occurrence` | `occurrence` (path from the root), `parent` (path; empty: the root) | see [Moving an occurrence to another parent](#moving-an-occurrence-to-another-parent) |
 
@@ -5052,6 +5149,7 @@ file's bodies built with OCCT.
 | `geometric_tolerance` | mm, greater than 0 (default 0.01; the application's Preferences, General, *Import tolerance*): how far the replay's geometry may be from the file's where no exact result is (mitcad#224). The decoded edges, faces and vertices are looked for in the replay within 0.001 mm first (a fillet's edge by its middle, ends, or circle centre, radius and plane), then within this tolerance; a match found so keeps the uniqueness rules, counts as `read` where the input was decoded and the match is unique, and the item's report gives its `geometric_deviation`. It is also the distance within which an item's new faces must lie on the file's in the history's geometric check (`core/import/docs/f3d-fallbacks.md`), and the distance a sketch's solved points may lie from the file's where the sketch's regions stay the file's (mitcad#396; else 1e-4 mm); volume and area checks keep their relative tolerances |
 | `retry_bodies` | `keep` (default), `replace` or `ask` (mitcad#283): what a retry of an item on the file's stored state before it does with the replayed bodies that match that state (exactly, or within `geometric_tolerance`). `keep`: they stay, parametric, and only the bodies that differ are brought to the state (nothing differs: no retry, and the item takes the file's bodies if it fails); `replace`: the stored bodies replace them too; `ask`: the user is asked through the document's job (`JobControl::question`, `answer`) the first time a retry would replace a body that matches, and the answer holds for the rest of the import, its tries and the documents it refers to (kept without a job). See *Retries on the file's exact state* in `core/import/docs/f3d-fallbacks.md` |
 | `time_limit` | seconds; after them the remaining items take the file's bodies without trying definitions |
+| `own_start_time_scale` | a factor above 0 (default 1; mitcad#847) on the time an item is first tried from its own start, the state before the operations no item names right before its own (half of the item's 60 s): the checks of a debug build give its slowdown (`mitcad-cli import-f3d --own-start-time-scale`), so that an item that gives its state that way does not hang on the build or the load beside it. The item's other routes keep their times. Passed on to the documents the design refers to |
 | `hang_limit` | seconds without progress after which the import is taken to hang in the geometry kernel (a new document only; the import makes progress between kernel calls, also in its own long loops, so only a kernel call that does not return counts, mitcad#82): the import runs on a thread of its own and is run again with the item it hung on taking the file's bodies (hung comparing the final bodies: by volume only; elsewhere: the stored bodies without the timeline); the report warns. The try given up stops once its kernel call returns (before its next item or definition; a definition's long kernel operations stop inside) and its result is dropped (mitcad#71) |
 | `text` | `import_f3d_timeline` returns a readable report |
 | `report_path` | also write the JSON report to this file |
@@ -5664,8 +5762,8 @@ the checker finds wrong), `feature`,
 imported solid matched, all within `max_relative`, every imported solid
 valid).
 
-Tests: `core/ipt` (`core.ipt`, no OCCT; with the design replayed on the
-mock kernel, `tests/design_import.rs`), `core.exchange`
+Tests: `core/ipt` (`core.ipt`, no OCCT), the design replayed on the
+mock kernel (`core.model.imports`, `core/model-tests/imports/src/ipt_design_tests.rs`), `core.exchange`
 (`core/tests/test_exchange.cpp`), `cli.import_ipt*`, `cli.ipt_design_file`,
 `ipt.corpus`
 (`MITCAD_IPT_CORPUS`, [core/import/docs/ipt.md](../../import/docs/ipt.md#ipt-import))
@@ -7434,28 +7532,14 @@ give a document its own (`Document::set_link_resolver`).
 
 ### Configuration tables
 
-A design's table of sizes (`configurations` in the design file, left out
-when empty): `selectors` (the cascaded choices, may be empty),
-`parameters` (names of the design's parameters the rows set), `default`
-(a row's name; the first row when left out) and `rows`: `name` (unique),
-`select` ({selector: value}, a unique combination), `values` ({parameter:
-expression}; a parameter left out keeps its own) and an optional
-`designation`.
-
-| Command | Fields | Result |
-|---|---|---|
-| `set_configurations` | `configurations` (the table; null or an empty table removes it) | `rows`; refused with the first problem; undo step `Edit Configurations`, nothing recomputed |
-| `apply_configuration` | `name` | `changed` (parameters whose values changed); undo step `Apply M5x16` |
-
-| Query | Result |
-|---|---|
-| `configurations` | `configurations` (the table or null), `selector_values` ({selector: values in natural order: `M2.5`, `M3`, `M10`}), `current` (the row whose expressions the parameters have, or null), `problems` |
-
-Problems: a parameter that does not exist or is listed twice, a row
-without a name, a value for a selector or parameter not in the table, a
-missing selector value, two rows with the same name or the same
-selection, a value its parameter refuses (unit, cycle, syntax), a default
-that is no row. Opening a file with such a table fails with the first.
+A design's table of sizes and options (`configurations` in the design
+file, left out when empty) is described in
+[Configurations](#configurations-options-rows-and-rules) (mitcad#797):
+its options, open and closed tables, rows, rules, the cascade, the
+`configure` command and query and `check_rules`. A library's design is
+inserted in one of its rows (`config` below). A design written before
+mitcad#798, whose table has `selectors`, opens as a closed table whose
+options are text parameters made from the selectors.
 
 ### Library parts
 
@@ -7547,6 +7631,456 @@ the checks, the BUILD search and `library_build_candidates`), ctest
 BUILD parts' generator on sections made in the test, its frames,
 fetch, search and candidates; needs git and Python) and
 `tools/ui-library-test.sh`.
+
+## Configurations: options, rows and rules
+
+A configurable design stands for a family of products (mitcad#797; the
+design note is [docs/configurations.md](../../../docs/configurations.md)).
+The user picks a value for each **option** (Color, Length, Size), **rules**
+remove the values and combinations that are not allowed, and named
+**rows** are presets of option values. A configuration only ever sets
+parameters. The model is `core/model-base/src/configurations.rs` (the
+table, the rules and the cascade, without a kernel) and
+`core/model/src/document/configurations.rs` (the commands); the api is
+`core/model-api/src/configurations.rs`.
+
+### The table
+
+`configurations` in the design file and in `set_configurations`:
+
+| Field | |
+|---|---|
+| `options` | names of user parameters, in choice order: the order in which the cascade repairs them and the choosers show them |
+| `closed` | default false. An **open** table allows every combination the rules allow; a **closed** table allows only its rows' combinations |
+| `parameters` | other parameters the rows set (a closed table only, as tables did before mitcad#798) |
+| `default` | a row's name; the first row when left out |
+| `rows` | presets: `name` (unique; what `apply_configuration`, `library.config`, BUILD's `build.rows` and `derived_part.config` name), `values` ({parameter: expression}: the options' constants and a closed table's `parameters`), and optional `designation`, `part_number`, `supplier_url` |
+| `rules` | see [Rules](#rules) (mitcad#799) |
+
+- **Options.** An option is a user parameter. Its expression is a
+  constant (`'Black'`, `1200 mm`, `1`); choosing a value writes that
+  constant. An option whose expression is a formula is **driven**: it is
+  shown as driven, it is never moved, and a rule it breaks refuses the
+  change that made it so.
+- **Domain.** What an option can be before rules: a **list** (its
+  parameter's `values` limit, [Allowed values](#allowed-values)), else a
+  **range** (its `min`, `max` and `step`, [Parameter
+  limits](#parameter-limits)), else **free**.
+- **Rows.** In an open table a row sets options only; an option a row
+  leaves out keeps its value. In a closed table each row gives every
+  option a value, and no two rows the same combination. A row's option
+  values are constants.
+- **The row of a combination.** The row whose option values the
+  parameters have (all its values in a table without options) is the
+  combination's row; it gives the designation, the part
+  number and the supplier URL. Any other combination of an open table
+  takes the library's designation pattern with the option values in
+  braces (`ISO 4762 M{Size}x{Length}`: a text option's text, a number
+  option's number in its unit without the unit, `16`), as BUILD writes
+  `{L}`. A closed table refuses a combination that is no row, and a
+  command that chooses its options (`configure`, `set_parameter` of an
+  option, the cascade) also sets the row's other `parameters`, except
+  those the command sets itself.
+- **Problems** (`problems` of the queries; `set_configurations` and
+  opening a file refuse the table with the first): an option or parameter
+  that does not exist, is not a user parameter, or is listed twice; a
+  parameter that is both; an option of an open table among `parameters`
+  of rows (an open table's rows set options only); a row without a name,
+  two rows with the same name, a value for a parameter not in the table, a
+  row option value that is not a constant, a closed table's row without a
+  value for an option (`A: no value for Size`), two rows of a closed table
+  with the same combination (`B: another row has the same Size and
+  Length`), a value its parameter refuses (unit, cycle, syntax, a strict
+  limit: `A: d = 1 deg: …`), a default that is no row, and the rules'
+  problems ([Rules](#rules)).
+- **Old tables.** A table with `selectors` (before mitcad#798) opens as a
+  closed table: each selector becomes a text parameter of its name (the
+  next free name, `Size2`, when a parameter already has it, with a
+  warning), each row's `select` becomes its values of those options (as
+  texts: `"Size": "'M5'"`), and the new options take the values of the
+  row the parameters have (else of the default row). Row names, the
+  default, `parameters` and their values stay. An old table without
+  selectors (its rows chosen by name) is closed too: a table with
+  `parameters` and no `options` is always read as closed. The file is written in the
+  new form from then on; `set_configurations` reads the old form the same
+  way (the new parameters and the table are one undo step).
+
+### Allowed values
+
+`values` is a parameter limit next to `min`, `max` and `step`
+(mitcad#798), on any parameter: a list of expressions in the parameter's
+unit (`["'Black'", "'White'"]`, `["300 mm", "500 mm", "800 mm"]`; they may
+use other parameters, which then take part in the dependency order like
+the other limits).
+
+- A **number** whose result is not in the list snaps to the nearest
+  listed value (the lower one of two as near), and `limited` is `values`
+  (`Length is limited to its allowed value 500 mm (its expression gives
+  520 mm)`); a **strict** parameter refuses it instead (`parameter
+  'Length': 520 mm is not one of its allowed values 300 mm, 500 mm, 800
+  mm`). With `min`, `max` or `step` as well, the result is clamped and
+  snapped first, then snapped to the list.
+- A **text** whose result is not in the list is always refused (`parameter
+  'Color': 'Green' is not one of its allowed values 'Black', 'White'`): a
+  text has no nearest value. `values` is the only limit a text parameter
+  can have.
+- `add_parameter` and `set_parameter` take `values` as a list of
+  expression texts or numbers (in the parameter's unit); `null` or `[]`
+  removes it in `set_parameter`. The `parameters` query's `limits` has
+  `values` (as written, or null), `values_value` (evaluated: mm or rad for
+  a number, the texts for a text) and `values_text` (`["300 mm", …]`).
+  The design file stores `values` with the parameter; undo, copies and
+  renames treat it as the other limits; the parameters CSV has a `values`
+  column (the list as a JSON array of expression texts, `["300
+  mm","500 mm"]`; empty for none).
+
+### Rules
+
+`rules` of the table (mitcad#799): each rule has `name` (unique),
+`enabled` (default true), an optional `comment`, an optional `when` (a
+condition in the expression language, true when left out), `then` and an
+optional `else` (lists of actions).
+
+```json
+"rules": [
+  {"name": "Black is short", "when": "Color == 'Black'",
+   "then": [{"option": "Length", "max": "1000 mm"}]},
+  {"name": "Power needs tables", "when": "Tables == 0",
+   "then": [{"option": "Power", "values": ["0"]}]},
+  {"name": "No red XL", "when": "and(Color == 'Red'; Size == 'XL')",
+   "then": [{"forbid": "Red is not made in XL"}]},
+  {"name": "Deep enough", "then": [{"require": "Depth >= Length / 4",
+   "message": "the shelf is too shallow for its length"}]}
+]
+```
+
+- **Conditions** (`when`, `require`) are expressions of the language of
+  [Values](#values) that give a number: zero is false, anything else
+  true (`==`, `<>`, `<`, `and`, `or`, `not`, `if`, text comparison; a
+  condition is read in parentheses, so a single `=` compares too:
+  `Color = 'Black'`). They may use any parameter. A condition that does not evaluate is a problem
+  of the table.
+- **Actions**:
+  - `{"option": "Length", "values": [...]}` allows only these values, and
+    `{"option": "Color", "exclude": [...]}` not these (expressions in the
+    option's unit; a text option's are texts);
+  - `{"option": "Length", "min": "…", "max": "…", "step": "…"}` restricts
+    a number option's range (any of the three; expressions in its unit;
+    they may be given with `values` or `exclude` in one action);
+  - `{"require": "<condition>", "message": "…"}` and `{"forbid":
+    "<message>"}` reject the combination.
+  - `{"in_table": "Made", "columns": {"Color": "Color"}}` requires
+    the combination to be a row of a table: [Configurations and
+    tables](#configurations-and-tables) (mitcad#806).
+- **Rules only narrow.** An option's allowed values are its domain
+  intersected with every active restriction (the actions of the `then` of
+  each enabled rule whose `when` holds, and of the `else` of each whose
+  `when` does not). Their order does not matter, and a rule never sets a
+  computed parameter. When an intersection is empty, the problem names the
+  rules (`Black is short and Long only leave Length no value`).
+- **Rules do not take part in evaluation.** They check the evaluated
+  parameters and change only the constants of options. They add no
+  dependency edges, so they cannot form a cycle: two rules may point in
+  opposite directions (Color restricts Length, and Length restricts
+  Color).
+- **Renames and deletes.** Renaming a parameter rewrites the rules'
+  conditions and action expressions and `option` names; a parameter that
+  a rule uses cannot be deleted (`parameter 'Wall' is used by the rule
+  Thick walls`), nor an option or a row's parameter (`configurations:
+  option Color of the table does not exist`, as before mitcad#799). The
+  rules are checked first: an option that a rule uses is refused with the
+  rule's name. The
+  `parameters` query gives each parameter `option` (true for an option of
+  the table) and `rules` (the names of the rules that use it).
+
+**Rule problems:** a rule without a name, two rules of one name, an
+action of no kind or of two (`values` with `require`), an option that is
+not an option of the table, a range action on a text option, a step
+that is not positive, an expression that does not parse or evaluate. An
+empty intersection depends on the values: it is a broken rule (the
+`configure` query's `problems`, a refusal), not a problem of the table.
+
+### The cascade
+
+After every change of parameters (`set_parameter`, `apply_configuration`,
+`configure`, the parameters CSV import, `set_configurations`, and so MCP
+and the CLI, which send those commands), the model goes through the
+options in order:
+
+1. An option keeps its value when it is allowed.
+2. Otherwise it **moves**: a number with a range to the nearest allowed
+   value by the step rule of [Parameter limits](#parameter-limits); a list
+   to the nearest listed value (a number), else to the default row's value
+   when it is allowed, else to the first allowed value; a single allowed
+   value is chosen by itself.
+3. An option the change itself set, an option before the first of those
+   (only the later options move; all may when the change set no option),
+   and a driven option, is never moved.
+
+When every rule then holds, the change and the moves are **one undo
+step**, and the answer lists the moves: `moves`, a list of `option`,
+`from` and `to` (the values as text, `1500 mm`, `Black`),
+`from_expression`, `to_expression` and `rule` (the rule that moved it),
+and `text` (`Length 1500 mm → 1000 mm: Black is short`). When a rule that
+held before the change is broken after it (a `require`, a `forbid`, a
+restriction of an option the change set or of a driven one, a closed
+table's combination that is no row), the change is **refused** with the
+rule's name and message (`the rule Black is short: does not allow Length
+= 1500 mm`, `the rule No red XL: Red is not made in XL`, `the
+configuration table is closed: Size M6 and Length 99 is no row`), and
+nothing changes. A rule already broken before the change (a file opened
+so, a table just edited) does not refuse it: the `configure` query
+reports it.
+
+`set_parameter`, `apply_configuration` and `import_parameters_csv` add
+`moves` to their answers (left out when empty for the first and the
+last). Rust: `Document::configuration_moves()` gives the moves of the
+last command.
+
+### Commands and queries
+
+| Command | Fields | Result |
+|---|---|---|
+| `set_configurations` | `configurations` (the table, new or old form; null or an empty table removes it) | `rows` (count), `options` (names, after any migration), `added` (parameters the migration made), `warnings`; refused with the first problem; undo step `Edit Configurations` |
+| `apply_configuration` | `name` (a row) | `changed` (parameters whose values changed), `moves`; undo step `Apply M5x16` |
+| `configure` | `values` ({option: value}, any of the options) | `changed`, `moves`, `row` (the combination's row or null), `refused` (null, or `{"rule", "message", "text"}` when the cascade cannot repair the change: then nothing changed); undo step `Configure Color = Black` (`Configure Color = Black, Length = 800 mm` for more) |
+
+A **value** in `configure` and in the `configure` query is a text
+option's text (`"Black"`), or for a number option a number in mm or rad
+(as `set_parameter`'s `value`) or a constant expression (`"800 mm"`);
+`configure` writes the constant (`'Black'`, `800 mm`). An expression with
+parameter references, a driven option and a parameter that is no option
+are refused.
+
+| Query | Fields | Result |
+|---|---|---|
+| `configurations` | | `configurations` (the table or null), `selector_values` ({option: the rows' values as texts in natural order: `M2.5`, `M3`, `M10`}), `current` (the row the parameters have, or null), `problems` |
+| `configure` | `values` (optional: values to try, as `configure`'s; nothing changes) | `options` (each option in order, after the cascade of `values`: `name`, `kind` (`number` or `text`), `unit`, `value` (mm or rad, or the text), `text`, `expression`, `driven`, `domain`, `allowed`, `restricted_by` (the rules that narrow it now)), `row` (the combination's row, or null), `designation_values` ({option: text} as a designation pattern takes them), `moves`, `refused` (as `configure`'s), `problems` |
+| `check_rules` | `limit` (optional, default 100000) | the report below |
+
+`domain` and `allowed` are `{"kind": "list", "values": [{"value",
+"text", "expression"}, …]}`, `{"kind": "range", "min", "max", "step"}`
+(mm or rad, or null, with `min_text`, `max_text`, `step_text`) or
+`{"kind": "free"}`. For a list each value is tested through the cascade
+from it: it is allowed when the cascade from it, given the options before
+it, ends with no broken rule. A range is the intersection of the active
+`min`, `max` and `step`. A closed table's allowed values are those of its
+rows that match the options before. Every chooser uses this query (the
+Configurations window, the active configuration bar, the part pickers,
+MCP); the final check of a whole combination is always exact.
+
+**Check Rules** (`check_rules`) goes through every combination of the
+options' finite domains (lists, and ranges with a step, a minimum and a
+maximum) up to `limit` combinations; above it, it samples `limit` of them
+evenly and says so. The report: `combinations` (how many there are, or
+null when a domain is not finite), `checked`, `sampled`, `never_allowed`
+([{`option`, `text`}]: values the cascade never keeps), `never_applies`
+(rules whose `when` never holds), `empty` ([{`option`, `rules`,
+`values`}]: combinations of earlier options that leave an option no
+value), `rows` ([{`row`, `rule`, `message`}]: rows that break a rule),
+`unrepairable` ([{`values`, `rule`, `message`}], at most 20: combinations
+the cascade cannot repair), `problems` and `lines` (the report in words).
+
+Rust (for the application's and the inserted components' use,
+mitcad#801, #807): `mitcad_model::configurations::{Configurations,
+ConfigurationRow, ConfigurationRule, RuleAction, OptionValue,
+ConfigurationMove, RuleViolation, Cascade, Domain, DomainValue,
+OptionReport, RulesReport, cascade}`; `Document::{configurations,
+set_configurations, apply_configuration, configure, configure_report,
+check_rules, configuration_moves}`.
+
+Tests: `core/model-tests/api/src/configurations_tests.rs` (`values` on
+numbers and texts with save, load, undo, renames and the CSV; the
+`configure` query on list, range and driven options; `configure`; open
+and closed tables; an old table opened and written new; the design
+note's rules and moves, opposite rules, an empty intersection, refusals
+of `set_parameter`, driven options and the CSV, renames and deletes,
+Check Rules), `expr::limits::tests` (snapping to the allowed values),
+`library::tests` (the designation of a combination that is no row),
+`core/model-tests/links/src/library_tests.rs` (old tables through
+`set_configurations` and library parts).
+
+## Options of inserted components
+
+A library part, a linked design and a BUILD part have options of their
+own (mitcad#801; [docs/configurations.md](../../../docs/configurations.md),
+"Inserted components", decisions 8 and 11): `parameters`, values of the
+source's options (and other user parameters), each an expression of
+**this** design's parameters. The model is
+`core/model/src/part_options.rs` (the source's rules, the combination,
+the choosers' JSON) and `core/model/src/document/component_options.rs`
+(the commands).
+
+```json
+{"cmd": "insert_component",
+ "library": {"id": "shelves", "url": "...", "rev": "v1.0.0", "component": "shelf-board", "config": "Standard"},
+ "parameters": {"Length": "Shelf_W - 2 * Wall", "Color": "Color"}}
+```
+
+- **How it is made.** A component inserted with `parameters` (with
+  `library` or with `path`, linked; a copy has the design's own
+  parameters and is refused) is made by a `derived_part` feature, the
+  feature BUILD's parts have: the design keeps the source's design in
+  `library_sources` (a linked file's as a source with an empty `library`
+  and its `path`), and the part evaluates it in the row `config` (else the
+  default row) with the `parameters` at recompute. A change of a parameter
+  the values use recomputes that part only; the design needs no library to
+  open. The component is linked (read only, `link.feature` is the derived
+  part) and has the source's mount frames as joint origins on the part's
+  frames (`F7:mount(name)`), so that they follow its options;
+  `insert_component` with `parameters: {}` gives a component that can take
+  options later. `derived_part.parameters` is the same field: a value may
+  be a number (mm or rad), a text (a text option's, `'Black'`) or any
+  expression, in the source's parameter's unit.
+- **Options belong to the component.** All of its occurrences share them;
+  a second configuration is a second component (both use one source).
+- **The source's rules hold.** A **bound** value (its expression names
+  this design's parameters, or it is one) is never moved; a **constant**
+  is. The cascade runs when the options are set (insert,
+  `set_component_parameters`, `update_library_parts`, `update_links`):
+  the constants it moves are written into the part and listed in `moves`
+  (`option`, `from`, `to`, `from_expression`, `to_expression`, `rule`,
+  `text`: `Length 1500 mm → 1000 mm: Black is short`). When a bound value
+  breaks a rule, the part fails with the rule (`the rule Black is short:
+  …`): the component has the error status of a failed feature, the answers
+  give it as `refused` (`rule`, `message`, `text`), and the design's own
+  change (`set_parameter` of the bound parameter) goes through. A constant
+  that a later change of a bound value no longer allows is moved in the
+  evaluation, with a warning on the part.
+- **Parts list and designation.** A library part's record (`library`:
+  `config`, `designation`, `part_number`, `supplier_url`) follows its
+  combination: the row whose option values it has (the row it starts from
+  first) gives its own designation, part number and page; any other
+  combination takes the library's pattern with the option values in
+  braces (`Board {Color} {Length}` → `Board Black 800`), else the name and
+  standard followed by the option values. A component whose name was its
+  designation is renamed with it. A BUILD part's designation is BUILD's,
+  with its options and `{L}`.
+
+| Command | Fields | Result |
+|---|---|---|
+| `insert_component` | `parameters` ({option: expression or number}) beside `path` or `library` | as without, plus `moves` and `refused` |
+| `set_component_parameters` | `component`, `parameters` ({option: expression or number; null removes the component's own value, so the row's holds}), `config` (another row to start from; not for a BUILD part, whose row is `build_edit`'s) | `component`, `name`, `part`, `moves`, `refused` and the component's options as `library_parts` gives them; undo step `Change Options of Shelf board` |
+| `update_library_parts` | a part with options: its `rev` and `config` as for other parts (parts with and without options are changed apart) | `changes` |
+| `build_place` | `part.parameters` ({option: expression}) beside `part.config`; the command's own `parameters` win for a name in both, and the cut length is `length`'s | as without |
+
+| Query | Fields | Result |
+|---|---|---|
+| `configure` | `component` (an inserted component or a BUILD part) and optional `parameters` (values to try, by option, as `set_component_parameters` takes them) | the `configure` answer (`options`, `row`, `designation_values`, `moves`, `refused`, `problems`) for that component's source with its values, and `designation`; its bound options are `driven` and have `bound` true and `parameter` (the expression). The tried constants may move; nothing changes |
+| `library_parts`, `parts_list` | | a component with options has `options`: `part`, `source`, `config`, `parameters` (its values as written: the part's own expression, or the name of the design's parameter), `row`, `designation`, `error` (the rule a bound value breaks, or why the source cannot be made; null) and `options` (as the `configure` query's) |
+
+Library commands (`core/vcs/src/library/api.rs`, [Library
+commands](#library-commands)):
+
+| Command | Fields | Result |
+|---|---|---|
+| `library_show`, `library_build_candidates` | | a component whose design has options also has `options` (as the `configure` query's, in its default row): a chooser per option for the pickers |
+| `library_configure` | `url` or `id`, `rev` (default the newest version), `component`, `config` (default the default row), `values` ({option: a text option's text, a number in mm or rad, or a constant expression}) | the `configure` answer on the component's design with the values tried, and `designation`, `component`, `library`, `rev`: what Insert from Library and the BUILD pickers show before inserting. A value tried is not moved; one that breaks a rule is `refused`, and the later options move |
+
+Rust: `mitcad_model::part_options::{PartValue, OptionMove, BrokenRule,
+ConfiguredSource, Naming, Combination, configure, configure_state,
+combination, options_json, configure_json, command_value, is_bound,
+part_values}`; `Document::{set_component_parameters, component_options,
+component_configure_json}` with `OptionsChange`, `OptionsChanged` and
+`ComponentOptions`; `InsertOptions::parameters`.
+
+Tests: `core/model-tests/links/src/component_options_tests.rs` (library
+parts bound and constant, the cascade's moves, a bound value that breaks
+a rule, two components of one source, the parts list's designation, the
+`configure` query, a linked design with options) and
+`core/model-tests/build-frames/src/options_tests.rs` (a BUILD part's cut
+length through `parameters`).
+## Configurations and tables
+
+The design's tables ([Tables](#tables), mitcad#803) meet its
+configurations in three places (mitcad#806; the design note is
+[docs/configurations.md](../../../docs/configurations.md), "Tables and
+configurations"). Otherwise they stay separate: a row sets a key, and
+lookups (`XLOOKUP(Size; Screws.Size; Screws.dk)`) do the rest.
+
+**Option values from a column.** A parameter's `values` limit
+([Allowed values](#allowed-values)) can be a table column instead of a
+list: `"values": "Screws.Size"` in `add_parameter`, `set_parameter`, the
+`parameters` query and the design file (which also reads the list of that
+one entry, `["Screws.Size"]`; a column is a whole list, never mixed with
+listed values).
+
+- The domain is the column's distinct non-empty cells, in the table's
+  order (`values_value`, `values_text` and the `configure` query's
+  `domain` list them). A text option takes a text column; a number option
+  a number column of its dimension (an `in` column gives `0.25 in`, the
+  cell kept exact) or a unitless one, whose numbers are in the option's
+  unit (`16` in an option in mm is `16 mm`). Another kind is a problem
+  (`Screws.Size is a text column, and option Length is a number`).
+- **A table edit** (`set_table`, a CSV import) that takes an option's
+  value out of its column moves the option before the parameters are
+  evaluated with the new table: to the nearest value for a number (the
+  lower of two as near), else to the default row's value when the column
+  still has it, else to the column's first value. The cascade then runs as
+  after any change, and `set_table`'s answer lists every move in `moves`
+  (`Size M7 → M6: its allowed values Screws.Size`), and so does
+  `import_table_csv`'s (mitcad#849; Rust:
+  `Document::configuration_moves`). A driven
+  option is not moved: the edit is refused when its value would fail, as
+  for any parameter. The edit and the moves are one undo step.
+- A column as allowed values makes its parameter a user of the table
+  (`used_by` of the `tables` query): a table or column rename rewrites
+  the reference, and deleting the table is refused while an option's
+  values or a rule (`in_table`, a list of its column) uses it (`table
+  Made is used by the rule Made sizes`).
+
+**Combinations in a table.** The rule action `in_table` requires the
+values of some options to be a row of a table:
+
+```json
+{"name": "Made sizes",
+ "then": [{"in_table": "Made", "columns": {"Color": "Color", "Length": "Length"}}]}
+```
+
+- `columns` maps options (keys) to columns of the table (values); each
+  option's column is of its kind, as above. An action with `in_table` has
+  no other kind of action.
+- For the choosers and the cascade, each mapped option is narrowed to its
+  column's cells in the rows that match the mapped options before it in
+  option order (the first is narrowed by none): with `Color = 'Black'`,
+  `Length` may be only the lengths of the Black rows. A row with an empty
+  cell in a mapped column takes part in nothing.
+- The final check is exact: the combination of every mapped option must
+  be a row. A change that leaves it none is refused with the rule's name
+  (`the rule Made sizes: Color Black and Length 1200 mm is no row of
+  Made`), as a `forbid` is.
+- Renaming an option renames its key; renaming the table or a column
+  rewrites the action. `rules` of the `parameters` query names the rule
+  for each mapped option.
+
+**Rows generated from a table.**
+
+| Command | Fields | Result |
+|---|---|---|
+| `generate_configuration_rows` | `table`, `column`, `option` (a user parameter) | `rows` (the rows of the column's keys, in the table's order), `added`, `updated` (row names), `moves`; undo step `Generate Rows from Screws`, nothing recomputed |
+
+One row per distinct non-empty key of the column, named by the key (a
+text's text, `M5`; a number in its column's unit without the unit, `16`),
+whose `values` set the option to it (`'M5'`, `16 mm`). A row of the same
+name is updated, not duplicated: it keeps its other values, designation,
+part number and supplier URL, and is listed in `updated` only when its
+value changed. The option becomes an option of the table when it is not
+one. Refused when the option is not a user parameter or is one of a
+closed table's other `parameters`, when the column cannot give it values,
+when the column has none, and with the table's first problem afterwards
+(a closed table's new row without a value for another option).
+
+Rust: `mitcad_model::configurations::{TableColumns, TableColumn, Cell,
+InTable, GeneratedRows, ColumnMove, column_domain, column_reference,
+values_column, tables_of, columns_of}` (`tables_of` reads the tables the
+parameters evaluate with), `Configurations::{generate_rows, in_table_allowed,
+in_table_violation, in_table_problems, column_moves, table_users,
+rename_table, rename_table_column}`; `Document::generate_configuration_rows`.
+
+Tests: `core/model-base/src/configurations/from_tables.rs` (column
+domains, `in_table`, generated rows, moves) and
+`core/model-tests/api/src/configuration_tables_tests.rs` (the commands
+with tables; `import_table_csv`'s moves).
 
 ## Progress and cancellation
 
@@ -9253,8 +9787,8 @@ level arc after it, their joint faces 1.2 µm apart). In a design with a
 join tolerance a Combine's join (`Kernel::unite_within`) is widened alike:
 a union whose result is invalid is tried again with the smallest fuzzy
 value, as above, that gives a valid one; a union that works exactly is the
-exact one. Tests: `core.model` (`document::import_notes`), `core/import`
-(`tests/rvt_rails.rs`).
+exact one. Tests: `core.model` (`document::import_notes`), `core/import-rvt`
+(`tests/corpus/rvt_rails.rs`).
 
 Two more repairs of the geometry kernel's results apply to every design
 (mitcad#235):
@@ -12650,7 +13184,7 @@ Tests: `core/model-tests/appearance/src/properties_tests.rs`, `core/ifc/src/prop
 `core/import-ifc/src/tests.rs` (`property_sets_land_on_their_levels`),
 `core/import-rvt/src/lib.rs` (`elements_bring_their_identity_and_parameters`),
 `core/import/src/tests/property_tests.rs`, `core/ipt/src/lib.rs`,
-`core/import-rvt/tests/rvt_corpus.rs` and `core/ifc/tests/corpus.rs` (corpus
+`core/import-rvt/tests/corpus/rvt_corpus.rs` and `core/ifc/tests/corpus.rs` (corpus
 files by content id), `tools/ui-property-sets-test.sh`,
 `tools/ui-windows-property-sets-test.ps1`.
 
@@ -13416,7 +13950,7 @@ library's or an import's, [Print profiles](#print-profiles)).
 
 | Command | Fields | Result |
 |---|---|---|
-| `create_material` | `id` (the next free `custom<n>` when left out), `name` (`New Material`, `New Material 2`, ... when left out; a copy `<its source's name> 2`, `3`, ..., mitcad#655; free among the design's and the libraries' names), `density`, `appearance`, `filament`, `class` (`metal`, `plastic` or `other`, mitcad#655: stored on the material; left out, a copy keeps its source's class and a new one is stored as worked out, see `library_items`), `based_on` (a material whose fields it starts from, by id, or a library's item `{library, id}`: Duplicate, with the appearance it carries; 1 g/cm³ and nothing else without it), `version`, `origin`, `project`; with `library` see *Items where they live* ([Print profiles](#print-profiles)) | `id`; undo step `Create Material Acme PETG` (with a library item's appearance, one step) |
+| `create_material` | `id` (the next free `custom<n>` when left out), `name` (`Material 1`, `Material 2`, ... when left out, never `New …`, mitcad#828; a copy `<its source's name> (copy)`, `(copy 2)`, ..., a copy of a copy counted on from its source's name, mitcad#655, mitcad#828; free among the design's and the libraries' names), `density`, `appearance`, `filament`, `class` (`metal`, `plastic` or `other`, mitcad#655: stored on the material; left out, a copy keeps its source's class and a new one is stored as worked out, see `library_items`), `based_on` (a material whose fields it starts from, by id, or a library's item `{library, id}`: Duplicate, with the appearance it carries; 1 g/cm³ and nothing else without it), `version`, `origin`, `project`; with `library` see *Items where they live* ([Print profiles](#print-profiles)) | `id`; undo step `Create Material Acme PETG` (with a library item's appearance, one step) |
 | `edit_material` | `id`, and the fields that change: `name`, `density`, `appearance` (null: none), `filament` (its keys are set, a key with null removed), `class`, `version`, `origin`; with `library` see *Items where they live* ([Print profiles](#print-profiles)) | undo step `Edit Material Acme PETG` unless nothing changes; a built-in one is refused (`create_material` with `based_on`, or with its id, makes one the design can change) |
 | `delete_material` | `id`; with `library` see *Items where they live* ([Print profiles](#print-profiles)) | `bodies` and `components` that named it: they use the built-in of the same id when the deleted one took its place, else none of their own; undo step `Delete Material Acme PETG` |
 | `set_component_material` | `component` (uid, `C0` the root, or name), `material` (an id, or null: none of its own), `library` (`base`, `user`, `project`: `material` is that library's item), `project` | undo step `Set Default Material of Arm` unless nothing changes; a library's item is copied in first (or the design's copy of it reused) in the same step |
@@ -13538,7 +14072,7 @@ as text are read in the key's form (`"15%"` is 15).
 
 | Command | Fields | Result |
 |---|---|---|
-| `create_print_profile` | `kind`, `id` (the name's when left out, `bench-printer`; else `printer1`, `process1`, ...), `name` (`New Printer`, `New Process`, then `New Printer 2`, ... when left out: one pattern for every kind, mitcad#655; a copy `<its source's name> 2`, `3`, ...; free among the design's and the libraries' names), `values`, `slicer`, `based_on` (a design profile whose fields it starts from, by id, or a library's item `{library, id}`: Duplicate), `version`, `origin`, `project`, `choose` (true: the design, the root, chooses it in the same undo step, mitcad#655); with `library` see *Items where they live* ([Print profiles](#print-profiles)) | `id`; undo step `Create Profile Bench printer`. Refused: keys of another set, values not of their key, a name another profile of the kind has |
+| `create_print_profile` | `kind`, `id` (the name's when left out, `bench-printer`; else `printer1`, `process1`, ...), `name` (`Printer 1`, `Process 1`, then `Printer 2`, ... when left out: one pattern for every kind, mitcad#655, never `New …`, mitcad#828; a copy `<its source's name> (copy)`, `(copy 2)`, ...; free among the design's and the libraries' names), `values`, `slicer`, `based_on` (a design profile whose fields it starts from, by id, or a library's item `{library, id}`: Duplicate), `version`, `origin`, `project`, `choose` (true: the design, the root, chooses it in the same undo step, mitcad#655); with `library` see *Items where they live* ([Print profiles](#print-profiles)) | `id`; undo step `Create Profile Bench printer`. Refused: keys of another set, values not of their key, a name another profile of the kind has |
 | `edit_print_profile` | `id`, and what changes: `name`, `values` (a key's `null` removes it), `slicer` (a key's `null` removes it), `version`, `origin`; with `library` see *Items where they live* ([Print profiles](#print-profiles)) | undo step `Edit Printer Bench printer` (`Edit Process ...`) unless nothing changes; the kind and id cannot change |
 | `delete_print_profile` | `id`; with `library` (and `kind` when the library has a printer and a process of the id) see *Items where they live* ([Print profiles](#print-profiles)) | `owners`: the components, occurrences and bodies that chose it, which no longer do; undo step `Delete Profile Bench printer` |
 
@@ -13631,12 +14165,13 @@ built-in (read-only) or the user's own, saved in a library or not yet.
   and change nothing in the design: from `based_on` (an item of the
   design, a built-in material, or a library's item `{library, id}`:
   Duplicate) or empty (a material of 1 g/cm³; a profile needs its
-  `kind`). The name is `<name> 2` (`3`, ...) after the item it is based
-  on, else `New Material`, `New Printer`, `New Process` (then `… 2`), free among the
-  libraries' and the design's names; the id is the name's (`acme-petg-2`)
+  `kind`). The name is `<name> (copy)` (then `(copy 2)`, ...,
+  mitcad#828) after the item it is based on, else `Material 1`,
+  `Printer 1`, `Process 1` (then `… 2`), free among the
+  libraries' and the design's names; the id is the name's (`acme-petg-copy`)
   when not given, free among the libraries' items. A material's
   appearance that is not one of MitCad's goes with it into the file. The
-  file is an undo step of its own (`Create Material New Material`): undo
+  file is an undo step of its own (`Create Material Material 1`): undo
   removes it. The design's windows make new items in the design instead
   and put them into a library only by `save_to_print_library`; My
   Library (mitcad#704, `app/COMMANDS.md`) makes them in the library with
@@ -13717,6 +14252,37 @@ bodies: the report counts them as left out.
 | Command | Fields | Result |
 |---|---|---|
 | `import_print_profile` | `path`, `dialect`, `into` (`design` the default, `user`, `project`), `project`, `choose` (into the design: the root chooses the printer and process read; true by default) | into the design (one undo step `Import Print Settings plate.3mf`): `printers`, `processes`, `materials` (`id`, `name`), `chosen`; into a library: `items` (`kind`, `id`, `name`, `version`, `path`); both `dialect` and `report`: `mapped`, `mapped_keys`, `kept`, `kept_keys`, `left_out`, `problems` |
+
+**An installed slicer's presets** (mitcad#830,
+`print_files/installed.rs`, `document/slicer_presets.rs`). The user
+presets of the Bambu-family slicers installed (Bambu Studio, OrcaSlicer,
+QIDI Studio), read straight from their data folders, never changed:
+`%APPDATA%\<key>` on Windows, `~/Library/Application Support/<key>` on
+macOS, `$XDG_CONFIG_HOME/<key>` (else `~/.config/<key>`) on Linux and a
+Flatpak's `~/.var/app/<id>/config/<key>`, `<key>` `BambuStudio`,
+`OrcaSlicer` or `QIDIStudio`; a slicer is installed when its folder has
+`user/`. Its presets are `user/<account>/{machine,process,filament}/*.json`
+(`default` without an account). A preset's `inherits` is filled in from
+the user's own presets of its account and the slicer's `system/` presets,
+up the chain, the nearer value winning; a base that is missing stays
+named and the report says so (as for a preset file). A ticked preset
+whose kind and name the target has (`same`) either overrides that item
+(`same_name: override`: into a library its next version, as
+`edit_print_profile` / `edit_material` with `library`; into the design
+the design's item of that name) or comes in as a copy under the next
+free name (`copy`, the default: `Fine 2`, `Fine 3`, ...); two of one name
+in one import make the second a copy. New items get ids no library has
+for their kind, version 1. Into the design the whole import is one undo
+step `Import Presets of Bambu Studio`, the overrides with it; it chooses
+nothing.
+
+| Command | Fields | Result |
+|---|---|---|
+| `import_slicer_presets` | `dialect` (`bambu_studio`, `orcaslicer`, `qidi_studio`), `folder` (the slicer's data folder, `slicer_presets`' `folder`), `presets` (`[{path, same_name}]`, `same_name` `copy` or `override`), `into` (`design` the default, `user`, `project`), `project` | as `import_print_profile`'s (into the design `printers`, `processes`, `materials`; into a library `items`), the overridden items among them, with `overridden` (`kind`, `id`, `name`; in a library `version`, `path`), `copied` (`kind`, `name`, `from`: the preset's name), `dialect`, `into`, `report` |
+
+| Query | Fields | Result |
+|---|---|---|
+| `slicer_presets` | `into` (`design` the default, `user`, `project`), `project`, `folders` (`[{dialect, path}]`: data folders to read instead of the installed slicers', for tests) | `slicers`: `dialect`, `name` (`Bambu Studio`), `folder`, `flatpak`, `presets`: `kind` (`printer`, `process`, `material` for a filament), `name`, `path`, `account`, `inherits`, `same` (the target's item of its kind and name: `id`, `name`, `place` `design`, `user` or `project`; null when it has none) |
 
 **Export.** `export` of a 3MF with `dialect` (`bambu_studio`,
 `orcaslicer`, `qidi_studio`, `prusaslicer`, `cura`; [3MF](#3mf)) writes
@@ -16175,3 +16741,285 @@ and read back), `tools/ui-image-references-test.sh` and
 Not yet: the `.f3d` import leaves canvases out (the stream decoder does not
 read their records or the images they keep); a reference does not follow
 an occurrence moved to another parent or Reorient Design.
+
+## Bindings: values from expressions
+
+A body's appearance and material, a face's appearance, a feature's
+suppression and the visibility of a body or an occurrence can follow an
+expression of parameters instead of a value set by hand (mitcad#800;
+[docs/configurations.md](../../../docs/configurations.md), "Bindings"). A
+configuration only sets parameters, and these follow; they work as well
+in a design without configurations. Code:
+`core/model/src/document/bindings.rs`.
+
+| Command | `expression` | Undo step |
+|---|---|---|
+| `set_body_appearance` | a text: an appearance id, else the name of one appearance (`switch(Color; 'Black'; 'paint_black'; 'White'; 'Paint - White'; 'plastic_white')`) | `Set Appearance of Body1` |
+| `set_face_appearance` | as above, for the faces given | `Set Appearance of Face of Body1` |
+| `set_body_material` | a text: a material id, else the name of one material | `Set Material of Body1` |
+| `suppress_feature` | a condition: suppressed while it holds (`Holes = 'No'`) | `Suppress Extrude2 When` |
+| `set_body_visible` | a condition: shown while it holds | `Show Body1 When` |
+| `set_occurrence_visible` | a condition: shown while it holds | `Show Board:1 When` |
+
+- **The value and the expression are alternatives.** A command gives
+  one of them; both are refused. Setting the value by hand removes the
+  expression in the same undo step (`Hide Body1`, `Unsuppress Extrude2`).
+  An empty `expression` removes the expression and keeps the value it
+  gave (`Clear Appearance Expression of Body1`, `Clear Show When of
+  Board:1`, `Clear Suppress When of Extrude2`). The same expression again
+  is no undo step.
+- **Checked when set.** The expression must evaluate with the design's
+  parameters: an appearance's or a material's must give a text, a
+  condition a number (true when it is not 0: `Color = 'Black'`,
+  `Length > 1 m`, `and(Tables = 1; Power = 1)`). A text that names no
+  appearance or material is accepted and gives the warning below.
+- **Values follow.** Every command settles the bound values after its
+  edit, in the same undo step: changing `Color` in Change Parameters, a
+  configuration row, a CSV import or undo all switch the look. The value
+  is stored next to the expression, so readers that ignore bindings (the
+  exports, older versions) see the value as if it were set by hand.
+  - A changed suppression recomputes from that feature on, as
+    `suppress_feature` does; the features before it keep their results.
+  - Appearance, material and visibility recompute nothing.
+  - A material that follows an expression gives the body the new
+    material's appearance by the rule of [Materials](#materials): unless
+    the body's appearance was set by hand or follows an expression of its
+    own.
+- **Warnings.** A text that names no appearance or material, or names
+  two, gives the body a warning, and the body has the default look: no
+  appearance of its own (its material's) or no material of its own (its
+  component's). A face shows the body's look. A condition that cannot be
+  evaluated (a text, a parameter that is gone) leaves the value as it
+  was, with a warning.
+- **Parameters.** Renames rewrite the expressions (in the rename's undo
+  step). A parameter that a binding uses cannot be deleted: `parameter
+  'Color' is used by the appearance of Body1`. A feature's own parameter
+  that a binding uses stays as a user parameter when the feature is
+  deleted.
+- **Queries.**
+  - `bodies`: `appearance_expr`, `material_expr`, `visible_when` and
+    `face_appearance_exprs` (`{face name: expression}`) when bound, with
+    `dependencies` (the parameters the body's bindings use) and
+    `warnings` (one line each, `appearance: there is no appearance 'Gloss
+    Purple'; the body has the default look`).
+  - `timeline` and `feature`: `suppressed_when`, `dependencies` and,
+    when the condition cannot be evaluated, `binding_warning`.
+  - `components`: each occurrence of the tree has `visible_when`,
+    `dependencies` and `warnings`.
+- **Design file.** A body keeps `appearance_expr`, `material_expr`,
+  `visible_when` and `face_appearance_exprs` beside its values, a feature
+  `suppressed_when` beside `suppressed`, an occurrence `visible_when`
+  beside `visible`. Opening the file settles the values with the file's
+  parameters.
+## Tables
+
+A design keeps named tables of data (screw sizes, standard dimensions)
+that parameter expressions look values up in with `Table.Column` and the
+lookup functions `XLOOKUP`, `MATCH` and `INDEX` (mitcad#667; the design is
+[docs/table-lookups.md](../../../docs/table-lookups.md); `tables.rs`,
+`document/tables.rs`, `api/tables.rs`):
+
+```text
+Size    = 'M5'
+HeadDia = XLOOKUP(Size; Screws.Size; Screws.dk)   → 8.5 mm
+```
+
+| | Fields | Result |
+|---|---|---|
+| command `set_table` | `name`, `table`: `comment`, `columns` [{`name`, `unit`}], `rows` (arrays of cells: numbers in the column's unit, texts, null) | `changed`: the parameters whose values changed; `moves`: the configuration options it moved ([Configurations and tables](#configurations-and-tables), mitcad#806); creates the table or replaces it; one undo step `Edit Table <name>`, none for the same table |
+| command `rename_table` | `name`, `new_name` | `{}`; the expressions, limits and configuration values that use it follow; undo step `Rename Table <name> to <new_name>` |
+| command `rename_table_column` | `table`, `name`, `new_name` | `{}`; the same; undo step `Rename Column <table>.<name> to <new_name>` |
+| command `delete_table` | `name` | `{}`; refused while a parameter or a configuration row uses it, naming them; undo step `Delete Table <name>` |
+| query `tables` | `name` (optional: only that table) | `tables`: each with `name`, `comment`, `columns`, `rows`, `used_by` (the parameters that use it), `problems` (first cells more than one row has: lookups find the first) |
+
+- **Names.** A table's name follows the parameter name rules
+  (case-sensitive, not a unit, function or constant) and the tables share
+  the parameters' namespace: a table cannot take a parameter's name, nor a
+  parameter (added, renamed, copied) a table's. Column names use the same
+  characters, are unique in their table and may be reserved words (`in`,
+  `Max`): a column is only ever written after `Table.`.
+- **Cells** are constants. A column's `unit` is any unit a parameter
+  takes (`mm`, `in`, `deg`, `mm^2`), `""` for unitless, or `Text`; a
+  number cell is in the column's unit (`5.5` in an `mm` column is 5.5 mm),
+  a text cell a string, an empty cell `null`. A row has a cell per column;
+  a text in a number column, a number in a `Text` column, a number that is
+  not finite or a text over the text limit is refused with its row and
+  column. At most 10 000 rows and 100 columns.
+- **Edits re-evaluate.** `set_table` re-evaluates every parameter that
+  uses the table, and the parameters that depend on them, in one step.
+  When one of them would fail (a key no longer found, a column of another
+  kind) the command is refused with that parameter and its error, and
+  nothing changes; a column a parameter uses cannot be left out
+  (`column Screws.dk is used by HeadDia`). The features then recompute by
+  the usual rule: only those whose parameters changed value, so an edit
+  that changes no used value recomputes nothing.
+- **Renames** rewrite every expression and limit that uses the table or
+  the column, keeping the rest of their text, and the configuration rows'
+  values; values do not change.
+- **Copies.** Copying parameters into another design (Paste New, inserting
+  a design's copy) brings the tables they use: the same table there is
+  used as it is, a different one of the same name gets a free name
+  (`Screws_1`), and the copied expressions follow.
+- **Configurations** stay separate: a row can set only the key
+  (`Size = 'M5'`), and the lookups follow when it is applied.
+
+The other queries:
+
+- `parameters`: each parameter's `table_dependencies`, the columns it
+  looks values up in (`["Screws.Size", "Screws.dk"]`).
+- `evaluate`: `table_references`, the same for the expression, beside
+  `references`.
+- `formula_help`: `tables`, each table's `name` and `columns` (`name`,
+  `unit`), for completion.
+- `diff`: a `tables` section (the "Tables" lines of the text), by name:
+  tables added, deleted, renamed (the same content under another name),
+  and changed ones by their comment, columns (`column Pitch added`,
+  `column dk mm -> in`) and rows (`table Screws row 3 (M5): dk 8.5 mm ->
+  8.7 mm`); rows are matched by their first cell when it tells them apart.
+
+The design file keeps them as `"tables"`, left out when there are none,
+each `{name, comment, columns, rows}` (`comment` left out when empty); a
+table with a problem, a name twice or a parameter's name is refused.
+
+Classes: all of them are the model's own. Tests: `tables::tests` (the
+file form, refused tables), `tables_tests` in the model (recompute only
+what a changed value reaches, refused edits, renames, deletes, undo,
+copies, configurations), `api::tables_tests` in `core.model.api` (the
+commands and queries) and `files::tables_tests` in `core.model.files`
+(saved and read back, the diff's rows).
+
+## Tables as CSV
+
+A table of the design (mitcad#667, `docs/table-lookups.md`) is exported to
+and imported from CSV, one file per table (mitcad#804; `tables_csv.rs`,
+`document/tables_csv.rs`, `api/tables_csv.rs`). It is separate from the
+[parameters CSV](#parameters-as-csv). The CSV is the text of the query or
+the command: the application reads and writes the file.
+
+| | Fields | Result |
+|---|---|---|
+| query `table_csv` | `name` | `csv`: the table as CSV, `rows`: its number of rows |
+| query `table_csv_preview` | `name`, `csv` | what `import_table_csv` would do; nothing changes |
+| command `import_table_csv` | `name`, `csv` | what it did, as the preview, and `moves`: the configuration options it moved, as `set_table`'s ([Configurations and tables](#configurations-and-tables), mitcad#849; empty when the table is already as the file has it); one undo step `Import Table <name>`, none when the table is already as the file has it |
+
+The file is UTF-8 (a byte order mark is skipped) with RFC 4180 quoting
+and CRLF, read and written as the parameters CSV is; a header with
+semicolons and no comma is read with `;` between fields.
+
+- **The header** has a field per column: its name with its unit in
+  brackets, `Size [Text],d [mm],dk [mm],Pitch [mm]`, `[]` for unitless,
+  any unit a parameter takes (`mm`, `in`, `deg`, `mm^2`). A unit that is
+  not one refuses the file.
+- **Cells.** A cell of a number column is read as a constant expression
+  in the column's unit: `5,5` (a decimal comma) is 5.5, a plain `5` in an
+  `mm` column is 5 mm, `0.25 in` there is kept as 6.35. A cell that is not
+  a number of the column's kind (`abc`, `5 deg` in an `mm` column, a
+  parameter's name: cells are constants) is refused with the reason. A
+  `Text` column takes its cells as they are, numbers too (`8`). White
+  space around a cell is dropped; an empty cell is empty (null). Rows of
+  empty cells at the end of the file are left out; one in the middle stays.
+- **Inferred columns.** A header without brackets is a `Text` column when
+  any of its cells is not a number; else a column of the unit of its first
+  cell with a unit, in the design's default units (`10 mm` makes an `mm`
+  column, and a plain `12` in it is 12 mm), and a unitless one when no cell
+  has a unit.
+- **Names.** A column name the model cannot use gets a free one, as the
+  parameters CSV renames: other characters as `_` (`Head diameter` as
+  `Head_diameter`), `c_` before one that does not start with a letter
+  (`2nd` as `c_2nd`), `column_<n>` for an empty one, and `_1`, `_2`, ...
+  for a name already taken (a second `d` as `d_1`). Reserved words (`in`,
+  `Max`) name columns as they are. A column without a name and without
+  cells (a separator too many) is left out.
+- **Sizes**: at most 10 000 rows and 100 columns, a text cell at most
+  `MAX_TEXT_BYTES`; a larger file is refused.
+- **Export** writes every unit in brackets (`[Text]` too) and numbers with
+  decimal points, the shortest decimal that gives the value back (`5.5`,
+  `1e-12`), so export and import give the same table.
+
+An import creates the table `name` or replaces it whole; a table it
+replaces keeps its comment. It goes through the same atomic check as a
+table edit: the parameters that name the table, and their dependents, are
+evaluated again with the new one in one step, and features recompute only
+when a value changed. It is refused, and nothing changes, while a cell of
+the file is refused, while a parameter would fail with the new table (a
+key no longer found, a column gone or of another kind), and for a name no
+table can have (a parameter's, a reserved one).
+
+The preview and the import answer:
+
+| Field | |
+|---|---|
+| `name` | the table's |
+| `created` | the import makes the table (else it replaces the one of its name) |
+| `unchanged` | the table is already as the file has it |
+| `columns` | in the file's order: `name` (the file's), `renamed` (the table's, when the file's cannot be used; left out otherwise), `unit` (`mm`, `""`, `Text`), `inferred` (the header had no unit) |
+| `rows` | the cells as the table keeps them: numbers in their column's unit, texts, null for an empty or refused cell |
+| `refused` | cells: `line` (the header is line 1), `column` (the table's name; empty for a cell beyond the last column), `text`, `reason` |
+| `changed` | parameters whose values change: `name`, `from`, `to` (`8.5 mm`, a text as it is) |
+| `failing` | parameters that would fail: `name`, `error` |
+| `summary` | `new table Screws: 5 columns, 3 rows, 1 renamed, 2 inferred, 1 cell refused, 2 parameters change, 1 parameter fails` (the nought counts after the rows left out); `Screws replaced: …`, `Screws unchanged: …` |
+| `moves` | the import only: the configuration options it moved (`option`, `from`, `to`, `from_expression`, `to_expression`, `rule`, `text`), as `set_table`'s; the preview does not move anything and has no `moves` |
+
+```json
+{"query": "table_csv", "name": "Screws"}
+{"query": "table_csv_preview", "name": "Screws", "csv": "Size [Text];d [mm]\r\nM5;5\r\n"}
+{"cmd": "import_table_csv", "name": "Screws", "csv": "Size [Text],d [mm]\r\nM5,5\r\n"}
+```
+
+Tests: `tables_csv::tests` (names and units of the header, semicolons and
+decimal commas, units in cells, inferred columns, refused cells, files
+that are no table, export and import of every unit kind, free names),
+`tables_csv_tests` (in the model: a round trip with every unit kind into
+the same and another design, a `;`-separated file, units in cells,
+inferred and renamed columns, refused cells refusing the import, a
+changed cell changing its parameter in one undo step, a key in use that
+disappears refusing the import with both failing parameters, a table
+with a parameter's name), `api::tables_csv::tests` (the queries and the
+command).
+## Recompute workers
+
+`Document::set_recompute_workers(n)` (mitcad#842) lets a recompute
+evaluate the features of independent components on up to `n` threads at
+once, each with a fork of the kernel; `1`, the default, evaluates every
+feature on the recompute's own thread as before. The environment variable
+`MITCAD_RECOMPUTE_WORKERS` gives every document of the process its
+starting value (the ctests `core.model.assembly.workers`,
+`core.model.links.workers` and `core.model.joints.workers` run those
+model tests with 4). No JSON command or query sets it yet, and the
+application and `mitcad-cli` leave it at 1.
+
+The recompute cuts the timeline into windows that end at barriers
+(joints, rigid groups, constraint sets and motion links; Move, Capture
+Position, Joint Origin, Pattern at Points, Component from Bodies, Body
+Transfer and any feature that made a component; sketches with driven
+dimensions and Bound Length, which write parameters; an extrusion with a
+cut scope across components, and a feature whose last result moved
+occurrences, measured parameters or gave bodies to another component).
+Within a window, each component's features run ahead on a worker, except
+a feature that reads other components (links in its definition, or reads
+of other components' bodies, placements or results in its last result)
+and the features of its component after it, which the recompute
+evaluates itself. A window runs ahead only when at least two components
+have a feature there that the cache likely lacks.
+
+The recompute still goes through the timeline in order and takes a
+worker's result only where the cache would take a stored one (the same
+definition, every read the evaluation recorded holding where the
+recompute is, the definition's parameter values the same) and the
+evaluation succeeded; otherwise it evaluates the feature itself. The
+document, results, versions, topological names, statuses, warnings, the
+memory cache, the result store's writes and the monitor's progress are
+therefore those of one thread. A stop cancels every worker (their monitors
+are part of the recompute's) and keeps nothing a worker returned; results
+not yet taken count against the memory cache's budget, and before the
+cache drops results for its budget the recompute stops the workers and
+waits for them, so that it drops what it drops with one thread. Previews, commands
+that add base features from shapes (`written_from`) and recomputes on a
+worker's thread use no workers. The OCCT kernel installs its crash
+handlers on each worker thread (`Kernel::worker_thread`).
+
+Tests: `core/model-tests/assembly/src/parallel_recompute_tests.rs` (two
+components at the same time; a linked feature, a driven dimension's
+reader and a moved occurrence's reader waiting for what they read; stops
+while workers evaluate and while the recompute waits for one; each against
+the same design with one thread).

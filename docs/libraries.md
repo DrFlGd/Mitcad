@@ -101,9 +101,11 @@ names a PNG image in the folder.
 
 `designation` is the name of a part in a bill of materials. MitCad
 replaces these placeholders in braces: `{standard}`, `{name}`,
-`{config}` and the selectors' names (`{Size}`). Without `designation`,
-the name is `{standard} {config}`. A configuration row's own
-`designation` comes first.
+`{config}` and the options' names (`{Size}`: the option's value, a
+number without its unit). Without `designation`, the name is
+`{standard} {config}`. The own `designation` of the row of the part's
+combination comes first; a combination that is no row of an open table
+takes the pattern, with `{config}` empty.
 
 MitCad ignores unknown fields. Thus newer libraries stay readable.
 
@@ -176,22 +178,36 @@ A design's top-level `configurations` block holds the table. The
 
 ```json
 "configurations": {
-  "selectors": ["Size", "Length"],
+  "options": ["Size", "Length"],
+  "closed": true,
   "parameters": ["d", "dk", "k", "s", "t", "L"],
   "default": "M5x16",
   "rows": [
-    {"name": "M5x16", "select": {"Size": "M5", "Length": "16"},
-     "values": {"d": "5 mm", "dk": "8.5 mm", "k": "5 mm", "s": "4 mm", "t": "2.5 mm", "L": "16 mm"}}
+    {"name": "M5x16",
+     "values": {"Size": "'M5'", "Length": "'16'", "d": "5 mm", "dk": "8.5 mm",
+                "k": "5 mm", "s": "4 mm", "t": "2.5 mm", "L": "16 mm"}}
   ]
 }
 ```
 
-Each row sets the expressions of the table's parameters. These are
-parameters of the design, usually user parameters that its features
-use. Selectors are the cascaded choices that the application shows
-(Size, then Length). Each row's combination of selectors is unique.
-When MitCad applies a row, it changes parameter expressions only, as
-Change Parameters does.
+The options (Size, then Length) are user parameters of the design (here
+text parameters) in the order the application offers them. A row is a
+preset: it sets the options' values and, in a closed table, the
+expressions of the table's other parameters, usually user parameters
+that the design's features use. A closed table allows only its rows'
+combinations, each unique. An open table (`"closed": false`, the
+default) sets options only and allows every combination its rules
+allow; its rows are named presets. When MitCad applies a row, it changes
+parameter expressions only, as Change Parameters does. Rules, the
+cascade and the `configure` command are in
+[commands.md](../core/model-api/src/commands.md#configurations-options-rows-and-rules)
+and [configurations.md](configurations.md).
+
+A table written before mitcad#798 has `selectors` and rows with
+`select` (`{"Size": "M5", "Length": "16"}`). MitCad still reads it, as
+a closed table whose options are text parameters made from the
+selectors, and writes the form above. Library components keep working
+without being published again.
 
 ### Mount frames
 

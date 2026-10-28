@@ -138,3 +138,18 @@ expect-parameter-cell width 0 '.*' absent
 button '^OK$'
 focus-main
 expect-never 'Recompute failed'
+
+# Appearances within the screen's available area, title bar included: its
+# body scrolls and its buttons stay visible below it, also in a compact
+# dialog (mitcad#818).
+command solid.appearances
+focus-dialog '^Appearances$'
+expect-dialog-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+expect-dialog-fits
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/appearances-${MITCAD_TEST_COLOR_SCHEME}.png'
+dialog-resize 700 420
+expect-dialog-fits 700 420
+screenshot-dialog '${MITCAD_DIALOG_SHOTS}/appearances-compact-${MITCAD_TEST_COLOR_SCHEME}.png'
+button '^Close$'
+expect-dialog-gone '^Appearances$'
+focus-main

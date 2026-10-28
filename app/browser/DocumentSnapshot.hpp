@@ -42,6 +42,8 @@ struct DocumentSnapshot {
     // The sketches it uses (profiles, paths, curves, points), in timeline
     // order: the browser lists it under each (mitcad#177).
     QStringList sketches;
+    // The condition it is suppressed under (mitcad#800); empty: none.
+    QString suppressedWhen;
 
     bool isSketch() const { return type == QStringLiteral("sketch"); }
     bool isConstruction() const { return type.startsWith(QStringLiteral("construction_")); }
@@ -69,12 +71,17 @@ struct DocumentSnapshot {
     // Where it places its component in the design: 4 rows of 4 numbers.
     QJsonArray world;
     QVector<Occurrence> children;
+    // The condition it is shown under (mitcad#800); empty: none.
+    QString visibleWhen;
   };
   struct Component {
     QString uid;
     QString name;
     QStringList bodies; // at the marker
     bool linked = false;
+    // Inserted from a library (its record, mitcad#64): it may have options
+    // of its own (Edit Options…, mitcad#810).
+    bool library = false;
   };
   struct Body {
     QString uid;
@@ -88,9 +95,26 @@ struct DocumentSnapshot {
     QString printBedFace;
     QStringList printBedFaces;
     QString printBedError;
+    // Bindings (mitcad#800): the expressions its appearance, material and
+    // visibility follow (empty: none), its faces' ({face: expression}),
+    // and why one gives no value.
+    QString appearanceExpr;
+    QString materialExpr;
+    QString visibleWhen;
+    QJsonObject faceAppearanceExprs;
+    QStringList warnings;
+    bool bound() const {
+      return !appearanceExpr.isEmpty() || !materialExpr.isEmpty() || !visibleWhen.isEmpty() ||
+             !faceAppearanceExprs.isEmpty();
+    }
   };
 
   QVector<Feature> features; // in timeline order
+  // The features' places in `features` by uid, for feature(): the browser
+  // and the view look up a feature per row, body and profile, which a
+  // search through the timeline made quadratic in a large design (an
+  // imported building's thousands of features, mitcad#833).
+  QHash<QString, qsizetype> featureIndex;
   int marker = 0;
   // Timeline groups (P9): a name and its features, a run in timeline order.
   struct Group {

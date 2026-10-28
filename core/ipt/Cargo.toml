@@ -33,8 +33,7 @@ ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 
-[dev-dependencies]
-# The design replayed by the import on the model's mock geometry kernel.
-mitcad-import = { path = "../import" }
-mitcad-model = { workspace = true, features = ["testing"] }
-mitcad-model-api = { path = "../model-api" }
+# No dev-dependency on the model or the import (mitcad#831): the test
+# designs replayed by the import on the model's mock kernel are tested in
+# core/model-tests/imports (`ipt_design_tests.rs`), so that the release
+# profile's test build, which this crate's tests are in, builds neither.

@@ -8,12 +8,14 @@
 #include <QString>
 
 #include "../framework/ParameterEdits.hpp"
+#include "ConfigurationsData.hpp"
 
 class QCheckBox;
 class QEvent;
 class QLabel;
 class QLineEdit;
 class QPushButton;
+class QTabWidget;
 class QTreeWidget;
 class QTreeWidgetItem;
 
@@ -21,6 +23,7 @@ namespace mitcad {
 
 class DecimalAlignDelegate;
 class DocumentHost;
+class TablesPage;
 
 // Change Parameters: the user parameters and the model's (the
 // dimensions of each feature) with their name, unit, expression, value and
@@ -33,7 +36,8 @@ class DocumentHost;
 // place, Strict refuses a result outside them instead of clamping it, a
 // limited value is marked in its cell (`372 mm → 300 mm ▲max`, the tooltip
 // says why), a parameter with a minimum and a maximum gets a slider, and
-// "Only limited" shows only the parameters a limit changed.
+// "Only limited" shows only the parameters a limit changed. The Tables tab
+// (mitcad#667) edits the design's tables that formulas look up.
 class ParametersDialog : public QDialog {
   Q_OBJECT
 
@@ -102,6 +106,19 @@ private:
   void importParameters();
   QPushButton* m_import = nullptr;
   QPushButton* m_export = nullptr;
+
+  // Configurations (mitcad#807): the options' reports (the `configure`
+  // query), for an option's mark on its name and the rules' restrictions
+  // shown as the limits are (in grey in Min, Max and Step, the rules in the
+  // tooltip).
+  void markOption(QTreeWidgetItem* row, const QJsonObject& parameter);
+  configurations::Report m_options;
+  QStringList m_optionRows; // for the log
+  QString m_loggedOptions;
+  // Two tabs (mitcad#667): Parameters (the table above) and Tables, the
+  // design's tables of data that formulas look up (TablesPage).
+  QTabWidget* m_tabs = nullptr;
+  TablesPage* m_tablesPage = nullptr;
 };
 
 } // namespace mitcad

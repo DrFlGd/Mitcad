@@ -31,7 +31,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'solid.rectangular_pattern' = 'F7'; 'solid.circular_pattern' = 'F8' }
+Ui-Init $App $Out $QtBin @{ 'solid.rectangular_pattern' = 'F7'; 'solid.circular_pattern' = 'F8' } -StepPause 0
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
@@ -95,6 +95,8 @@ function Show-Axes([string]$Description) {
       Start-Sleep -Milliseconds 200
       if (@(Ui-LogLines | Where-Object { $_.StartsWith('Datum x at ') }).Count -gt $before) { break }
     }
+    # All three axes' new places logged, as the Linux test's ui_sync.
+    Ui-Sync
   }
   Ui-Fail "${Description}: the origin axes' places stayed outside the view"
 }

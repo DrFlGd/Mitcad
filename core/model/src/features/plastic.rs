@@ -278,7 +278,7 @@ fn rule_values<K: Kernel>(
     let FeatureDef::PlasticRule(def) = &entry.def else {
         return Err(format!("{} ({uid}) is not a plastic rule", entry.name));
     };
-    let result = ctx.env.history.iter().find(|r| r.uid == uid);
+    let result = ctx.env.result_of(uid);
     let status = result.map(|r| r.status.clone());
     let version = result.and_then(|r| r.output.as_ref()).map(|o| o.version);
     ctx.reads.push(Read::Output(uid, version));

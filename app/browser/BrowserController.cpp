@@ -20,6 +20,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QMessageBox>
+#include <QPair>
 #include <QPushButton>
 #include <QSet>
 #include <QToolButton>
@@ -32,8 +33,13 @@
 #include "../framework/MoveOccurrenceDialog.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "../library/EditOptionsDialog.hpp"
+#include "../library/PartOptions.hpp"
 #include "DocumentHost.hpp"
 #include "AppearanceDialog.hpp"
+#include "Bindings.hpp"
+#include "ConfigurationBar.hpp"
+#include "ConfigurationsDialog.hpp"
 #include "FindDialog.hpp"
 #include "ParametersDialog.hpp"
 #include "PolicyDialog.hpp"
@@ -70,9 +76,26 @@ public:
       m_menu.setToolTipsVisible(true);
     }
   }
+  // A submenu of entries, logged as "Context menu <title>: A | B" as the
+  // view's submenus are (mitcad#809: Follow Option).
+  void addSubmenu(const QString& icon, const QString& title,
+                  const QVector<QPair<QString, std::function<void()>>>& entries) {
+    QMenu* submenu = m_menu.addMenu(themeIcon(icon), title);
+    QStringList texts;
+    for (const auto& entry : entries) {
+      QAction* action = submenu->addAction(entry.first);
+      QObject::connect(action, &QAction::triggered, &m_menu, entry.second);
+      texts << entry.first;
+    }
+    m_entries << title;
+    m_submenus << QStringLiteral("Context menu %1: %2").arg(title, texts.join(QStringLiteral(" | ")));
+  }
   void separator() { m_menu.addSeparator(); }
   bool isEmpty() const { return m_entries.isEmpty(); }
   void exec(const QPoint& at) {
+    for (const QString& line : std::as_const(m_submenus)) {
+      qDebug().noquote() << line;
+    }
     qDebug().noquote() << QStringLiteral("Context menu: %1").arg(m_entries.join(QStringLiteral(" | ")));
     execMenu(&m_menu, at);
   }
@@ -80,6 +103,7 @@ public:
 private:
   QMenu m_menu;
   QStringList m_entries;
+  QStringList m_submenus;
 };
 
 const QStringList kLengthUnits = {QStringLiteral("mm"), QStringLiteral("cm"), QStringLiteral("m"),
@@ -105,6 +129,10 @@ void BrowserController::follow(Sender* sender, void (Sender::*signal)(Args...),
 BrowserController::BrowserController(DocumentHost& host, QWidget* window)
     : QObject(window), m_host(host), m_window(window) {
   m_browser = new BrowserPanel(window);
+  // The Configuration bar above the rows (mitcad#807): hidden while the
+  // design has no options.
+  m_configurationBar = new ConfigurationBar(host, m_browser);
+  m_browser->setTopBar(m_configurationBar);
   m_timeline = new TimelineWidget(host.model(), window);
   m_failures = new QToolButton(window);
   m_failures->setObjectName(QStringLiteral("failuresBadge"));
@@ -211,6 +239,11 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   }
   if (m_parameters && m_parameters->isVisible()) {
     m_parameters->refresh();
+  }
+  // Configurations (mitcad#807): the bar always, the window while shown.
+  m_configurationBar->refresh();
+  if (m_configurations && m_configurations->isVisible()) {
+    m_configurations->refresh();
   }
   if (m_appearances && m_appearances->isVisible()) {
     m_appearances->refresh();
@@ -1084,6 +1117,8 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
         }
       });
       visibility();
+      // Shown while a condition holds (mitcad#809).
+      menu.add(QStringLiteral("eye"), tr("Show When…"), [this, node] { showOccurrenceWhen(node.occurrence); });
     }
     isolate();
     // The timeline's filter (mitcad#98), this window's view.
@@ -1108,6 +1143,17 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.add(QStringLiteral("parameters"), tr("Property Sets…"), [this, node] {
       openPropertySets({QString(), node.occurrence, node.occurrence.isEmpty() ? node.uid : QString()});
     });
+    // The options of a library part or a linked design (mitcad#810): its
+    // own, shared by its occurrences, so named by the component (Shelf
+    // board), not by the occurrence's row (Shelf board:1).
+    for (const DocumentSnapshot::Component& c : std::as_const(m_snapshot.components)) {
+      if (!root && c.uid == node.uid && (c.library || c.linked)) {
+        const QString component = c.uid;
+        const QString name = c.name.isEmpty() ? node.name : c.name;
+        menu.add(QStringLiteral("parameters"), tr("Edit Options…"),
+                 [this, component, name] { editOptions(component, name); });
+      }
+    }
     // The whole design turned by quarter turns (mitcad#502).
     if (root) {
       menu.add(QStringLiteral("orientation-cube"), tr("Reorient Design…"), [this] { openReorient(); });
@@ -1123,6 +1169,8 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     moveEntry();
     menu.separator();
     visibility();
+    // Shown while a condition holds (mitcad#809).
+    menu.add(QStringLiteral("eye"), tr("Show When…"), [this, node] { showBodyWhen(node.uid); });
     isolate();
     menu.add(QStringLiteral("component"), tr("Create Components from Bodies"),
              [this, node] { componentsFromBodies(node); });
@@ -1143,6 +1191,16 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     });
     // Their material: density, appearance and filament (mitcad#640).
     menu.add(QStringLiteral("material"), tr("Material…"), [this, bodies] { openMaterial(bodies); });
+    // Their appearance or material from an option (mitcad#809).
+    {
+      Selection targets;
+      for (const QString& uid : bodies) {
+        targets.append(SelectionItem{SelectKind::Body, uid, QString(), QString()});
+      }
+      menu.addSubmenu(QStringLiteral("parameters"), tr("Follow Option"),
+                      {{tr("Appearance…"), [this, targets] { followOption(targets, false); }},
+                       {tr("Material…"), [this, targets] { followOption(targets, true); }}});
+    }
     // Its properties, its occurrence's and its component's (mitcad#496).
     menu.add(QStringLiteral("parameters"), tr("Property Sets…"),
              [this, node] { openPropertySets({node.uid, node.occurrence, QString()}); });
@@ -1683,6 +1741,8 @@ void BrowserController::featureMenu(const QString& uid, const QPoint& at, const 
                                                                  name);
              }
            });
+  // Suppressed while a condition holds (mitcad#809).
+  menu.add(QStringLiteral("suppress"), tr("Suppress When…"), [this, uid] { suppressWhen(uid); });
   menu.add(QStringLiteral("delete"), tr("Delete"), [this, uid] { deleteFeature(uid); });
   // Moving features into components (mitcad#171): a modelled feature with
   // what goes with it, or the history of a component made from bodies.
@@ -2114,6 +2174,21 @@ void BrowserController::openParameters() {
 
 ParametersDialog* BrowserController::parametersDialog() const { return m_parameters.data(); }
 
+void BrowserController::openConfigurations() {
+  if (!m_configurations) {
+    m_configurations = new ConfigurationsDialog(m_host, m_window);
+  }
+  showDialog(m_configurations);
+  if (!m_configurations->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_configurations->raise();
+    m_configurations->activateWindow();
+  }
+  qDebug().noquote() << "Configurations window opened";
+  m_configurations->refresh();
+}
+
+ConfigurationsDialog* BrowserController::configurationsDialog() const { return m_configurations.data(); }
+
 void BrowserController::openAppearances(const Selection& targets) {
   if (!m_appearances) {
     m_appearances = new AppearanceDialog(m_host, m_window);
@@ -2245,6 +2320,31 @@ void BrowserController::openPolicy(const QString& component) {
   }
 }
 
+void BrowserController::editOptions(const QString& component, const QString& name) {
+  if (!canChange()) {
+    return;
+  }
+  EditOptionsDialog dialog(
+      [this](const QJsonObject& query) {
+        try {
+          return m_host.model().queryObject(query);
+        } catch (const std::exception& error) {
+          return QJsonObject{{QStringLiteral("error"),
+                              QJsonObject{{QStringLiteral("message"), QString::fromUtf8(error.what())}}}};
+        }
+      },
+      component, name, m_window);
+  prepareModal(&dialog);
+  qDebug().noquote() << QStringLiteral("Edit Options opened for %1").arg(name);
+  if (execDialog(&dialog) != QDialog::Accepted || !dialog.hasOptions() || !canChange()) {
+    qDebug() << "Edit Options closed without a change";
+    return;
+  }
+  if (m_host.runModelCommand(setComponentParametersCommand(component, dialog.parameters()))) {
+    qDebug().noquote() << QStringLiteral("Edit Options of %1: %2").arg(name, dialog.summary());
+  }
+}
+
 void BrowserController::openMaterial(const QStringList& bodies, const QString& component, bool keepOpen) {
   if (!m_materials) {
     m_materials = new MaterialsDialog(m_host, m_window);
@@ -2323,6 +2423,152 @@ void BrowserController::openReorient() {
     qDebug().noquote() << QStringLiteral("Reorient Design body %1: box %2 - %3")
                               .arg(instance.value(QStringLiteral("name")).toString(),
                                    point(box.value(QStringLiteral("min"))), point(box.value(QStringLiteral("max"))));
+  }
+}
+
+// Bindings (mitcad#809).
+
+void BrowserController::suppressWhen(const QString& feature) {
+  const DocumentSnapshot::Feature* f = m_snapshot.feature(feature);
+  if (f == nullptr || !canChange()) {
+    return;
+  }
+  const QString name = f->name;
+  const QString current = f->suppressedWhen;
+  ConditionDialog dialog(tr("Suppress %1 When").arg(name),
+                         tr("%1 is suppressed while the condition holds (gives a number that is not 0), "
+                            "as Color = 'Black' or Length > 1 m. The features after it recompute when it "
+                            "changes.")
+                             .arg(name),
+                         current, m_window);
+  if (execDialog(&dialog) != QDialog::Accepted || dialog.condition() == current) {
+    return;
+  }
+  const QString condition = dialog.condition();
+  if (m_host.runModelCommand(cmd("suppress_feature", {{QStringLiteral("uid"), feature},
+                                                      {QStringLiteral("expression"), condition}}))) {
+    qDebug().noquote() << (condition.isEmpty() ? QStringLiteral("Suppress When of %1 removed").arg(name)
+                                               : QStringLiteral("Suppress %1 when %2").arg(name, condition));
+  } else {
+    qDebug().noquote() << QStringLiteral("Suppress When of %1 refused: %2").arg(name, m_host.lastError());
+  }
+}
+
+void BrowserController::showBodyWhen(const QString& body) {
+  if (!canChange()) {
+    return;
+  }
+  const DocumentSnapshot::Body found = m_snapshot.bodies.value(body);
+  const QString name = found.name.isEmpty() ? body : found.name;
+  const QString current = found.visibleWhen;
+  ConditionDialog dialog(tr("Show %1 When").arg(name),
+                         tr("%1 is shown while the condition holds (gives a number that is not 0), "
+                            "as Color = 'Black' or Length > 1 m.")
+                             .arg(name),
+                         current, m_window);
+  if (execDialog(&dialog) != QDialog::Accepted || dialog.condition() == current) {
+    return;
+  }
+  const QString condition = dialog.condition();
+  if (m_host.runModelCommand(cmd("set_body_visible", {{QStringLiteral("uid"), body},
+                                                      {QStringLiteral("expression"), condition}}))) {
+    qDebug().noquote() << (condition.isEmpty() ? QStringLiteral("Show When of %1 removed").arg(name)
+                                               : QStringLiteral("Show %1 when %2").arg(name, condition));
+  } else {
+    qDebug().noquote() << QStringLiteral("Show When of %1 refused: %2").arg(name, m_host.lastError());
+  }
+}
+
+void BrowserController::showOccurrenceWhen(const QString& path) {
+  const DocumentSnapshot::Occurrence* found = occurrence(path);
+  if (found == nullptr || !canChange()) {
+    return;
+  }
+  const QString uid = found->uid;
+  const QString name = found->name;
+  const QString current = found->visibleWhen;
+  ConditionDialog dialog(tr("Show %1 When").arg(name),
+                         tr("%1 and what it contains are shown while the condition holds (gives a number "
+                            "that is not 0), as Color = 'Black' or Length > 1 m.")
+                             .arg(name),
+                         current, m_window);
+  if (execDialog(&dialog) != QDialog::Accepted || dialog.condition() == current) {
+    return;
+  }
+  const QString condition = dialog.condition();
+  if (m_host.runModelCommand(cmd("set_occurrence_visible", {{QStringLiteral("occurrence"), uid},
+                                                            {QStringLiteral("expression"), condition}}))) {
+    qDebug().noquote() << (condition.isEmpty() ? QStringLiteral("Show When of %1 removed").arg(name)
+                                               : QStringLiteral("Show %1 when %2").arg(name, condition));
+  } else {
+    qDebug().noquote() << QStringLiteral("Show When of %1 refused: %2").arg(name, m_host.lastError());
+  }
+}
+
+void BrowserController::followOption(const Selection& targets, bool material) {
+  if (targets.isEmpty() || !canChange()) {
+    return;
+  }
+  // The bodies, and for the appearance the faces of each body picked (a
+  // face stands for its body's material).
+  QStringList bodies;
+  QHash<QString, QStringList> faces;
+  for (const SelectionItem& target : targets) {
+    if (!material && target.kind == SelectKind::Face) {
+      faces[target.owner] << target.name;
+    } else if (!bodies.contains(target.owner)) {
+      bodies << target.owner;
+    }
+  }
+  const auto nameOf = [this](const QString& uid) {
+    const QString name = m_snapshot.bodies.value(uid).name;
+    return name.isEmpty() ? uid : name;
+  };
+  // What the first target follows now.
+  const SelectionItem& first = targets.first();
+  const DocumentSnapshot::Body body = m_snapshot.bodies.value(first.owner);
+  QString current = body.appearanceExpr;
+  if (material) {
+    current = body.materialExpr;
+  } else if (first.kind == SelectKind::Face) {
+    current = body.faceAppearanceExprs.value(first.name).toString();
+  }
+  QString what;
+  if (!faces.isEmpty() && bodies.isEmpty()) {
+    int count = 0;
+    for (const QStringList& list : std::as_const(faces)) {
+      count += static_cast<int>(list.size());
+    }
+    what = count == 1 ? tr("Appearance of a Face of %1").arg(nameOf(first.owner))
+                      : tr("Appearance of %n Faces", nullptr, count);
+  } else {
+    const QString of = bodies.size() == 1 ? nameOf(bodies.first()) : tr("%n Bodies", nullptr, static_cast<int>(bodies.size()));
+    what = material ? tr("Material of %1").arg(of) : tr("Appearance of %1").arg(of);
+  }
+  FollowOptionDialog dialog(m_host.model(), material ? FollowOptionDialog::Kind::Material
+                                                     : FollowOptionDialog::Kind::Appearance,
+                            tr("%1 Follows Option").arg(what), current, m_window);
+  if (execDialog(&dialog) != QDialog::Accepted || dialog.expression() == current) {
+    return;
+  }
+  const QString expression = dialog.expression();
+  QJsonArray commands;
+  for (const QString& uid : std::as_const(bodies)) {
+    commands.append(cmd(material ? "set_body_material" : "set_body_appearance",
+                        {{QStringLiteral("uid"), uid}, {QStringLiteral("expression"), expression}}));
+  }
+  for (auto face = faces.cbegin(); face != faces.cend(); ++face) {
+    commands.append(cmd("set_face_appearance", {{QStringLiteral("uid"), face.key()},
+                                                {QStringLiteral("faces"), QJsonArray::fromStringList(face.value())},
+                                                {QStringLiteral("expression"), expression}}));
+  }
+  const bool done = commands.size() == 1 ? m_host.runModelCommand(commands.first().toObject())
+                                         : m_host.runModelCommands(commands, tr("%1 Follows Option").arg(what));
+  if (done) {
+    qDebug().noquote() << (expression.isEmpty() ? QStringLiteral("Follow Option of %1 removed").arg(what)
+                                                : QStringLiteral("%1 follows %2").arg(what, expression));
+  } else {
+    qDebug().noquote() << QStringLiteral("Follow Option of %1 refused: %2").arg(what, m_host.lastError());
   }
 }
 

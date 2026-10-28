@@ -205,6 +205,12 @@ const StepSpec kSpecs[] = {
     {"expect-native-enabled", 2, 2, kIdle},
     {"expect-native-visible", 2, 2, kIdle},
     {"expect-native-present", 2, 2, kIdle},
+    {"expect-native-style", 2, 2, kIdle},
+    {"expect-native-columns", 1, 2, kIdle},
+    {"native-dialog-size", 2, 2, kInputOfTarget},
+    // Native tile grids, group lists and utility panels (mitcad#813, #819).
+    {"native-tiles", 2, 4, kInputOfTarget},
+    {"expect-native-tiles", 1, 4, kIdle},
     {"expect-native-layout", 0, 0, kIdle},
     {"expect-native-history", 0, -1, kIdle},
     {"native-history-drag", 1, 2, kInputOfMain},
@@ -226,6 +232,9 @@ const StepSpec kSpecs[] = {
     {"expect-sketch-finish-layout", 0, 0, kIdle},
     {"expect-ribbon-labels", 1, -1, kIdle},
     {"expect-tree-rename", 1, 1, kIdle},
+    {"native-drag", 2, 2, kInputOfTarget},
+    {"expect-native-focus", 1, 2, kIdle},
+    {"expect-native-selection", 2, 2, kIdle},
     {"collapse-card", 2, 2, kInputOfMain},
     {"expect-setting", 2, 2, kIdle},
     {"expect-dialog-gone", 1, 1, kIdle},
@@ -257,6 +266,25 @@ const StepSpec kSpecs[] = {
     {"quit", 0, 1, kPlain},
     {"kill", 0, 0, kPlain},
     {"stay", 0, 0, kPlain},
+    // Card widths and windows within the screen (mitcad#818, TestDriverWindowFit.cpp).
+    {"expect-dialog-fits", 0, 2, kIdle},
+    {"native-card-width", 2, 2, kInputOfMain},
+    {"expect-native-card-width", 2, 3, kIdle},
+    {"expect-native-name-fits", 2, 2, kIdle},
+    {"native-screen-limit", 2, 2, kIdle},
+    {"expect-native-window-fits", 1, 1, kIdle},
+    // Compact AppKit selection and command cards (mitcad#815).
+    {"expect-native-selection-card", 1, 1, kIdle},
+    {"expect-native-command-layout", 0, -1, kIdle},
+    // Shared layout bounds, real pointer input and button order (mitcad#812, #817).
+    {"expect-native-bounds", 2, 3, kIdle},
+    {"expect-native-button-order", 1, -1, kIdle},
+    {"expect-native-control-focus", 1, 1, kIdle},
+    {"expect-native-layout-contract", 0, 0, kIdle},
+    {"native-pointer-click", 1, 1, kInputOfTarget},
+    {"native-pointer-button", 1, 1, kInputOfTarget},
+    {"native-pointer-drag", 3, 3, kInputOfTarget},
+    {"native-dialog-resize", 2, 2, kInputOfTarget},
 };
 
 const StepSpec* findSpec(const QString& name) {
@@ -1310,6 +1338,11 @@ void TestDriver::run(const Step& step) {
   };
   QWidget* mainWindow = m_main.data();
 
+  // Card widths and windows within the screen (mitcad#818).
+  if (runWindowFitStep(name, a, line)) {
+    return;
+  }
+
   // --- Keys and text
   if (name == QLatin1String("expect-picking-on-job")) {
     auto* window = qobject_cast<MainWindow*>(mainWindow);
@@ -2089,6 +2122,21 @@ void TestDriver::run(const Step& step) {
       m_waitDetail = error;
       return ready;
     }, 6, QStringLiteral("native disclosure layout did not settle"));
+  } else if (name == QLatin1String("expect-native-selection-card") ||
+             name == QLatin1String("expect-native-command-layout")) {
+    // Actual AppKit bounds and hit tests of the cards' actions (mitcad#815).
+    if (!mac::test::active()) { fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name)); return; }
+    bool counted = true;
+    const int expected = name == QLatin1String("expect-native-selection-card") ? a.at(0).toInt(&counted) : 0;
+    if (!counted) { fail(line, QStringLiteral("expect-native-selection-card <number of Create actions>")); return; }
+    whenReady([this, name, a, expected] {
+      QString error;
+      const bool ready = name == QLatin1String("expect-native-selection-card")
+                             ? mac::test::selectionCard(expected, error)
+                             : mac::test::commandLayout(a, error);
+      m_waitDetail = error;
+      return ready;
+    }, 6, QStringLiteral("'%1' did not hold").arg(name));
   } else if (name == QLatin1String("expect-native-form-controls")) {
     auto* window = qobject_cast<MainWindow*>(m_main.data());
     QString error;
@@ -2119,6 +2167,26 @@ void TestDriver::run(const Step& step) {
       whenReady([a, expected] { return mac::test::toolbarItemPresent(a.at(0), expected); }, 6,
                 QStringLiteral("native toolbar item '%1' has unexpected membership").arg(a.at(0)));
     }
+  } else if (name == QLatin1String("native-tiles") || name == QLatin1String("expect-native-tiles")) {
+    // native-tiles <action> <id> [tile|value] [more]; expect-native-tiles
+    // <check> <id> [value] [more] (NativeTestInput.hpp, mitcad#813, #819).
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
+      return;
+    }
+    if (name == QLatin1String("native-tiles")) {
+      queue([this, a, line] {
+        QString error;
+        if (!mac::test::tileAction(a, error)) fail(line, error);
+      });
+    } else {
+      whenReady([this, a] {
+        QString detail;
+        const bool ready = mac::test::tileCheck(a, detail);
+        m_waitDetail = detail;
+        return ready;
+      }, 6, QStringLiteral("native tile check '%1' did not pass").arg(a.join(QLatin1Char(' '))));
+    }
   } else if (name == QLatin1String("expect-native-text") || name == QLatin1String("expect-native-enabled") ||
              name == QLatin1String("expect-native-visible") || name == QLatin1String("expect-native-present")) {
     if (!mac::test::active()) {
@@ -2145,6 +2213,160 @@ void TestDriver::run(const Step& step) {
         return visibility ? mac::test::visible(id, expected) : mac::test::enabled(id, expected);
       }, 6, QStringLiteral("native control '%1' was not %2=%3")
                 .arg(id, presence ? QStringLiteral("present") : visibility ? QStringLiteral("visible") : QStringLiteral("enabled"), value));
+    }
+  } else if (name == QLatin1String("expect-native-style") || name == QLatin1String("expect-native-columns") ||
+             name == QLatin1String("native-dialog-size")) {
+    // Native table semantics and sizing (mitcad#814).
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
+      return;
+    }
+    if (name == QLatin1String("native-dialog-size")) {
+      double width = 0;
+      double height = 0;
+      if (!toNumber(a.at(0), width) || !toNumber(a.at(1), height) || width < 360 || height < 160 ||
+          width > 3000 || height > 2000) {
+        fail(line, QStringLiteral("native-dialog-size expects width 360..3000 and height 160..2000"));
+        return;
+      }
+      queue([this, width, height, line] {
+        QString error;
+        if (!mac::test::resizeNativeDialog(qRound(width), qRound(height), error)) fail(line, error);
+      });
+      m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+      return;
+    }
+    const QString id = a.at(0);
+    if (name == QLatin1String("expect-native-style")) {
+      const QStringList states = a.at(1).split(QLatin1Char(','), Qt::SkipEmptyParts);
+      whenReady([this, id, states] {
+        QString detail;
+        const bool ready = mac::test::nativeStyle(id, states, detail);
+        m_waitDetail = detail;
+        return ready;
+      }, 6, QStringLiteral("native '%1' was not %2").arg(id, a.at(1)));
+    } else {
+      const QString mode = a.size() > 1 ? a.at(1) : QStringLiteral("any");
+      if (mode != QLatin1String("fit") && mode != QLatin1String("scroll") && mode != QLatin1String("any")) {
+        fail(line, QStringLiteral("expect-native-columns <id> [fit|scroll|any]"));
+        return;
+      }
+      whenReady([this, id, mode] {
+        QString detail;
+        const bool ready = mac::test::nativeColumns(id, mode, detail);
+        m_waitDetail = detail;
+        return ready;
+      }, 6, QStringLiteral("native table '%1' columns were not %2").arg(id, mode));
+    }
+  } else if (name == QLatin1String("native-drag") || name == QLatin1String("expect-native-focus") ||
+             name == QLatin1String("expect-native-selection")) {
+    // Native outline rows: drags, keyboard focus and selection (mitcad#816).
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
+      return;
+    }
+    if (name == QLatin1String("native-drag")) {
+      const QString from = a.at(0);
+      const QString to = a.at(1);
+      whenReady([from, to] { return mac::test::rowsPresent({from, to}); }, 6,
+                QStringLiteral("no native rows '%1' and '%2'").arg(from, to), [this, line, from, to] {
+        queue([this, line, from, to] {
+          QString error;
+          if (!mac::test::dragRow(from, to, error)) fail(line, error);
+        });
+      });
+    } else if (name == QLatin1String("expect-native-focus")) {
+      QRegularExpression editor;
+      if (a.size() == 2 && !regex(a.at(1), editor)) return;
+      const QString id = a.at(0);
+      const bool editing = a.size() == 2;
+      whenReady([this, id, editor, editing] { return mac::test::focusedIn(id, editing ? &editor : nullptr, m_waitDetail); },
+                6, QStringLiteral("the keyboard is not in native '%1'%2")
+                       .arg(id, editing ? QStringLiteral(" in a text editor matching '%1'").arg(a.at(1)) : QString()));
+    } else {
+      const QString outline = a.at(0);
+      const QString row = a.at(1);
+      whenReady([this, outline, row] { return mac::test::selectedRow(outline, row, m_waitDetail); }, 6,
+                QStringLiteral("native '%1' does not select '%2' as its presenter does").arg(outline, row));
+    }
+  } else if (name == QLatin1String("expect-native-bounds") || name == QLatin1String("expect-native-button-order") ||
+             name == QLatin1String("expect-native-control-focus") || name == QLatin1String("expect-native-layout-contract") ||
+             name == QLatin1String("native-pointer-click") || name == QLatin1String("native-pointer-button") ||
+             name == QLatin1String("native-pointer-drag") || name == QLatin1String("native-dialog-resize")) {
+    // Shared layout bounds, real pointer input and button order (mitcad#812, #817).
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
+      return;
+    }
+    if (name == QLatin1String("expect-native-bounds")) {
+      double minimum = 0;
+      if (!toNumber(a.at(1), minimum) || minimum < 0) {
+        fail(line, QStringLiteral("expect-native-bounds <identifier> <minimum width> [label regex]"));
+        return;
+      }
+      const QString id = a.at(0);
+      const QString label = a.size() > 2 ? a.at(2) : QString();
+      QString detail;
+      if (!mac::test::controlBounds(id, minimum, label, detail)) {
+        whenReady([id, minimum, label] {
+          QString ignored;
+          return mac::test::controlBounds(id, minimum, label, ignored);
+        }, 6, detail);
+      }
+    } else if (name == QLatin1String("expect-native-button-order")) {
+      const QStringList patterns = a;
+      QString detail;
+      if (!mac::test::buttonOrder(patterns, detail)) {
+        whenReady([patterns] {
+          QString ignored;
+          return mac::test::buttonOrder(patterns, ignored);
+        }, 6, detail);
+      }
+    } else if (name == QLatin1String("expect-native-control-focus")) {
+      const QString id = a.at(0);
+      whenReady([id] { return mac::test::focused(id); }, 6,
+                QStringLiteral("native control '%1' does not have keyboard focus").arg(id));
+    } else if (name == QLatin1String("expect-native-layout-contract")) {
+      QString detail;
+      if (!mac::test::layoutContract(detail)) fail(line, detail);
+    } else if (name == QLatin1String("native-dialog-resize")) {
+      double width = 0;
+      double height = 0;
+      if (!toNumber(a.at(0), width) || !toNumber(a.at(1), height) || width < 200 || height < 120 ||
+          width > 10000 || height > 10000) {
+        fail(line, QStringLiteral("native-dialog-resize expects width 200..10000 and height 120..10000"));
+        return;
+      }
+      queue([this, width, height, line] {
+        QString detail;
+        if (!mac::test::resizeDialog(int(width), int(height), detail)) fail(line, detail);
+      });
+      m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+    } else {
+      double from = 0;
+      double to = 0;
+      if (name == QLatin1String("native-pointer-drag") && (!toNumber(a.at(1), from) || !toNumber(a.at(2), to))) {
+        fail(line, QStringLiteral("native-pointer-drag <identifier> <from fraction> <to fraction>"));
+        return;
+      }
+      const QString target = a.at(0);
+      const bool byTitle = name == QLatin1String("native-pointer-button");
+      QRegularExpression re;
+      if (byTitle && !regex(target, re)) return;
+      const auto perform = [this, line, name, target, re, from, to] {
+        QString detail;
+        const bool ok = name == QLatin1String("native-pointer-button") ? mac::test::pointerButton(re, detail)
+                        : name == QLatin1String("native-pointer-drag") ? mac::test::pointerDrag(target, from, to, detail)
+                                                                       : mac::test::pointerClick(target, detail);
+        if (!ok) fail(line, detail.isEmpty() ? QStringLiteral("native pointer input failed for '%1'").arg(target) : detail);
+      };
+      if (byTitle) {
+        whenReady([re] { return mac::test::buttonExists(re); }, 6,
+                  QStringLiteral("no native button matching '%1'").arg(target), [this, perform] { queue(perform); });
+      } else {
+        whenReady([target] { return mac::test::controlExists(target); }, 6,
+                  QStringLiteral("no native control '%1'").arg(target), [this, perform] { queue(perform); });
+      }
     }
   } else if (name.startsWith(QLatin1String("native-")) && name != QLatin1String("native-key-now") &&
              name != QLatin1String("native-key-event")) {

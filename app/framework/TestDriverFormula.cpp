@@ -33,7 +33,7 @@ void TestDriver::testFormulaBuilder() {
   auto* text=dialog->findChild<QPlainTextEdit*>(QStringLiteral("formulaText"));
   auto* search=dialog->findChild<QLineEdit*>(QStringLiteral("formulaFunctionSearch"));
   auto* functions=dialog->findChild<QTreeWidget*>(QStringLiteral("formulaFunctions"));
-  if (!text || !search || !functions || functions->topLevelItemCount()!=57) { // 52 + the text functions (mitcad#664)
+  if (!text || !search || !functions || functions->topLevelItemCount()!=60) { // 52 + the text functions (mitcad#664) + XLOOKUP, MATCH, INDEX (mitcad#667)
     fail(m_line,QStringLiteral("formula catalog or multiline text editor missing")); return;
   }
   if (dialog->screen() && dialog->width()<std::min(700,dialog->screen()->availableGeometry().width()-24)) {

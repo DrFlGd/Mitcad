@@ -1555,6 +1555,8 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
   // Bodies kept as they are drawn whose other parameters changed (what the
   // rendered view shows, mitcad#46).
   int restyled = 0;
+  // Bodies kept as they are drawn, only placed elsewhere (mitcad#838).
+  int placed = 0;
   // A design's first bodies coming into an empty view are fitted into it
   // (a design opened, a new design's first body), but not the new bodies a
   // command previews: the view would move under the items still to be
@@ -1606,6 +1608,30 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
       kept.emplace(key, entry);
       continue;
     }
+    if (existing != m_bodies.end() && existing->second.style == style && existing->second.inactive == inactive &&
+        existing->second.object->Shape().IsEqual(shape) && existing->second.component == body.component &&
+        existing->second.color == body.color && existing->second.sectioned == body.sectioned &&
+        sameFaceColors(existing->second.faceLooks, body.faceLooks)) {
+      // Only placed elsewhere (a component moved, a Move's drag, mitcad#838):
+      // its objects move, nothing is drawn anew from its faces.
+      BodyEntry entry = existing->second;
+      entry.shape = body.shape;
+      entry.ghosted = ghosted;
+      if (!entry.appearance.sameLook(body.appearance) || !sameFaceLooks(entry.faceLooks, body.faceLooks)) {
+        ++restyled;
+      }
+      entry.appearance = body.appearance;
+      entry.faceLooks = body.faceLooks;
+      const auto info = m_pickInfo.find(entry.object.get());
+      if (info != m_pickInfo.end()) {
+        info->second.body = body.shape;
+      }
+      placeBody(entry, body.placement);
+      ++placed;
+      m_bodies.erase(existing);
+      kept.emplace(key, entry);
+      continue;
+    }
     if (existing != m_bodies.end()) {
       removeBody(existing->second);
       m_bodies.erase(existing);
@@ -1627,11 +1653,12 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     ++shown;
     kept.emplace(key, entry);
   }
-  timing.setDetail(QStringLiteral("%1 bodies, %2 new").arg(bodies.size()).arg(shown));
+  timing.setDetail(placed > 0 ? QStringLiteral("%1 bodies, %2 new, %3 placed").arg(bodies.size()).arg(shown).arg(placed)
+                              : QStringLiteral("%1 bodies, %2 new").arg(bodies.size()).arg(shown));
   for (auto& [uid, entry] : m_bodies) {
     removeBody(entry);
   }
-  const bool changed = shown > 0 || restyled > 0 || !m_bodies.empty();
+  const bool changed = shown > 0 || restyled > 0 || placed > 0 || !m_bodies.empty();
   m_bodies = std::move(kept);
   if (m_firstFit.shown(wasEmpty, designBodies(m_bodies))) {
     m_fitPending = true;
@@ -2059,6 +2086,16 @@ void OcctViewer::showBody(BodyEntry& entry) {
     m_context->Display(object, AIS_WireFrame, -1, false);
   }
   applyRenderedVisibility(entry);
+}
+
+void OcctViewer::placeBody(BodyEntry& entry, const TopLoc_Location& placement) {
+  entry.placement = placement;
+  entry.occluder.reset(); // its faces placed anew when next asked
+  for (const occ::handle<AIS_Shape>* object : {&entry.object, &entry.hiddenEdges, &entry.visibleEdges}) {
+    if (!object->IsNull()) {
+      m_context->SetLocation(*object, placement);
+    }
+  }
 }
 
 void OcctViewer::removeBody(BodyEntry& entry) {
@@ -4801,6 +4838,13 @@ std::optional<SelectionItem> OcctViewer::takeRefusedClick() {
     return std::nullopt;
   }
   m_clickPickedNothing = false;
+  return untestedClickItem();
+}
+
+std::optional<SelectionItem> OcctViewer::untestedClickItem() {
+  if (!m_pickTest) {
+    return std::nullopt;
+  }
   // What the click would have taken without the finer test: the first item
   // under it of the filter's kinds.
   m_untestedPicks = true;

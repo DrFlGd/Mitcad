@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: MIT
+# After reopening the application (mitcad#816): the renamed, new and moved
+# rows stay, and the outline's keys and row editor work again.
+expect-ever 'Projects panel at the start: shown'
+wait-log 'Projects panel: 2 projects' 30
+native-resize 1280 820
+native-expand projectsTree
+sleep 250
+expect-native-layout
+expect-native-text projects.row.Nested/parts/holder.mitcad '^holder$'
+expect-native-text projects.row.Nested/parts/spare.mitcad '^spare$'
+expect-native-text 'projects.row.Nested/parts/fasteners/Gear plate.mitcad' '^Gear plate$'
+expect-native-text projects.row.Nested/parts/an-equally-long-synthetic-subfolder-name/ '^an-equally-long-synthetic-subfolder-name$'
+
+mark
+native-select projects.row.Nested/parts/spare.mitcad
+expect-native-focus projectsTree
+key Return
+wait-log '^Opened .*/Nested/parts/spare\.mitcad$' 30
+expect-native-focus projectsTree
+expect-native-selection projectsTree projects.row.Nested/parts/spare.mitcad
+
+native-appearance dark
+sleep 250
+mark
+key F2
+expect-log 'Projects panel: renaming Nested/parts/spare\.mitcad' 10
+expect-native-focus projects.row.Nested/parts/spare.mitcad '^spare$'
+type renamed
+key Escape
+expect-log 'Projects panel: rename of parts/spare\.mitcad cancelled' 10
+expect-native-focus projectsTree
+expect-native-selection projectsTree projects.row.Nested/parts/spare.mitcad
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/reopened-dark.png'
+native-appearance light

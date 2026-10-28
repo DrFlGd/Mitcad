@@ -6,12 +6,7 @@
 #include <utility>
 
 #include <QComboBox>
-#include <QFileInfo>
 #include <QHBoxLayout>
-#include <QJsonArray>
-#include <QJsonObject>
-#include <QJsonValue>
-#include <QLabel>
 #include <QPoint>
 #include <QPushButton>
 #include <QSignalBlocker>
@@ -23,17 +18,15 @@
 #include <QtLogging>
 
 #include "../framework/Command.hpp"
-#include "../framework/DialogFolders.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
-#include "ImportDetailsDialog.hpp"
 #include "MaterialsDialog.hpp"
-#include "PrintKeys.hpp"
 #include "PrintLibrary.hpp"
 #include "ProfilesDialog.hpp"
+#include "SlicerImport.hpp"
 
 namespace mitcad {
 namespace {
@@ -49,25 +42,18 @@ MyLibraryDialog::MyLibraryDialog(QWidget* parent) : QDialog(parent) {
   resize(960, 640);
   auto* layout = new QVBoxLayout(this);
 
-  // The place (in a project only) and Import… with its line.
-  auto* top = new QHBoxLayout;
+  // The place (in a project only) and Import from Slicer… with its line
+  // and Details… (SlicerImportBar, mitcad#829: one import with 3D Print's
+  // and Printers and Processes'), into the library shown.
   m_place = new QComboBox;
   m_place->addItem(placeName(QStringLiteral("user")), QStringLiteral("user"));
   m_place->addItem(placeName(QStringLiteral("project")), QStringLiteral("project"));
   m_place->setAccessibleName(tr("Library"));
   m_place->hide();
-  m_importLine = new QLabel;
-  m_importLine->setStyleSheet(QStringLiteral("color: gray;"));
-  m_importLine->hide();
-  m_details = new QPushButton(tr("Details…"));
-  m_details->hide();
-  m_import = new QPushButton(tr("Import from Slicer…"));
-  top->addWidget(m_place);
-  top->addStretch(1);
-  top->addWidget(m_importLine);
-  top->addWidget(m_details);
-  top->addWidget(m_import);
-  layout->addLayout(top);
+  m_importBar = new SlicerImportBar(m_host, QStringLiteral("My Library"));
+  m_importBar->target = [this] { return place(); };
+  m_importBar->row()->insertWidget(0, m_place);
+  layout->addWidget(m_importBar);
 
   // The panels of the design's windows, on the library.
   m_tabs = new QTabWidget;
@@ -90,9 +76,6 @@ MyLibraryDialog::MyLibraryDialog(QWidget* parent) : QDialog(parent) {
   m_materials->addButton(makeClose(), QStringLiteral("close"));
   m_printers->addButton(makeClose(), QStringLiteral("close"));
   m_processes->addButton(makeClose(), QStringLiteral("close"));
-  for (QPushButton* button : {m_details, m_import}) {
-    mac::auxiliaryButton(button);
-  }
   mac::styleDialog(this);
 
   m_materials->setLibrary(QStringLiteral("user"));
@@ -104,8 +87,10 @@ MyLibraryDialog::MyLibraryDialog(QWidget* parent) : QDialog(parent) {
   connect(m_printers, &ProfilesPanel::changed, this, changed);
   connect(m_processes, &ProfilesPanel::changed, this, changed);
   connect(m_place, &QComboBox::activated, this, [this] { placeChosen(); });
-  connect(m_import, &QPushButton::clicked, this, &MyLibraryDialog::importFromSlicer);
-  connect(m_details, &QPushButton::clicked, this, [this] { ImportDetailsDialog::showReport(m_summary, this); });
+  connect(m_importBar, &SlicerImportBar::imported, this, [this] {
+    m_changed = true;
+    refresh();
+  });
   connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
     if (index >= 0 && index < static_cast<int>(std::size(kTabs))) {
       qDebug().noquote() << QStringLiteral("My Library tab: %1").arg(QLatin1String(kTabs[index]));
@@ -115,8 +100,9 @@ MyLibraryDialog::MyLibraryDialog(QWidget* parent) : QDialog(parent) {
 }
 
 MyLibraryDialog::~MyLibraryDialog() {
-  // The panels before the model they work through.
+  // The panels and the import before the model they work through.
   delete m_tabs;
+  delete m_importBar;
 }
 
 QString MyLibraryDialog::place() const {
@@ -144,61 +130,11 @@ void MyLibraryDialog::refresh() {
 void MyLibraryDialog::placeChosen() {
   const QString library = place();
   qDebug().noquote() << QStringLiteral("My Library place: %1").arg(library);
-  m_importLine->hide();
-  m_details->hide();
+  m_importBar->clear();
   m_materials->setLibrary(library);
   m_printers->setLibrary(library);
   m_processes->setLibrary(library);
   scheduleLogPlaces();
-}
-
-void MyLibraryDialog::importFromSlicer() {
-  // As 3D Print's Import from slicer…, into the library shown (mitcad#704).
-  const QString path = dialogOpenFileName(this, tr("Import from Slicer"),
-                                          dialogStartFolder(DialogGroup::Import, QString()), slicerFileFilter());
-  if (path.isEmpty()) {
-    return;
-  }
-  rememberDialogFolder(DialogGroup::Import, path);
-  const QString library = place();
-  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("import_print_profile")},
-                      {QStringLiteral("path"), path},
-                      {QStringLiteral("into"), library}};
-  if (library == QStringLiteral("project")) {
-    command.insert(QStringLiteral("project"), m_host.projectFolder());
-  }
-  PrintKeyTable keys;
-  try {
-    keys = PrintKeyTable(m_host.model().queryObject({{QStringLiteral("query"), QStringLiteral("print_keys")}}));
-  } catch (const std::exception&) {
-    // Without the names: as reported.
-  }
-  QJsonObject result;
-  if (!m_host.runModelCommand(command, &result)) {
-    m_importLine->setText(plainModelError(m_host.lastError(), keys, command));
-    setErrorStyleSheet(m_importLine);
-    m_importLine->show();
-    m_details->hide();
-    qDebug().noquote() << QStringLiteral("My Library import refused: %1").arg(m_host.lastError());
-    scheduleLogPlaces();
-    return;
-  }
-  m_changed = true;
-  m_summary = printImportSummary(QFileInfo(path).fileName(), library, result, &keys);
-  m_importLine->setText(m_summary.line);
-  m_importLine->setStyleSheet(QStringLiteral("color: gray;"));
-  m_importLine->show();
-  m_details->setVisible(!m_summary.details.isEmpty());
-  QStringList items;
-  for (const QJsonValue& value : result.value(QStringLiteral("items")).toArray()) {
-    const QJsonObject item = value.toObject();
-    items << QStringLiteral("%1 %2").arg(item.value(QStringLiteral("kind")).toString(),
-                                         item.value(QStringLiteral("name")).toString());
-  }
-  qDebug().noquote() << QStringLiteral("My Library imported into %1: %2")
-                            .arg(library, items.isEmpty() ? QStringLiteral("nothing") : items.join(QStringLiteral(", ")));
-  qDebug().noquote() << QStringLiteral("My Library import: %1").arg(m_summary.line);
-  refresh();
 }
 
 void MyLibraryDialog::showEvent(QShowEvent* event) {
@@ -241,12 +177,9 @@ void MyLibraryDialog::logPlaces() {
     lines << QStringLiteral("My Library tab %1 at %2")
                  .arg(QLatin1String(kTabs[i]), at(m_tabs->tabBar(), m_tabs->tabBar()->tabRect(i).center()));
   }
-  const std::pair<const char*, QWidget*> widgets[] = {
-      {"place", m_place}, {"import", m_import}, {"details", m_details}};
-  for (const auto& [name, widget] : widgets) {
-    if (widget->isVisibleTo(this)) {
-      lines << QStringLiteral("My Library %1 at %2").arg(QLatin1String(name), at(widget, widget->rect().center()));
-    }
+  // The import's buttons are logged by their row.
+  if (m_place->isVisibleTo(this)) {
+    lines << QStringLiteral("My Library place at %1").arg(at(m_place, m_place->rect().center()));
   }
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_loggedPlaces) {

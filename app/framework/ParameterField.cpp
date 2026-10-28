@@ -63,6 +63,8 @@ constexpr int kName = 2;
 constexpr int kFormula = 3;
 constexpr int kFunction = 4;
 constexpr int kTemplate = 5;
+constexpr int kTable = 6;  // a table's name (mitcad#667): puts `Screws.` in
+constexpr int kColumn = 7; // a column after `Screws.`
 
 constexpr int kMaxRows = 10;
 constexpr int kPageRows = 8;
@@ -377,7 +379,7 @@ QString ParameterField::typedName(const Anchor& where) const {
   } else if (m_mode == Mode::Browsing) {
     name = m_filter.trimmed();
   }
-  if (!isValidParameterName(name)) {
+  if (!isValidParameterName(name) || tableNamed(m_tables, name) != nullptr) {
     return QString();
   }
   for (const SuggestedParameter& p : m_parameters) {
@@ -411,8 +413,9 @@ void ParameterField::fetch() {
   try {
     m_parameters = suggestedParameters(source->parameters());
     if (source->query) {
-      m_functions = source->query({{QStringLiteral("query"),QStringLiteral("formula_help")}})
-                        .value(QStringLiteral("functions")).toArray();
+      const QJsonObject help = source->query({{QStringLiteral("query"), QStringLiteral("formula_help")}});
+      m_functions = help.value(QStringLiteral("functions")).toArray();
+      m_tables = suggestedTables(help.value(QStringLiteral("tables")).toArray());
     }
   } catch (const std::exception& e) {
     // A job computes the model: the parameters read last.
@@ -425,6 +428,21 @@ void ParameterField::textEdited() {
   if (m_inserting) {
     return;
   }
+  // A column after `Table.` (mitcad#667).
+  const ColumnFragment column = columnFragmentAt(m_edit->text(), m_edit->cursorPosition());
+  if (column.active && !m_edit->hasSelectedText()) {
+    if (m_mode != Mode::Typing) {
+      fetch();
+    }
+    if (tableNamed(m_tables, column.table) != nullptr) {
+      m_columnsOf = column.table;
+      m_mode = Mode::Typing;
+      m_filter = column.typed;
+      open(Mode::Typing);
+      return;
+    }
+  }
+  m_columnsOf.clear();
   const NameFragment fragment = nameFragmentAt(m_edit->text(), m_edit->cursorPosition());
   if (!fragment.active || m_edit->hasSelectedText()) {
     close();
@@ -447,6 +465,16 @@ void ParameterField::caretMoved() {
     // no longer where a choice would go.
     if (m_edit->cursorPosition() != m_anchor.caret) {
       close();
+    }
+    return;
+  }
+  if (!m_columnsOf.isEmpty()) {
+    const ColumnFragment column = columnFragmentAt(m_edit->text(), m_edit->cursorPosition());
+    if (!column.active || column.table != m_columnsOf) {
+      close();
+    } else if (column.typed != m_filter) {
+      m_filter = column.typed;
+      open(Mode::Typing);
     }
     return;
   }
@@ -515,8 +543,62 @@ void ParameterField::open(Mode mode) {
   QTimer::singleShot(0, this, [this] { logPlaces(); });
 }
 
+bool ParameterField::fillColumns() {
+  const SuggestedTable* table = tableNamed(m_tables, m_columnsOf);
+  if (table == nullptr) {
+    return false;
+  }
+  QFont bold = m_list->font();
+  bold.setBold(true);
+  auto* header = new QTreeWidgetItem(m_list, {tr("Columns of %1").arg(table->name)});
+  header->setFlags(Qt::ItemIsEnabled);
+  header->setFont(0, bold);
+  header->setData(0, kActionRole, kHeader);
+  header->setFirstColumnSpanned(true);
+  const std::vector<SuggestedTable::Column> columns = matchColumns(*table, m_filter);
+  QStringList logged;
+  QTreeWidgetItem* current = nullptr;
+  for (const SuggestedTable::Column& column : columns) {
+    // The unit box's words: a unit, "no unit" or "Text".
+    const QString unit = column.unit.isEmpty() ? tr("no unit") : column.unit;
+    auto* item = new QTreeWidgetItem(m_list, {column.name, unit, table->comment});
+    item->setData(0, kNameRole, column.name);
+    item->setData(0, kActionRole, kColumn);
+    const QString tip = tr("%1.%2: a column (%3); look a value up with XLOOKUP or INDEX")
+                            .arg(table->name, column.name, unit);
+    for (int i = 0; i < 3; ++i) {
+      item->setToolTip(i, tip);
+    }
+    if (current == nullptr) {
+      current = item;
+    }
+    logged << column.name;
+  }
+  if (columns.empty()) {
+    auto* item = new QTreeWidgetItem(m_list, {tr("No column of %1 matches “%2”").arg(table->name, m_filter)});
+    item->setFlags(Qt::ItemIsEnabled);
+    item->setData(0, kActionRole, kHeader);
+    item->setFirstColumnSpanned(true);
+  }
+  m_list->setCurrentItem(current);
+  showProblem(current);
+  m_search->setVisible(false);
+  const QString line = QStringLiteral("Parameter suggestions for %1 \"%2.%3\": %4")
+                           .arg(m_options.label, table->name, m_filter,
+                                logged.isEmpty() ? QStringLiteral("none") : logged.join(QStringLiteral(", ")));
+  if (line != m_logged) {
+    m_logged = line;
+    qDebug().noquote() << line;
+  }
+  // Exactly the one column typed already: nothing to choose.
+  return !(columns.size() == 1 && columns.front().name == m_filter);
+}
+
 bool ParameterField::fill() {
   m_list->clear();
+  if (!m_columnsOf.isEmpty() && m_mode == Mode::Typing) {
+    return fillColumns();
+  }
   const Anchor at = anchor();
   const auto inserted = [&at](const QString& name) {
     return insertParameter(at.text, at.caret, at.selection, at.selectionLength, name).text;
@@ -584,7 +666,35 @@ bool ParameterField::fill() {
     }
     logged << (choice.problem.isEmpty() ? p.name : QStringLiteral("%1 (%2)").arg(p.name, choice.problem));
   }
-  if (choices.empty()) {
+  // The design's tables (mitcad#667): a choice puts `Screws.` in, and the
+  // list goes on with its columns.
+  const std::vector<const SuggestedTable*> tables = matchTables(m_tables, m_filter, browsing);
+  QStringList loggedTables;
+  if (!tables.empty()) {
+    auto* header = new QTreeWidgetItem(m_list, {tr("Tables")});
+    header->setFlags(Qt::ItemIsEnabled);
+    header->setFont(0, bold);
+    header->setData(0, kActionRole, kHeader);
+    header->setFirstColumnSpanned(true);
+  }
+  for (const SuggestedTable* table : tables) {
+    QStringList columns;
+    for (const SuggestedTable::Column& column : table->columns) {
+      columns << column.name;
+    }
+    auto* item = new QTreeWidgetItem(m_list, {table->name, columns.join(QStringLiteral(", ")), table->comment});
+    item->setData(0, kNameRole, table->name + QLatin1Char('.'));
+    item->setData(0, kActionRole, kTable);
+    const QString tip = tr("Table %1: %2. Choose a column after the dot.").arg(table->name, columns.join(QStringLiteral(", ")));
+    for (int column = 0; column < 3; ++column) {
+      item->setToolTip(column, tip);
+    }
+    if (current == nullptr) {
+      current = item;
+    }
+    loggedTables << table->name;
+  }
+  if (choices.empty() && tables.empty()) {
     if (m_parameters.empty()) {
       note(tr("The design has no parameters yet"));
     } else if (m_filter.trimmed().isEmpty()) {
@@ -666,8 +776,10 @@ bool ParameterField::fill() {
   m_search->setText(m_filter.isEmpty() ? tr("Type to search names and comments")
                                        : tr("Search: %1").arg(m_filter));
   const QString line =
-      QStringLiteral("Parameter suggestions for %1 \"%2\": %3%4")
+      QStringLiteral("Parameter suggestions for %1 \"%2\": %3%4%5")
           .arg(m_options.label, m_filter, logged.isEmpty() ? QStringLiteral("none") : logged.join(QStringLiteral(", ")),
+               loggedTables.isEmpty() ? QString()
+                                      : QStringLiteral("; tables: %1").arg(loggedTables.join(QStringLiteral(", "))),
                actions.isEmpty() ? QString() : QStringLiteral("; actions: %1").arg(actions.join(QStringLiteral(", "))));
   if (line != m_logged) {
     m_logged = line;
@@ -678,10 +790,10 @@ bool ParameterField::fill() {
     const QString word = at.text.mid(fragment.start, fragment.length);
     // Nothing to offer for a function's or a unit's name; nor for exactly
     // the one name typed already (Enter then confirms as without a list).
-    if (choices.empty() && actions.isEmpty() && !hasFunctions && isReservedName(word)) {
+    if (choices.empty() && tables.empty() && actions.isEmpty() && !hasFunctions && isReservedName(word)) {
       return false;
     }
-    if (choices.size() == 1 && choices.front().parameter->name == word && actions.isEmpty()) {
+    if (choices.size() == 1 && choices.front().parameter->name == word && actions.isEmpty() && tables.empty()) {
       return false;
     }
   }
@@ -829,6 +941,37 @@ void ParameterField::activate(QTreeWidgetItem* item) {
   case kFormula:
     QTimer::singleShot(0,this,[this] { openFormulaEditor(); });
     return;
+  case kTable: {
+    // `Screws.` in place of the name typed; the list goes on with its
+    // columns (mitcad#667).
+    // A `.` after the name typed (`Scr|.dk`) is not put in twice: the
+    // caret goes past it.
+    const Anchor where = anchor();
+    const NameFragment fragment = nameFragmentAt(where.text, where.caret);
+    const int end = fragment.start + fragment.length;
+    const bool dot = fragment.active && end < where.text.size() && where.text.at(end) == QLatin1Char('.');
+    QString name = item->data(0, kNameRole).toString();
+    if (dot) {
+      name.chop(1);
+    }
+    insert(name, QStringLiteral("table"), where);
+    if (dot) {
+      m_edit->setCursorPosition(m_edit->cursorPosition() + 1);
+    }
+    QTimer::singleShot(0, this, [this] { textEdited(); });
+    return;
+  }
+  case kColumn: {
+    // In place of the column's name typed, also what follows the caret.
+    Anchor where = anchor();
+    const ColumnFragment column = columnFragmentAt(where.text, where.caret);
+    if (column.active && column.length > 0) {
+      where.selection = column.start;
+      where.selectionLength = column.length;
+    }
+    insert(item->data(0, kNameRole).toString(), QStringLiteral("column"), where);
+    return;
+  }
   default:
     break;
   }
@@ -952,6 +1095,8 @@ void ParameterField::openCreateEditor() {
   insert(dialog.chosen(), dialog.created() ? QStringLiteral("created") : QStringLiteral("existing"), at);
 }
 
+void ParameterField::refreshParameters() { fetch(); }
+
 void ParameterField::startNaming() {
   const Anchor at = anchor();
   const QString typed = typedName(at);
@@ -999,6 +1144,7 @@ void ParameterField::close(const QString& why) {
   const bool shown = m_popup && m_popup->isVisible();
   m_mode = Mode::Closed;
   m_filter.clear();
+  m_columnsOf.clear();
   if (m_popup) {
     m_popup->hide();
   }

@@ -10,6 +10,8 @@
 #include <QLabel>
 #include <QLayout>
 #include <QMargins>
+#include <QObject>
+#include <QPoint>
 #include <QRect>
 #include <QScreen>
 #include <QScrollArea>
@@ -136,6 +138,38 @@ int fitToScreenTests() {
     check(small.size() == bigger, "GrowOnly does not shrink");
     fitWindowToContents(&small);
     check(small.size() == small.sizeHint(), "Fit shrinks to the hint");
+
+    // A preferred size opens a window roomier than its hint where the
+    // screen has room, and never beyond the screen (mitcad#818).
+    QDialog roomy;
+    makeArea(&roomy, 3);
+    const QSize preferred = roomy.sizeHint() + QSize(40, 40);
+    fitWindowToContents(&roomy, FitMode::Fit, preferred);
+    check(roomy.size() == preferred, "a preferred size larger than the hint is taken where it fits");
+    fitWindowToContents(&roomy, FitMode::Fit, available.size() * 2);
+    check(roomy.width() <= available.width() && roomy.height() <= available.height(),
+          "a preferred size larger than the screen is capped at it");
+
+    // A shown window larger than its screen is made to fit it and moved
+    // inside its available area; one that fits keeps its size.
+    QDialog shown;
+    makeArea(&shown, 3);
+    shown.show();
+    shown.resize(available.size() + QSize(300, 300));
+    shown.move(available.topLeft() + QPoint(200, 200));
+    capWindowToScreen(&shown);
+    check(shown.width() <= available.width() && shown.height() <= available.height(),
+          "a shown window larger than the screen is capped at it");
+    check(available.contains(shown.frameGeometry()), "a capped window is moved inside the available area");
+    const QSize fitting = shown.sizeHint() + QSize(20, 20);
+    shown.resize(fitting);
+    capWindowToScreen(&shown);
+    check(shown.size() == fitting, "a window that fits the screen keeps its size");
+    keepWindowOnScreen(&shown);
+    keepWindowOnScreen(&shown);
+    check(shown.findChildren<QObject*>(QStringLiteral("mitcadKeptOnScreen"), Qt::FindDirectChildrenOnly).size() == 1,
+          "a window is watched for screen changes once");
+    shown.hide();
   }
   return failures;
 }

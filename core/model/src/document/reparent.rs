@@ -130,7 +130,9 @@ impl ReparentPlan {
 #[derive(Debug, Clone, Default)]
 struct Rewritten {
     features: Vec<(usize, FeatureDef)>,
-    analyses: Vec<(usize, OccurrencePath)>,
+    /// Section analyses' paths: the analysis, whether the path is its
+    /// axis' (mitcad#823) rather than its plane's, and the new path.
+    analyses: Vec<(usize, bool, OccurrencePath)>,
     isolated: Vec<(usize, String)>,
     /// Contact sets' occurrences (mitcad#454).
     contact_sets: Vec<(usize, Vec<OccurrencePath>)>,
@@ -423,12 +425,21 @@ fn rewrite_references(
     for (i, analysis) in state.analyses.iter().enumerate() {
         match &analysis.def {
             AnalysisDef::Section(section) => {
-                if let Some(path) = &section.occurrence {
-                    let mut moved = path.0.clone();
-                    if rewrite.absolute(&mut moved) {
-                        updates.push(analysis.name.clone());
-                        out.analyses.push((i, OccurrencePath(moved)));
+                let mut changed = false;
+                for (axis, path) in [
+                    (false, &section.occurrence),
+                    (true, &section.axis_occurrence),
+                ] {
+                    if let Some(path) = path {
+                        let mut moved = path.0.clone();
+                        if rewrite.absolute(&mut moved) {
+                            changed = true;
+                            out.analyses.push((i, axis, OccurrencePath(moved)));
+                        }
                     }
+                }
+                if changed {
+                    updates.push(analysis.name.clone());
                 }
             }
             // Bodies and a bed face by uid and name: no occurrence path.
@@ -1039,8 +1050,9 @@ fn take(state: &mut DocState, plan: &ReparentPlan) {
         }
         state.next_uid = state.next_uid.max(entry.uid.0 + 1);
     }
-    for (i, path) in &plan.changes.analyses {
+    for (i, axis, path) in &plan.changes.analyses {
         match &mut state.analyses[*i].def {
+            AnalysisDef::Section(section) if *axis => section.axis_occurrence = Some(path.clone()),
             AnalysisDef::Section(section) => section.occurrence = Some(path.clone()),
             AnalysisDef::Print(_) => {}
         }

@@ -2,6 +2,7 @@
 //! Commands and queries of components and occurrences (F6, see
 //! `commands.md`).
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::Deserialize;
@@ -12,6 +13,7 @@ use super::dispatch::named_enum;
 use super::prelude::*;
 use mitcad_model::assembly::{from_rows, matrix_rows, matrix4};
 use mitcad_model::features::OccurrencePath;
+use mitcad_model::features::ValueInput;
 use mitcad_model::ids::{BodyUid, ComponentUid, OccurrenceUid};
 use mitcad_model::kernel::Kernel;
 use mitcad_model::transform::Transform;
@@ -100,7 +102,12 @@ named_enum! {
         },
         "set_occurrence_visible" => SetOccurrenceVisible {
             occurrence: String,
-            visible: bool,
+            #[serde(default)]
+            visible: Option<bool>,
+            /// A condition the visibility follows instead (mitcad#800); ""
+            /// removes it.
+            #[serde(default)]
+            expression: Option<String>,
         },
         "set_occurrence_transform" => SetOccurrenceTransform {
             occurrence: String,
@@ -138,6 +145,10 @@ named_enum! {
             /// Placed by a mount frame (mitcad#525).
             #[serde(default)]
             mount: Option<Box<mitcad_model::MountInput>>,
+            /// Linked with options (mitcad#801): values of the source's
+            /// user parameters, expressions of this design's parameters.
+            #[serde(default)]
+            parameters: Option<BTreeMap<String, ValueInput>>,
         },
         "update_links" => UpdateLinks {
             #[serde(default)]
@@ -150,6 +161,16 @@ named_enum! {
             /// The path of the new parent's occurrence; empty: the root.
             #[serde(default)]
             parent: String,
+        },
+        // Options of an inserted component (mitcad#801).
+        "set_component_parameters" => SetComponentParameters {
+            component: String,
+            /// {option: expression or number}; null removes the
+            /// component's own value.
+            #[serde(default)]
+            parameters: BTreeMap<String, Option<ValueInput>>,
+            #[serde(default)]
+            config: Option<String>,
         },
     }
 }
@@ -325,9 +346,25 @@ impl<K: Kernel> ComponentsCrateOps<K> for Document<K> {
             ComponentCommand::SetOccurrenceVisible {
                 occurrence,
                 visible,
+                expression,
             } => {
                 let uid = self.occurrence_ref(&occurrence)?;
-                self.set_occurrence_visible(uid, visible)?;
+                match (visible, expression) {
+                    (Some(_), Some(_)) => {
+                        return Err(ApiError(
+                            "`visible` and `expression` are both given: give the value, or the \
+                             expression it follows"
+                                .to_owned(),
+                        ));
+                    }
+                    (None, None) => {
+                        return Err(ApiError(
+                            "set_occurrence_visible needs `visible` or `expression`".to_owned(),
+                        ));
+                    }
+                    (Some(visible), None) => self.set_occurrence_visible(uid, visible)?,
+                    (None, Some(expression)) => self.bind_occurrence_visible(uid, &expression)?,
+                }
                 json!({})
             }
             ComponentCommand::SetOccurrenceTransform {
@@ -369,6 +406,7 @@ impl<K: Kernel> ComponentsCrateOps<K> for Document<K> {
                 name,
                 base,
                 mount,
+                parameters,
             } => {
                 let options = InsertOptions {
                     link,
@@ -376,6 +414,7 @@ impl<K: Kernel> ComponentsCrateOps<K> for Document<K> {
                     name,
                     base: base.map(PathBuf::from),
                     mount: mount.map(|m| *m),
+                    parameters,
                 };
                 // With its mount frames and the joint a mount placement made
                 // (mitcad#525).
@@ -389,6 +428,19 @@ impl<K: Kernel> ComponentsCrateOps<K> for Document<K> {
                     }
                 };
                 super::mounts::inserted_json(self, &inserted)
+            }
+            ComponentCommand::SetComponentParameters {
+                component,
+                parameters,
+                config,
+            } => {
+                let change = mitcad_model::OptionsChange {
+                    component: self.component_ref(&component)?,
+                    parameters,
+                    config,
+                };
+                let changed = self.set_component_parameters(&change)?;
+                super::component_options::changed_json(self, &changed)
             }
             ComponentCommand::UpdateLinks { base } => {
                 let base = base.map(PathBuf::from);
@@ -648,7 +700,7 @@ impl<K: Kernel> ComponentsLocal<K> for Document<K> {
                 path.push(o.uid);
                 let placement = self.placement(o.uid).unwrap_or(o.transform);
                 let world = at.after(&placement);
-                json!({
+                let mut value = json!({
                     "uid": o.uid,
                     "name": a.occurrence_name(o.uid),
                     "path": a.path_name(&path),
@@ -658,7 +710,18 @@ impl<K: Kernel> ComponentsLocal<K> for Document<K> {
                     "grounded": o.grounded,
                     "visible": o.visible,
                     "children": self.occurrence_tree(o.component, &path, world),
-                })
+                });
+                // The condition it is shown under (mitcad#800), the
+                // parameters it uses, and why it does not hold.
+                if let Some(text) = self.occurrence_visible_when(o.uid) {
+                    value["visible_when"] = json!(text);
+                    value["dependencies"] =
+                        json!(mitcad_model::DocState::expression_parameters([text]));
+                    if let Some(warning) = self.state().occurrence_binding_warning(o.uid) {
+                        value["warnings"] = json!([warning]);
+                    }
+                }
+                value
             })
             .collect()
     }

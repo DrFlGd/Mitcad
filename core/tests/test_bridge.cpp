@@ -195,7 +195,7 @@ void test_block_fillet_and_dimension_change() {
   CHECK(has_sharp_vertical_edge_at(*document, 80, 40));
   CHECK(contains(std::string(document->query(R"({"query": "parameters"})")),
                  R"({"comment":"Fillet1 radius","dependencies":[],"expression":"3 mm","favorite":false,)"
-                 R"("kind":"model","name":"d4","owner":"F3","text":"3 mm","unit":"mm","value":3.0})"));
+                 R"("kind":"model","name":"d4","owner":"F3","table_dependencies":[],"text":"3 mm","unit":"mm","value":3.0})"));
 
   // A failing fillet keeps the unfilleted body: the ball is too large to
   // touch either face inside the 80 x 40 block, even rolling on a far edge.

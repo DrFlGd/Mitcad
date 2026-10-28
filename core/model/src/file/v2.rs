@@ -134,6 +134,10 @@ struct FileOut<'a> {
     // Image references with their images (mitcad#782), when there are any.
     #[serde(skip_serializing_if = "<[ImageReference]>::is_empty")]
     image_references: &'a [ImageReference],
+    // Tables of data that expressions look values up in (mitcad#667),
+    // when there are any.
+    #[serde(skip_serializing_if = "crate::tables::Tables::is_empty")]
+    tables: &'a crate::tables::Tables,
 }
 
 /// A component's default material (mitcad#640).
@@ -200,6 +204,9 @@ struct OccurrenceOut {
     visible: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pattern: Option<crate::features::point_pattern::PatternInstance>,
+    // The condition it is shown under (mitcad#800).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visible_when: Option<String>,
 }
 
 fn is_root(component: &ComponentUid) -> bool {
@@ -237,6 +244,9 @@ struct ParameterOut<'a> {
     step: Option<&'a str>,
     #[serde(skip_serializing_if = "is_false")]
     strict: bool,
+    // Allowed values (mitcad#798).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    values: Option<&'a [String]>,
 }
 
 #[derive(Serialize)]
@@ -245,6 +255,9 @@ struct FeatureOut<'a> {
     name: &'a str,
     #[serde(skip_serializing_if = "is_false")]
     suppressed: bool,
+    // The condition it is suppressed under (mitcad#800).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    suppressed_when: Option<&'a str>,
     #[serde(skip_serializing_if = "is_root")]
     component: ComponentUid,
     /// Set by the user for sketches and construction features (U3).
@@ -277,6 +290,15 @@ struct BodyOut<'a> {
     // The face that lies on the print bed (mitcad#731).
     #[serde(skip_serializing_if = "Option::is_none")]
     print_bed_face: Option<&'a str>,
+    // Expressions the values above follow (mitcad#800).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    appearance_expr: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    material_expr: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visible_when: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    face_appearance_exprs: Option<&'a BTreeMap<String, String>>,
 }
 
 pub(super) fn save(state: &DocState) -> String {
@@ -319,6 +341,7 @@ pub(super) fn save(state: &DocState) -> String {
                 max: p.limits().max.as_deref(),
                 step: p.limits().step.as_deref(),
                 strict: p.limits().strict,
+                values: p.limits().values.as_deref(),
             })
             .collect(),
         root_component: (assembly.root_name != ROOT_NAME).then_some(assembly.root_name.as_str()),
@@ -347,6 +370,7 @@ pub(super) fn save(state: &DocState) -> String {
                 grounded: o.grounded,
                 visible: (!o.visible).then_some(false),
                 pattern: o.pattern.clone(),
+                visible_when: state.bindings.occurrence_visible_when.get(&o.uid).cloned(),
             })
             .collect(),
         active_component: (!assembly.active.is_root()).then_some(assembly.active),
@@ -357,6 +381,11 @@ pub(super) fn save(state: &DocState) -> String {
                 uid: f.uid,
                 name: &f.name,
                 suppressed: f.suppressed,
+                suppressed_when: state
+                    .bindings
+                    .suppressed_when
+                    .get(&f.uid)
+                    .map(String::as_str),
                 component: f.component,
                 visible: state.feature_visibility.get(&f.uid).copied(),
                 import_note: state.import_notes.get(&f.uid).map(String::as_str),
@@ -382,6 +411,12 @@ pub(super) fn save(state: &DocState) -> String {
                         .map(|a| &a.face_appearances)
                         .filter(|faces| !faces.is_empty()),
                     print_bed_face: attributes.and_then(|a| a.print_bed_face.as_deref()),
+                    appearance_expr: attributes.and_then(|a| a.appearance_expr.as_deref()),
+                    material_expr: attributes.and_then(|a| a.material_expr.as_deref()),
+                    visible_when: attributes.and_then(|a| a.visible_when.as_deref()),
+                    face_appearance_exprs: attributes
+                        .map(|a| &a.face_appearance_exprs)
+                        .filter(|faces| !faces.is_empty()),
                 }
             })
             .collect(),
@@ -445,6 +480,7 @@ pub(super) fn save(state: &DocState) -> String {
             .filter(|d| assembly.exists(d.component))
             .collect(),
         image_references: &state.image_references,
+        tables: &state.tables,
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -600,6 +636,28 @@ struct ParameterIn {
     step: Option<String>,
     #[serde(default)]
     strict: bool,
+    // Allowed values (mitcad#798): a list, or a table column as its one
+    // entry, also written as the column alone (`"Screws.Size"`, mitcad#806).
+    #[serde(default, deserialize_with = "values_list")]
+    values: Option<Vec<String>>,
+}
+
+/// The allowed values of a parameter in the file: a list of expressions,
+/// or a table column (`"Screws.Size"`) read as a list of that one entry.
+fn values_list<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Values {
+        List(Vec<String>),
+        Column(String),
+    }
+    Ok(match Option::<Values>::deserialize(deserializer)? {
+        None => None,
+        Some(Values::List(list)) => Some(list),
+        Some(Values::Column(column)) => Some(vec![column]),
+    })
 }
 
 #[derive(Deserialize)]
@@ -626,6 +684,15 @@ struct BodyIn {
     face_appearances: BTreeMap<String, String>,
     #[serde(default)]
     print_bed_face: Option<String>,
+    // Bindings (mitcad#800).
+    #[serde(default)]
+    appearance_expr: Option<String>,
+    #[serde(default)]
+    material_expr: Option<String>,
+    #[serde(default)]
+    visible_when: Option<String>,
+    #[serde(default)]
+    face_appearance_exprs: BTreeMap<String, String>,
 }
 
 fn visible() -> bool {
@@ -665,12 +732,16 @@ struct OccurrenceIn {
     visible: bool,
     #[serde(default)]
     pattern: Option<crate::features::point_pattern::PatternInstance>,
+    #[serde(default)]
+    visible_when: Option<String>,
 }
 
 struct FeatureIn {
     uid: FeatureUid,
     name: String,
     suppressed: bool,
+    /// The condition it is suppressed under (mitcad#800).
+    suppressed_when: Option<String>,
     component: ComponentUid,
     visible: Option<bool>,
     /// What the importer that made it said (mitcad#170).
@@ -684,7 +755,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 36] = [
+const TOP_FIELDS: [&str; 37] = [
     "format",
     "version",
     "units",
@@ -737,6 +808,8 @@ const TOP_FIELDS: [&str; 36] = [
     "drawings",
     // Image references (mitcad#782).
     "image_references",
+    // Tables of data that expressions look values up in (mitcad#667).
+    "tables",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -785,6 +858,15 @@ fn feature_in(i: usize, value: Value) -> Result<FeatureIn, FileError> {
             )));
         }
     };
+    let suppressed_when = match fields.remove("suppressed_when") {
+        None => None,
+        Some(Value::String(text)) => Some(text).filter(|t| !t.trim().is_empty()),
+        Some(_) => {
+            return Err(schema(format!(
+                "features[{i}] ({name}): \"suppressed_when\" must be a string"
+            )));
+        }
+    };
     let component = match fields.remove("component") {
         None => ComponentUid::ROOT,
         Some(Value::String(text)) => text
@@ -826,6 +908,7 @@ fn feature_in(i: usize, value: Value) -> Result<FeatureIn, FileError> {
         uid,
         name,
         suppressed,
+        suppressed_when,
         component,
         visible,
         import_note,
@@ -836,9 +919,13 @@ fn feature_in(i: usize, value: Value) -> Result<FeatureIn, FileError> {
 }
 
 /// The components and occurrences of a file; files without them have
-/// only the root component, which holds every feature.
-fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
+/// only the root component, which holds every feature. Also the conditions
+/// occurrences are shown under (mitcad#800).
+fn assembly_in(
+    top: &mut Map<String, Value>,
+) -> Result<(Assembly, BTreeMap<OccurrenceUid, String>), FileError> {
     let mut assembly = Assembly::default();
+    let mut visible_when = BTreeMap::new();
     match top.remove("root_component") {
         None => {}
         Some(Value::String(name)) if !name.trim().is_empty() => assembly.root_name = name,
@@ -883,6 +970,9 @@ fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
             Some(rows) => from_rows(rows).map_err(|e| invalid(format!("occurrences[{i}]: {e}")))?,
         };
         assembly.next_occurrence = assembly.next_occurrence.max(o.uid.0 + 1);
+        if let Some(text) = o.visible_when.filter(|t| !t.trim().is_empty()) {
+            visible_when.insert(o.uid, text);
+        }
         assembly.occurrences.push(Occurrence {
             uid: o.uid,
             component: o.component,
@@ -901,7 +991,7 @@ fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
                 .map_err(|e| schema(format!("active_component: {e}")))?;
         }
     }
-    Ok(assembly)
+    Ok((assembly, visible_when))
 }
 
 pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
@@ -930,7 +1020,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
                 .map_err(|e| schema(format!("parameters[{i}]: {e}")))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let assembly = assembly_in(&mut top)?;
+    let (assembly, occurrence_visible_when) = assembly_in(&mut top)?;
     let features = array(&mut top, "features", true)?
         .into_iter()
         .enumerate()
@@ -1255,8 +1345,24 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
                 .ok_or_else(|| schema("\"marker\" must be a feature count"))?,
         ),
     };
+    // Tables (mitcad#667), before the parameters that look values up in
+    // them.
+    let mut tables = Vec::new();
+    for (i, table) in array(&mut top, "tables", false)?.into_iter().enumerate() {
+        let table = serde_json::from_value::<crate::tables::Table>(table)
+            .map_err(|e| schema(format!("tables[{i}]: {e}")))?;
+        table
+            .check()
+            .map_err(|e| invalid(format!("tables[{i}]: {e}")))?;
+        tables.push(table);
+    }
+    let tables =
+        crate::tables::Tables::from_list(tables).map_err(|e| invalid(format!("tables: {e}")))?;
 
-    let mut state = DocState::default();
+    let mut state = DocState {
+        tables,
+        ..DocState::default()
+    };
     let mut warnings = Vec::new();
     let renamed = load_parameters(&mut state, context, &parameters, &features, &mut warnings)?;
 
@@ -1326,6 +1432,9 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         if let Some(visible) = f.visible {
             state.feature_visibility.insert(f.uid, visible);
         }
+        if let Some(text) = &f.suppressed_when {
+            state.bindings.suppressed_when.insert(f.uid, text.clone());
+        }
         if let Some(note) = &f.import_note {
             state.import_notes.insert(f.uid, note.clone());
         }
@@ -1337,11 +1446,15 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     }
     let feature_uids: BTreeSet<FeatureUid> = uids.iter().copied().collect();
     assembly.check(&feature_uids).map_err(invalid)?;
+    // (The features by uid: a search per check made loading a large
+    // design quadratic in its features, mitcad#841.)
+    let index = crate::feature_index::FeatureIndex::default();
     for (i, entry) in entries.iter().enumerate() {
         let ctx = CheckContext {
             uid: entry.uid,
             earlier: &entries[..i],
             all: &entries,
+            index: &index,
         };
         entry
             .def
@@ -1356,7 +1469,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
                 }
                 _ => Ok(()),
             })
-            .and_then(|()| check_components(&assembly, &entries, entry))
+            .and_then(|()| check_components(&assembly, &entries, &index, entry))
             .map_err(|e| invalid(format!("features[{i}] ({}): {e}", entry.name)))?;
     }
     // Derived parts are made from the file's sources (mitcad#375).
@@ -1410,6 +1523,15 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             )));
         }
         if let Some(face) = body
+            .face_appearance_exprs
+            .keys()
+            .find(|face| face.parse::<crate::topo::FaceName>().is_err())
+        {
+            return Err(invalid(format!(
+                "bodies[{i}]: '{face}' is no face name in face_appearance_exprs"
+            )));
+        }
+        if let Some(face) = body
             .print_bed_face
             .as_deref()
             .filter(|face| face.parse::<crate::topo::FaceName>().is_err())
@@ -1424,6 +1546,10 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             appearance: body.appearance,
             face_appearances: body.face_appearances,
             print_bed_face: body.print_bed_face,
+            appearance_expr: body.appearance_expr.filter(|t| !t.trim().is_empty()),
+            material_expr: body.material_expr.filter(|t| !t.trim().is_empty()),
+            visible_when: body.visible_when.filter(|t| !t.trim().is_empty()),
+            face_appearance_exprs: body.face_appearance_exprs,
         };
         if !attributes.is_default() {
             state.body_attributes.insert(body.uid, attributes);
@@ -1589,9 +1715,54 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     // under the names they were loaded with.
     let mut configurations = configurations;
     if !renamed.is_empty() {
-        for name in &mut configurations.parameters {
+        for name in configurations
+            .parameters
+            .iter_mut()
+            .chain(&mut configurations.options)
+        {
             if let Some(new) = renamed.get(name) {
                 new.clone_into(name);
+            }
+        }
+        // The rules' conditions, options and expressions (mitcad#799).
+        for rule in &mut configurations.rules {
+            if let Some(when) = rule.when.as_mut() {
+                *when = rename_names(when, &renamed);
+            }
+            for action in rule.then.iter_mut().chain(&mut rule.otherwise) {
+                if let Some(option) = action.option.as_mut()
+                    && let Some(new) = renamed.get(option.as_str())
+                {
+                    new.clone_into(option);
+                }
+                // The options of an `in_table` action (mitcad#806).
+                if let Some(columns) = action.columns.as_mut() {
+                    *columns = std::mem::take(columns)
+                        .into_iter()
+                        .map(|(option, column)| {
+                            (renamed.get(&option).cloned().unwrap_or(option), column)
+                        })
+                        .collect();
+                }
+                for list in [&mut action.values, &mut action.exclude]
+                    .into_iter()
+                    .flatten()
+                {
+                    for text in list.iter_mut() {
+                        *text = rename_names(text, &renamed);
+                    }
+                }
+                for text in [
+                    &mut action.min,
+                    &mut action.max,
+                    &mut action.step,
+                    &mut action.require,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    *text = rename_names(text, &renamed);
+                }
             }
         }
         for row in &mut configurations.rows {
@@ -1604,6 +1775,15 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
                 .collect();
         }
     }
+    // A table of the old form (selectors, before mitcad#798) opens as a
+    // closed table whose options are new text parameters.
+    let (_, migrated) = crate::document::configurations::migrate(
+        &mut configurations,
+        &mut state.parameters,
+        &Configurations::default(),
+    )
+    .map_err(|e| invalid(format!("configurations: {e}")))?;
+    warnings.extend(migrated);
     if let Some(problem) = configurations.problems(&state.parameters).first() {
         return Err(invalid(format!("configurations: {problem}")));
     }
@@ -1635,6 +1815,13 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         shown = shown || analysis.visible;
     }
     settle_unitless_slots(&mut state, &mut warnings);
+    // Bindings (mitcad#800): those of occurrences the file has, and every
+    // bound value as its expression gives it with the file's parameters.
+    state.bindings.occurrence_visible_when = occurrence_visible_when;
+    if !renamed.is_empty() {
+        state.edit_binding_texts(|text| *text = rename_names(text, &renamed));
+    }
+    state.settle_bindings();
     Ok((state, warnings))
 }
 
@@ -1844,6 +2031,7 @@ fn load_parameters(
             max: p.max.clone(),
             step: p.step.clone(),
             strict: p.strict,
+            values: p.values.clone(),
         };
         specs.push((
             spec.with_comment(&p.comment)
@@ -1863,11 +2051,14 @@ fn load_parameters(
             .iter()
             .position(|p| renamed.get(&p.name).unwrap_or(&p.name) == name)
     };
-    state.parameters = Parameters::build(context, specs).map_err(|e| {
+    // They look values up in the design's tables (mitcad#667).
+    let tables = state.tables.source();
+    state.parameters = Parameters::build_with_tables(context, specs, tables).map_err(|e| {
         let name = match &e {
             TableError::InvalidName(name)
             | TableError::ReservedName(name)
-            | TableError::DuplicateName(name) => Some(name.as_str()),
+            | TableError::DuplicateName(name)
+            | TableError::TableName(name) => Some(name.as_str()),
             TableError::Parse { parameter, .. } | TableError::Eval { parameter, .. } => {
                 Some(parameter.as_str())
             }

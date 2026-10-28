@@ -16,6 +16,13 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
       COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-print-fits-test.sh"
               "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-print-fits" qt)
     set_tests_properties(app.ui-macos-print-fits PROPERTIES TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    # Configurations (mitcad#807): the window opens and a choice in the
+    # browser's Configuration bar changes the body (the test driver's
+    # script, shared with the Windows test).
+    add_test(NAME app.ui-macos-configurations
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-configurations-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-configurations")
+    set_tests_properties(app.ui-macos-configurations PROPERTIES TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     if(MITCAD_MACOS_NATIVE_UI)
       add_test(NAME app.ui-macos-native-print-fits
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-print-fits-test.sh"
@@ -29,6 +36,21 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-projects-test.sh"
                 "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-projects")
       set_tests_properties(app.ui-macos-native-projects PROPERTIES TIMEOUT 420 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      # Card widths and secondary windows within the visible screen (mitcad#818).
+      add_test(NAME app.ui-macos-native-card-widths
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-card-widths-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-card-widths")
+      set_tests_properties(app.ui-macos-native-card-widths PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      # Projects keys, row editor and drags in the AppKit outline (mitcad#816).
+      add_test(NAME app.ui-macos-native-projects-edit
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-projects-edit-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-projects-edit")
+      set_tests_properties(app.ui-macos-native-projects-edit PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      # Compact selection and command cards with their actions and fx tools (mitcad#815).
+      add_test(NAME app.ui-macos-native-forms
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-forms-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-forms")
+      set_tests_properties(app.ui-macos-native-forms PROPERTIES TIMEOUT 660 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endif()
   endif()
   find_package(Python3 COMPONENTS Interpreter QUIET)
@@ -133,6 +155,31 @@ add_test(NAME app.ui-macos-native-familiar
 set_tests_properties(app.ui-macos-native-familiar PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
       set_tests_properties(app.ui-macos-native app.ui-macos-native-cancel app.ui-macos-native-secondary app.ui-macos-native-sketch app.ui-macos-native-panels app.ui-macos-native-gestures app.ui-macos-native-history app.ui-macos-native-context-menus app.ui-macos-native-replacement app.ui-macos-native-autoselect app.ui-macos-native-point-pattern app.ui-macos-native-toolbar
         PROPERTIES TIMEOUT 300 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      # Table cell semantics, cell edit keys and column sizing (mitcad#814),
+      # with a local synthetic library, in both appearances.
+      if(TARGET mitcad-cli AND Python3_Interpreter_FOUND)
+        add_test(NAME app.ui-macos-native-tables
+          COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-tables-test.sh"
+                  "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-tables")
+        set_tests_properties(app.ui-macos-native-tables PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      endif()
+      # The native part catalogue and the modeless Part Picker, each with a
+      # local synthetic library made by mitcad-cli (mitcad#813, mitcad#819).
+      if(TARGET mitcad-cli AND Python3_Interpreter_FOUND)
+        add_test(NAME app.ui-macos-native-library
+          COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-library-test.sh"
+                  "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-library")
+        add_test(NAME app.ui-macos-native-part-picker
+          COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-part-picker-test.sh"
+                  "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-part-picker")
+        set_tests_properties(app.ui-macos-native-library app.ui-macos-native-part-picker
+          PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      endif()
+      # Shared dialog sizing contract and macOS button order (mitcad#812, #817).
+      add_test(NAME app.ui-macos-native-dialog-layout
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-dialog-layout-test.sh"
+                "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-dialog-layout")
+      set_tests_properties(app.ui-macos-native-dialog-layout PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     endif()
     add_test(NAME app.ui-macos-render-metal
       COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-render-metal-test.sh"

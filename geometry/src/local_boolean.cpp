@@ -92,6 +92,17 @@ struct Piece {
   // Which group of pieces it belongs to (connected without crossing a
   // section edge).
   int group = -1;
+  // The tool a piece of a tool's face comes from (an index into the
+  // tools), or -1 for the body's.
+  int tool = -1;
+};
+
+// A piece the result keeps, with where it comes from (Piece's origin and
+// tool).
+struct Kept {
+  TopoDS_Shape face;
+  int origin = -1;
+  int tool = -1;
 };
 
 // Pieces connected through edges that are not section edges have the same
@@ -116,18 +127,21 @@ struct Groups {
 
 enum class State { Unknown, In, Out };
 
-std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, LocalOperation operation,
-                                 const std::string& tool_name) {
+std::optional<LocalResult> local(const Shape& body, const std::vector<NamedTool>& tools, LocalOperation operation) {
   const std::vector<TopoDS_Shape> solids = sub_shapes(body.occt(), TopAbs_SOLID);
   if (solids.size() != 1 || sub_shapes(solids.front(), TopAbs_SHELL).size() != 1) {
     return std::nullopt;
   }
   const TopoDS_Solid solid = TopoDS::Solid(solids.front());
-  // One tool solid: several could touch or overlap, which the
+  // One solid per tool: several could touch or overlap, which the
   // classification below does not take.
-  const std::vector<TopoDS_Shape> tool_solids = sub_shapes(tool, TopAbs_SOLID);
-  if (tool_solids.size() != 1) {
-    return std::nullopt;
+  std::vector<TopoDS_Shape> tool_solids;
+  for (const NamedTool& tool : tools) {
+    const std::vector<TopoDS_Shape> own = sub_shapes(tool.shape, TopAbs_SOLID);
+    if (own.size() != 1) {
+      return std::nullopt;
+    }
+    tool_solids.push_back(own.front());
   }
   ShapeMap body_faces;
   TopExp::MapShapes(body.occt(), TopAbs_FACE, body_faces);
@@ -135,25 +149,40 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
     return std::nullopt;
   }
 
-  // The near faces: those whose boxes reach the tool's.
-  Bnd_Box tool_box;
-  BRepBndLib::Add(tool, tool_box, false);
-  tool_box.Enlarge(1.0e-3 * std::max(1.0, std::sqrt(tool_box.SquareExtent())));
+  // The tools' boxes; several tools only apart from each other (so no two
+  // touch or overlap).
+  std::vector<Bnd_Box> tool_boxes;
+  for (const NamedTool& tool : tools) {
+    Bnd_Box tool_box;
+    BRepBndLib::Add(tool.shape, tool_box, false);
+    tool_box.Enlarge(1.0e-3 * std::max(1.0, std::sqrt(tool_box.SquareExtent())));
+    for (const Bnd_Box& other : tool_boxes) {
+      if (!tool_box.IsOut(other)) {
+        return std::nullopt;
+      }
+    }
+    tool_boxes.push_back(tool_box);
+  }
+  // The near faces: those whose boxes reach a tool's.
   std::vector<TopoDS_Shape> near;
   std::vector<TopoDS_Shape> far;
   for (TopExp_Explorer f(solid, TopAbs_FACE); f.More(); f.Next()) {
     Bnd_Box box;
     BRepBndLib::Add(f.Current(), box, false);
-    (box.IsOut(tool_box) ? far : near).push_back(f.Current());
+    const bool out = std::all_of(tool_boxes.begin(), tool_boxes.end(),
+                                 [&](const Bnd_Box& tool_box) { return box.IsOut(tool_box); });
+    (out ? far : near).push_back(f.Current());
   }
   if (near.empty() || 2 * near.size() > static_cast<std::size_t>(body_faces.Extent())) {
     return std::nullopt;
   }
 
-  // Split the near faces and the tool's faces by each other.
+  // Split the near faces and the tools' faces by each other.
   BOPAlgo_Builder fuse;
   fuse.AddArgument(compound_of(near));
-  fuse.AddArgument(tool);
+  for (const NamedTool& tool : tools) {
+    fuse.AddArgument(tool.shape);
+  }
   fuse.SetNonDestructive(true);
   interruptible([&](const Message_ProgressRange& range) { fuse.Perform(range); });
   if (fuse.HasErrors()) {
@@ -184,18 +213,20 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
   for (const TopoDS_Shape& face : near) {
     for (const TopoDS_Face& piece : images(face)) {
       body_pieces.Add(piece);
-      pieces.push_back({piece, body_faces.FindIndex(face) - 1, -1, -1});
+      pieces.push_back({piece, body_faces.FindIndex(face) - 1, -1, -1, -1});
     }
   }
   const std::size_t first_tool = pieces.size();
-  for (TopExp_Explorer f(tool, TopAbs_FACE); f.More(); f.Next()) {
-    for (const TopoDS_Face& piece : images(f.Current())) {
-      const int index = body_pieces.FindIndex(piece);
-      if (index > 0) {
-        // A face of both: the body's piece stands for it.
-        pieces[static_cast<std::size_t>(index - 1)].same = static_cast<int>(pieces.size());
+  for (std::size_t t = 0; t < tools.size(); ++t) {
+    for (TopExp_Explorer f(tools[t].shape, TopAbs_FACE); f.More(); f.Next()) {
+      for (const TopoDS_Face& piece : images(f.Current())) {
+        const int index = body_pieces.FindIndex(piece);
+        if (index > 0) {
+          // A face of both: the body's piece stands for it.
+          pieces[static_cast<std::size_t>(index - 1)].same = static_cast<int>(pieces.size());
+        }
+        pieces.push_back({piece, -1, index > 0 ? index - 1 : -1, -1, static_cast<int>(t)});
       }
-      pieces.push_back({piece, -1, index > 0 ? index - 1 : -1, -1});
     }
   }
 
@@ -280,9 +311,9 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
 
   // Each other group by the faces of the other side at one of its section
   // edges (the method of angles), else by a point inside it.
-  std::vector<TopoDS_Solid> tools;
+  std::vector<TopoDS_Solid> solids_of_tools;
   for (const TopoDS_Shape& s : tool_solids) {
-    tools.push_back(TopoDS::Solid(s));
+    solids_of_tools.push_back(TopoDS::Solid(s));
   }
   const auto state_of = [&](std::size_t i) -> State {
     const Piece& piece = pieces[i];
@@ -323,7 +354,7 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
       return state_in(solid);
     }
     State result = State::Out;
-    for (const TopoDS_Solid& t : tools) {
+    for (const TopoDS_Solid& t : solids_of_tools) {
       const State state = state_in(t);
       if (state == State::In) {
         return State::In;
@@ -348,7 +379,7 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
   // The pieces the result keeps.
   const bool cut = operation == LocalOperation::Cut;
   std::vector<TopoDS_Shape> kept;
-  std::vector<std::pair<TopoDS_Shape, int>> kept_origins;
+  std::vector<Kept> kept_origins;
   for (std::size_t i = 0; i < pieces.size(); ++i) {
     const Piece& piece = pieces[i];
     const bool tool_side = i >= first_tool;
@@ -362,7 +393,7 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
           piece.face.Orientation() == pieces[static_cast<std::size_t>(piece.same)].face.Orientation();
       if (same_side != cut) {
         kept.push_back(piece.face);
-        kept_origins.emplace_back(piece.face, piece.origin);
+        kept_origins.push_back({piece.face, piece.origin, -1});
       }
       continue;
     }
@@ -370,11 +401,11 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
     if (!tool_side) {
       if (state == State::Out) {
         kept.push_back(piece.face);
-        kept_origins.emplace_back(piece.face, piece.origin);
+        kept_origins.push_back({piece.face, piece.origin, -1});
       }
     } else if ((state == State::In) == cut) {
       kept.push_back(cut ? piece.face.Reversed() : TopoDS_Shape(piece.face));
-      kept_origins.emplace_back(kept.back(), -1);
+      kept_origins.push_back({kept.back(), -1, piece.tool});
     }
   }
 
@@ -445,7 +476,7 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
   const TopoDS_Compound result = compound_of({result_solid});
 
   // Names: the far faces and the body's pieces carry their faces' names,
-  // the tool's pieces get the tool's.
+  // the tools' pieces get their tool's.
   FaceNamer namer(result);
   for (const TopoDS_Shape& face : far) {
     const int index = body_faces.FindIndex(face) - 1;
@@ -453,13 +484,13 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
       namer.add(face, name);
     }
   }
-  for (const auto& [face, origin] : kept_origins) {
-    if (origin < 0) {
-      namer.add(face, tool_name);
+  for (const Kept& piece : kept_origins) {
+    if (piece.origin < 0) {
+      namer.add(piece.face, tools[static_cast<std::size_t>(piece.tool)].name);
       continue;
     }
-    for (const std::string& name : body.face_names(origin)) {
-      namer.add(face, name);
+    for (const std::string& name : body.face_names(piece.origin)) {
+      namer.add(piece.face, name);
     }
   }
   return LocalResult{namer.shape(), true};
@@ -469,10 +500,33 @@ std::optional<LocalResult> local(const Shape& body, const TopoDS_Shape& tool, Lo
 
 LocalResult local_boolean(const Shape& body, const TopoDS_Shape& tool, LocalOperation operation,
                           const std::string& tool_name) {
-  if (std::optional<LocalResult> done = local(body, tool, operation, tool_name)) {
+  if (std::optional<LocalResult> done = local(body, {NamedTool{tool, tool_name}}, operation)) {
     return *done;
   }
   return ordinary(body, tool, operation, tool_name);
+}
+
+ShapePtr local_boolean_all(const Shape& body, const std::vector<NamedTool>& tools, LocalOperation operation,
+                           bool* merged) {
+  if (merged != nullptr) {
+    *merged = false;
+  }
+  if (tools.empty()) {
+    throw std::invalid_argument("no tools for the local boolean");
+  }
+  if (tools.size() > 1) {
+    if (std::optional<LocalResult> done = local(body, tools, operation)) {
+      if (merged != nullptr) {
+        *merged = true;
+      }
+      return done->shape;
+    }
+  }
+  ShapePtr current;
+  for (const NamedTool& tool : tools) {
+    current = local_boolean(current ? *current : body, tool.shape, operation, tool.name).shape;
+  }
+  return current;
 }
 
 void require_valid_near(const TopoDS_Shape& result, const TopoDS_Shape& changed, const char* operation) {

@@ -99,6 +99,7 @@ fn export_and_import_round_trip() {
             max: Some("count * 20 mm".to_owned()),
             step: Some("0.5 mm".to_owned()),
             strict: false,
+            ..ParamLimits::default()
         },
         None,
         None,
@@ -111,6 +112,7 @@ fn export_and_import_round_trip() {
             max: Some("10".to_owned()),
             step: Some("1".to_owned()),
             strict: true,
+            ..ParamLimits::default()
         },
         None,
         None,
@@ -118,23 +120,25 @@ fn export_and_import_round_trip() {
     .unwrap();
     let csv = doc.parameters_csv();
     assert!(
-        csv.starts_with("name,kind,unit,expression,value,comment,favorite,min,max,step,strict\r\n"),
+        csv.starts_with(
+            "name,kind,unit,expression,value,comment,favorite,min,max,step,strict,values\r\n"
+        ),
         "{csv}"
     );
     assert!(csv.contains("\r\nd1,model,mm,width * 2,60,"), "{csv}");
     assert!(
         csv.contains(
             "\r\nwidth,user,mm,30 mm,30,\"Outer width, \"\"nominal\"\"; both sides\",true,\
-             10,count * 20 mm,0.5 mm,false\r\n"
+             10,count * 20 mm,0.5 mm,false,\r\n"
         ),
         "{csv}"
     );
     assert!(
-        csv.contains("\r\ncount,user,,4,4,,false,1,10,1,true\r\n"),
+        csv.contains("\r\ncount,user,,4,4,,false,1,10,1,true,\r\n"),
         "{csv}"
     );
     assert!(
-        csv.contains("\r\nangle,user,deg,360 deg / count,90,Pitch angle,false,,,,false\r\n"),
+        csv.contains("\r\nangle,user,deg,360 deg / count,90,Pitch angle,false,,,,false,\r\n"),
         "{csv}"
     );
 
@@ -177,6 +181,7 @@ fn export_and_import_round_trip() {
             max: Some("count * 20 mm".to_owned()),
             step: Some("0.5 mm".to_owned()),
             strict: false,
+            values: None,
         }
     );
     assert_eq!(row(&done, "angle").limits, None);
@@ -352,6 +357,7 @@ fn existing_parameters_change_as_their_rows_say() {
             max: Some("100".to_owned()),
             step: Some("0.5".to_owned()),
             strict: false,
+            ..ParamLimits::default()
         }
     );
     // An angle for a length, without a value: refused, d3 stays.
@@ -388,7 +394,7 @@ fn text_parameters_go_out_and_come_back() {
     assert!(
         csv.contains(
             "\r\nLabel,user,Text,\"'Box ' & GridX & ', it''s'\",\"Box 6, it's\",Lid text,\
-             false,,,,false\r\n"
+             false,,,,false,\r\n"
         ),
         "{csv}"
     );

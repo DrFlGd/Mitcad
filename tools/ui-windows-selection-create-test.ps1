@@ -25,7 +25,7 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 # Thread by a shortcut of the test's own: session 0 has no command search.
-Ui-Init $App $Out $QtBin @{ 'solid.thread' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'solid.thread' = 'F7' } -StepPause 0
 
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1

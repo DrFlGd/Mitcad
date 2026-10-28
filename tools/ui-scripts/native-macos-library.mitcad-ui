@@ -1,0 +1,117 @@
+# SPDX-License-Identifier: MIT
+# Native part catalogue (mitcad#813): Insert from Library and Community
+# Library keep the shared picture tiles, captions, groups, search,
+# favourites, tile size and activation, in usable bounds. The library is
+# the test's local synthetic one (a socket screw and a nut, both pictured).
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+wait-idle
+native-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+window-resize 1280 820
+show-dialog-style-fixture setup
+focus-main
+
+# Two pictured tiles with readable captions, the groups as a readable
+# source list beside them and every control inside the dialog.
+command insert.library_component
+focus-dialog '^Insert from Library$'
+expect-native-tiles count libraryResults 2
+expect-native-tiles pictures libraryResults 2
+expect-native-tiles captions libraryResults
+expect-native-tiles groups partPickerGroups 4
+expect-native-tiles layout libraryResults
+screenshot-dialog '${MITCAD_TEST_WORK}/insert-${MITCAD_TEST_COLOR_SCHEME}.png'
+
+# A group lists its parts; folding and a group's star go to the shared tree.
+native-tiles group partPickerGroups Nuts
+expect-native-tiles count libraryResults 1
+native-tiles group partPickerGroups 'All parts'
+expect-native-tiles count libraryResults 2
+native-tiles fold partPickerGroups 'General fasteners' closed
+expect-log 'Part picker group .* folded'
+native-tiles fold partPickerGroups 'General fasteners' open
+expect-log 'Part picker group .* unfolded'
+native-tiles group-star partPickerGroups Screws
+expect-log 'Part picker group star .* on'
+native-tiles group-star partPickerGroups Screws
+expect-log 'Part picker group star .* off'
+native-tiles group partPickerGroups 'All parts'
+
+# The search is the library's (library_search); clearing it lists both.
+native-type librarySearch 4032
+expect-log "Library search '4032': 1 components"
+expect-native-tiles count libraryResults 1
+native-type librarySearch ''
+expect-native-tiles count libraryResults 2
+
+# A tile's star: Favourites lists it; turned off again.
+native-tiles star libraryResults iso4032
+expect-log 'Part picker star iso4032 on'
+expect-native-tiles star libraryResults iso4032 on
+native-tiles group partPickerGroups Favourites
+expect-native-tiles count libraryResults 1
+native-tiles group partPickerGroups 'All parts'
+native-tiles star libraryResults iso4032
+expect-log 'Part picker star iso4032 off'
+expect-native-tiles star libraryResults iso4032 off
+
+# The hover card: the larger picture with the part's details.
+native-tiles hover libraryResults iso4762 enter
+expect-native-tiles hover true
+native-tiles hover libraryResults iso4762 leave
+expect-native-tiles hover false
+
+# The shared tile-size slider resizes the pictures and the tiles.
+native-tiles slider partPickerTileSize 160
+expect-native-tiles tile-size libraryResults 160
+expect-native-tiles layout libraryResults
+native-tiles slider partPickerTileSize 64
+expect-native-tiles tile-size libraryResults 64
+native-tiles slider partPickerTileSize 96
+expect-native-tiles tile-size libraryResults 96
+expect-setting partPicker/tileSize 96
+
+# A narrow dialog keeps the groups, a whole tile and the details usable.
+native-tiles resize 900 600
+expect-native-tiles layout libraryResults
+expect-native-tiles groups partPickerGroups 4
+screenshot-dialog '${MITCAD_TEST_WORK}/insert-narrow-${MITCAD_TEST_COLOR_SCHEME}.png'
+native-tiles resize 1180 680
+
+# The keyboard: a click gives the grid the keyboard, Right moves to the
+# nut and Return inserts it (the grid's Return, before the default button).
+native-tiles group partPickerGroups Screws
+native-tiles group partPickerGroups 'All parts'
+native-tiles click libraryResults iso4762
+expect-native-tiles current libraryResults iso4762
+key Right
+expect-native-tiles current libraryResults iso4032
+mark
+key Return
+expect-log 'Part picker chose mitcad-parts/iso4032'
+expect-native-dialog-gone '^Insert from Library$'
+expect-log 'Inserted component .* from mitcad-parts'
+focus-main
+
+# The pointer: a double click on a tile inserts it.
+command insert.library_component
+focus-dialog '^Insert from Library$'
+expect-native-tiles count libraryResults 2
+mark
+native-tiles dblclick libraryResults iso4762
+expect-log 'Part picker chose mitcad-parts/iso4762'
+expect-native-dialog-gone '^Insert from Library$'
+expect-log 'Inserted component .* from mitcad-parts'
+focus-main
+
+# Community Library shares the catalogue.
+command tools.community_library
+focus-dialog '^Community Library$'
+expect-native-tiles count libraryResults 2
+expect-native-tiles pictures libraryResults 2
+expect-native-tiles captions libraryResults
+expect-native-tiles groups partPickerGroups 4
+expect-native-tiles layout libraryResults
+screenshot-dialog '${MITCAD_TEST_WORK}/community-${MITCAD_TEST_COLOR_SCHEME}.png'
+button '^Close$'
+expect-native-dialog-gone '^Community Library$'
+focus-main

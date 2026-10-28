@@ -272,7 +272,7 @@ ui_start_app() {
   UI_RUNNER=$!
   # The main window is titled "<document> - MitCad", "*" marking changes.
   UI_WINDOW=""
-  for _ in $(seq 1 $((${UI_WINDOW_WAIT:-20} * 5))); do
+  for _ in $(seq 1 $((${UI_WINDOW_WAIT:-20} * 20))); do
     for window in $(xdotool search --onlyvisible --name ' - MitCad$' 2> /dev/null); do
       case "$before " in
       *" $window "*) ;;
@@ -283,7 +283,7 @@ ui_start_app() {
       esac
     done
     [ -n "$UI_WINDOW" ] && break
-    sleep 0.2
+    sleep 0.05
   done
   if [ -z "$UI_WINDOW" ]; then
     echo "FAIL: Mitcad window did not appear"; cat "$UI_LOG"; exit 1
@@ -378,12 +378,20 @@ ui_step() {
   echo "ok   $name"
 }
 
+# ui_poll_pause i: the pause after the i-th look at the log in a wait for a
+# line: 0.05 s during the first second, where most lines come, then 0.2 s
+# (mitcad#833). A wait of T seconds looks 5 * T + 15 times.
+ui_poll_pause() {
+  if [ "$1" -le 20 ]; then sleep 0.05; else sleep 0.2; fi
+}
+
 # ui_expect_log "text" "description": waits for a line in the application log
-# (a single ellipsis and three dots match each other, mitcad#645).
+# (a single ellipsis and three dots match each other, mitcad#645), up to 6 s.
 ui_expect_log() {
-  for _ in $(seq 1 30); do
+  local i
+  for i in $(seq 1 45); do
     sed "s/…/.../g" "$UI_LOG" | grep -qF -- "${1//…/...}" && { echo "ok   $2"; return; }
-    sleep 0.2
+    ui_poll_pause "$i"
   done
   ui_fail "$2: '$1' not in the log"
 }
@@ -822,9 +830,10 @@ ui_type_path() {
 # ellipsis and three dots match each other (mitcad#645).
 ui_mark() { UI_MARK=$(wc -l < "$UI_LOG"); }
 ui_expect_new() {
-  for _ in $(seq 1 $((${3:-6} * 5))); do
+  local i
+  for i in $(seq 1 $((${3:-6} * 5 + 15))); do
     tail -n +$((${UI_MARK:-0} + 1)) "$UI_LOG" | sed "s/…/.../g" | grep -qF -- "${1//…/...}" && { echo "ok   $2"; return; }
-    sleep 0.2
+    ui_poll_pause "$i"
   done
   ui_fail "$2: '$1' not in the log since the mark"
 }

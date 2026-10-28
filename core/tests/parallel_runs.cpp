@@ -593,19 +593,89 @@ std::string executable_path(const char* argv0) {
   return error ? std::string(argv0) : absolute.string();
 }
 
+std::map<std::string, double> read_file_times(const std::string& path) {
+  std::map<std::string, double> times;
+  std::ifstream table(path);
+  std::string line;
+  while (std::getline(table, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    const std::size_t tab = line.find('\t');
+    if (tab == std::string::npos || tab == 0) {
+      continue;
+    }
+    const std::size_t end = line.find('\t', tab + 1);
+    const std::string seconds = line.substr(tab + 1, end == std::string::npos ? std::string::npos : end - tab - 1);
+    char* rest = nullptr;
+    const double value = std::strtod(seconds.c_str(), &rest);
+    if (rest != seconds.c_str() && value >= 0.0) {
+      times[line.substr(0, tab)] = value;
+    }
+  }
+  return times;
+}
+
+std::vector<double> start_order(const std::vector<std::string>& keys, const std::vector<double>& weights,
+                                const std::map<std::string, double>& known) {
+  if (keys.empty() || known.empty()) {
+    return weights;
+  }
+  const bool weighted = weights.size() == keys.size();
+  std::vector<double> rates;
+  double longest = 0.0;
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    const auto found = known.find(keys[i]);
+    if (found == known.end()) {
+      continue;
+    }
+    longest = std::max(longest, found->second);
+    if (weighted && weights[i] > 0.0) {
+      rates.push_back(found->second / weights[i]);
+    }
+  }
+  double rate = 0.0;
+  if (!rates.empty()) {
+    std::sort(rates.begin(), rates.end());
+    const std::size_t middle = rates.size() / 2;
+    rate = rates.size() % 2 == 1 ? rates[middle] : (rates[middle - 1] + rates[middle]) / 2.0;
+  }
+  std::vector<double> out(keys.size(), 0.0);
+  for (std::size_t i = 0; i < keys.size(); ++i) {
+    const auto found = known.find(keys[i]);
+    if (found != known.end()) {
+      out[i] = found->second;
+    } else if (weighted && weights[i] > 0.0 && rate > 0.0) {
+      out[i] = weights[i] * rate;
+    } else {
+      out[i] = longest;
+    }
+  }
+  return out;
+}
+
 void run_all(const std::vector<Command>& commands, const Settings& settings,
-             const std::function<void(std::size_t, const Outcome&)>& done, const std::vector<double>& weights) {
+             const std::function<void(std::size_t, const Outcome&)>& done, const std::vector<double>& weights,
+             const std::vector<std::string>& keys) {
   Runner runner(settings);
   const int jobs = std::max(1, settings.jobs);
-  // The heaviest first, so that a long one does not start last.
+  // The longest first (by the files' own profiles where the test runner
+  // gave them, else the heaviest), so that a long one does not start last.
+  const bool keyed = keys.size() == commands.size() && !commands.empty();
+  const std::string profile = keyed ? env("MITCAD_CORPUS_FILES") : std::string();
+  const std::vector<double> sizes =
+      keyed && !profile.empty() ? start_order(keys, weights, read_file_times(profile)) : weights;
   std::vector<std::size_t> order(commands.size());
   for (std::size_t i = 0; i < order.size(); ++i) {
     order[i] = i;
   }
-  if (weights.size() == commands.size()) {
+  if (sizes.size() == commands.size()) {
     std::stable_sort(order.begin(), order.end(),
-                     [&weights](std::size_t a, std::size_t b) { return weights[a] > weights[b]; });
+                     [&sizes](std::size_t a, std::size_t b) { return sizes[a] > sizes[b]; });
   }
+  // Each child's time and peak, for the test runner's profiles of the files.
+  const std::string record_path = keyed ? env("MITCAD_CORPUS_RECORD") : std::string();
+  std::string records;
   std::vector<std::unique_ptr<Child>> children(commands.size());
   std::size_t next = 0;
   std::size_t reported = 0;
@@ -633,6 +703,16 @@ void run_all(const std::vector<Command>& commands, const Settings& settings,
         child.reader.join();
       }
       done(reported, child.outcome);
+      if (!record_path.empty()) {
+        std::string key = keys[reported];
+        std::replace(key.begin(), key.end(), '\t', ' ');
+        std::replace(key.begin(), key.end(), '\n', ' ');
+        const bool ok = child.outcome.failure.empty() && child.outcome.exit_code == 0;
+        char numbers[64];
+        std::snprintf(numbers, sizeof numbers, "\t%.2f\t%llu\t", child.outcome.seconds,
+                      static_cast<unsigned long long>(child.outcome.peak_memory));
+        records += key + numbers + (ok ? "ok" : "failed") + "\n";
+      }
       peak = std::max(peak, child.outcome.peak_memory);
       longest = std::max(longest, child.outcome.seconds);
       children[reported].reset();
@@ -645,6 +725,10 @@ void run_all(const std::vector<Command>& commands, const Settings& settings,
                    "memory %s, the longest %.1f s\n",
                    commands.size(), jobs, format_size(settings.memory).c_str(),
                    peak > 0 ? format_size(peak).c_str() : "unknown", longest);
+      if (!record_path.empty() && !records.empty()) {
+        std::ofstream table(record_path, std::ios::app | std::ios::binary);
+        table << records;
+      }
       break;
     }
     runner.changed.wait_for(lock, std::chrono::milliseconds(500));

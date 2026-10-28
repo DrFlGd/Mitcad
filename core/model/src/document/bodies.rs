@@ -43,6 +43,17 @@ pub struct BodyAttributes {
     /// text), found as a face appearance's is. None: the design's −Z is
     /// down.
     pub print_bed_face: Option<String>,
+    // Bindings (mitcad#800, `bindings.rs`): expressions of parameters that
+    // the values above follow; None (or no entry) for a value set by hand.
+    /// A text: an appearance id, else a unique appearance name.
+    pub appearance_expr: Option<String>,
+    /// A text: a material id, else a unique material name.
+    pub material_expr: Option<String>,
+    /// A condition: the body is shown while it holds.
+    pub visible_when: Option<String>,
+    /// Appearances of single faces from expressions, by the face's
+    /// topological name as assigned (canonical text).
+    pub face_appearance_exprs: BTreeMap<String, String>,
 }
 
 impl Default for BodyAttributes {
@@ -53,6 +64,10 @@ impl Default for BodyAttributes {
             appearance: None,
             face_appearances: BTreeMap::new(),
             print_bed_face: None,
+            appearance_expr: None,
+            material_expr: None,
+            visible_when: None,
+            face_appearance_exprs: BTreeMap::new(),
         }
     }
 }
@@ -85,11 +100,13 @@ impl<K: Kernel> Document<K> {
             .unwrap_or_default()
     }
 
-    /// Shows or hides a body at the timeline marker.
+    /// Shows or hides a body at the timeline marker; a condition it
+    /// followed (mitcad#800) is removed in the same undo step.
     pub fn set_body_visible(&mut self, uid: BodyUid, visible: bool) -> Result<(), ModelError> {
         let verb = if visible { "Show" } else { "Hide" };
         self.change_body(uid, verb, |a| {
             a.visible = visible;
+            a.visible_when = None;
             Ok(())
         })
     }
@@ -106,7 +123,9 @@ impl<K: Kernel> Document<K> {
         self.set_body_material_with(uid, material, super::AppearanceChoice::Keep)
     }
 
-    /// Sets a body's appearance by id, or back to its material's with None.
+    /// Sets a body's appearance by id, or back to its material's with None;
+    /// an expression it followed (mitcad#800) is removed in the same undo
+    /// step.
     pub fn set_body_appearance(
         &mut self,
         uid: BodyUid,
@@ -117,6 +136,7 @@ impl<K: Kernel> Document<K> {
                 return Err(invalid("the appearance id is empty"));
             }
             a.appearance = appearance.map(str::to_owned);
+            a.appearance_expr = None;
             Ok(())
         })
     }
@@ -137,6 +157,40 @@ impl<K: Kernel> Document<K> {
         if appearance.is_some_and(|id| id.trim().is_empty()) {
             return Err(invalid("the appearance id is empty"));
         }
+        let names = self.checked_faces(uid, faces)?;
+        let mut attributes = self.body_attributes(uid);
+        for name in &names {
+            match appearance {
+                Some(id) => {
+                    attributes
+                        .face_appearances
+                        .insert(name.clone(), id.to_owned());
+                }
+                None => {
+                    attributes.face_appearances.remove(name);
+                }
+            }
+            // A value set by hand ends the face's binding (mitcad#800).
+            attributes.face_appearance_exprs.remove(name);
+        }
+        let verb = if appearance.is_some() {
+            format!("Set Appearance of {} of", faces_label(names.len()))
+        } else {
+            format!("Clear Appearance of {} of", faces_label(names.len()))
+        };
+        self.set_attributes(uid, &verb, attributes)
+    }
+
+    /// The canonical names of faces of a body at the marker, each checked
+    /// to find a face there.
+    pub(super) fn checked_faces(
+        &self,
+        uid: BodyUid,
+        faces: &[String],
+    ) -> Result<Vec<String>, ModelError> {
+        if faces.is_empty() {
+            return Err(invalid("no faces are given"));
+        }
         let shape = self
             .body_shape(uid)
             .ok_or_else(|| invalid(format!("body {uid} does not exist at the timeline marker")))?;
@@ -156,34 +210,11 @@ impl<K: Kernel> Document<K> {
             }
             names.push(name.to_string());
         }
-        let mut attributes = self.body_attributes(uid);
-        for name in &names {
-            match appearance {
-                Some(id) => {
-                    attributes
-                        .face_appearances
-                        .insert(name.clone(), id.to_owned());
-                }
-                None => {
-                    attributes.face_appearances.remove(name);
-                }
-            }
-        }
-        let count = names.len();
-        let what = if count == 1 {
-            "Face".to_owned()
-        } else {
-            format!("{count} Faces")
-        };
-        let verb = if appearance.is_some() {
-            format!("Set Appearance of {what} of")
-        } else {
-            format!("Clear Appearance of {what} of")
-        };
-        self.set_attributes(uid, &verb, attributes)
+        Ok(names)
     }
 
-    /// Takes the appearances of all faces of a body away.
+    /// Takes the appearances of all faces of a body away, those that
+    /// followed expressions too.
     pub fn clear_face_appearances(&mut self, uid: BodyUid) -> Result<(), ModelError> {
         if self.body_shape(uid).is_none() {
             return Err(invalid(format!(
@@ -192,6 +223,7 @@ impl<K: Kernel> Document<K> {
         }
         let mut attributes = self.body_attributes(uid);
         attributes.face_appearances.clear();
+        attributes.face_appearance_exprs.clear();
         self.set_attributes(uid, "Clear Face Appearances of", attributes)
     }
 
@@ -320,6 +352,15 @@ impl<K: Kernel> Document<K> {
             }
             Ok((label, ()))
         })
+    }
+}
+
+/// `Face` or `3 Faces`, for undo labels.
+pub(super) fn faces_label(count: usize) -> String {
+    if count == 1 {
+        "Face".to_owned()
+    } else {
+        format!("{count} Faces")
     }
 }
 

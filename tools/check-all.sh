@@ -94,14 +94,27 @@
 #                   Markdown documents count for neither fingerprint.
 #   --corpus-tests N, --corpus-jobs N
 #                   corpus tests at once (ctest -j) and the files each
-#                   imports at once (MITCAD_CORPUS_JOBS). By default the
-#                   children of all of them together are as many as the
-#                   memory limit allows, CORPUS_MEMORY (1536M) each
-#                   (MITCAD_CORPUS_MEMORY: the memory a child may commit),
-#                   with 1G left for the rest, and at most the cores / the
-#                   test slots; about the square root of that many tests
-#                   run at once. A child runs at most CORPUS_TIMEOUT (300 s,
-#                   MITCAD_CORPUS_TIMEOUT).
+#                   imports at once (MITCAD_CORPUS_JOBS). By default, with
+#                   the test runner, the runner gives each corpus test its
+#                   files at once from its profile (mitcad-testrun
+#                   --corpus-children, mitcad#832): every run records each
+#                   file's time and peak in its child process, and the
+#                   next run starts the longest files first and shares
+#                   the machine's cores and the run's memory budget among
+#                   the corpus tests by their work, a long test more
+#                   children, a short one fewer, so that they end at about
+#                   the same time; a child's memory limit is twice its
+#                   test's largest peak of a file, never below
+#                   CORPUS_MEMORY. A test without that history yet (and
+#                   every test with --corpus-jobs, or without the runner)
+#                   takes the fixed plan: all the children together as
+#                   many as the memory limit allows, CORPUS_MEMORY (1536M)
+#                   each (MITCAD_CORPUS_MEMORY: the memory a child may
+#                   commit), with 1G left for the rest, and at most the
+#                   cores / the test slots, about the square root of that
+#                   many tests at once (with the runner the tests at once
+#                   only with --corpus-tests). A child runs at most
+#                   CORPUS_TIMEOUT (300 s, MITCAD_CORPUS_TIMEOUT).
 #   --memory SIZE   the memory the whole run may use (default
 #                   $MITCAD_CHECK_MEMORY, else 12G; "none": no limit), in a
 #                   systemd slice of its own (MemoryMax, no swap) beneath
@@ -660,7 +673,7 @@ test_step() {
       changed=(--changed "$out/changed.txt")
     fi
     "$TESTRUN_BIN" --build "$BUILD" --schedule --out "$out" ${TESTRUN_JOBS:+-j "$TESTRUN_JOBS"} \
-      "${changed[@]}" "$@" \
+      ${TESTRUN_CORPUS:+--corpus-children} "${changed[@]}" "$@" \
       > "$LOGS/$name.log" 2>&1 9>&- || status=$?
     if grep -q '^finished' "$out/status.txt" && [ -f "$out/results.tsv" ]; then
       testrun_lines "$out/results.tsv" "$out/logs" >> "$LOGS/$name.log"
@@ -759,12 +772,30 @@ if wanted corpus; then
     echo "== corpus: would run"
   else
     [ -n "$fingerprint" ] || fingerprint=$(corpus_fingerprint)
+    tests_given=$CORPUS_TESTS_AT_ONCE
+    jobs_given=$CORPUS_JOBS
     corpus_plan
-    echo "== corpus: $CORPUS_TESTS_AT_ONCE tests at once, $CORPUS_JOBS files each at once, $CORPUS_MEMORY each"
-    # The runner takes the plan's tests at once as its most (a test's
-    # children are within its own scope's limit).
+    # With the test runner and no --corpus-jobs, the runner plans each
+    # corpus test's children from its files' history (mitcad#832,
+    # tools/testrun/README.md "Corpus tests"): within the machine's cores
+    # and the run's memory budget, a long test more, a short one fewer,
+    # each child's memory limit from its test's largest file. The fixed
+    # plan above is for the tests without that history, and for ctest -j.
+    corpus_runner=""
+    corpus_at_once=$CORPUS_TESTS_AT_ONCE
+    if [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ] && [ -z "$jobs_given" ]; then
+      corpus_runner=1
+      corpus_at_once=$tests_given
+      echo "== corpus: children per test from the files' history (mitcad-testrun --corpus-children);" \
+        "without one $CORPUS_JOBS files each at once, $CORPUS_MEMORY each${tests_given:+, $tests_given tests at once}"
+    else
+      echo "== corpus: $CORPUS_TESTS_AT_ONCE tests at once, $CORPUS_JOBS files each at once, $CORPUS_MEMORY each"
+    fi
+    # The runner takes the tests at once as its most when they are fixed
+    # (a test's children are within its own scope's limit).
     if MITCAD_CORPUS_JOBS=$CORPUS_JOBS MITCAD_CORPUS_MEMORY=$CORPUS_MEMORY MITCAD_CORPUS_TIMEOUT=$CORPUS_TIMEOUT \
-      TESTRUN_JOBS=$CORPUS_TESTS_AT_ONCE test_step corpus "$CORPUS_TESTS_AT_ONCE" -R "$CORPUS_TESTS" &&
+      TESTRUN_JOBS=$corpus_at_once TESTRUN_CORPUS=$corpus_runner \
+      test_step corpus "$CORPUS_TESTS_AT_ONCE" -R "$CORPUS_TESTS" &&
       [ "$BUILT" = 1 ]; then
       mkdir -p "$(dirname "$CORPUS_PASSED")"
       echo "$fingerprint" >> "$CORPUS_PASSED"

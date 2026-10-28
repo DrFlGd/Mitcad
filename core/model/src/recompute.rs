@@ -20,7 +20,14 @@
 //! operations stop inside an evaluation (P7e, [`Kernel::interruptible`]).
 //! An evaluation that returns after the request is not cached: it may be
 //! one the request cut short.
+//!
+//! With workers (`Cache::workers` above one), the features of
+//! independent components are evaluated ahead on threads of their own and
+//! their results taken in timeline order (mitcad#842, `recompute/ahead.rs`,
+//! which describes the scheduling and its barriers); the result is the
+//! one without workers.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -38,6 +45,9 @@ use crate::monitor::{Cancelled, RecomputeMonitor};
 use crate::parameters::{ParamId, Parameters};
 use crate::store::ResultStore;
 use crate::transform::Transform;
+
+// Features of independent components evaluated in parallel (mitcad#842).
+mod ahead;
 
 /// Identity of a computed result, sketch output or body shape: a
 /// fingerprint of what made it (see the module comment).
@@ -255,9 +265,7 @@ impl Read {
                 .map(|(uid, b)| (*uid, b.version))
                 .eq(bodies.iter().copied()),
             Self::Output(uid, version) => {
-                env.history
-                    .iter()
-                    .find(|r| r.uid == *uid)
+                env.result_of(*uid)
                     .and_then(|r| r.output.as_ref())
                     .map(|o| o.version)
                     == *version
@@ -477,6 +485,11 @@ pub struct Cache<S> {
     /// makes its [`Recomputed::preview_tool`]. Set only while a preview
     /// computes; not forked, and not part of any cached result.
     pub(crate) preview: Option<FeatureUid>,
+    /// Threads that evaluate the features of independent components ahead
+    /// (mitcad#842, `recompute/ahead.rs`); 1: none, every feature is
+    /// evaluated on the recompute's own thread. Not forked: a fork's
+    /// recomputes use none.
+    pub(crate) workers: usize,
 }
 
 /// Results kept per feature: enough for a few undo steps and value changes.
@@ -493,6 +506,7 @@ impl<S> Default for Cache<S> {
             stats: CacheStats::default(),
             written_from: Vec::new(),
             preview: None,
+            workers: ahead::default_workers(),
         }
     }
 }
@@ -557,6 +571,7 @@ impl<S> Cache<S> {
             stats: CacheStats::default(),
             written_from: Vec::new(),
             preview: None,
+            workers: 1,
         }
     }
 
@@ -631,8 +646,47 @@ impl<S: Clone> Recomputed<S> {
             changed_pieces: self.changed_pieces.clone(),
             gone_pieces: self.gone_pieces.clone(),
             preview_tool: self.preview_tool.clone(),
+            resume: None,
         }
     }
+
+    /// The start of a recompute that goes on after this one's features
+    /// ([`recompute_after`]): its results so far, without what the
+    /// recompute itself did (evaluated, restored, measured), what it makes
+    /// at its end (the bodies, the joints' frames) and its preview's tool.
+    fn continued(&self) -> Self {
+        Self {
+            sheets: self.sheets.clone(),
+            sheet_rules: self.sheet_rules.clone(),
+            results: self
+                .results
+                .iter()
+                .map(|r| FeatureResult {
+                    uid: r.uid,
+                    status: r.status.clone(),
+                    output: r.output.clone(),
+                    applied_warnings: r.applied_warnings.clone(),
+                })
+                .collect(),
+            owners: self.owners.clone(),
+            sketches: self.sketches.clone(),
+            datums: self.datums.clone(),
+            placements: self.placements.clone(),
+            split_pieces: self.split_pieces.clone(),
+            changed_pieces: self.changed_pieces.clone(),
+            gone_pieces: self.gone_pieces.clone(),
+            ..Self::default()
+        }
+    }
+}
+
+/// Whether a feature is evaluated anew by every recompute. These cheap
+/// evaluations bind definition-state occurrence IDs. An edit can allocate
+/// new IDs for an earlier definition, so geometry/placement reads alone
+/// are not a sufficient cache key.
+fn never_cached(def: &FeatureDef) -> bool {
+    matches!(def, FeatureDef::PatternAtPoints(p)
+        if matches!(p.objects, crate::features::PatternObjects::Components { .. }))
 }
 
 impl<S> Cache<S> {
@@ -643,12 +697,7 @@ impl<S> Cache<S> {
 
     fn lookup(&mut self, entry: &FeatureEntry, env: &Env<'_, S>) -> Option<Arc<Output<S>>> {
         self.stats.lookups += 1;
-        // These cheap evaluations bind definition-state occurrence IDs. An
-        // edit can allocate new IDs for an earlier definition, so geometry/
-        // placement reads alone are not a sufficient cache key.
-        if matches!(&entry.def, crate::features::FeatureDef::PatternAtPoints(p)
-            if matches!(p.objects, crate::features::PatternObjects::Components { .. }))
-        {
+        if never_cached(&entry.def) {
             return None;
         }
         let now = self.tick();
@@ -690,15 +739,17 @@ impl<S> Cache<S> {
     }
 
     /// The result the store keeps for the inputs `env` gives, now in the
-    /// cache too.
+    /// cache too; `before_insert` sees it before it goes in.
     fn restore<K: Kernel<Shape = S>>(
         &mut self,
         kernel: &K,
         entry: &FeatureEntry,
         def_fp: u128,
         env: &Env<'_, S>,
+        before_insert: impl FnOnce(&Self, &Output<S>),
     ) -> Option<Arc<Output<S>>> {
         let output = Arc::new(self.store.as_ref()?.find(kernel, entry, def_fp, env)?);
+        before_insert(self, &output);
         self.insert(kernel, entry, output.clone());
         self.stats.restored += 1;
         Some(output)
@@ -713,6 +764,13 @@ impl<S> Cache<S> {
 
     pub fn budget(&self) -> Option<u64> {
         self.budget
+    }
+
+    /// Whether a result of `bytes` going in would make the cache drop
+    /// results for its budget ([`Cache::trim`]).
+    fn would_trim(&self, bytes: u64) -> bool {
+        self.budget
+            .is_some_and(|budget| self.bytes + bytes > budget)
     }
 
     /// The memory the results take, estimated.
@@ -840,6 +898,21 @@ pub struct Recomputed<S> {
     /// mitcad#712): made by a recompute for [`Cache::preview`] only, never
     /// cached.
     pub preview_tool: Option<S>,
+    /// What a later recompute needs to go on after this one's features
+    /// (mitcad#841, [`recompute_after`]); None when it cannot.
+    pub(crate) resume: Option<ResumePoint<S>>,
+}
+
+/// Where a recompute ended, for one that goes on after its features
+/// ([`recompute_after`]): the timeline it evaluated, which every feature
+/// before the marker was, the assembly its features were placed in, each
+/// component's bodies at its end, and the parameters its driven dimensions
+/// and bound lengths measure, with their values (bits) at its end.
+pub(crate) struct ResumePoint<S> {
+    features: Vec<Arc<FeatureEntry>>,
+    assembly: crate::assembly::Assembly,
+    components: BTreeMap<ComponentUid, Arc<BodyState<S>>>,
+    measured: Vec<(ParamId, Option<u64>)>,
 }
 
 impl<S> Default for Recomputed<S> {
@@ -863,6 +936,7 @@ impl<S> Default for Recomputed<S> {
             changed_pieces: BTreeMap::new(),
             gone_pieces: BTreeMap::new(),
             preview_tool: None,
+            resume: None,
         }
     }
 }
@@ -883,124 +957,418 @@ pub(crate) fn recompute<K: Kernel>(
     cache: &mut Cache<K::Shape>,
     monitor: Option<&Arc<RecomputeMonitor>>,
 ) -> Result<Recomputed<K::Shape>, Cancelled> {
-    let mut done = Recomputed::default();
-    let assembly = &state.assembly;
+    recompute_after(kernel, state, cache, monitor, None)
+}
+
+/// Like [`recompute`]; `before` is the result of an earlier state. When
+/// `state` begins with the features `before` evaluated, the same entries
+/// (an import's batches appended at the end, mitcad#841), and nothing they
+/// read of the state changed ([`resume_point`]), their results are taken
+/// from `before` and only the features after them are looked up and
+/// evaluated: the result is the one a recompute from the start makes,
+/// which would find each of them in the cache, without going through
+/// them. Otherwise the timeline is evaluated from the start.
+///
+/// With workers (`Cache::workers` above one) the features of
+/// independent components are evaluated ahead on threads of their own and
+/// taken in timeline order (`recompute/ahead.rs`, mitcad#842): the result,
+/// the cache and what the monitor is told are those without workers.
+pub(crate) fn recompute_after<K: Kernel>(
+    kernel: &K,
+    state: &DocState,
+    cache: &mut Cache<K::Shape>,
+    monitor: Option<&Arc<RecomputeMonitor>>,
+    before: Option<&Recomputed<K::Shape>>,
+) -> Result<Recomputed<K::Shape>, Cancelled> {
     let total = state.marker.min(state.features.len());
     // (A copy: the evaluations below borrow it while the cache changes.)
     let written_from = cache.written_from.clone();
-    // Each component's bodies; a feature sees only its own component's.
-    let mut components: BTreeMap<ComponentUid, Arc<BodyState<K::Shape>>> = BTreeMap::new();
-    let none: Arc<BodyState<K::Shape>> = Arc::new(BTreeMap::new());
-    // The parameters with the values driven dimensions measured so far
-    // (mitcad#231).
-    let mut params = std::borrow::Cow::Borrowed(&state.parameters);
-    done.placements = assembly
-        .occurrences
-        .iter()
-        .filter(|o| o.pattern.is_none())
-        .map(|o| (o.uid, o.transform))
-        .collect();
-    for (position, entry) in state.features.iter().enumerate() {
-        if position < total
-            && let Some(monitor) = monitor
-        {
-            monitor.enter(position, total)?;
+    let resumed = match before {
+        Some(before) if cache.preview.is_none() => {
+            resume_point(before, state).map(|point| (before, point))
         }
-        let status = if position >= state.marker {
-            Some(FeatureStatus::RolledBack)
-        } else if entry.suppressed {
-            Some(FeatureStatus::Suppressed)
-        } else {
-            None
-        };
-        if let Some(status) = status {
-            done.results.push(FeatureResult {
-                uid: entry.uid,
-                status,
-                output: None,
-                applied_warnings: None,
-            });
+        _ => None,
+    };
+    let params = Cow::Borrowed(&state.parameters);
+    // Where the features to go through begin.
+    let first;
+    let mut walk = match resumed {
+        Some((before, point)) => {
+            first = point.features.len();
+            Walk {
+                done: before.continued(),
+                components: point.components.clone(),
+                params,
+                measured_ids: point.measured.iter().map(|(id, _)| *id).collect(),
+                touched: Vec::new(),
+                not_resumable: false,
+            }
+        }
+        None => {
+            first = 0;
+            let placements = state
+                .assembly
+                .occurrences
+                .iter()
+                .filter(|o| o.pattern.is_none())
+                .map(|o| (o.uid, o.transform))
+                .collect();
+            Walk {
+                done: Recomputed {
+                    placements,
+                    ..Recomputed::default()
+                },
+                components: BTreeMap::new(),
+                params,
+                measured_ids: Vec::new(),
+                touched: Vec::new(),
+                not_resumable: false,
+            }
+        }
+    };
+    let run = Run {
+        kernel,
+        state,
+        monitor,
+        written_from: &written_from,
+        total,
+    };
+    // Workers evaluate ahead in a plain recompute only: not for a preview
+    // (its tool is made beside the result), not while base features adopt
+    // the shapes they were written from (those are the recompute's
+    // kernel's), and not on another recompute's worker.
+    let workers = cache.workers > 1
+        && cache.preview.is_none()
+        && written_from.is_empty()
+        && !ahead::on_worker();
+    let count = state.features.len();
+    let mut position = first;
+    while position < count {
+        if workers && position < total {
+            let window = ahead::plan(state, cache, &walk, position, total);
+            if window.parallel() && ahead::run_window(&run, cache, &mut walk, position, &window)? {
+                position = window.end;
+                continue;
+            }
+            // Nothing to evaluate side by side: the window's features, or
+            // the barrier that ends it, one after another.
+            let end = window.end.max(position + 1);
+            for at in position..end {
+                step(&run, cache, &mut walk, at, None)?;
+            }
+            position = end;
             continue;
         }
+        step(&run, cache, &mut walk, position, None)?;
+        position += 1;
+    }
+    let Walk {
+        mut done,
+        components,
+        params,
+        mut measured_ids,
+        touched,
+        not_resumable,
+    } = walk;
+    let all = match resumed {
+        // The earlier result's bodies with those the features after it
+        // set or removed: a body is in the component that owns it.
+        Some((before, _)) => {
+            let mut all = (*before.bodies).clone();
+            for uid in touched {
+                let body = done
+                    .owners
+                    .get(&uid)
+                    .and_then(|owner| components.get(owner))
+                    .and_then(|bodies| bodies.get(&uid));
+                match body {
+                    Some(body) => {
+                        all.insert(uid, body.clone());
+                    }
+                    None => {
+                        all.remove(&uid);
+                    }
+                }
+            }
+            all
+        }
+        None => {
+            let mut all = BTreeMap::new();
+            for bodies in components.values() {
+                all.extend(bodies.iter().map(|(uid, b)| (*uid, b.clone())));
+            }
+            all
+        }
+    };
+    done.bodies = Arc::new(all);
+    // The joints' frames and values where the occurrences are at the
+    // marker.
+    crate::joints::finish(&mut done.joints, &done.placements);
+    if let Some(monitor) = monitor {
+        monitor.finish(total);
+    }
+    // (Not after a preview's recompute, nor with features after the
+    // marker: a later recompute could not take this one's results as
+    // those of its first features.)
+    if !not_resumable && cache.preview.is_none() && state.marker >= state.features.len() {
+        measured_ids.sort_unstable();
+        measured_ids.dedup();
+        done.resume = Some(ResumePoint {
+            features: state.features.clone(),
+            assembly: state.assembly.clone(),
+            components,
+            measured: measured_ids
+                .into_iter()
+                .map(|id| (id, params.read_bits(id)))
+                .collect(),
+        });
+    }
+    Ok(done)
+}
 
-        // (The component's bodies are let go once the output is there: a
-        // second holder of them would make each body the feature sets copy
-        // every body of the component, quadratic in its bodies, mitcad#413.)
-        let own = components.get(&entry.component).unwrap_or(&none).clone();
-        let env = Env {
-            sheets: &done.sheets,
-            sheet_rules: &done.sheet_rules,
-            params: &params,
-            bodies: &own,
-            owners: &done.owners,
-            assembly,
-            sketches: &done.sketches,
-            datums: &done.datums,
+/// What every feature of one recompute is evaluated with.
+struct Run<'a, K: Kernel> {
+    kernel: &'a K,
+    state: &'a DocState,
+    monitor: Option<&'a Arc<RecomputeMonitor>>,
+    /// B-rep data of base features being added and the shapes it was
+    /// written from (`Cache::written_from`).
+    written_from: &'a [(Brep, K::Shape)],
+    /// The features before the marker.
+    total: usize,
+}
+
+/// What a recompute has made so far as it goes through the timeline. A
+/// worker that evaluates features ahead goes on from a copy of its own
+/// (`recompute/ahead.rs`).
+struct Walk<'s, S> {
+    done: Recomputed<S>,
+    /// Each component's bodies; a feature sees only its own component's.
+    components: BTreeMap<ComponentUid, Arc<BodyState<S>>>,
+    /// The parameters with the values driven dimensions measured so far
+    /// (mitcad#231). (Where a recompute goes on after an earlier one, the
+    /// state holds what the earlier one measured: `resume_point`.)
+    params: Cow<'s, Parameters>,
+    /// The parameters driven dimensions and bound lengths measure.
+    measured_ids: Vec<ParamId>,
+    /// The bodies the features gone through set or removed, when the
+    /// bodies at the end are the earlier result's with these changed.
+    touched: Vec<BodyUid>,
+    /// Whether a feature gone through keeps a later recompute from going
+    /// on after this one: a joint (applied after its evaluation, on what
+    /// the whole state holds) or a feature evaluated anew every time.
+    not_resumable: bool,
+}
+
+/// Where a feature's result came from, for the recompute's lists.
+enum Came {
+    Cache,
+    /// The result store, read in this long.
+    Store(Duration),
+    /// An evaluation that took this long.
+    Evaluated(Duration),
+}
+
+/// Goes through the feature at `position`: takes its result from the
+/// cache, from the result store or from a worker that evaluated it ahead
+/// (`ahead`, mitcad#842), or evaluates it, and applies the result.
+fn step<K: Kernel>(
+    run: &Run<'_, K>,
+    cache: &mut Cache<K::Shape>,
+    walk: &mut Walk<'_, K::Shape>,
+    position: usize,
+    mut ahead: Option<&mut ahead::Ahead<'_, '_, K::Shape>>,
+) -> Result<(), Cancelled> {
+    let (kernel, state, monitor) = (run.kernel, run.state, run.monitor);
+    let entry = &state.features[position];
+    if position < run.total
+        && let Some(monitor) = monitor
+    {
+        monitor.enter(position, run.total)?;
+    }
+    let status = if position >= state.marker {
+        Some(FeatureStatus::RolledBack)
+    } else if entry.suppressed {
+        Some(FeatureStatus::Suppressed)
+    } else {
+        None
+    };
+    if let Some(status) = status {
+        walk.done.results.push(FeatureResult {
+            uid: entry.uid,
+            status,
+            output: None,
+            applied_warnings: None,
+        });
+        return Ok(());
+    }
+    if crate::joints::applies(&entry.def) || never_cached(&entry.def) {
+        walk.not_resumable = true;
+    }
+    if let FeatureDef::Sketch(def) = &entry.def {
+        walk.measured_ids
+            .extend(def.dimensions.iter().filter_map(|d| d.reference));
+    }
+
+    // (The component's bodies are let go once the output is there: a
+    // second holder of them would make each body the feature sets copy
+    // every body of the component, quadratic in its bodies, mitcad#413.)
+    let own = walk
+        .components
+        .get(&entry.component)
+        .cloned()
+        .unwrap_or_default();
+    let env = walk.env(state, &own, run.written_from);
+    let (output, came) = match cache.lookup(entry, &env) {
+        Some(output) => (output, Came::Cache),
+        None => {
+            let def_fp = def_fingerprint(&entry.def, env.params);
+            let start = Instant::now();
+            // (Workers let go of the results they hold before the cache
+            // drops any for its budget, mitcad#842.)
+            let restored = cache.restore(kernel, entry, def_fp, &env, |cache, output| {
+                if let Some(ahead) = ahead.as_deref_mut()
+                    && cache.would_trim(output_bytes(kernel, output))
+                {
+                    ahead.release();
+                }
+            });
+            if let Some(output) = restored {
+                (output, Came::Store(start.elapsed()))
+            } else {
+                if let Some(monitor) = monitor {
+                    monitor.evaluating(&entry.name);
+                }
+                // A worker's result where one evaluated the feature ahead
+                // and what it read holds here (mitcad#842).
+                let from_worker = match ahead.as_deref_mut() {
+                    Some(ahead) => ahead.take(position, def_fp, &env, monitor)?,
+                    None => None,
+                };
+                let output = match (from_worker, monitor) {
+                    (Some(output), _) => output,
+                    (None, Some(monitor)) => {
+                        kernel.interruptible(monitor, || evaluate(kernel, entry, env, def_fp))
+                    }
+                    (None, None) => evaluate(kernel, entry, env, def_fp),
+                };
+                // A result that came back after a cancel request is not
+                // kept: the request may have cut it short (P7), or the
+                // kernel stopped inside and failed (P7e). One that ran
+                // out of memory says so all the same: the request may
+                // have come for that very failure (the .f3d import's
+                // memory guard counts failed allocations, mitcad#132).
+                let out_of_memory =
+                    matches!(&output.result, Err(m) if KernelError::is_out_of_memory(m));
+                if let Some(monitor) = monitor
+                    && !out_of_memory
+                {
+                    monitor.evaluation_done()?;
+                }
+                // Nor is a failure for lack of memory: the feature may
+                // build once memory is free again (mitcad#80).
+                if !out_of_memory {
+                    if let Some(ahead) = &mut ahead
+                        && cache.would_trim(output_bytes(kernel, &output))
+                    {
+                        ahead.release();
+                    }
+                    cache.insert(kernel, entry, output.clone());
+                }
+                if let Some(monitor) = monitor {
+                    monitor.kept();
+                }
+                let time = output.time;
+                (output, Came::Evaluated(time))
+            }
+        }
+    };
+    // What the open command's preview shows of its feature besides the
+    // result (mitcad#712): made for the preview only, against what the
+    // feature saw, whether its result was cached or not, and kept out
+    // of the cache.
+    let preview_tool = (cache.preview == Some(entry.uid) && output.result.is_ok()).then(|| {
+        let mut ctx = EvalContext::new(kernel, entry.uid, env);
+        entry.def.evaluator::<K>().preview_tool(&mut ctx)
+    });
+    drop(own);
+    if let Some(tool) = preview_tool {
+        walk.done.preview_tool = tool;
+    }
+    match came {
+        Came::Cache => {}
+        Came::Store(time) => {
+            walk.done.restore_times.push(time);
+            walk.done.restored.push(entry.uid);
+        }
+        Came::Evaluated(time) => {
+            walk.done.times.push(time);
+            walk.done.evaluated.push(entry.uid);
+        }
+    }
+    walk.apply(kernel, state, entry, output);
+    Ok(())
+}
+
+impl<'s, S> Walk<'s, S> {
+    /// What the feature evaluated next reads: `own`, its component's
+    /// bodies, and what the timeline before it made.
+    fn env<'a>(
+        &'a self,
+        state: &'a DocState,
+        own: &'a BodyState<S>,
+        written_from: &'a [(Brep, S)],
+    ) -> Env<'a, S> {
+        Env {
+            sheets: &self.done.sheets,
+            sheet_rules: &self.done.sheet_rules,
+            params: &self.params,
+            bodies: own,
+            owners: &self.done.owners,
+            assembly: &state.assembly,
+            sketches: &self.done.sketches,
+            datums: &self.done.datums,
             features: &state.features,
-            history: &done.results,
-            components: &components,
-            placements: &done.placements,
-            written_from: &written_from,
+            index: &state.feature_index,
+            history: &self.done.results,
+            components: &self.components,
+            placements: &self.done.placements,
+            written_from,
             join_tolerance: state.join_tolerance,
             sources: &state.library_sources,
             split_pieces: &state.split_pieces,
-            changed_pieces: &done.changed_pieces,
-            gone_pieces: &done.gone_pieces,
-        };
-        let output = match cache.lookup(entry, &env) {
-            Some(output) => output,
-            None => {
-                let def_fp = def_fingerprint(&entry.def, &params);
-                let start = Instant::now();
-                if let Some(output) = cache.restore(kernel, entry, def_fp, &env) {
-                    done.restore_times.push(start.elapsed());
-                    done.restored.push(entry.uid);
-                    output
-                } else {
-                    let output = match monitor {
-                        Some(monitor) => {
-                            monitor.evaluating(&entry.name);
-                            kernel.interruptible(monitor, || evaluate(kernel, entry, env, def_fp))
-                        }
-                        None => evaluate(kernel, entry, env, def_fp),
-                    };
-                    // A result that came back after a cancel request is not
-                    // kept: the request may have cut it short (P7), or the
-                    // kernel stopped inside and failed (P7e). One that ran
-                    // out of memory says so all the same: the request may
-                    // have come for that very failure (the .f3d import's
-                    // memory guard counts failed allocations, mitcad#132).
-                    let out_of_memory =
-                        matches!(&output.result, Err(m) if KernelError::is_out_of_memory(m));
-                    if let Some(monitor) = monitor
-                        && !out_of_memory
-                    {
-                        monitor.evaluation_done()?;
-                    }
-                    done.times.push(output.time);
-                    // Nor is a failure for lack of memory: the feature may
-                    // build once memory is free again (mitcad#80).
-                    if !out_of_memory {
-                        cache.insert(kernel, entry, output.clone());
-                    }
-                    if let Some(monitor) = monitor {
-                        monitor.kept();
-                    }
-                    done.evaluated.push(entry.uid);
-                    output
-                }
-            }
-        };
-        // What the open command's preview shows of its feature besides the
-        // result (mitcad#712): made for the preview only, against what the
-        // feature saw, whether its result was cached or not, and kept out
-        // of the cache.
-        if cache.preview == Some(entry.uid) && output.result.is_ok() {
-            let mut ctx = EvalContext::new(kernel, entry.uid, env);
-            done.preview_tool = entry.def.evaluator::<K>().preview_tool(&mut ctx);
+            changed_pieces: &self.done.changed_pieces,
+            gone_pieces: &self.done.gone_pieces,
         }
-        drop(own);
+    }
+}
 
+impl<'s, S: Clone> Walk<'s, S> {
+    /// A copy to go on from on another thread (`recompute/ahead.rs`): what
+    /// was made so far, shared, without what this walk did itself.
+    fn snapshot(&self) -> Walk<'s, S> {
+        Walk {
+            done: self.done.fork(),
+            components: self.components.clone(),
+            params: self.params.clone(),
+            measured_ids: Vec::new(),
+            touched: Vec::new(),
+            not_resumable: false,
+        }
+    }
+
+    /// Applies the result of the feature `entry` where the timeline is:
+    /// its placements, joints, sketch, datum, measured values and body
+    /// changes, and its status.
+    fn apply<K: Kernel<Shape = S>>(
+        &mut self,
+        kernel: &K,
+        state: &DocState,
+        entry: &FeatureEntry,
+        output: Arc<Output<S>>,
+    ) {
+        let assembly = &state.assembly;
+        let done = &mut self.done;
         let mut status = match &output.result {
             Ok(()) => FeatureStatus::Ok,
             Err(message) => FeatureStatus::Failed(message.clone()),
@@ -1023,7 +1391,7 @@ pub(crate) fn recompute<K: Kernel>(
         // other components' bodies at this point: applied here too.
         let mut applied_warnings = None;
         if status.is_ok() && crate::joints::applies(&entry.def) {
-            match crate::joints::apply(kernel, state, entry, &components, &mut done) {
+            match crate::joints::apply(kernel, state, entry, &self.components, done) {
                 Ok(warnings) if !warnings.is_empty() => {
                     let mut all = output.warnings.clone();
                     for warning in warnings {
@@ -1045,16 +1413,18 @@ pub(crate) fn recompute<K: Kernel>(
             }
             if let Some(sketch) = &output.sketch {
                 done.sketches.insert(entry.uid, sketch.clone());
-                measure_references(entry, &sketch.value, &mut params, &mut done.measured);
+                measure_references(entry, &sketch.value, &mut self.params, &mut done.measured);
             }
             if let Some(datum) = &output.datum {
                 done.datums.insert(entry.uid, datum.clone());
             }
             // A bound length's measured value (mitcad#375) sizes what follows.
+            self.measured_ids
+                .extend(output.measured.iter().map(|(id, _)| *id));
             if status.is_ok() {
                 for (id, value) in &output.measured {
-                    if params.value(*id).map(f64::to_bits) != Some(value.to_bits())
-                        && params.to_mut().set_measured(*id, *value).is_ok()
+                    if self.params.value(*id).map(f64::to_bits) != Some(value.to_bits())
+                        && self.params.to_mut().set_measured(*id, *value).is_ok()
                     {
                         done.measured.push((*id, *value));
                     }
@@ -1065,6 +1435,7 @@ pub(crate) fn recompute<K: Kernel>(
             for change in &output.changes {
                 match change {
                     Change::Set(uid, shape) => {
+                        self.touched.push(*uid);
                         let target = output.owners.get(uid).copied().unwrap_or(target);
                         crate::sheet::publish(
                             &mut done.sheets,
@@ -1076,17 +1447,18 @@ pub(crate) fn recompute<K: Kernel>(
                         );
                         if let Some(old) = done.owners.insert(*uid, target)
                             && old != target
-                            && let Some(bodies) = components.get_mut(&old)
+                            && let Some(bodies) = self.components.get_mut(&old)
                         {
                             Arc::make_mut(bodies).remove(uid);
                         }
-                        Arc::make_mut(components.entry(target).or_default())
+                        Arc::make_mut(self.components.entry(target).or_default())
                             .insert(*uid, shape.clone());
                     }
                     Change::Remove(uid) => {
+                        self.touched.push(*uid);
                         done.sheets.remove(uid);
                         if let Some(old) = done.owners.remove(uid)
-                            && let Some(bodies) = components.get_mut(&old)
+                            && let Some(bodies) = self.components.get_mut(&old)
                         {
                             Arc::make_mut(bodies).remove(uid);
                         }
@@ -1094,7 +1466,7 @@ pub(crate) fn recompute<K: Kernel>(
                 }
             }
             if status.is_ok() {
-                follow_pieces(&mut done, entry.uid, &output);
+                follow_pieces(done, entry.uid, &output);
             }
         }
         if let FeatureStatus::Failed(message) = &status {
@@ -1112,18 +1484,55 @@ pub(crate) fn recompute<K: Kernel>(
             applied_warnings,
         });
     }
-    let mut all = BTreeMap::new();
-    for bodies in components.values() {
-        all.extend(bodies.iter().map(|(uid, b)| (*uid, b.clone())));
+}
+
+/// The point after which a recompute of `state` can go on from `before`
+/// ([`recompute_after`]), if it can: `state` begins with the features
+/// `before` evaluated (the same entries), in the same assembly, and
+/// nothing those features read of the state besides the timeline before
+/// them changed: the values of the parameters they read or measure, the
+/// join tolerance, the library sources and what they remember of the
+/// pieces of their splits. A recompute from the start then finds each of
+/// their results in the cache (their reads match, by induction over the
+/// timeline) and does with them what the earlier recompute did.
+fn resume_point<'b, S>(before: &'b Recomputed<S>, state: &DocState) -> Option<&'b ResumePoint<S>> {
+    let point = before.resume.as_ref()?;
+    let count = point.features.len();
+    if before.results.len() != count || state.features.len() < count || state.marker < count {
+        return None;
     }
-    done.bodies = Arc::new(all);
-    // The joints' frames and values where the occurrences are at the
-    // marker.
-    crate::joints::finish(&mut done.joints, &done.placements);
-    if let Some(monitor) = monitor {
-        monitor.finish(total);
+    let same_features = point
+        .features
+        .iter()
+        .zip(&state.features)
+        .all(|(a, b)| Arc::ptr_eq(a, b));
+    if !same_features || point.assembly != state.assembly {
+        return None;
     }
-    Ok(done)
+    let params = &state.parameters;
+    if point
+        .measured
+        .iter()
+        .any(|(id, bits)| params.read_bits(*id) != *bits)
+    {
+        return None;
+    }
+    let reads_hold = before
+        .results
+        .iter()
+        .filter_map(|r| r.output.as_ref())
+        .flat_map(|output| &output.reads)
+        .all(|read| match read {
+            Read::Param(id, bits) => params.read_bits(*id) == *bits,
+            Read::JoinTolerance(bits) => state.join_tolerance.map(f64::to_bits) == *bits,
+            Read::Source(id, version) => state.library_sources.version(*id) == *version,
+            Read::Pieces(uid, fits) => fits.contains(&crate::features::pieces::fingerprint(
+                state.split_pieces.get(uid),
+            )),
+            // What earlier features made and the assembly: the same.
+            _ => true,
+        });
+    reads_hold.then_some(point)
 }
 
 /// Keeps the pieces of splits up to date after a feature that succeeded

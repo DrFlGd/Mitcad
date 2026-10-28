@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+# Appearances within the screen's available area, its buttons visible below
+# its scrolling body (mitcad#818); run by ui-appearance-fit-test.sh on a
+# screen lower than the dialog's contents, and in a compact dialog.
+wait-idle
+command solid.appearances
+focus-dialog '^Appearances$'
+expect-dialog-fits
+dialog-resize 700 420
+expect-dialog-fits 700 420
+button '^Close$'
+expect-dialog-gone '^Appearances$'
+focus-main

@@ -31,12 +31,15 @@ sleep 2500
 screenshot '${MITCAD_TEST_REPLACEMENT}/Open.png'
 expect-file '${MITCAD_TEST_REPLACEMENT}/Open-verified' 20
 
-# New Design (mitcad#175) in the Cloud project: the AppKit frontend asks
-# for the name (no Projects panel), then the open design would be replaced.
+# New Design (mitcad#175) in the Cloud project: as in the default frontend,
+# the design is named in place in the Projects panel's visible row editor
+# (mitcad#816); taking the name would then replace the open design.
 mark
 menu 'File/New Design'
-focus-dialog '^New Design$'
-button '^OK$'
+expect-log 'Projects panel: naming a new design in ada$' 30
+expect-native-focus projectsTree '^Design1$'
+key Return
+expect-log 'Projects panel: new design Design1\.mitcad in ' 10
 focus-dialog '^Save changes to part\.mitcad\?$'
 button "^Don't Save$"
 expect-log 'needs a choice before the release: asked' 30

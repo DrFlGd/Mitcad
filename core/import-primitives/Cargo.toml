@@ -10,6 +10,9 @@ publish.workspace = true
 
 [lib]
 name = "mitcad_import_primitives"
+# No tests of its own (its family is tested in core/import): no test binary,
+# which a change in the model would rebuild and link for nothing (mitcad#831).
+test = false
 
 [dependencies]
 mitcad-model.workspace = true

@@ -24,6 +24,8 @@
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSlider>
+#include <QTabBar>
+#include <QTabWidget>
 #include <QStyle>
 #include <QStyleOptionSlider>
 #include <QTimer>
@@ -44,6 +46,7 @@
 #include "../platform/MacDialogs.hpp"
 #include "DecimalAlignDelegate.hpp"
 #include "DocumentHost.hpp"
+#include "TablesPage.hpp"
 
 namespace mitcad {
 namespace {
@@ -349,8 +352,17 @@ ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
   setObjectName(QStringLiteral("parametersDialog"));
   setWindowTitle(tr("Parameters"));
   setWindowIcon(themeIcon(QStringLiteral("parameters")));
-  resize(1200, 460); // room for the limits' columns (mitcad#665)
-  auto* layout = new QVBoxLayout(this);
+  // Room for the limits' columns (mitcad#665), and for the tabs and the
+  // OK row of mitcad#667 above and below the rows.
+  resize(1200, 530);
+  auto* dialogLayout = new QVBoxLayout(this);
+  // The Parameters tab; the Tables tab beside it (mitcad#667).
+  m_tabs = new QTabWidget;
+  m_tabs->setObjectName(QStringLiteral("parametersTabs"));
+  m_tabs->setDocumentMode(true);
+  auto* parametersPage = new QWidget;
+  auto* layout = new QVBoxLayout(parametersPage);
+  layout->setContentsMargins(0, 6, 0, 0);
 
   auto* top = new QHBoxLayout;
   m_add = new QPushButton(themeIcon(QStringLiteral("add")), tr("User Parameter"));
@@ -435,12 +447,19 @@ ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
 #endif
   bottom->addWidget(m_import);
   bottom->addWidget(m_export);
-  m_formula = new QPushButton(tr("Edit Formula…"));
+  m_formula = new QPushButton(tr("Edit &Formula…"));
   m_formula->setObjectName(QStringLiteral("parametersFormula"));
   m_formula->setAutoDefault(false);
   m_formula->setToolTip(tr("Edit the selected parameter's formula and limits"));
   bottom->addWidget(m_formula);
   bottom->addStretch(1);
+  layout->addLayout(bottom);
+  m_tabs->addTab(parametersPage, tr("&Parameters"));
+  m_tablesPage = new TablesPage(host);
+  m_tabs->addTab(m_tablesPage, tr("&Tables"));
+  dialogLayout->addWidget(m_tabs, 1);
+  auto* closing = new QHBoxLayout;
+  closing->addStretch(1);
   auto* buttons = new QDialogButtonBox;
   m_ok = new QPushButton(tr("OK"));
   m_ok->setObjectName(QStringLiteral("parametersOK"));
@@ -448,8 +467,22 @@ ParametersDialog::ParametersDialog(DocumentHost& host, QWidget* parent)
   m_add->setAutoDefault(false);
   m_delete->setAutoDefault(false);
   buttons->addButton(m_ok, QDialogButtonBox::AcceptRole);
-  bottom->addWidget(buttons);
-  layout->addLayout(bottom);
+  closing->addWidget(buttons);
+  dialogLayout->addLayout(closing);
+  // A table's change changes the values of the parameters that use it.
+  connect(m_tablesPage, &TablesPage::changed, this, &ParametersDialog::refresh);
+  connect(m_tabs, &QTabWidget::currentChanged, this, [this](int index) {
+    qDebug().noquote() << QStringLiteral("Parameters tab shown: %1").arg(m_tabs->tabText(index).remove(QLatin1Char('&')));
+    // The keys go to the tab's table (Alt+P, Alt+T).
+    if (m_tabs->widget(index) == m_tablesPage) {
+      m_tablesPage->takeFocus();
+    } else {
+      m_table->setFocus();
+    }
+    m_logged.clear();
+    QTimer::singleShot(0, this, &ParametersDialog::logLayout);
+  });
+  m_table->setFocus();
   mac::styleParametersDialog(this, m_table, m_filter, m_add, m_delete, m_ok);
   mac::styleListButtons(m_add, m_delete);
   mac::styleDialogButtons(buttons, m_ok);
@@ -572,6 +605,7 @@ QTreeWidgetItem* ParametersDialog::addRow(QTreeWidgetItem* parent, const QJsonOb
   if (!reference && !text && !m_scope.holds(parameter)) {
     addSlider(row, parameter);
   }
+  markOption(row, parameter);
   for (const int column : {kName, kUnit, kExpression, kComment, kMin, kMax, kStep}) {
     const auto refused = m_refused.constFind(refusedKey(name, column));
     if (refused != m_refused.cend()) {
@@ -594,8 +628,74 @@ QTreeWidgetItem* ParametersDialog::addRow(QTreeWidgetItem* parent, const QJsonOb
   return row;
 }
 
+void ParametersDialog::markOption(QTreeWidgetItem* row, const QJsonObject& parameter) {
+  const QString name = parameter.value(QStringLiteral("name")).toString();
+  const configurations::OptionReport* option = m_options.option(name);
+  if (option == nullptr && !parameter.value(QStringLiteral("option")).toBool()) {
+    return;
+  }
+  row->setIcon(kName, themeIcon(QStringLiteral("configurations")));
+  QStringList tip{tr("An option of the configuration table (Configurations…)")};
+  QString logged = name;
+  if (option != nullptr && option->driven) {
+    tip << tr("Driven by its formula: no chooser sets it, no rule moves it");
+  }
+  if (option != nullptr && !option->restrictedBy.isEmpty()) {
+    const configurations::Domain& allowed = option->allowed;
+    const QString rules = option->restrictedBy.join(QStringLiteral(", "));
+    const QString narrowed = tr("Narrowed by %1: %2").arg(rules, allowed.summary());
+    tip << narrowed;
+    logged += QStringLiteral(" (narrowed by %1: %2)").arg(rules, allowed.summary());
+    if (allowed.kind == configurations::Domain::Kind::Range) {
+      // The rules' bounds as a feature's fixed limits are shown: in grey
+      // where the parameter has none of its own, else in the tooltip.
+      const std::pair<int, QString> bounds[] = {{kMin, allowed.min ? allowed.minText : QString()},
+                                                {kMax, allowed.max ? allowed.maxText : QString()},
+                                                {kStep, allowed.step ? allowed.stepText : QString()}};
+      const configurations::Domain& domain = option->domain;
+      const QString own[] = {domain.min ? domain.minText : QString(), domain.max ? domain.maxText : QString(),
+                             domain.step ? domain.stepText : QString()};
+      for (int i = 0; i < 3; ++i) {
+        const int column = bounds[i].first;
+        const QString& bound = bounds[i].second;
+        if (bound.isEmpty() || bound == own[i]) {
+          continue;
+        }
+        const QString why = tr("Narrowed to %1 by %2").arg(bound, rules);
+        if (row->data(column, kOwnLimitRole).toString().isEmpty()) {
+          row->setText(column, bound);
+          row->setData(column, kFixedLimitRole, bound);
+          row->setForeground(column, m_table->palette().color(QPalette::Disabled, QPalette::Text));
+          row->setToolTip(column, why);
+        } else {
+          row->setToolTip(column, row->toolTip(column).isEmpty() ? why : row->toolTip(column) + QLatin1Char('\n') + why);
+        }
+      }
+    } else {
+      const QString value = row->toolTip(kValue);
+      row->setToolTip(kValue, value.isEmpty() ? narrowed : value + QLatin1Char('\n') + narrowed);
+    }
+  }
+  row->setToolTip(kName, tip.join(QLatin1Char('\n')));
+  if (!m_optionRows.contains(logged)) {
+    m_optionRows << logged;
+  }
+}
+
 void ParametersDialog::refresh() {
   updateScope(); // what is edited now (mitcad#564)
+  // The configuration's options (mitcad#807); none when the design has no
+  // table or the model cannot report it.
+  m_options = configurations::Report();
+  m_optionRows.clear();
+  try {
+    if (!configurations::readTable(m_host.model().queryObject(configurations::configurationsQuery()))
+             .options.isEmpty()) {
+      m_options = configurations::readReport(m_host.model().queryObject(configurations::configureQuery()));
+    }
+  } catch (const std::exception&) {
+    m_options = configurations::Report();
+  }
   QString current;
   if (QTreeWidgetItem* item = m_table->currentItem()) {
     current = item->data(kName, kNameRole).toString();
@@ -622,6 +722,10 @@ void ParametersDialog::refresh() {
   auto* favorites = new QTreeWidgetItem(m_table, {tr("Favorites")});
   auto* users = new QTreeWidgetItem(m_table, {tr("User Parameters")});
   auto* models = new QTreeWidgetItem(m_table, {tr("Model Parameters")});
+  // Section rows' stable identifiers (native tests, mitcad#814).
+  favorites->setData(kName, NativeControlIdentifierRole, QStringLiteral("parameters.group.favorites"));
+  users->setData(kName, NativeControlIdentifierRole, QStringLiteral("parameters.group.users"));
+  models->setData(kName, NativeControlIdentifierRole, QStringLiteral("parameters.group.models"));
   QHash<QString, QTreeWidgetItem*> owners;
   QStringList names;
   QStringList rows; // for the log
@@ -653,6 +757,8 @@ void ParametersDialog::refresh() {
       parent = owners.value(owner);
       if (parent == nullptr) {
         parent = new QTreeWidgetItem(models, {featureNames.value(owner, owner)});
+        parent->setData(kName, NativeControlIdentifierRole,
+                        QStringLiteral("parameters.group.%1").arg(featureNames.value(owner, owner)));
         parent->setExpanded(true);
         owners.insert(owner, parent);
       }
@@ -684,6 +790,14 @@ void ParametersDialog::refresh() {
     group->setFont(kName, font);
     group->setFirstColumnSpanned(true);
   }
+  // A feature's section row is bold too: the row delegate paints every row
+  // without a parameter so; the font role says it to other presenters
+  // (the AppKit table, mitcad#814).
+  for (QTreeWidgetItem* group : std::as_const(owners)) {
+    QFont font = group->font(kName);
+    font.setBold(true);
+    group->setFont(kName, font);
+  }
   m_building = false;
   m_align->invalidate();
   applyFilter();
@@ -706,6 +820,14 @@ void ParametersDialog::refresh() {
     qDebug().noquote() << QStringLiteral("Parameters favorites: %1")
                               .arg(favoriteNames.isEmpty() ? QStringLiteral("none") : favoriteNames);
   }
+  // The options and the rules' restrictions (mitcad#807).
+  const QString optionNames = m_optionRows.join(QStringLiteral("; "));
+  if (optionNames != m_loggedOptions && isVisible()) {
+    m_loggedOptions = optionNames;
+    qDebug().noquote() << QStringLiteral("Parameters options: %1")
+                              .arg(optionNames.isEmpty() ? QStringLiteral("none") : optionNames);
+  }
+  m_tablesPage->refresh(); // the tables, with the parameters that use them (mitcad#667)
   QTimer::singleShot(0, this, &ParametersDialog::logLayout);
 }
 
@@ -1129,6 +1251,12 @@ void ParametersDialog::logLayout() {
   lines << QStringLiteral("Parameters OK at %1").arg(at(m_ok, m_ok->rect().center()));
   lines << QStringLiteral("Parameters import at %1").arg(at(m_import, m_import->rect().center()));
   lines << QStringLiteral("Parameters export at %1").arg(at(m_export, m_export->rect().center()));
+  lines << QStringLiteral("Parameters formula at %1").arg(at(m_formula, m_formula->rect().center()));
+  // The tabs (mitcad#667).
+  for (int i = 0; i < m_tabs->count(); ++i) {
+    lines << QStringLiteral("Parameters tab %1 at %2")
+                 .arg(m_tabs->tabText(i).remove(QLatin1Char('&')), at(m_tabs->tabBar(), m_tabs->tabBar()->tabRect(i).center()));
+  }
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_logged) {
     m_logged = logged;
@@ -1142,12 +1270,12 @@ void ParametersDialog::logLayout() {
 void ParametersDialog::updateScope() {
   m_scope = m_host.parameterScope();
   if (m_scopeNote == nullptr) {
-    // Above the rows, below the buttons and the search.
+    // Above the tabs: it holds for the tables too (mitcad#667).
     m_scopeNote = new QLabel(this);
     m_scopeNote->setObjectName(QStringLiteral("parametersScope"));
     m_scopeNote->setWordWrap(true);
     if (auto* box = qobject_cast<QVBoxLayout*>(layout())) {
-      box->insertWidget(1, m_scopeNote);
+      box->insertWidget(0, m_scopeNote);
     }
   }
   const QString note = m_scope.note();

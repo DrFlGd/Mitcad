@@ -79,9 +79,25 @@ public:
     NameList names;
   };
 
+  // What the names of the faces give the edges and vertices: each edge's
+  // two faces and name, each vertex's faces and name, in TopExp order, as
+  // a shape works them out when it is made (persist.cpp keeps them with a
+  // stored shape, mitcad#841).
+  struct DerivedNames {
+    std::vector<std::array<int, 2>> edge_faces;
+    std::vector<std::string> edge_names;
+    std::vector<std::vector<int>> vertex_faces;
+    std::vector<std::string> vertex_names;
+  };
+
   // Faces of `shape` that are not listed have no name. Listed faces that are
   // not part of the shape are ignored.
   explicit Shape(TopoDS_Shape shape, const std::vector<NamedFace>& faces = {});
+  // The same shape with the edge and vertex names it was given (`derived`,
+  // what a Shape of the same B-rep and face names worked out) instead of
+  // working them out again; when their counts do not match the shape's
+  // edges and vertices they are worked out.
+  Shape(TopoDS_Shape shape, const std::vector<NamedFace>& faces, DerivedNames derived);
   Shape(const Shape&) = default;
   Shape(Shape&&) = default;
   Shape& operator=(const Shape&) = default;
@@ -116,6 +132,8 @@ public:
   const std::string& vertex_name(int i) const {
     return m_vertexNames[static_cast<std::size_t>(i)];
   }
+  // The faces at vertex i, in the order the vertex's names list them.
+  const std::vector<int>& vertex_faces(int i) const { return m_vertexFaces[static_cast<std::size_t>(i)]; }
 
   // Index of a sub-shape of this shape, or -1.
   int face_index(const TopoDS_Shape& face) const { return m_faces.FindIndex(face) - 1; }
@@ -246,6 +264,9 @@ public:
   void add_note(std::string note) { m_notes.push_back(std::move(note)); }
 
 private:
+  void map_faces(const std::vector<NamedFace>& faces);
+  void register_check();
+  bool take_derived(DerivedNames& derived);
   void derive_edge_names();
   void derive_vertex_names();
   bool edge_matches(int i, const std::string& a, const std::string& b) const;

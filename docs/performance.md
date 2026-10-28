@@ -375,8 +375,8 @@ triangulation, and a 0.018 mm² face that (a) leaves undrawn drawn by (b)
 with 181 triangles over 11.8 mm², which nothing but the area comparison
 detects. The ticket has the tables and the faces by design content id.
 
-The final tier now triangulates planes through Delabella and checks each
-one (`io::MeshOptions::check_planes`): a plane left without a
+From 0.29.0 the final tier triangulated planes through Delabella and
+checked each one (`io::MeshOptions::check_planes`): a plane left without a
 triangulation, or whose triangles' area differs from the area its
 boundary's discretization encloses (the outer wire's polygon less the
 holes', from the edge points the mesher made, so next to no cost) by more
@@ -388,3 +388,11 @@ keeps Delabella's where it is right, also where the default had none.
 `MeshReport::planes_redone` counts the planes made again
 (`MITCAD_MESH_TRACE=1`: "planes redone N"); `mitcad-cli mesh-compare --b
 checked` repeats the trial against the switched tier.
+
+mitcad#846 put the final tier's planes back to the default insertion
+(`viewMeshOptions` is `defaultPlaneMeshOptions`; the checked variant is
+`checkedPlaneMeshOptions`): a large design of 7 471 faces, 6 455 of them
+planes, meshed in 4.7 s with the default insertion did not end in 40
+minutes with the checked Delabella, so the design could not be opened.
+The checked variant stays available to `mitcad-cli mesh-compare --b
+checked` until that hang is found.

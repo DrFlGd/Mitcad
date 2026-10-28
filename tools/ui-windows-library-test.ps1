@@ -28,7 +28,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'tools.libraries' = 'F8'; 'insert.library_component' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'tools.libraries' = 'F8'; 'insert.library_component' = 'F9' } -StepPause 0
 
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
@@ -73,6 +73,15 @@ foreach ($arguments in @(@('add', '-A'), @('commit', '-q', '-m', 'Blocks'))) {
   if ($LASTEXITCODE -ne 0) { Ui-Fail "git $($arguments -join ' '): $($output -join ' / ')" }
 }
 $broken = Join-Path $work 'no-such-library'
+
+# Type-Ahead text: the picker's group by its first letters. Qt joins the
+# keys typed within its keyboard input interval (400 ms) into one search,
+# also across steps ('W', then 'Slot' would look for 'WSlot'): it waits
+# that long first, as the Linux test's ui_type_ahead.
+function Type-Ahead([string]$Text) {
+  Start-Sleep -Milliseconds 500
+  Ui-Type $Text
+}
 
 # Add-Source path: Add URL in Libraries... (open), then back to it.
 function Add-Source([string]$Path) {
@@ -143,7 +152,7 @@ Ui-FocusDialog '^Insert from Library$'
 Ui-ExpectNew 'Part picker opened: 1 parts for Insert from Library' 'the results as the picker grid'
 Ui-ExpectNew 'Part picker in this design: 0 parts' 'no library part in the design yet'
 Ui-Mark
-Ui-Step 'the group Blocks (Alt+O, B)'    { Ui-Key 'alt+o'; Ui-Type 'B' }
+Ui-Step 'the group Blocks (Alt+O, B)'    { Ui-Key 'alt+o'; Type-Ahead 'B' }
 Ui-ExpectNew 'Part picker group Blocks: 1 parts, first test-blocks/block' 'the group'
 Ui-Mark
 Ui-Step 'search for nothing (Alt+S)'     { Ui-Key 'alt+s'; Ui-Type 'nosuchpart' }
@@ -159,7 +168,7 @@ Ui-ExpectNew 'Part picker star block on' 'the block starred'
 Ui-ExpectNew 'Part picker tiles kept: ' 'a star changes only the star: the tiles stay (mitcad#517)'
 Ui-ExpectNew '; current test-blocks/block' 'the selection stays on the starred block'
 Ui-Mark
-Ui-Step 'Favourites (Alt+O, F)'          { Ui-Key 'alt+o'; Ui-Type 'F' }
+Ui-Step 'Favourites (Alt+O, F)'          { Ui-Key 'alt+o'; Type-Ahead 'F' }
 Ui-ExpectNew 'Part picker group Favourites: 1 parts, first test-blocks/block' 'Favourites has the block'
 Ui-Step 'Insert (Alt+I)'                 { Ui-Key 'alt+i' }
 Ui-FocusMain
@@ -235,13 +244,13 @@ foreach ($group in @('Wood', 'Wood/Beams', 'Wood/Sheets', 'Slot profile', 'Slot 
 }
 Write-Host "ok   the groups as a tree: $groupsTree"
 Ui-Mark
-Ui-Step 'the group Wood (Alt+O, W)'      { Ui-Key 'alt+o'; Ui-Type 'W' }
+Ui-Step 'the group Wood (Alt+O, W)'      { Ui-Key 'alt+o'; Type-Ahead 'W' }
 Ui-ExpectNew 'Part picker group Wood: 2 parts' "Wood lists its subgroups' parts, of both libraries"
 Ui-Mark
-Ui-Step "Slot profile's Screws (Alt+O, Slot, Down)" { Ui-Key 'alt+o'; Ui-Type 'Slot'; Ui-Key 'Down' }
+Ui-Step "Slot profile's Screws (Alt+O, Slot, Down)" { Ui-Key 'alt+o'; Type-Ahead 'Slot'; Ui-Key 'Down' }
 Ui-ExpectNew 'Part picker group Slot profile/Screws: 1 parts, first test-wood/slot-screw' 'the slot screw in Slot profile'
 Ui-Mark
-Ui-Step "General fasteners' Screws (Alt+O, General, Down)" { Ui-Key 'alt+o'; Ui-Type 'General'; Ui-Key 'Down' }
+Ui-Step "General fasteners' Screws (Alt+O, General, Down)" { Ui-Key 'alt+o'; Type-Ahead 'General'; Ui-Key 'Down' }
 Ui-ExpectNew 'Part picker group General fasteners/Screws: 1 parts, first test-wood/slot-screw' 'the same screw in General fasteners'
 # The slot screw stays the current tile (chosen in Slot profile/Screws: the
 # browser logs no new selection); the star names it.
@@ -249,7 +258,7 @@ Ui-Mark
 Ui-Step 'star it (Ctrl+D)'               { Ui-Key 'ctrl+d' }
 Ui-ExpectNew 'Part picker star slot-screw on' 'the slot screw starred'
 Ui-Mark
-Ui-Step 'Favourites (Alt+O, F)'          { Ui-Key 'alt+o'; Ui-Type 'F' }
+Ui-Step 'Favourites (Alt+O, F)'          { Ui-Key 'alt+o'; Type-Ahead 'F' }
 Ui-ExpectNew 'Part picker group Favourites: 2 parts' 'the block and the slot screw'
 $tiles = Ui-LastMatch '^Part picker tiles: (.*)$'
 if (([regex]::Matches("$tiles", 'test-wood/slot-screw')).Count -ne 1) {
@@ -257,7 +266,7 @@ if (([regex]::Matches("$tiles", 'test-wood/slot-screw')).Count -ne 1) {
 }
 Write-Host 'ok   a part in two groups is one tile in Favourites'
 Ui-Mark
-Ui-Step 'fold Wood (Alt+O, W, Left)'     { Ui-Key 'alt+o'; Ui-Type 'W'; Ui-Key 'Left' }
+Ui-Step 'fold Wood (Alt+O, W, Left)'     { Ui-Key 'alt+o'; Type-Ahead 'W'; Ui-Key 'Left' }
 Ui-ExpectNew 'Part picker group Wood folded' 'Wood folded'
 Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
 Ui-FocusMain
@@ -268,7 +277,7 @@ Ui-ExpectNew 'Wood (folded)' 'the fold remembered'
 $groupsTree = Ui-LastMatch '^Part picker groups: (.*)$'
 if ("$groupsTree" -like '*Wood/Beams*') { Ui-Fail "a folded group's subgroups are shown: '$groupsTree'" }
 Ui-Mark
-Ui-Step 'unfold it (Alt+O, W, Right)'    { Ui-Key 'alt+o'; Ui-Type 'W'; Ui-Key 'Right' }
+Ui-Step 'unfold it (Alt+O, W, Right)'    { Ui-Key 'alt+o'; Type-Ahead 'W'; Ui-Key 'Right' }
 Ui-ExpectNew 'Part picker group Wood unfolded' 'Wood unfolded'
 Ui-Step 'close (Escape)'                 { Ui-Key 'Escape' }
 Ui-FocusMain

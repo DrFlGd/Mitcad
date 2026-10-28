@@ -112,6 +112,9 @@ pub struct CsvLimits {
     pub max: Option<String>,
     pub step: Option<String>,
     pub strict: bool,
+    /// The allowed values (mitcad#798); left out when there are none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub values: Option<Vec<String>>,
 }
 
 impl CsvLimits {
@@ -122,6 +125,7 @@ impl CsvLimits {
             max: limits.max.clone(),
             step: limits.step.clone(),
             strict: limits.strict,
+            values: limits.values.clone(),
         })
     }
 }
@@ -135,7 +139,12 @@ fn row_limits(
     current: &ParamLimits,
     renamed: &HashMap<String, String>,
 ) -> Option<ParamLimits> {
-    if row.min.is_none() && row.max.is_none() && row.step.is_none() && row.strict.is_none() {
+    if row.min.is_none()
+        && row.max.is_none()
+        && row.step.is_none()
+        && row.strict.is_none()
+        && row.values.is_none()
+    {
         return None;
     }
     // As the table keeps them: trimmed, decimal points, empty as none.
@@ -146,11 +155,28 @@ fn row_limits(
             (!text.is_empty()).then(|| with_decimal_points(&text).into_owned())
         }
     };
+    // Allowed values (mitcad#798): a JSON array of expression texts; a
+    // cell that is no such array is read as one expression.
+    let values = match &row.values {
+        None => current.values.clone(),
+        Some(text) if text.trim().is_empty() => None,
+        Some(text) => {
+            let list = serde_json::from_str::<Vec<String>>(text.trim())
+                .unwrap_or_else(|_| vec![text.trim().to_owned()]);
+            let list: Vec<String> = list
+                .iter()
+                .map(|t| with_decimal_points(&rename_in(t.trim(), renamed)).into_owned())
+                .filter(|t| !t.is_empty())
+                .collect();
+            (!list.is_empty()).then_some(list)
+        }
+    };
     Some(ParamLimits {
         min: cell(&row.min, &current.min),
         max: cell(&row.max, &current.max),
         step: cell(&row.step, &current.step),
         strict: row.strict.unwrap_or(current.strict),
+        values,
     })
 }
 

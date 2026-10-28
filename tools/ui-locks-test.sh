@@ -178,13 +178,13 @@ start() {
   ui_expect_log "Opened $file" "$name: $(basename "$file") opened" > /dev/null
 }
 
-# quit instance: Ctrl+Q, Mitcad ends (its edit lock released).
+# quit instance: Ctrl+Q, Mitcad ends (its edit lock released); up to 20 s.
 quit() {
   ui_instance "$1"
   ui_key ctrl+q
-  for _ in $(seq 1 100); do
+  for _ in $(seq 1 400); do
     kill -0 "$UI_RUNNER" 2> /dev/null || break
-    sleep 0.2
+    sleep 0.05
   done
   kill -0 "$UI_RUNNER" 2> /dev/null && ui_fail "$1: Mitcad did not exit"
   wait "$UI_RUNNER" 2> /dev/null
@@ -369,11 +369,11 @@ ui_instance sam
 ui_stop_app
 echo "ok   Sam's Mitcad killed"
 [ "$(request_refs "$TEAM")" = 1 ] || ui_fail "the remote has $(request_refs "$TEAM") request refs, not Sam's one"
-# Sam's Mitcad started again, its lock clock 40 times as fast: the killed
+# Sam's Mitcad started again, its lock clock 80 times as fast: the killed
 # session's request, never refreshed, is stale after the idle time (10
-# minutes) and two of its polls (2 × 10 s), 15.5 s here, and the new
-# session's poll removes it.
-start sam 40 "$B/part.mitcad"
+# minutes) and two of its polls (2 × 10 s), 7.75 s here, and the new
+# session's poll (every 0.125 s) removes it.
+start sam 80 "$B/part.mitcad"
 ui_expect_new "Edit lock held: part.mitcad by Ada Tester" "held by Ada" 20
 ui_focus_dialog '^Edit Lock$'
 ui_step "continue read-only (Alt+C)"    ui_key alt+c
@@ -558,9 +558,9 @@ ui_key ctrl+q
 ui_expect_new "Read-only: unsaved changes of part.mitcad asked about" "quitting asks about the changes kept"
 ui_focus_dialog '^MitCad$'
 ui_key alt+d # Don't Save: Mitcad ends
-for _ in $(seq 1 100); do
+for _ in $(seq 1 400); do
   kill -0 "$UI_RUNNER" 2> /dev/null || break
-  sleep 0.2
+  sleep 0.05
 done
 kill -0 "$UI_RUNNER" 2> /dev/null && ui_fail "ada: Mitcad did not exit"
 UI_RUNNER=""
@@ -694,7 +694,7 @@ printf '{"send_at_once": false}\n' > "$CA/.mitcad/local/sync.json"
 # revision and original filename while the lock is held.
 printf '\n[autosave]\nenabled=true\n' >> "$XDG_CONFIG_HOME/Mitcad/Mitcad.conf"
 export MITCAD_AUTOSAVE_DIR=$WORK/replacement-autosave
-export MITCAD_TEST_AUTOSAVE_SECONDS=2
+export MITCAD_TEST_AUTOSAVE_SECONDS=1
 start ada 1 "$CA/part.mitcad" --set d3=27
 ui_expect_new "Edit lock taken: part.mitcad" "the original design holds its lock" 20
 ui_expect_new "Autosaved part.mitcad:" "its unsaved geometry has recovery data" 20
@@ -764,9 +764,10 @@ for action in Open New Close; do
   ui_step "cancel the scheduled sync"     ui_key Escape
   ui_focus_main
   ui_expect_new "Sync cancelled" "the original design stays for inspection"
-  # Wait through an autosave tick: an unintended import would change its
-  # revision and publish a new snapshot, even if the filename survived.
-  sleep 3
+  # Wait through an autosave tick (every second here): an unintended
+  # import would change its revision and publish a new snapshot, even if
+  # the filename survived.
+  sleep 1.5
   ui_sync
   title=$(xdotool getwindowname "$UI_WINDOW")
   [ "$title" = 'part.mitcad* - MitCad' ] || ui_fail "$action changed the design's name: $title"
@@ -854,6 +855,11 @@ ui_step "cancel the resolution" ui_key Escape
 ui_focus_main
 ui_expect_new "Resolve Sync Conflicts cancelled" "resolution remains pending"
 expect_holder "$SAVEAS" ada@example.invalid "the original lock stays owned"
+# The kept lock's idle time (5 s here) passes here, in both cases: its own
+# sync finds the conflict and the lock stays marked idle. Without this wait
+# it can pass later, after Save As back to the original, and its sync then
+# runs as Ctrl+Alt+Y below is pressed, which opens no Resolve dialog
+# (mitcad#833).
 ui_expect_new "Edit lock idle: part.mitcad kept, marked idle (sync: conflict)" \
   "the original lock's timer still runs" 30
 ui_expect_new "Edit lock refreshed: part.mitcad (idle)" "the original lock is still refreshed" 20

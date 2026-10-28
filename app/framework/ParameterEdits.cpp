@@ -92,6 +92,12 @@ bool parameterCommandChangesValues(const QJsonObject& command) {
       cmd == QStringLiteral("rename_parameter")) {
     return true;
   }
+  // Tables (mitcad#667): the lookups of the parameters that use them are
+  // evaluated again, and renames rewrite their expressions.
+  if (cmd == QStringLiteral("set_table") || cmd == QStringLiteral("import_table_csv") ||
+      cmd == QStringLiteral("rename_table") || cmd == QStringLiteral("rename_table_column")) {
+    return true;
+  }
   if (cmd == QStringLiteral("set_parameter")) {
     // Limits change the value too (mitcad#665).
     return command.contains(QStringLiteral("expression")) || command.contains(QStringLiteral("unit")) ||

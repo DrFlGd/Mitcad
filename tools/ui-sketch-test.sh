@@ -3,7 +3,7 @@
 # check-all sources: app/sketch core/solver app/MainWindowVisibility.cpp
 # Sketch mode (U2) through the real UI, as a user works:
 #   - Create Sketch asks for the plane, the origin planes shown in a new
-#     design (mitcad#294); the view looks at it.
+#     design (mitcad#844); the view looks at it.
 #   - A closed profile drawn with the line tool, its horizontal and
 #     vertical constraints inferred while drawing; dimensions placed with
 #     the sketch dimension tool, one an expression, until the sketch is
@@ -98,7 +98,7 @@ ui_start_app
 
 echo "--- Create Sketch asks for a plane and looks at it"
 ui_step "create sketch on XY"            ui_create_sketch xy
-ui_expect_log "Create Sketch: origin planes shown" "a new design (its empty Component1 active): the origin planes shown (mitcad#294)"
+ui_expect_log "Create Sketch: origin planes shown" "a new design: the origin planes shown (mitcad#844)"
 ui_expect_log "Sketch view" "the sketch's place in the view is logged"
 ui_expect_log "Sketch Sketch1: 0 DOF" "an empty sketch"
 

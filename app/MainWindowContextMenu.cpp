@@ -259,6 +259,17 @@ void MainWindow::fillModelContextMenu(QMenu& menu, QStringList& entries) {
       }
     }
     addCall(QStringLiteral("material"), tr("Material…"), [this, bodies] { m_controller->openMaterial(bodies); });
+    // The appearance or the material from an option (mitcad#809).
+    Submenu follow(tr("Follow Option"), &menu);
+    follow.addCall(tr("Appearance…"), [this, targets] { m_controller->followOption(targets, false); });
+    follow.addCall(tr("Material…"), [this, targets] { m_controller->followOption(targets, true); });
+    addSubmenu(follow);
+    follow.log(QStringLiteral("Follow Option"));
+    // Shown while a condition holds (mitcad#809).
+    if (bodies.size() == 1) {
+      const QString body = bodies.first();
+      addCall(QStringLiteral("eye"), tr("Show When…"), [this, body] { m_controller->showBodyWhen(body); });
+    }
   } else if (selection.size() == 1 && first.kind == SelectKind::Component) {
     // A component's default material (mitcad#640).
     const QString component = first.owner;

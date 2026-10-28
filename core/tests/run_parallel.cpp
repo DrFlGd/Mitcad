@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -114,6 +115,28 @@ int self_test(const std::string& self) {
   }
   CHECK(threw);
   CHECK(mitcad::runs::default_jobs(1) >= 1);
+
+  // The start order from the files' own profiles (mitcad#832): a known file
+  // by its time, an unknown one by its weight at the known files' median
+  // rate, or as the longest known when it has no weight.
+  {
+    const std::map<std::string, double> known{{"a", 10.0}, {"b", 40.0}};
+    const std::vector<double> by_rate = mitcad::runs::start_order({"a", "b", "c"}, {100.0, 100.0, 300.0}, known);
+    // Rates 0.1 and 0.4 s per unit: the median 0.25, so c is 75 s.
+    CHECK(by_rate.size() == 3 && by_rate[0] == 10.0 && by_rate[1] == 40.0 && std::abs(by_rate[2] - 75.0) < 1e-9);
+    CHECK((mitcad::runs::start_order({"a", "c"}, {}, known) == std::vector<double>{10.0, 10.0}));
+    CHECK((mitcad::runs::start_order({"a", "c"}, {1.0, 2.0}, {}) == std::vector<double>{1.0, 2.0}));
+    CHECK(mitcad::runs::start_order({}, {}, known).empty());
+    const std::string table = "parallel-runs-files.tsv";
+    {
+      std::ofstream out(table, std::ios::binary);
+      out << "x/one.f3d\t12.5\t1000\n" << "malformed\n" << "two\tsoon\t1\n" << "three\t3\r\n";
+    }
+    const std::map<std::string, double> read = mitcad::runs::read_file_times(table);
+    CHECK(read.size() == 2 && read.count("x/one.f3d") == 1 && read.at("x/one.f3d") == 12.5);
+    CHECK(read.count("three") == 1 && read.at("three") == 3.0);
+    CHECK(mitcad::runs::read_file_times(table + ".missing").empty());
+  }
 
   // In the commands' order whatever order they end in, the heaviest
   // started first, the totals apart from the text, its lines ending in
@@ -252,7 +275,8 @@ int main(int argc, char** argv) {
                               std::printf("FAILED %s: the child process %s\n", labels[i].c_str(), why.c_str());
                             }
                             std::fflush(stdout);
-                          });
+                          },
+                          {}, labels);
     return failed == 0 ? 0 : 1;
   } catch (const std::exception& e) {
     std::fprintf(stderr, "mitcad_run_parallel: %s\n", e.what());

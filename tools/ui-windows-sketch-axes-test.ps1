@@ -27,7 +27,7 @@ param(
 
 # Coincident has no default shortcut (the command search's popup closes at
 # once in session 0).
-Ui-Init $App $Out $QtBin @{ 'sketch.constraint.coincident' = 'Shift+F5' }
+Ui-Init $App $Out $QtBin @{ 'sketch.constraint.coincident' = 'Shift+F5' } -StepPause 0
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }

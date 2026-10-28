@@ -5,7 +5,7 @@ expect-model-bodies 3 11760
 expect-shown-body F1.b0 O1 3840
 expect-shown-body F2.b0 O2 4000
 expect-shown-body F3.b0 O3/O4 3920
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 mark
 native-activate native.history.F5
 expect-log 'Editing F5 with Extrude'

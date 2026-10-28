@@ -69,6 +69,11 @@ pub struct PartInput {
     pub config: Option<String>,
     #[serde(default)]
     pub source: Option<SourceId>,
+    /// Values of its options (mitcad#801): expressions of the design's
+    /// parameters, as the command's `parameters` (which win for a name in
+    /// both).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub parameters: BTreeMap<String, ValueInput>,
 }
 
 /// Whether a pick on a profile goes on its side or on its end.
@@ -1021,11 +1026,23 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
             _ => {}
         }
         let mut warnings = Vec::new();
-        // Values of the source's parameters, the length first.
-        let mut values = input.parameters.clone();
+        // Values of the source's parameters, the length first; the part's
+        // options (mitcad#801) under the command's own.
+        let mut values = input.part.parameters.clone();
+        values.extend(input.parameters.clone());
         let mut numbers = Vec::new();
-        for (name, value) in &input.parameters {
-            numbers.push((name.clone(), value_in(self, value, Unit::MM)?));
+        let design = source.def.design.state().ok();
+        for (name, value) in &values {
+            // A text option takes no part in the frames and the box.
+            let text = design.as_ref().is_some_and(|d| {
+                d.parameters
+                    .find(name)
+                    .and_then(|id| d.parameters.get(id))
+                    .is_some_and(|p| p.unit().is_text())
+            });
+            if !text {
+                numbers.push((name.clone(), value_in(self, value, Unit::MM)?));
+            }
         }
         let config = source.config.as_deref();
         // A member by two points: their distance unless a length is given

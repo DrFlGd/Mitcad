@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser app/framework app/MainWindow.cpp app/MainWindowVisibility.cpp tools/cli
 # Input-driven Windows UI test of the browser's light bulbs in every mode
-# (mitcad#295) and Create Sketch's origin planes (mitcad#294) in the build
+# (mitcad#295) and Create Sketch's origin planes (mitcad#844) in the build
 # VM (tools/ui-windows-lib.ps1 says how the input is posted); the Linux test
 # is tools/ui-visibility-test.sh:
 #   1. A design without components (mitcad-cli): Body1 (20 x 20 x 10)
@@ -17,16 +17,18 @@
 #      extrusion back and leaves Body1 hidden; the next one shows it.
 #   4. Edit of Extrude2 (the timeline rolled back), Body1 hidden meanwhile,
 #      Cancel: Body1 stays hidden, the last undo step (no marker move left).
-#   5. The same design with a component and the root active: Create Sketch
-#      does not show the origin planes, a face of Body2 can be picked; the
-#      component's radio button (another browser action) says "Finish the
-#      command or the sketch first." during the pick and during Extrude,
-#      where the component's light bulb works; the Origin folder's light
-#      bulb during the pick shows the planes, and XY can be picked.
-#   6. The same design: Create Sketch offers the hidden origin planes in the
-#      browser (mitcad#694): the Origin folder opens with XY, XZ and YZ
-#      pickable, its light bulb unchanged; a click on the XZ row starts the
-#      sketch on it, and the folder folds back.
+#   5. The same design with a component (Part, its body across the origin)
+#      and the root active: Create Sketch shows the origin planes too, the
+#      Origin folder's light bulb off and unchanged, behind the bodies for
+#      the pick: a click on Part's top face, which XZ and YZ run through
+#      and XY lies below, picks the face; the component's radio button
+#      (another browser action) says "Finish the command or the sketch
+#      first." during the pick and during Extrude, where the component's
+#      light bulb works.
+#   6. The same design: a click on XZ beside the bodies picks the plane, and
+#      after the pick the origin is hidden again, as its light bulb is off;
+#      the Origin folder's light bulb switched on during the pick: XY can
+#      be picked, and the origin stays shown in the sketch.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-visibility-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -36,7 +38,12 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7' } -StepPause 0
+
+# The view's origin and the Origin folder's light bulb (mitcad#739).
+$originShown = "Design origin shown in the view; the Origin folder's light bulb off"
+$originHidden = "Design origin hidden in the view; the Origin folder's light bulb off"
+$originOn = "Design origin shown in the view; the Origin folder's light bulb on"
 
 # Ui-ExpectNone "text" "description": no line since the mark has the text.
 function Ui-ExpectNone([string]$Text, [string]$Description) {
@@ -89,9 +96,8 @@ function Place-Valid([string]$Text) {
 
 # Click-Row "Browser <path>" (or "Browser eye|radio <path>"): a browser row
 # clicked, scrolled into sight first by wheel steps over the rows (down, then
-# up) when it is not. The Origin folder opened for Create Sketch's plane pick
-# (mitcad#694) can push rows below the card's edge in session 0's 1024x768
-# desktop; a place the row has left is never clicked.
+# up) when it is not: rows below the card's edge in session 0's 1024x768
+# desktop are scrolled to; a place the row has left is never clicked.
 function Click-Row([string]$Text) {
   foreach ($steps in @(-2, 2)) {
     for ($i = 0; $i -lt 8 -and -not (Place-Valid $Text); $i++) {
@@ -133,12 +139,13 @@ $blocks = @'
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_rectangle", "sketch": "F5", "corner": [100, -140], "width": 20, "height": 20}
 '@
-# The same with Part:1 (O1, C1) beside them: Sketch4 (F6), Extrude3 (F7);
-# the root active again.
+# The same with Part:1 (O1, C1) at the origin: Sketch4 (F6) 20 x 20 around
+# its origin, Extrude3 (F7) 10 up: across XZ and YZ, on XY; the root active
+# again.
 $part = @'
-  {"cmd": "create_component", "name": "Part", "transform": {"translation": [0, 120, 0]}},
+  {"cmd": "create_component", "name": "Part", "transform": {"translation": [0, 0, 0]}},
   {"cmd": "sketch.create"},
-  {"cmd": "sketch.add_rectangle", "sketch": "F6", "corner": [0, 0], "width": 20, "height": 20},
+  {"cmd": "sketch.add_rectangle", "sketch": "F6", "corner": [-10, -10], "width": 20, "height": 20},
   {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F6", "region": "RECT"}],
     "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
   {"cmd": "activate_component", "component": "Root"}
@@ -162,7 +169,7 @@ Write-Host '--- Create Sketch: the origin planes; Body2 hidden while a plane is 
 Ui-Mark
 Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
 Ui-ExpectNew 'Create Sketch: select a plane' 'Create Sketch asks for a plane'
-Ui-ExpectNew 'Create Sketch: origin planes shown' 'no components: the origin planes shown (mitcad#294)'
+Ui-ExpectNew 'Create Sketch: origin planes shown' 'no components: the origin planes shown'
 Ui-ExpectNew 'Datum xy at' 'the XY plane can be picked'
 Ui-ExpectNew 'Pick places:' 'the faces'' pick places logged'
 Ui-ExpectNone 'Pick face F2.b0/' 'Body1, inside Body2, cannot be picked'
@@ -229,7 +236,7 @@ Ui-ExpectNew 'Bodies shown: F2.b0, F4.b0' 'Body1 shown by the undo'
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
 Ui-StopApp
 
-Write-Host '--- A design with a component: no origin planes by themselves (mitcad#294)'
+Write-Host '--- A design with a component: the origin planes shown, behind the bodies (mitcad#844)'
 Ui-StartApp 'visibility-parts' @('--open', $parts)
 Ui-ExpectLog 'parts.mitcad' 'the design opened'
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
@@ -237,47 +244,54 @@ Ui-ExpectLog 'Browser radio Root/Part:1 at' 'Part:1 in the browser'
 Ui-Mark
 Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
 Ui-ExpectNew 'Create Sketch: select a plane' 'Create Sketch asks for a plane'
-Ui-ExpectNew 'Create Sketch: origin planes not shown (the design has components)' 'the origin planes not shown'
+Ui-ExpectNew 'Create Sketch: origin planes shown' 'a design with a component: the origin planes shown'
+Ui-ExpectNew $originShown 'the design''s origin shown for the pick, its light bulb off'
+Ui-ExpectNew 'Datum xy at' 'the XY plane can be picked'
 Ui-ExpectNew 'Pick face F4.b0/F4:end(' 'Body2''s top face can be picked'
-Ui-ExpectNone 'Datum xy at' 'the XY plane is not in the view'
+# Part's body lies across the origin: XZ and YZ run through it, XY lies
+# below it, so a plane is in front of or behind each point of its top face.
+Ui-ExpectNew 'Pick face F7.b0/F7:end(' 'Part''s top face, which the origin planes run through, can be picked'
 Ui-Mark
 Ui-Step 'activate Part (radio)'          { Click-Row 'Browser radio Root/Part:1' }
 Ui-ExpectNew 'Create Sketch is waiting for a plane: pick one or press Esc.' 'other browser actions wait for the plane pick'
 Ui-ExpectNone 'Activated Part' 'Part not activated'
-Ui-Step 'pick Body2''s top face'         { Ui-ClickPick 'face F4.b0/F4:end(' }
-Ui-ExpectNew 'Sketch started on {"body":"F4.b0","face":"F4:end(' 'the sketch started on Body2''s top face'
-Ui-Mark
-Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
-Ui-ExpectNew 'Sketch finished' 'the empty sketch finished'
-
-Write-Host '--- The hidden origin planes offered in the browser (mitcad#694)'
-Ui-Mark
-Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
-Ui-ExpectNew 'Create Sketch: origin planes not shown (the design has components)' 'the origin planes not shown'
-Ui-ExpectNew 'Browser offers the origin planes: Root/Origin open; XY, XZ, YZ pickable' 'the Origin folder opened, its planes pickable'
-Ui-ExpectNew 'Browser Root/Origin/XZ at' 'the XZ row in sight'
+Ui-Step 'pick Part''s top face'          { Ui-ClickPick 'face F7.b0/F7:end(' }
+Ui-ExpectNew 'Sketch started on {"body":"F7.b0","face":"F7:end(' 'the face is picked, not the plane through it'
+Ui-ExpectNew $originHidden 'the design''s origin hidden again in the sketch'
 Ui-ExpectNone 'Visibility Root/Origin' 'the Origin''s light bulb not changed'
-Ui-ExpectNone 'Datum xz at' 'the XZ plane is not in the view'
-Ui-Mark
-Ui-Step 'click XZ in the browser'        { Click-Row 'Browser Root/Origin/XZ' }
-Ui-ExpectNew 'Sketch started on xz' 'the sketch started on the origin''s XZ plane'
-Ui-ExpectNew 'Browser no longer offers the origin planes: Root/Origin folded' 'the Origin folder folded back'
-Ui-ExpectNew 'Browser Root/Origin/XZ out of sight' 'the XZ row folded away'
 Ui-Mark
 Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
 Ui-ExpectNew 'Sketch finished' 'the empty sketch finished'
-Ui-ExpectNone 'Browser Root/Origin/XZ at' 'the Origin folder stays folded'
 
-Write-Host '--- The Origin folder''s light bulb during the pick'
+Write-Host '--- A click on an origin plane beside the bodies picks the plane; the light bulb as before'
 Ui-Mark
 Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
-Ui-ExpectNew 'Create Sketch: origin planes not shown (the design has components)' 'the origin planes not shown'
+Ui-ExpectNew 'Create Sketch: origin planes shown' 'the origin planes shown'
+Ui-ExpectNew $originShown 'the design''s origin shown for the pick, its light bulb off'
+Ui-ExpectNew 'Datum xz at' 'the XZ plane can be picked'
+Ui-Step 'pick XZ in the view'            { Ui-ClickLogged 'Datum xz' }
+Ui-ExpectNew 'Sketch started on xz' 'the sketch started on the origin''s XZ plane'
+Ui-ExpectNew $originHidden 'the design''s origin hidden again: its light bulb is off'
+Ui-ExpectNone 'Visibility Root/Origin' 'the Origin''s light bulb not changed'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'the empty sketch finished'
+Ui-ExpectNone $originShown 'the design''s origin stays hidden after the sketch'
+
+Write-Host '--- The Origin folder''s light bulb during the pick: the origin stays shown after it'
+Ui-Mark
+Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
+Ui-ExpectNew 'Create Sketch: origin planes shown' 'the origin planes shown'
 Ui-Mark
 Ui-Step 'show the origin'                { Click-Row 'Browser eye Root/Origin' }
 Ui-ExpectNew 'Visibility Root/Origin: shown (during Create Sketch)' 'the Origin folder shown during the pick'
-Ui-ExpectNew 'Datum xy at' 'the XY plane in the view'
+Ui-ExpectNew $originOn 'its light bulb on'
 Ui-Step 'pick XY'                        { Ui-ClickLogged 'Datum xy' }
 Ui-ExpectNew 'Sketch started on xy' 'the sketch started on the origin''s XY plane'
+Ui-Sync
+$state = Ui-LastMatch '(Design origin (?:hidden|shown) in the view; .*)$'
+if ($state -cne $originOn) { Ui-Fail "the origin is not shown in the sketch with its light bulb on: '$state'" }
+Write-Host 'ok   the origin stays shown in the sketch, as its light bulb says'
 Ui-Mark
 Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
 Ui-ExpectNew 'Sketch finished' 'the empty sketch finished'

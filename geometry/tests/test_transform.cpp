@@ -3,17 +3,25 @@
 // unions, the tools of faces and primitives.
 
 #include <cmath>
+#include <string>
+#include <vector>
 
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRepMesh_IncrementalMesh.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
 #include <Poly_Triangulation.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
+#include <TopoDS.hxx>
 #include <TopoDS_Face.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 
 #include "check.hpp"
+#include "mitcad/geometry/input_check.hpp"
 #include "mitcad/geometry/contact.hpp"
 #include "mitcad/geometry/import.hpp"
 
@@ -127,6 +135,93 @@ void test_mirrors_and_scales() {
   CHECK(throws_with([&] { transform_shape(*cube, flat); }, "flattens"));
 }
 
+// Each face's triangulation, in the order the faces are explored (null
+// where a face has none).
+std::vector<const Poly_Triangulation*> triangulations(const TopoDS_Shape& shape) {
+  std::vector<const Poly_Triangulation*> found;
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    TopLoc_Location location;
+    found.push_back(BRep_Tool::Triangulation(TopoDS::Face(it.Current()), location).get());
+  }
+  return found;
+}
+
+// A Move of a body with curved faces (mitcad#838): move_shape turns and
+// moves it as a location on the same B-rep, so every face keeps the
+// triangulation it has (the same one, nothing meshed again, also when
+// meshed again with the same options) and its names, the body is where
+// the motion puts it, and the input is as it was: no location, its faces'
+// own triangulations and its place. A mirror still moves a copy (without
+// the meshes), and a mesh body still moves with its triangles.
+void test_moves_keep_meshes() {
+  // A peg of radius 5, 10 high: a cylinder and two caps.
+  // Meshed as the view meshes a body's display: outside any operation, so
+  // the input check (MITCAD_CHECK_INPUTS) would report the shape changed;
+  // the peg is made and meshed while the check is off, and so is not
+  // checked.
+  const bool checking = mitcad::geometry::input_checks_enabled();
+  mitcad::geometry::enable_input_checks(false);
+  const ShapePtr original = extrude("F2", {circle(1, 0, 0, 5)}, 0, 10);
+  BRepMesh_IncrementalMesh(original->occt(), 0.01, false, 0.5, false);
+  mitcad::geometry::enable_input_checks(checking);
+  const std::vector<const Poly_Triangulation*> meshes = triangulations(original->occt());
+  CHECK(meshes.size() >= 3);
+  for (const Poly_Triangulation* mesh : meshes) {
+    CHECK(mesh != nullptr);
+  }
+  const TopLoc_Location placed = original->occt().Location();
+  std::vector<TopLoc_Location> face_places;
+  for (TopExp_Explorer it(original->occt(), TopAbs_FACE); it.More(); it.Next()) {
+    face_places.push_back(it.Current().Location());
+  }
+  // 30 degrees about X, then 20 along X.
+  Affine turn;
+  const double c = std::cos(kPi / 6);
+  const double s = std::sin(kPi / 6);
+  turn.linear = {{{1, 0, 0}, {0, c, -s}, {0, s, c}}};
+  turn.translation = {20, 0, 0};
+  const ShapePtr moved = move_shape(*original, turn);
+  CHECK(triangulations(moved->occt()) == meshes);
+  CHECK(!moved->occt().Location().IsEqual(placed));
+  CHECK(moved->face_count() == original->face_count());
+  for (int i = 0; i < original->face_count() && i < moved->face_count(); ++i) {
+    CHECK(moved->face_names(i) == original->face_names(i));
+  }
+  // Meshed again as the view meshes: the triangulations are kept.
+  BRepMesh_IncrementalMesh(moved->occt(), 0.01, false, 0.5, false);
+  CHECK(triangulations(moved->occt()) == meshes);
+  const MassProperties at = mass_properties(*moved);
+  CHECK_NEAR(at.volume, kPi * 25 * 10);
+  CHECK(at.center.Distance(gp_Pnt(20, -5 * s, 5 * c)) < 1e-6);
+  // The input is untouched.
+  CHECK(original->occt().Location().IsEqual(placed));
+  std::size_t face = 0;
+  for (TopExp_Explorer it(original->occt(), TopAbs_FACE); it.More(); it.Next(), ++face) {
+    CHECK(face < face_places.size() && it.Current().Location().IsEqual(face_places[face]));
+  }
+  CHECK(triangulations(original->occt()) == meshes);
+  CHECK(mass_properties(*original).center.Distance(gp_Pnt(0, 0, 5)) < 1e-6);
+
+  // A copy's faces renamed, sharing the meshes as well.
+  const ShapePtr copy = move_shape(*original, turn, "F9:inst1");
+  CHECK(triangulations(copy->occt()) == meshes);
+  for (int i = 0; i < original->face_count() && i < copy->face_count(); ++i) {
+    for (const std::string& name : original->face_names(i)) {
+      CHECK(faces_named(*copy, "F9:inst1(" + name + ")") == 1);
+    }
+  }
+
+  // A mirror is a copy, without the meshes.
+  Affine mirror;
+  mirror.linear = {{{-1, 0, 0}, {0, 1, 0}, {0, 0, 1}}};
+  const ShapePtr mirrored = move_shape(*original, mirror);
+  CHECK_NEAR(volume(*mirrored), kPi * 25 * 10);
+  for (const Poly_Triangulation* mesh : triangulations(mirrored->occt())) {
+    CHECK(mesh == nullptr);
+  }
+  CHECK(triangulations(original->occt()) == meshes);
+}
+
 // A mesh body as STL import makes it: one face without a surface carrying
 // the 12 triangles of the box 0..60 x 0..40 x 0..20 (counter-clockwise seen
 // from outside), named F7:import(0).
@@ -192,6 +287,12 @@ void test_mesh_bodies_move() {
   const ShapePtr far = transform_shape(*both, translation(0, 0, 50));
   CHECK(box_is(*far, 0, 0, 50, 60, 40, 70));
   CHECK_NEAR(volume(*far), 2 * 48000.0);
+
+  // A Move's motion (move_shape, mitcad#838) moves its triangles too.
+  const ShapePtr shifted = move_shape(*original, placed);
+  CHECK(body_kind(shifted->occt()) == BodyKind::Mesh);
+  CHECK(box_is(*shifted, 60, 0, 0, 100, 60, 20));
+  CHECK(box_is(*original, 0, 0, 0, 60, 40, 20));
 }
 
 // A body OCCT's checker finds invalid, as some imported bodies are (one
@@ -410,6 +511,7 @@ void transform_tests() {
   test_moves_keep_or_rename_faces();
   test_mirrors_and_scales();
   test_mesh_bodies_move();
+  test_moves_keep_meshes();
   test_invalid_bodies_move();
   test_mesh_bodies_refused();
   test_unions_keep_names();

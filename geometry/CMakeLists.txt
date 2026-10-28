@@ -56,6 +56,7 @@ target_sources(mitcad_geometry PRIVATE
   src/thread.cpp
   src/local_boolean.cpp
   src/local_boolean.hpp
+  src/thread_options.hpp
   include/mitcad/geometry/hole.hpp
   include/mitcad/geometry/reference.hpp
   include/mitcad/geometry/revolve.hpp
@@ -354,7 +355,64 @@ if(BUILD_TESTING)
   target_sources(test_geometry PRIVATE tests/test_face_revolve.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
-  add_test(NAME geometry COMMAND test_geometry)
+  # The suite in parts, a ctest each (geometry.suite.<part>, label
+  # geometry_suite): the parts run beside each other and the test runner
+  # profiles each, where the whole suite was one 250 s test that every
+  # check waited for (mitcad#832). `test_geometry` without arguments still
+  # runs every part in one process. The parts are the table in
+  # tests/test_main.cpp; geometry.suite_parts fails when this list and that
+  # table differ, so that no part is left without its ctest. A new part:
+  # its name at the end of this list.
+  set(geometry_suite_parts
+    naming
+    profile
+    extrude
+    boolean
+    dressup
+    query
+    transform
+    faceops
+    split
+    datum
+    extrude_feature
+    revolve
+    hole
+    thread
+    sweeps
+    text
+    skin
+    persist
+    cancel
+    input_check
+    far_features
+    removed
+    mirror_join
+    fillet_overflow
+    fillet_kernel
+    fillet_ends
+    allocation
+    shapefix
+    chamfer_kernel
+    shell_vanishing
+    fillet_rolling_ball
+    face_copy
+    large_bodies
+    fillet_corners
+    chamfer_overflow
+    fillet_results
+    fillet_chains
+    tangent_chain
+    fillet_cutouts
+    section_curves
+    fillet_pierced
+    move_faces
+    face_extrude
+    face_revolve)
+  foreach(part IN LISTS geometry_suite_parts)
+    add_test(NAME geometry.suite.${part} COMMAND test_geometry --part ${part})
+    set_tests_properties(geometry.suite.${part} PROPERTIES LABELS geometry_suite)
+  endforeach()
+  add_test(NAME geometry.suite_parts COMMAND test_geometry --check-parts ${geometry_suite_parts})
   # Planar material domains and sheet thickness/reference sides (mitcad#206).
   add_executable(test_sheet tests/test_sheet.cpp)
   target_link_libraries(test_sheet PRIVATE mitcad_geometry mitcad_warnings)
@@ -552,6 +610,15 @@ if(BUILD_TESTING)
   find_package(Threads REQUIRED)
   target_link_libraries(test_tool_contacts PRIVATE mitcad_geometry mitcad_geometry_io mitcad_warnings Threads::Threads)
   add_test(NAME geometry.tool_contacts COMMAND test_tool_contacts)
+endif()
+
+if(BUILD_TESTING)
+  # Two concave edges rounded at a convex corner left sharp, the roundings
+  # running past it into each other, with the port's patch 1060 (mitcad#840).
+  add_executable(test_fillet_corner_past_wall tests/test_fillet_corner_past_wall.cpp)
+  target_link_libraries(test_fillet_corner_past_wall PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.fillet_corner_past_wall COMMAND test_fillet_corner_past_wall)
+  set_tests_properties(geometry.fillet_corner_past_wall PROPERTIES TIMEOUT 60)
 endif()
 
 # Data exchange and analysis services, separate libraries on top of OCCT.

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Read-only assistance for formula fields and the larger formula editor.
 
+use super::tables::TablesOps;
 use super::{ApiError, evaluate::ValueKind};
 use mitcad_model::Document;
 use mitcad_model::expr::{self, Dims, Expr, Span, Unit, assistance};
@@ -43,6 +44,8 @@ impl<K: Kernel> FormulaHelpOps<K> for Document<K> {
             .collect();
         let mut result =
             json!({"functions": catalog,"formatted":assistance::indent_let(&query.expression)});
+        // The tables and their columns, for completion (mitcad#667).
+        result["tables"] = self.table_names_json();
         if let Some((function, argument)) =
             assistance::signature_at(&query.expression, query.cursor)
         {

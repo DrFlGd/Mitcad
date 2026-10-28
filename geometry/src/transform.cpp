@@ -103,9 +103,22 @@ void require_valid_brep(const TopoDS_Shape& shape) {
   }
 }
 
-} // namespace
+// True when `map` is a rotation (no mirror) without a scale: a motion a
+// location can carry (OCCT refuses locations that scale).
+bool is_rigid(const Affine& map) {
+  if (!is_similarity(map) || !(determinant(map) > 0.0)) {
+    return false;
+  }
+  double column = 0.0;
+  for (const auto& row : map.linear) {
+    column += row[0] * row[0];
+  }
+  return std::abs(column - 1.0) <= kSimilar;
+}
 
-ShapePtr transform_shape(const Shape& shape, const Affine& map, const std::string& rename) {
+// transform_shape and move_shape: `by_location` moves a rigid motion of a
+// B-rep as a location on the same sub-shapes instead of a copy.
+ShapePtr mapped(const Shape& shape, const Affine& map, const std::string& rename, bool by_location) {
   for (const auto& row : map.linear) {
     for (double value : row) {
       detail::require_finite("a transform", value);
@@ -145,7 +158,13 @@ ShapePtr transform_shape(const Shape& shape, const Affine& map, const std::strin
       gp_Trsf trsf;
       trsf.SetValues(m[0][0], m[0][1], m[0][2], t[0], m[1][0], m[1][1], m[1][2], t[1], m[2][0],
                      m[2][1], m[2][2], t[2]);
-      operation = std::make_unique<BRepBuilderAPI_Transform>(shape.occt(), trsf, true, mesh);
+      // A rigid motion of a B-rep by location (move_shape, mitcad#838): the
+      // result is the input's sub-shapes with the motion as their location,
+      // so a face keeps its surface and the triangulation it has, and the
+      // view draws the moved body from the meshes it has. Nothing of the
+      // input is written. Otherwise a moved copy.
+      const bool located = by_location && !mesh && is_rigid(map);
+      operation = std::make_unique<BRepBuilderAPI_Transform>(shape.occt(), trsf, !located, mesh);
     } else {
       gp_GTrsf trsf;
       trsf.SetVectorialPart(
@@ -178,6 +197,16 @@ ShapePtr transform_shape(const Shape& shape, const Affine& map, const std::strin
     }
     return namer.shape();
   });
+}
+
+} // namespace
+
+ShapePtr transform_shape(const Shape& shape, const Affine& map, const std::string& rename) {
+  return mapped(shape, map, rename, false);
+}
+
+ShapePtr move_shape(const Shape& shape, const Affine& map, const std::string& rename) {
+  return mapped(shape, map, rename, true);
 }
 
 } // namespace mitcad::geometry

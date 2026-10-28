@@ -7,8 +7,7 @@ use std::path::Path;
 
 use mitcad_freecad::FcstdFile;
 use mitcad_model::testing::MockKernel;
-use mitcad_model::{BoundingBox, Document, Kernel, Transform};
-use mitcad_model_api::DocumentApi;
+use mitcad_model::{BoundingBox, Document, FeatureDef, FeatureUid, Kernel, Transform};
 use mitcad_zip::{Method, Writer};
 use serde_json::json;
 
@@ -690,10 +689,28 @@ fn sketch_def(doc: &Document<MockKernel>, report: &FcstdReport, object: &str) ->
         .feature
         .as_deref()
         .unwrap_or_else(|| panic!("{object} not imported: {:?}", s.notes));
-    let answer = doc
-        .query(&format!(r#"{{"query": "feature", "uid": "{uid}"}}"#))
-        .unwrap();
-    serde_json::from_str::<serde_json::Value>(&answer).unwrap()["def"].clone()
+    def_json(doc, uid)
+}
+
+/// A feature id of the report.
+fn feature_uid(uid: &str) -> FeatureUid {
+    uid.parse()
+        .unwrap_or_else(|_| panic!("not a feature id: {uid}"))
+}
+
+/// A feature's definition as JSON with its values by their parameters'
+/// names: what the api's `feature` query answers as `def`, from the model
+/// itself, so that these tests do without the api (mitcad#831).
+fn def_json(doc: &Document<MockKernel>, uid: &str) -> serde_json::Value {
+    let entry = doc
+        .feature(feature_uid(uid))
+        .unwrap_or_else(|| panic!("feature {uid} does not exist"));
+    let params = doc.parameters();
+    let def = entry
+        .def
+        .map_params(&mut |_, id| Ok::<_, ()>(params.name(*id)))
+        .expect("names never fail");
+    serde_json::to_value(&def).unwrap()
 }
 
 #[test]
@@ -995,10 +1012,7 @@ fn feature<'a>(report: &'a FcstdReport, name: &str) -> &'a FeatureReport {
 }
 
 fn def_of(doc: &Document<MockKernel>, uid: &str) -> serde_json::Value {
-    let answer = doc
-        .query(&format!(r#"{{"query": "feature", "uid": "{uid}"}}"#))
-        .unwrap();
-    serde_json::from_str::<serde_json::Value>(&answer).unwrap()["def"].clone()
+    def_json(doc, uid)
 }
 
 #[test]
@@ -4200,14 +4214,25 @@ fn a_constraint_freecad_s_solution_does_not_meet_comes_in_inactive() {
             "{d}"
         );
     }
+    // It solves without an error and fully constrained: the sketch's own
+    // solve with the document's values, which the api's `sketch` query
+    // reports as its `error` and `dof`.
     let uid = s.feature.as_deref().unwrap();
-    let sketch: serde_json::Value = serde_json::from_str(
-        &doc.query(&format!(r#"{{"query": "sketch", "uid": "{uid}"}}"#))
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(sketch["error"].is_null(), "{sketch}");
-    assert_eq!(sketch["dof"], 0, "{sketch}");
+    let FeatureDef::Sketch(sketch) = &doc.feature(feature_uid(uid)).unwrap().def else {
+        panic!("{uid} is not a sketch");
+    };
+    let params = doc.parameters();
+    let solved = sketch
+        .solve_with(
+            &mut |id| {
+                params
+                    .value(id)
+                    .ok_or_else(|| format!("parameter {} does not exist", params.name(id)))
+            },
+            &|id| params.name(id),
+        )
+        .unwrap_or_else(|e| panic!("{uid} does not solve: {}", e.message));
+    assert_eq!(solved.status.dof, 0, "{uid}");
 }
 
 // Colours and fillet edges that follow sketch edits (mitcad#793).
@@ -4692,4 +4717,119 @@ fn fillets_of_all_edges_and_merged_edges_follow_a_sketch_edit() {
         "{}",
         shape.history
     );
+}
+
+/// A sketch point (`Part::GeomPoint`).
+fn sketch_point(at: [f64; 2], construction: bool) -> String {
+    format!(
+        "<Geometry type=\"Part::GeomPoint\"><GeomPoint X=\"{}\" Y=\"{}\" Z=\"0\"/><Construction value=\"{}\"/></Geometry>",
+        at[0],
+        at[1],
+        u8::from(construction)
+    )
+}
+
+#[test]
+fn a_hole_drills_each_sketch_point_once() {
+    // (mitcad#835) A through-all hole from a sketch of points, linked by
+    // one empty sub-element as FreeCAD 1.1 links it: two coincident points
+    // (one Mitcad point), a construction point (not in FreeCAD's sketch
+    // shape, so not drilled) and a point of its own.
+    let xml = document(&[
+        (
+            "PartDesign::Body",
+            "Body",
+            format!(
+                "{}{}{}",
+                shape("Body.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &["Sketch", "Pad", "Points", "Hole"]
+                ),
+                link("Tip", "Hole")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch",
+            rectangle_sketch(0.0, 0.0, 50.0, 30.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad",
+            format!(
+                "{}{}{}",
+                link_sub("Profile", "Sketch", &[""]),
+                float("Length", 15.0),
+                shape("Pad.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Points",
+            format!(
+                "{}{}",
+                geometry(&[
+                    sketch_point([15.0, 10.0], false),
+                    sketch_point([15.0, 10.0], false),
+                    sketch_point([25.0, 20.0], true),
+                    sketch_point([35.0, 10.0], false),
+                ]),
+                constraints(&[constrain(1, 0.0, &[(1, 1), (0, 1)], "", true)])
+            ),
+        ),
+        (
+            "PartDesign::Hole",
+            "Hole",
+            format!(
+                "{}{}{}{}{}{}{}",
+                link_sub("Profile", "Points", &[""]),
+                link("BaseFeature", "Pad"),
+                float("Diameter", 9.0),
+                enumeration("DepthType", 1),
+                enumeration("DrillPoint", 1),
+                enumeration("HoleCutType", 0),
+                shape("Hole.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Body.brp", b"9 body"),
+            ("Pad.brp", b"6 pad"),
+            ("Hole.brp", b"9 hole"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    let hole = feature(&report, "Hole");
+    assert_eq!(hole.outcome, ObjectOutcome::Parametric, "{hole:?}");
+    let def = &defs_of(&doc, &report, "Hole")[0];
+    assert_eq!(def["type"], "hole", "{def}");
+    assert_eq!(def["extent"]["type"], "through_all", "{def}");
+    // Simple (the default kind, not stored), with an angled point.
+    assert!(
+        def["kind"].is_null() && !def["tip_angle"].is_null(),
+        "{def}"
+    );
+    // One hole at each distinct, drawn point, in the sketch's order.
+    let sketch = sketch_def(&doc, &report, "Points");
+    let at = |id: &serde_json::Value| {
+        sketch["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == *id)
+            .map(|e| e["at"].clone())
+            .unwrap_or_else(|| panic!("no entity {id} in {sketch}"))
+    };
+    let points: Vec<serde_json::Value> = def["placement"]["points"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(at)
+        .collect();
+    assert_eq!(points, [json!([15.0, 10.0]), json!([35.0, 10.0])], "{def}");
 }

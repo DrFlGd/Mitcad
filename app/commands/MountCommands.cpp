@@ -200,6 +200,9 @@ std::optional<QJsonObject> atOf(const CommandState& state, const CommandContext&
 // pick its placement by the frame chosen.
 QJsonObject fieldsOf(const MountPart& part, const CommandState& state, const std::optional<QJsonObject>& at) {
   QJsonObject fields{{QStringLiteral("library"), part.library}, {QStringLiteral("link"), part.link}};
+  if (!part.parameters.isEmpty()) {
+    fields.insert(QStringLiteral("parameters"), part.parameters); // mitcad#810
+  }
   if (!at) {
     return fields;
   }

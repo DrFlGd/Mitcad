@@ -2,12 +2,16 @@
 // Modelled threads: the volume against the profile's exact one (bolts and
 // tapped holes, a class's diameters and the basic ones), where the helix
 // starts, ends at shoulders and partial lengths, end chamfers, taper pipe
-// threads, names, and the speed on a body of thousands of faces.
+// threads, names, and the speed on a body of thousands of faces; the
+// tools of faces far apart built in parallel and applied together
+// (mitcad#843) with the result made face by face.
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
@@ -33,6 +37,7 @@
 
 #include "../src/face_join.hpp"
 #include "../src/history.hpp"
+#include "../src/thread_options.hpp"
 #include "check.hpp"
 
 namespace test {
@@ -1132,6 +1137,182 @@ void test_taper_pipe_threads() {
   CHECK(!threaded->find_faces("F4:thread(F3:side(c5))").empty());
 }
 
+namespace {
+
+// The faces' names of a shape: each face's sorted and joined, all of them
+// sorted (the faces' order in the shape aside).
+std::vector<std::string> name_lists(const Shape& shape) {
+  std::vector<std::string> lists;
+  for (int i = 0; i < shape.face_count(); ++i) {
+    NameList names = shape.face_names(i);
+    std::sort(names.begin(), names.end());
+    std::string joined;
+    for (const std::string& name : names) {
+      joined += name + ";";
+    }
+    lists.push_back(joined);
+  }
+  std::sort(lists.begin(), lists.end());
+  return lists;
+}
+
+// Whether two threads' results are the same: the volume, the faces and
+// their names.
+bool same_result(const Shape& a, const Shape& b) {
+  return near(volume(a), volume(b), 1e-6) && a.face_count() == b.face_count() && name_lists(a) == name_lists(b);
+}
+
+// A boss of radius `radius` standing on `body` at (x, y) from z 0 to
+// `height`, its side named <feature>:side(c<curve>).
+ShapePtr with_boss(const ShapePtr& body, const std::string& feature, int curve, double x, double y, double radius,
+                   double height) {
+  const ShapePtr boss = extrude(feature, {circle(curve, x, y, radius)}, 0, height);
+  const BooleanResult joined = boolean(BooleanOp::Join, {body.get()}, *boss);
+  CHECK(joined.pieces.size() == 1);
+  return joined.pieces.at(0).shape;
+}
+
+// A block with ports as threaded designs have them (mitcad#843): four
+// M45x3 bosses (one thinner than the major diameter: its teeth are added)
+// for one thread feature, an M48x5 boss and an M48x5 bore through the
+// block (wider than the minor diameter) for a feature each, and a strip
+// of small holes away from them, so that the block has the 200 faces the
+// local booleans need.
+ShapePtr ported_block() {
+  TopoDS_Shape plate = BRepPrimAPI_MakeBox(gp_Pnt(-150, -100, -20), 300, 200, 20).Shape();
+  BRep_Builder builder;
+  TopoDS_Compound holes;
+  builder.MakeCompound(holes);
+  for (int i = 0; i < 25; ++i) {
+    for (int j = 0; j < 9; ++j) {
+      const gp_Pnt at(-140 + 11.5 * i, -95 + 2.5 * j, -21);
+      builder.Add(holes, BRepPrimAPI_MakeCylinder(gp_Ax2(at, gp_Dir(0, 0, 1)), 1.0, 22).Shape());
+    }
+  }
+  plate = BRepAlgoAPI_Cut(plate, holes).Shape();
+  ShapePtr block = std::make_shared<Shape>(plate);
+  const double xs[] = {-100, -40, 20, 80};
+  for (int k = 0; k < 4; ++k) {
+    const std::string feature = "B" + std::to_string(k + 1);
+    block = with_boss(block, feature, k + 1, xs[k], 30, k == 3 ? 22.3 : 22.5, 12);
+  }
+  block = with_boss(block, "B5", 5, -100, -35, 24, 15);
+  const ShapePtr drill = extrude("H", {circle(6, 40, -35, 21.5)}, -21, 1);
+  const BooleanResult drilled = boolean(BooleanOp::Cut, {block.get()}, *drill);
+  CHECK(drilled.pieces.size() == 1);
+  return drilled.pieces.at(0).shape;
+}
+
+// A thread on the faces with 45-degree chamfers of the given diameter at
+// every free end.
+ThreadSpec chamfered(const std::string& feature, const std::vector<std::string>& faces, double size, double pitch,
+                     double chamfer) {
+  ThreadSpec spec = spec_of(feature, faces.front(), pitch, basic(size, pitch));
+  spec.faces = faces;
+  spec.chamfer = true;
+  spec.chamfer_angle = kPi / 4.0;
+  spec.chamfer_diameter = chamfer;
+  spec.chamfer_ends.assign(faces.size(), {true, true});
+  return spec;
+}
+
+double ms_since(std::chrono::steady_clock::time_point start) {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+}
+
+void test_thread_tools_in_parallel() {
+  // The threads of the ported block made face by face (as before
+  // mitcad#843), planned with the tools built one after another, and
+  // planned with them built on all cores: the same results, feature after
+  // feature. The four bosses' tools go into one boolean per stage. The
+  // times are printed (MITCAD_BOOLEAN_TRACE adds each face's and phase's).
+  const ShapePtr block = ported_block();
+  CHECK(block->face_count() >= 200);
+  const std::vector<ThreadSpec> specs = {
+      chamfered("T1", {"B1:side(c1)", "B2:side(c2)", "B3:side(c3)", "B4:side(c4)"}, 45, 3, 41),
+      chamfered("T2", {"B5:side(c5)"}, 48, 5, 43),
+      chamfered("T3", {"H:side(c6)"}, 48, 5, 50),
+  };
+  struct Mode {
+    const char* name;
+    detail::ThreadOptions options;
+  };
+  const Mode modes[] = {
+      {"face by face", {false, false, false}},
+      {"planned on one thread", {true, false, true}},
+      {"planned in parallel", {true, true, true}},
+  };
+  constexpr std::size_t kModes = sizeof modes / sizeof modes[0];
+  std::vector<ShapePtr> results(kModes, block);
+  const detail::ThreadCounts before = detail::thread_counts();
+  for (const ThreadSpec& spec : specs) {
+    std::string line = "thread tools: " + spec.feature + " (" + std::to_string(spec.faces.size()) + " faces):";
+    for (std::size_t m = 0; m < kModes; ++m) {
+      const detail::ThreadOptionsScope scope(modes[m].options);
+      const auto start = std::chrono::steady_clock::now();
+      results[m] = modeled_thread(*results[m], spec);
+      char took[96];
+      std::snprintf(took, sizeof took, " %s %.0f ms", modes[m].name, ms_since(start));
+      line += took;
+    }
+    std::printf("%s\n", line.c_str());
+    for (std::size_t m = 1; m < kModes; ++m) {
+      CHECK(same_result(*results[m], *results[0]));
+      CHECK_NEAR(volume(*results[m]), volume(*results[0]));
+      CHECK(results[m]->face_count() == results[0]->face_count());
+    }
+    // (A boss's free end is the low or the high one along its face's axis.)
+    for (const std::string& face : spec.faces) {
+      const Shape& result = *results.back();
+      CHECK(!result.find_faces(face_name(spec.feature, "thread", face)).empty());
+      CHECK(!result.find_faces(face_name(spec.feature, "thread_chamfer_low", face)).empty() ||
+            !result.find_faces(face_name(spec.feature, "thread_chamfer_high", face)).empty());
+    }
+  }
+  const ShapePtr& last = results.back();
+  CHECK(!last->find_faces("T3:thread_chamfer_low(H:side(c6))").empty());
+  CHECK(BRepCheck_Analyzer(last->occt()).IsValid());
+  // Both planned runs put all six faces ahead and merged the four bosses'
+  // stages (chamfers, beyond the crest, grooves; one band).
+  const detail::ThreadCounts after = detail::thread_counts();
+  std::printf("thread tools: %zu faces ahead, %zu in order, %zu merged booleans of %zu tools\n",
+              after.planned_faces - before.planned_faces, after.ordered_faces - before.ordered_faces,
+              after.merged_booleans - before.merged_booleans, after.merged_tools - before.merged_tools);
+  CHECK(after.planned_faces - before.planned_faces == 12);
+  CHECK(after.ordered_faces == before.ordered_faces);
+  CHECK(after.merged_booleans - before.merged_booleans >= 2);
+}
+
+void test_thread_faces_close_together_in_order() {
+  // Two bosses so close that their threads' reaches meet are threaded one
+  // after the other, a third far from them ahead: the same result as face
+  // by face.
+  ShapePtr body = extrude("P", {rectangle(1, -20, -20, 70, 40)}, -10, 0);
+  body = with_boss(body, "A", 2, 0, 0, 5, 10);
+  body = with_boss(body, "B", 3, 7.5, 7.5, 5, 10);
+  body = with_boss(body, "C", 4, 35, 0, 5, 10);
+  const ThreadSpec spec = chamfered("T", {"A:side(c2)", "B:side(c3)", "C:side(c4)"}, 10, 1.5, 9);
+  ShapePtr in_order;
+  {
+    const detail::ThreadOptionsScope scope({false, false, false});
+    in_order = modeled_thread(*body, spec);
+  }
+  const detail::ThreadCounts before = detail::thread_counts();
+  ShapePtr planned;
+  {
+    const detail::ThreadOptionsScope scope({true, true, true});
+    planned = modeled_thread(*body, spec);
+  }
+  const detail::ThreadCounts after = detail::thread_counts();
+  CHECK(after.planned_faces - before.planned_faces == 1);
+  CHECK(after.ordered_faces - before.ordered_faces == 2);
+  CHECK(same_result(*planned, *in_order));
+  CHECK_NEAR(volume(*planned), volume(*in_order));
+  CHECK(BRepCheck_Analyzer(planned->occt()).IsValid());
+}
+
+} // namespace
+
 void thread_tests() {
   guarded("test_bolt", test_bolt);
   guarded("test_taper_pipe_threads", test_taper_pipe_threads);
@@ -1146,6 +1327,8 @@ void thread_tests() {
   guarded("test_pieces_on_screw_surfaces_and_legacy_names", test_pieces_on_screw_surfaces_and_legacy_names);
   guarded("test_thread_pieces_join_smoothly", test_thread_pieces_join_smoothly);
   guarded("test_rounding_along_a_thread_keeps_its_pieces", test_rounding_along_a_thread_keeps_its_pieces);
+  guarded("test_thread_tools_in_parallel", test_thread_tools_in_parallel);
+  guarded("test_thread_faces_close_together_in_order", test_thread_faces_close_together_in_order);
 }
 
 } // namespace test

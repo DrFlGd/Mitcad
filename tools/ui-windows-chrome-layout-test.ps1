@@ -57,7 +57,7 @@ public static class LayoutTestWindow {
 
 # Popups close at once in session 0: the Display page by a key of the
 # test's own; Create Sketch by its default Alt+S. The top view by F7.
-Ui-Init $App $Out $QtBin @{ 'tools.preferences.display' = 'F8'; 'view.top' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'tools.preferences.display' = 'F8'; 'view.top' = 'F7' } -StepPause 0
 
 $work = Join-Path $script:UiOut 'chrome-layout'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
@@ -175,6 +175,8 @@ function Cards-BelowBar([string]$Description, [int]$Min, [int]$Max) {
 function Zoom-Plate {
   Ui-Step 'top view (F7)'                  { Ui-Key 'F7' }
   Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+  # The fitted view's places, as the Linux test syncs once more.
+  Ui-Sync
   $plate = Ui-LoggedAt 'Body F2.b0'
   Ui-Step 'zoom in at the plate''s middle' {
     [UiInput]::Move($script:UiWindow, $plate[0], $plate[1], 0)
@@ -235,19 +237,6 @@ function Click-PaletteFinish {
   Start-Sleep -Milliseconds 300
   Ui-Sync
   Ui-ClickLogged 'Palette Finish Sketch'
-}
-
-# Sketch-OnBrowserXY: Create Sketch on XY in part.mitcad, whose Component1:1
-# keeps the origin planes out of the view (mitcad#294): the browser offers
-# them for the pick (mitcad#694), and a click on its XY row starts the sketch.
-function Sketch-OnBrowserXY {
-  Ui-Mark
-  Ui-Key 'alt+s'
-  Ui-ExpectNew 'Browser offers the origin planes' 'the browser offers the origin planes' | Out-Null
-  Start-Sleep -Milliseconds 300
-  Ui-Sync
-  Ui-ClickLogged 'Browser Root/Origin/XY'
-  Ui-ExpectNew 'Sketch started on xy' 'sketch started on xy' | Out-Null
 }
 
 Write-Host '--- 1. Without a choice Floating with Rows; the cards; Docked chosen, Later'
@@ -340,12 +329,12 @@ Write-Host '--- 5. The next start: Docked by the preference; Floating and the Ca
 Ui-StartApp 'chrome-layout-docked-pref' @('--open', $file) -DefaultChrome
 Ui-ExpectLog 'Chrome: docked (the preference)' 'Docked by the preference'
 if (Has-Line 'Floating cards: ') { Ui-Fail 'Floating cards in the Docked layout' }
-Ui-Step 'create a Docked sketch'          { Sketch-OnBrowserXY }
+Ui-Step 'create a Docked sketch'          { Ui-CreateSketch 'alt+s' 'xy' }
 Ui-ExpectNew 'Palette Finish Sketch at' 'Docked palette finish is laid out'
 Ui-Mark
 Ui-Step 'finish Docked sketch from palette' { Click-PaletteFinish }
 Ui-ExpectNew 'Sketch finished' 'Docked palette still finishes a sketch'
-Ui-Step 'create another Docked sketch'    { Sketch-OnBrowserXY }
+Ui-Step 'create another Docked sketch'    { Ui-CreateSketch 'alt+s' 'xy' }
 Ui-Mark
 Ui-Step 'finish Docked sketch from ribbon' { Ui-ClickLogged 'Ribbon button sketch.finish' }
 Ui-ExpectNew 'Sketch finished' 'Docked ribbon still finishes a sketch'

@@ -36,7 +36,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'assembly.policy' = 'F8'; 'solid.new_component' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'assembly.policy' = 'F8'; 'solid.new_component' = 'F9' } -StepPause 0
 
 # Ui-ExpectNone "text" "description": no line since the mark has the text.
 function Ui-ExpectNone([string]$Text, [string]$Description) {
@@ -53,7 +53,14 @@ function Set-Policy([string]$Name, [string[]]$Keys, [string]$Expected) {
   Ui-Step "design policy of $Name (F8)" { Ui-Key 'F8' }
   Ui-ExpectNew "Design Policy dialog opened for $Name" "the policy of $Name opened"
   Ui-FocusDialog "^Design Policy of $Name$"
-  foreach ($key in $Keys) { Ui-Step "press $key" { Ui-Key $key } }
+  # A key's button or check box clicks a moment after the key (Qt's
+  # animateClick), and Enter clicks OK at once: each key waits for the
+  # dialog's line of its change.
+  foreach ($key in $Keys) {
+    Ui-Mark
+    Ui-Step "press $key" { Ui-Key $key }
+    Ui-ExpectNew "Policy dialog ${Name}: " "the dialog took $key"
+  }
   Ui-Step 'OK (Enter)'                   { Ui-Key 'Return' }
   Ui-FocusMain
   Ui-ExpectNew "Policy of $Name set: $Expected" "the policy of $Name set"

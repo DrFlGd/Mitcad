@@ -19,7 +19,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin
+Ui-Init $App $Out $QtBin -StepPause 0
 
 # Place-Valid "Browser <path>": the row's place was logged and has not gone
 # out of sight since (BrowserPanel::logLayout).
@@ -85,7 +85,9 @@ if ($ghosts.Count -gt 0) { Ui-Fail "ghosts with the root active: $($ghosts[0])" 
 Write-Host 'ok   no ghosts'
 Ui-Mark
 Ui-Step 'undo (Ctrl+Z)'                  { Ui-Key 'ctrl+z' }
-Start-Sleep -Milliseconds 500
+# A moment for an undo step that should not come, as the Linux test waits.
+Start-Sleep -Milliseconds 1000
+Ui-Sync
 if ((Since-Mark 'Undo: Activate').Count -gt 0) { Ui-Fail 'the activation is an undo step' }
 if ((Since-Mark 'Activated ').Count -gt 0) { Ui-Fail 'a component was activated by hand' }
 Write-Host 'ok   no undo step'

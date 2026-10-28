@@ -12,6 +12,7 @@ use serde_json::{Map, Value, json};
 
 use super::ApiError;
 use mitcad_model::Document;
+use mitcad_model::configurations::{column_reference, list_column};
 use mitcad_model::expr::{
     Bounds, DEFAULT_DECIMALS, Limited, ParamId, ParamLimits, Parameter, Unit, format_number,
     format_number_exact, format_value,
@@ -31,12 +32,19 @@ pub(super) struct LimitInput {
     pub max: Option<Value>,
     pub step: Option<Value>,
     pub strict: Option<bool>,
+    /// The allowed values (mitcad#798): a list of expression texts or
+    /// numbers, `null` or `[]` to remove it.
+    pub values: Option<Value>,
 }
 
 impl LimitInput {
     /// Whether the command gives any limit field.
     pub fn is_given(&self) -> bool {
-        self.min.is_some() || self.max.is_some() || self.step.is_some() || self.strict.is_some()
+        self.min.is_some()
+            || self.max.is_some()
+            || self.step.is_some()
+            || self.strict.is_some()
+            || self.values.is_some()
     }
 
     /// `base` with the given fields replaced: an expression text, a number
@@ -68,14 +76,71 @@ impl LimitInput {
                 match which {
                     Limited::Min => base.min = text,
                     Limited::Max => base.max = text,
-                    Limited::Step => base.step = text,
+                    Limited::Step | Limited::Values => base.step = text,
                 }
             }
         }
         if let Some(strict) = self.strict {
             base.strict = strict;
         }
+        if let Some(given) = &self.values {
+            base.values = match given {
+                Value::Null => None,
+                Value::Array(items) => {
+                    let mut list = Vec::with_capacity(items.len());
+                    for item in items {
+                        list.push(match item {
+                            Value::String(text) => text.clone(),
+                            Value::Number(number) => {
+                                let number =
+                                    number.as_f64().filter(|n| n.is_finite()).ok_or_else(|| {
+                                        ApiError(
+                                            "\"values\" has a number that is not finite".to_owned(),
+                                        )
+                                    })?;
+                                format_number_exact(number)
+                            }
+                            _ => {
+                                return Err(ApiError(
+                                    "\"values\" is a list of expressions or numbers".to_owned(),
+                                ));
+                            }
+                        });
+                    }
+                    (!list.is_empty()).then_some(list)
+                }
+                // A table column (`"Screws.Size"`, mitcad#806): the list of
+                // that one column reference.
+                Value::String(text) if column_reference(text).is_some() => {
+                    Some(vec![text.trim().to_owned()])
+                }
+                _ => {
+                    return Err(ApiError(
+                        "\"values\" is a list of expressions or numbers, a table column \
+                         (Screws.Size), or null"
+                            .to_owned(),
+                    ));
+                }
+            };
+        }
         Ok(base)
+    }
+}
+
+/// An allowed value as the `parameters` query's `values_value` gives it:
+/// a number in mm or rad, or a text.
+fn allowed_value(value: &mitcad_model::expr::Value) -> Value {
+    match value {
+        mitcad_model::expr::Value::Number(q) => json!(q.value),
+        mitcad_model::expr::Value::Text(text) => json!(text),
+    }
+}
+
+/// An allowed value as text in the parameter's unit (`300 mm`), or a text.
+fn allowed_text(value: &mitcad_model::expr::Value, unit: Unit) -> String {
+    match value {
+        mitcad_model::expr::Value::Number(q) => format_value(q.value, unit, DEFAULT_DECIMALS),
+        mitcad_model::expr::Value::Text(text) => text.clone(),
     }
 }
 
@@ -119,6 +184,29 @@ pub(super) fn add_fields(value: &mut Value, p: &Parameter, intrinsic: Option<&Ve
         out.insert("step".to_owned(), json!(limits.step));
         out.insert("strict".to_owned(), json!(limits.strict));
         bounds_json(&p.bounds(), p.unit(), &mut out);
+        // Allowed values (mitcad#798): as written, evaluated and as text.
+        // A table column as its name (mitcad#806).
+        let column = limits.values.as_deref().and_then(list_column);
+        out.insert(
+            "values".to_owned(),
+            match column {
+                Some((table, column)) => json!(format!("{table}.{column}")),
+                None => json!(limits.values),
+            },
+        );
+        let allowed = p.allowed_values();
+        out.insert(
+            "values_value".to_owned(),
+            json!(allowed.map(|list| list.iter().map(allowed_value).collect::<Vec<_>>())),
+        );
+        out.insert(
+            "values_text".to_owned(),
+            json!(allowed.map(|list| {
+                list.iter()
+                    .map(|v| allowed_text(v, p.unit()))
+                    .collect::<Vec<_>>()
+            })),
+        );
         value["limits"] = Value::Object(out);
         value["unclamped"] = json!(p.unclamped());
         value["unclamped_text"] = json!(format_value(p.unclamped(), p.unit(), DEFAULT_DECIMALS));
@@ -148,6 +236,11 @@ pub(super) fn message(p: &Parameter) -> Option<String> {
             "{} is rounded to its step of {}: {}",
             p.name(),
             text(p.bounds().step.unwrap_or_default()),
+            text(p.value())
+        ),
+        Limited::Values => format!(
+            "{} is limited to its allowed value {}",
+            p.name(),
             text(p.value())
         ),
     };

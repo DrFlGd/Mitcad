@@ -969,6 +969,20 @@ void MainWindow::registerCommands() {
   parameters.duringCommands = true;
   parameters.enabled = [this] { return !windowReadOnly(); };
   m_registry->add(parameters);
+  // Configurations (mitcad#807): the configuration table's own window
+  // (Options, Rows, Rules), beside Change Parameters; its options are also
+  // chosen in the browser's Configuration bar.
+  CommandDef configurations = action("solid.configurations", tr("Configurations…"), "configurations",
+                                     CommandDef::Mode::Model, [this] { m_controller->openConfigurations(); });
+  configurations.tooltip = tr("Options, rows and rules: the design as a family of products");
+  configurations.tab = QStringLiteral("SOLID");
+  configurations.group = QStringLiteral("MODIFY");
+  configurations.keywords = {QStringLiteral("configuration"), QStringLiteral("configuration table"),
+                             QStringLiteral("option"),        QStringLiteral("variant"),
+                             QStringLiteral("rows"),          QStringLiteral("rules"),
+                             QStringLiteral("family")};
+  configurations.enabled = [this] { return !windowReadOnly(); };
+  m_registry->add(configurations);
   // SKETCH > MODIFY > Change Parameters (mitcad#564; MainWindowParameterEdits.cpp).
   registerParameterEditCommands();
   // The active component's design policy (mitcad#220); the browser's
@@ -1099,6 +1113,7 @@ void MainWindow::createMenus() {
   edit->addAction(m_registry->action(QStringLiteral("edit.redo")));
   edit->addSeparator();
   edit->addAction(m_registry->action(QStringLiteral("solid.parameters")));
+  edit->addAction(m_registry->action(QStringLiteral("solid.configurations")));
   edit->addAction(m_registry->action(QStringLiteral("view.search_timeline")));
   edit->addAction(m_registry->action(QStringLiteral("view.find_in_design")));
   QMenu* view = menuBar()->addMenu(tr("&View"));
@@ -1748,9 +1763,11 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
         return;
       }
       showStartingSketches(*guarded);
-      m_nativeForm = createNativeCommandForm(*guarded);
+      // The value fields' fx tools use this window's parameters (mitcad#815).
+      m_nativeForm = createNativeCommandForm(*guarded, this);
+      addParametersButton(*m_nativeForm, guarded->def()); // mitcad#564
       m_nativeWindow->showInspector(true);
-      m_nativeWindow->setInspectorView(m_nativeForm->nativeView());
+      m_nativeWindow->setInspectorView(m_nativeForm->nativeView(), m_nativeForm->nativeFooterView());
       if (!m_nativeFocusInput.isEmpty()) {
         guarded->focusValue(std::exchange(m_nativeFocusInput, QString()));
       } else if (!guarded->startsWithValues() || !guarded->focusFirstValueOnOpen()) {
@@ -2014,6 +2031,7 @@ void MainWindow::cancel() {
   }
   if (m_mode == Mode::PickPlane) {
     m_mode = Mode::Idle;
+    updateModeBanner(); // the planes' pick order first (mitcad#844)
     inputActivated(SelectFilter());
     updateIdleView();
     updateActions();
@@ -3191,10 +3209,12 @@ void MainWindow::showBodies() {
     const QString label = occurrence.isEmpty() ? uid : QStringLiteral("%1 in %2").arg(uid, occurrence);
     shown << label;
     const TopoDS_Shape& shape = body.shape->occt();
+    // Keyed by the shape's data without its location: a moved body shares
+    // it with the body before the move, as a location (mitcad#838).
     const void* key = shape.TShape().get();
     if (!m_localCenters.contains(key)) {
       Bnd_Box box;
-      BRepBndLib::Add(shape, box);
+      BRepBndLib::Add(shape.Located(TopLoc_Location()), box);
       if (box.IsVoid()) {
         continue;
       }
@@ -3202,7 +3222,8 @@ void MainWindow::showBodies() {
     }
     const gp_Pnt center = m_localCenters.value(key);
     centers.insert(key, center);
-    m_bodyCenters.append({label, center.Transformed(body.placement.Transformation())});
+    m_bodyCenters.append(
+        {label, center.Transformed(body.placement.Transformation() * shape.Location().Transformation())});
   }
   m_localCenters = centers;
   const QString logged = shown.join(QStringLiteral(", "));
@@ -4051,6 +4072,16 @@ void MainWindow::onPicked(const Selection& items, Qt::KeyboardModifiers modifier
       // The view's filter already leaves out what the design policy
       // refuses; a pick queued before it changed is checked again.
       if (isSketchPlane(item) && sketchSupportRefusal(item).isEmpty()) {
+        // The planes lie behind the model (mitcad#844): one is not picked
+        // through a face in front of it that the pick refuses (the filter
+        // leaves that face out); the face says why instead.
+        if (item.kind == SelectKind::Plane && !window) {
+          if (const std::optional<SelectionItem> front = m_viewer->untestedClickItem();
+              front && front->kind == SelectKind::Face) {
+            refusePlanePick(*front);
+            return;
+          }
+        }
         createSketch(sketchPlaneFields(item));
         return;
       }
@@ -4515,6 +4546,16 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
                     [this, id, on] { m_sketch->setDimensionSigned(id, on); });
           }
         }
+        // A spline right-clicked gets a point there (Insert Point,
+        // mitcad#836): a fit point, or a control point that keeps its shape.
+        if (m_selection.size() == 1 && m_selection.first().kind == SelectKind::SketchCurve) {
+          const QString spline = m_selection.first().name;
+          const QPointF clicked = m_viewer->mapFromGlobal(globalPosition);
+          if (m_sketch->splineAt(clicked) == spline) {
+            addCall(QStringLiteral("point"), tr("Insert Point"),
+                    [this, spline, clicked] { m_sketch->insertSplinePoint(spline, clicked); });
+          }
+        }
         // Texts, patterns, offsets and equal spacings have edit panels (P3,
         // P4, mitcad#221).
         if (m_selection.size() == 1) {
@@ -4653,30 +4694,26 @@ void MainWindow::startSketch() {
   endAnnotationPick();
   m_mode = Mode::PickPlane;
   setSelection({});
-  // The origin planes only while the design has no other component
-  // (mitcad#294); the Origin folder's light bulb shows them anyway.
-  const bool origin = sketchShowsOrigin();
-  inputActivated(origin ? kConstructionGeometry : SelectFilter());
+  // The origin planes in every design, whatever the Origin folder's light
+  // bulb says, for the pick only (mitcad#844): behind the model's faces, so
+  // that a face in front of a plane, or one a plane runs through, is the
+  // pick, also another component's while one is active; a plane where no
+  // face is still is. Put back when the pick ends (updateModeBanner).
+  m_viewer->setPlanesBehind(true);
+  m_viewer->setPlanesByDepth(true);
+  inputActivated(kConstructionGeometry);
   updateIdleView();
   updateActions();
-  // Planes the view does not show are offered in the browser (mitcad#694):
-  // its Origin folder open, XY, XZ and YZ as rows to click, until the pick
-  // ends (updateModeBanner).
-  const bool offered = !origin && !m_originShown;
-  m_controller->browser()->offerOriginPlanes(offered);
   // Faces and planes the policy leaves out are neither picked nor
   // highlighted: say whose they are.
   const QStringList& denied = m_sketchDeniedOwners;
-  QString hint = offered ? tr("Create Sketch: select a planar face or a plane, or click XY, XZ or YZ in the "
-                              "browser's Origin folder (Esc cancels).")
-                         : tr("Create Sketch: select a plane or a planar face (Esc cancels).");
+  QString hint = tr("Create Sketch: select a plane or a planar face (Esc cancels).");
   if (!denied.isEmpty()) {
     hint += tr(" The design policy leaves out the faces and planes of %1.").arg(denied.join(QStringLiteral(", ")));
   }
   showHint(hint);
   qDebug() << "Create Sketch: select a plane";
-  qDebug().noquote() << (origin ? QStringLiteral("Create Sketch: origin planes shown")
-                                : QStringLiteral("Create Sketch: origin planes not shown (the design has components)"));
+  qDebug().noquote() << QStringLiteral("Create Sketch: origin planes shown");
   if (!denied.isEmpty()) {
     qDebug().noquote() << QStringLiteral("Create Sketch: policy leaves out %1").arg(denied.join(QStringLiteral(", ")));
   }
@@ -5481,6 +5518,9 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   double milliseconds = 0.0;
   QString previousActive; // the component the file had active (mitcad#426)
   QString activateError;
+  // New Design in a project keeps the component its new file has active
+  // (mitcad#844).
+  const bool newDesign = m_openingNewDesign;
   // The result store (P7d): costly features come from it, and what was
   // costly to compute goes to it.
   const QByteArray store = resultStoreDirectory().toUtf8();
@@ -5493,14 +5533,18 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
     const bool done = runJob(label, tr("Opening %1").arg(label), [&](ModelJob& job) {
       rust::Box<Document> document = make(job);
       // Every design opens with its root active (mitcad#426), whatever the
-      // file stores: no undo step, no new revision, so not modified.
+      // file stores: no undo step, no new revision, so not modified. A new
+      // design of a project keeps its Component1 active (mitcad#844), as
+      // the untitled design at the start does.
       try {
-        previousActive = parseObject(document->command(rustStr(compactJson(
-                                         {{QStringLiteral("cmd"), QStringLiteral("activate_component")},
-                                          {QStringLiteral("component"), QStringLiteral("C0")},
-                                          {QStringLiteral("opening"), true}}))))
-                             .value(QStringLiteral("previous"))
-                             .toString();
+        if (!newDesign) {
+          previousActive = parseObject(document->command(rustStr(compactJson(
+                                           {{QStringLiteral("cmd"), QStringLiteral("activate_component")},
+                                            {QStringLiteral("component"), QStringLiteral("C0")},
+                                            {QStringLiteral("opening"), true}}))))
+                               .value(QStringLiteral("previous"))
+                               .toString();
+        }
       } catch (const std::exception& e) {
         activateError = errorText(e);
       }
@@ -5592,6 +5636,11 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   // design's first body, not bodies shown again after all were hidden.
   m_viewer->expectFirstBodies();
   refreshScene();
+  if (newDesign) {
+    const DocumentSnapshot::Component* active = m_snapshot.component(m_snapshot.activeComponent);
+    qInfo().noquote() << QStringLiteral("Opened the new design with %1 active")
+                             .arg(active != nullptr ? active->name : m_snapshot.activeComponent);
+  }
   if (!m_keepView) {
     m_viewer->fitAll();
   }
@@ -5681,8 +5730,8 @@ void MainWindow::resetCommandState() {
   }
   if (m_mode == Mode::PickPlane) {
     m_mode = Mode::Idle;
+    updateModeBanner(); // the planes' pick order first (mitcad#844)
     inputActivated(SelectFilter());
-    updateModeBanner();
   }
   // An annotation's pick and highlight are the old document's.
   endAnnotationPick();

@@ -4,11 +4,13 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
+use std::sync::Arc;
 
 use super::ast::Expr;
-use super::eval::{EvalContext, EvalError, Lookup};
+use super::eval::{EvalContext, EvalError, Lookup, Value};
 use super::format::{format_value, value_to_expression};
 use super::limits::{self, Bounds, LimitError, LimitExprs, Limited, ParamLimits};
+use super::lookups::{ColumnError, TableColumn};
 use super::parser::ParseError;
 use super::units::{Quantity, Unit};
 use super::{ExprError, is_name_char, is_name_start, is_reserved_name, with_decimal_points};
@@ -142,6 +144,9 @@ pub struct Parameter {
     bounds: Bounds,
     unclamped: Quantity,
     limited: Option<Limited>,
+    /// Its allowed values evaluated (mitcad#798): numbers in canonical
+    /// units or texts; None when it has no `values`.
+    allowed: Option<Vec<Value>>,
 }
 
 impl Parameter {
@@ -241,10 +246,16 @@ impl Parameter {
         self.limited
     }
 
+    /// Its allowed values evaluated (mitcad#798): numbers in canonical
+    /// units or texts, in the order written; None without `values`.
+    pub fn allowed_values(&self) -> Option<&[Value]> {
+        self.allowed.as_deref()
+    }
+
     /// The names its limit expressions reference, each once.
     pub fn limit_references(&self) -> Vec<&str> {
         let mut names: Vec<&str> = Vec::new();
-        for (_, expr) in self.limit_exprs.iter() {
+        for (_, expr) in self.limit_exprs.all() {
             for name in expr.references() {
                 if !names.contains(&name) {
                     names.push(name);
@@ -252,6 +263,27 @@ impl Parameter {
             }
         }
         names
+    }
+
+    /// The table columns its expression and limits look values up in
+    /// (mitcad#667), as `(table, column)` pairs, each once: the
+    /// expression's first.
+    pub fn table_references(&self) -> Vec<(&str, &str)> {
+        let mut pairs = self.expr.table_references();
+        for (_, expr) in self.limit_exprs.all() {
+            for pair in expr.table_references() {
+                if !pairs.contains(&pair) {
+                    pairs.push(pair);
+                }
+            }
+        }
+        // Allowed values that are a column (mitcad#806).
+        if let Some(pair) = self.limit_exprs.values_column()
+            && !pairs.contains(&pair)
+        {
+            pairs.push(pair);
+        }
+        pairs
     }
 }
 
@@ -264,6 +296,8 @@ struct Evaluated {
     limited: Option<Limited>,
     /// A text parameter's text (mitcad#664).
     text: Option<String>,
+    /// The allowed values evaluated (mitcad#798).
+    allowed: Option<Vec<Value>>,
 }
 
 impl Evaluated {
@@ -274,6 +308,7 @@ impl Evaluated {
             bounds: Bounds::default(),
             limited: None,
             text: None,
+            allowed: None,
         }
     }
 
@@ -305,6 +340,7 @@ impl Parameter {
         self.bounds = evaluated.bounds;
         self.limited = evaluated.limited;
         self.text = evaluated.text;
+        self.allowed = evaluated.allowed;
     }
 
     fn definition(&self) -> Definition<'_> {
@@ -354,6 +390,9 @@ pub enum TableError {
         parameter: String,
         error: LimitError,
     },
+    /// The name of a table (mitcad#667), which tables and parameters
+    /// share.
+    TableName(String),
 }
 
 impl fmt::Display for TableError {
@@ -377,6 +416,7 @@ impl fmt::Display for TableError {
             }
             Self::IdOrder(id) => write!(f, "parameter ids must increase, found {}", id.0),
             Self::Limit { parameter, error } => write!(f, "parameter '{parameter}': {error}"),
+            Self::TableName(name) => write!(f, "'{name}' is the name of a table"),
         }
     }
 }
@@ -399,6 +439,18 @@ pub struct ParameterTable {
     /// (mitcad#413: a search from `d1` each time made adding many
     /// dimensions quadratic).
     dimension_names_from: u64,
+    /// The document's tables, which `Table.Column` references look values
+    /// up in (mitcad#667).
+    tables: Option<Arc<dyn TableSource>>,
+}
+
+/// The tables of a document that expressions look values up in with
+/// `Table.Column` (mitcad#667): [`Lookup::column`] gives a column's cells.
+/// Tables share the parameters' namespace, so a parameter cannot take a
+/// table's name.
+pub trait TableSource: Lookup + fmt::Debug + Send + Sync {
+    /// Whether a table of this name exists.
+    fn has_table(&self, name: &str) -> bool;
 }
 
 /// The prefix of dimension parameters' names.
@@ -433,6 +485,11 @@ impl Lookup for Overlay<'_> {
     fn lookup_text(&self, name: &str) -> Option<String> {
         self.current(name)?.1
     }
+
+    // A table's column (mitcad#667): the document's tables.
+    fn column(&self, table: &str, column: &str) -> Result<TableColumn<'_>, ColumnError> {
+        self.table.column(table, column)
+    }
 }
 
 impl Lookup for ParameterTable {
@@ -447,6 +504,14 @@ impl Lookup for ParameterTable {
         self.find(name)
             .and_then(|id| self.get(id))
             .and_then(|p| p.text.clone())
+    }
+
+    // A table's column (mitcad#667): the document's tables.
+    fn column(&self, table: &str, column: &str) -> Result<TableColumn<'_>, ColumnError> {
+        match self.tables.as_deref() {
+            Some(tables) => tables.column(table, column),
+            None => Err(ColumnError::NoTable),
+        }
     }
 }
 
@@ -477,7 +542,18 @@ impl ParameterTable {
         context: EvalContext,
         specs: impl IntoIterator<Item = (ParamId, ParamSpec)>,
     ) -> Result<Self, TableError> {
+        Self::build_with_tables(context, specs, None)
+    }
+
+    /// [`ParameterTable::build_with_ids`] whose expressions look values up
+    /// in `tables` (mitcad#667).
+    pub fn build_with_tables(
+        context: EvalContext,
+        specs: impl IntoIterator<Item = (ParamId, ParamSpec)>,
+        tables: Option<Arc<dyn TableSource>>,
+    ) -> Result<Self, TableError> {
         let mut table = Self::new(context);
+        table.tables = tables;
         for (id, spec) in specs {
             if table.items.last().is_some_and(|p| p.id >= id) || id.0 == u32::MAX {
                 return Err(TableError::IdOrder(id));
@@ -505,6 +581,7 @@ impl ParameterTable {
                 bounds: Bounds::default(),
                 unclamped: Quantity::unitless(0.0),
                 limited: None,
+                allowed: None,
             });
             table.next_id = id.0 + 1;
         }
@@ -630,7 +707,7 @@ impl ParameterTable {
         let (limits, limit_exprs) = parse_limits(&spec.name, spec.limits)?;
         let refers_to_itself = expr.references().contains(&spec.name.as_str())
             || limit_exprs
-                .iter()
+                .all()
                 .any(|(_, e)| e.references().contains(&spec.name.as_str()));
         if refers_to_itself {
             return Err(TableError::Cycle {
@@ -670,6 +747,7 @@ impl ParameterTable {
             bounds: evaluated.bounds,
             unclamped: evaluated.unclamped,
             limited: evaluated.limited,
+            allowed: evaluated.allowed,
         });
         Ok(id)
     }
@@ -841,6 +919,12 @@ impl ParameterTable {
                     *written = replace_references(written, limit, &old, new_name);
                 }
             }
+            // So do its allowed values (mitcad#798).
+            if let Some(values) = limits.values.as_mut() {
+                for (written, limit) in values.iter_mut().zip(p.limit_exprs.values()) {
+                    *written = replace_references(written, limit, &old, new_name);
+                }
+            }
             let (limits, limit_exprs) = parse_limits(&p.name, limits)?;
             rewrites.push((i, text, expr, limits, limit_exprs));
         }
@@ -930,6 +1014,8 @@ impl ParameterTable {
             Err(TableError::ReservedName(name.to_owned()))
         } else if self.by_name.contains_key(name) {
             Err(TableError::DuplicateName(name.to_owned()))
+        } else if self.tables.as_ref().is_some_and(|t| t.has_table(name)) {
+            Err(TableError::TableName(name.to_owned()))
         } else {
             Ok(())
         }
@@ -964,7 +1050,7 @@ impl ParameterTable {
         limits: &LimitExprs,
     ) -> Result<Vec<ParamId>, TableError> {
         let mut ids = self.resolve(owner, expr)?;
-        for (which, limit) in limits.iter() {
+        for (which, limit) in limits.all() {
             let found = self.resolve(owner, limit).map_err(|e| match e {
                 TableError::Eval { parameter, error } => TableError::Limit {
                     parameter,
@@ -1000,9 +1086,10 @@ impl ParameterTable {
             parameter: def.name.to_owned(),
             error,
         };
-        // A text parameter (mitcad#664): its expression's text, no limits.
+        // A text parameter (mitcad#664): its expression's text, no limits
+        // but allowed values (mitcad#798).
         if def.unit.is_text() {
-            if !def.limits.is_empty() {
+            if !def.limits.has_no_bounds() {
                 return Err(limit_error(LimitError::Text));
             }
             let text = def
@@ -1012,7 +1099,41 @@ impl ParameterTable {
                     parameter: def.name.to_owned(),
                     error,
                 })?;
-            return Ok(Evaluated::text(text));
+            if !def.limits.has_values() {
+                return Ok(Evaluated::text(text));
+            }
+            let mut allowed = Vec::with_capacity(def.limits.values().len());
+            // A table column (mitcad#806): its texts.
+            if let Some((table, column)) = def.limits.values_column() {
+                for value in column_values(&lookup, table, column, def.unit).map_err(limit_error)? {
+                    if let Value::Text(t) = value {
+                        allowed.push(t);
+                    }
+                }
+            }
+            for expr in def.limits.values() {
+                let value = expr.eval_text(&lookup, &context).map_err(|error| {
+                    limit_error(LimitError::Eval {
+                        limit: Limited::Values,
+                        error,
+                    })
+                })?;
+                allowed.push(value);
+            }
+            if !allowed.contains(&text) {
+                return Err(limit_error(LimitError::NotAllowed {
+                    value: super::text_literal(&text),
+                    values: allowed
+                        .iter()
+                        .map(|t| super::text_literal(t))
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                }));
+            }
+            return Ok(Evaluated {
+                allowed: Some(allowed.into_iter().map(Value::Text).collect()),
+                ..Evaluated::text(text)
+            });
         }
         let unclamped = def
             .expr
@@ -1034,14 +1155,54 @@ impl ParameterTable {
             })?;
             bounds.set(which, bound.value);
         }
-        let (value, limited) =
+        let (mut value, mut limited) =
             limits::apply(unclamped.value, &bounds, def.strict, def.unit).map_err(limit_error)?;
+        // The allowed values (mitcad#798): the nearest, or refused when
+        // strict.
+        let mut allowed = None;
+        if def.limits.has_values() {
+            let mut list = Vec::with_capacity(def.limits.values().len());
+            // A table column (mitcad#806): its numbers.
+            if let Some((table, column)) = def.limits.values_column() {
+                for value in column_values(&lookup, table, column, def.unit).map_err(limit_error)? {
+                    if let Value::Number(q) = value {
+                        list.push(q.value);
+                    }
+                }
+            }
+            for expr in def.limits.values() {
+                let listed = expr.eval_as(&lookup, &context, def.unit).map_err(|error| {
+                    limit_error(LimitError::Eval {
+                        limit: Limited::Values,
+                        error,
+                    })
+                })?;
+                if !listed.value.is_finite() {
+                    return Err(limit_error(LimitError::NotFinite(Limited::Values)));
+                }
+                list.push(listed.value);
+            }
+            let (snapped, moved) =
+                limits::snap_to_values(value, &list, def.strict, def.unit).map_err(limit_error)?;
+            if moved {
+                value = snapped;
+                if !matches!(limited, Some(Limited::Min | Limited::Max)) {
+                    limited = Some(Limited::Values);
+                }
+            }
+            allowed = Some(
+                list.into_iter()
+                    .map(|v| Value::Number(Quantity::new(v, unclamped.dims)))
+                    .collect(),
+            );
+        }
         Ok(Evaluated {
             value: Quantity::new(value, unclamped.dims),
             unclamped,
             bounds,
             limited,
             text: None,
+            allowed,
         })
     }
 
@@ -1103,14 +1264,19 @@ impl ParameterTable {
 
     /// `id` and everything that depends on it, in evaluation order.
     fn affected(&self, id: ParamId) -> Vec<ParamId> {
+        self.affected_all(&[id])
+    }
+
+    /// `ids` and everything that depends on them, in evaluation order.
+    fn affected_all(&self, ids: &[ParamId]) -> Vec<ParamId> {
         let mut dependents: HashMap<ParamId, Vec<ParamId>> = HashMap::new();
         for p in &self.items {
             for &dep in &p.dependencies {
                 dependents.entry(dep).or_default().push(p.id);
             }
         }
-        let mut affected = HashSet::from([id]);
-        let mut work = vec![id];
+        let mut affected: HashSet<ParamId> = ids.iter().copied().collect();
+        let mut work = ids.to_vec();
         while let Some(next) = work.pop() {
             for &d in dependents.get(&next).into_iter().flatten() {
                 if affected.insert(d) {
@@ -1217,6 +1383,225 @@ impl ParameterTable {
                 .collect(),
         }
     }
+
+    // Tables (mitcad#667): the document's tables, which `Table.Column`
+    // references look values up in. A table depends on nothing, so no
+    // cycle passes through one.
+
+    /// The tables lookups read.
+    pub fn tables(&self) -> Option<&Arc<dyn TableSource>> {
+        self.tables.as_ref()
+    }
+
+    /// Parameters whose expression or limits name the table `name`, in
+    /// creation order.
+    pub fn table_users(&self, name: &str) -> Vec<ParamId> {
+        self.items
+            .iter()
+            .filter(|p| p.table_references().iter().any(|(t, _)| *t == name))
+            .map(|p| p.id)
+            .collect()
+    }
+
+    /// Replaces the tables and re-evaluates, in one step, the parameters
+    /// that name one of the tables `changed` and the parameters that depend
+    /// on them. On failure (a key no longer found, a column gone or of
+    /// another kind) the table is unchanged. Returns the parameters whose
+    /// values changed.
+    pub fn set_tables(
+        &mut self,
+        tables: Option<Arc<dyn TableSource>>,
+        changed: &[&str],
+    ) -> Result<ChangeSet, TableError> {
+        if let Some(p) = self
+            .items
+            .iter()
+            .find(|p| tables.as_ref().is_some_and(|t| t.has_table(&p.name)))
+        {
+            return Err(TableError::DuplicateName(p.name.clone()));
+        }
+        let users: Vec<ParamId> = self
+            .items
+            .iter()
+            .filter(|p| {
+                p.table_references()
+                    .iter()
+                    .any(|(t, _)| changed.contains(t))
+            })
+            .map(|p| p.id)
+            .collect();
+        let old = std::mem::replace(&mut self.tables, tables);
+        let order = self.affected_all(&users);
+        match self.evaluate_pending(&order, None) {
+            Ok(values) => Ok(self.commit(values)),
+            Err(error) => {
+                self.tables = old;
+                Err(error)
+            }
+        }
+    }
+
+    /// Renames the table `table` to `new_name` (`column` None), or its
+    /// column `column`, in every expression and limit that names it, as
+    /// [`ParameterTable::rename`] does for parameters; `tables` are the
+    /// tables after the rename. Values do not change; on failure the table
+    /// is unchanged. Returns the parameters that were rewritten.
+    pub fn rename_table_references(
+        &mut self,
+        tables: Option<Arc<dyn TableSource>>,
+        table: &str,
+        column: Option<&str>,
+        new_name: &str,
+    ) -> Result<Vec<ParamId>, TableError> {
+        let mut candidate = self.clone();
+        candidate.tables = tables;
+        let mut rewritten = Vec::new();
+        for p in &mut candidate.items {
+            let named = p
+                .table_references()
+                .iter()
+                .any(|&(t, c)| t == table && column.is_none_or(|column| column == c));
+            if !named {
+                continue;
+            }
+            let text = replace_table_references(&p.expression, &p.expr, table, column, new_name);
+            let expr = parse(&p.name, &text)?;
+            let mut limits = p.limits.clone();
+            for (which, limit) in p.limit_exprs.iter() {
+                if let Some(written) = limits.text_mut(which) {
+                    *written = replace_table_references(written, limit, table, column, new_name);
+                }
+            }
+            // The allowed values (mitcad#798), and a column as them
+            // (mitcad#806).
+            if let Some(values) = limits.values.as_mut() {
+                if let Some((t, c)) = p.limit_exprs.values_column() {
+                    if t == table && column.is_none() {
+                        values[0] = format!("{new_name}.{c}");
+                    } else if t == table && column == Some(c) {
+                        values[0] = format!("{t}.{new_name}");
+                    }
+                } else {
+                    for (written, limit) in values.iter_mut().zip(p.limit_exprs.values()) {
+                        *written =
+                            replace_table_references(written, limit, table, column, new_name);
+                    }
+                }
+            }
+            let (limits, limit_exprs) = parse_limits(&p.name, limits)?;
+            p.expression = text;
+            p.expr = expr;
+            p.limits = limits;
+            p.limit_exprs = limit_exprs;
+            rewritten.push(p.id);
+        }
+        let order = candidate.affected_all(&rewritten);
+        let values = candidate.evaluate_pending(&order, None)?;
+        candidate.commit(values);
+        *self = candidate;
+        Ok(rewritten)
+    }
+}
+
+/// The allowed values a table column gives (mitcad#806): its distinct
+/// non-empty cells, in the table's order; texts for a text parameter, else
+/// numbers in canonical units (a unitless column's numbers read in the
+/// parameter's unit). A column of the other kind or of other dimensions
+/// is an error.
+fn column_values(
+    lookup: &dyn Lookup,
+    table: &str,
+    column: &str,
+    unit: Unit,
+) -> Result<Vec<Value>, LimitError> {
+    let error = |error| LimitError::Eval {
+        limit: Limited::Values,
+        error,
+    };
+    let span = super::Span::new(0, table.len() + 1 + column.len());
+    let data = lookup.column(table, column).map_err(|e| {
+        error(match e {
+            ColumnError::NoTable => EvalError::UnknownTable {
+                name: table.to_owned(),
+                span: super::Span::new(0, table.len()),
+            },
+            ColumnError::NoColumn => EvalError::UnknownColumn {
+                table: table.to_owned(),
+                column: column.to_owned(),
+                span: super::Span::new(table.len() + 1, span.end),
+            },
+        })
+    })?;
+    if unit.is_text() != data.unit.is_text() {
+        return Err(error(if unit.is_text() {
+            EvalError::NotText { span }
+        } else {
+            EvalError::NotNumber { span }
+        }));
+    }
+    let promoted = !unit.is_text() && data.unit.is_unitless() && !unit.is_unitless();
+    if !unit.is_text() && !promoted && data.unit.dims() != unit.dims() {
+        return Err(error(EvalError::WrongDimension {
+            expected: unit.dims(),
+            found: data.unit.dims(),
+        }));
+    }
+    let mut out: Vec<Value> = Vec::new();
+    for cell in &data.cells {
+        let value = match *cell {
+            super::TableCell::Empty => continue,
+            super::TableCell::Text(text) => Value::Text(text.to_owned()),
+            super::TableCell::Number(n) if promoted => {
+                Value::Number(Quantity::new(unit.to_canonical(n), unit.dims()))
+            }
+            super::TableCell::Number(n) => {
+                Value::Number(Quantity::new(data.unit.to_canonical(n), data.unit.dims()))
+            }
+        };
+        let seen = out.iter().any(|v| match (v, &value) {
+            (Value::Text(a), Value::Text(b)) => a == b,
+            (Value::Number(a), Value::Number(b)) => {
+                a.value == b.value
+                    || (a.value - b.value).abs() <= 1e-9 * a.value.abs().max(b.value.abs())
+            }
+            _ => false,
+        });
+        if !seen {
+            out.push(value);
+        }
+    }
+    Ok(out)
+}
+
+/// `text` with the references to the table `table` renamed to `new`
+/// (`column` None), or those to its column `column` (mitcad#667). `expr` is
+/// `text` parsed.
+pub fn replace_table_references(
+    text: &str,
+    expr: &Expr,
+    table: &str,
+    column: Option<&str>,
+    new: &str,
+) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut copied = 0;
+    for (t, c, span) in expr.column_reference_spans() {
+        if t != table {
+            continue;
+        }
+        // No spaces stand around the dot: the table's name starts the
+        // span, the column's ends it.
+        let (start, end) = match column {
+            None => (span.start, span.start + t.len()),
+            Some(column) if column == c => (span.end - c.len(), span.end),
+            Some(_) => continue,
+        };
+        out.push_str(&text[copied..start]);
+        out.push_str(new);
+        copied = end;
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 fn parse(name: &str, expression: &str) -> Result<Expr, TableError> {
@@ -1240,6 +1625,18 @@ fn parse_limits(
             .filter(|t| !t.is_empty())
             .map(|t| with_decimal_points(t).into_owned());
     }
+    // Allowed values (mitcad#798): trimmed, with decimal points; an empty
+    // list is none.
+    limits.values = limits
+        .values
+        .take()
+        .map(|values| {
+            values
+                .iter()
+                .map(|t| with_decimal_points(t.trim()).into_owned())
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty());
     let exprs = LimitExprs::parse(&limits).map_err(|error| TableError::Limit {
         parameter: name.to_owned(),
         error,

@@ -35,6 +35,7 @@
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
 #include "SettingsForm.hpp"
+#include "SlicerImport.hpp"
 
 namespace mitcad {
 namespace {
@@ -52,8 +53,28 @@ ProfilesDialog::ProfilesDialog(DocumentHost& host, QWidget* parent) : QDialog(pa
   setWindowIcon(themeIcon(QStringLiteral("print-3d")));
   resize(960, 620);
   auto* layout = new QVBoxLayout(this);
+  // Import from Slicer… into the design (mitcad#829), where My Library has
+  // it: 3D Print's import, whose root chooses the printer and process read
+  // in one undo step; its line and Details… before it.
+  m_import = new SlicerImportBar(m_designHost, QStringLiteral("Profiles"));
+  m_import->target = [] { return QStringLiteral("design"); };
+  layout->addWidget(m_import);
   m_panel = new ProfilesPanel(m_designHost, QStringLiteral("Profiles"));
-  layout->addWidget(m_panel);
+  layout->addWidget(m_panel, 1);
+  // The items read show in the list, the process selected (else the
+  // printer): the design's now, "Used in this design".
+  connect(m_import, &SlicerImportBar::imported, this, [this](const SlicerImportResult& result) {
+    const QJsonArray processes = result.answer.value(QStringLiteral("processes")).toArray();
+    const QJsonArray printers = result.answer.value(QStringLiteral("printers")).toArray();
+    const bool process = !processes.isEmpty();
+    const QJsonArray& made = process ? processes : printers;
+    if (made.isEmpty()) {
+      m_panel->refresh();
+      return;
+    }
+    const QString id = made.first().toObject().value(QStringLiteral("id")).toString();
+    m_panel->showItem(process ? QStringLiteral("process") : QStringLiteral("printer"), QStringLiteral("design/") + id);
+  });
   // The user's library without a design (mitcad#704), then Close.
   auto* myLibrary = new QPushButton(tr("My Library…"));
   auto* close = new QPushButton(tr("Close"));
@@ -70,8 +91,9 @@ ProfilesDialog::ProfilesDialog(DocumentHost& host, QWidget* parent) : QDialog(pa
 }
 
 ProfilesDialog::~ProfilesDialog() {
-  // The panel before the host it works through.
+  // The panel and the import before the host they work through.
   delete m_panel;
+  delete m_import;
 }
 
 void ProfilesDialog::showItem(const QString& kind, const QString& key) { m_panel->showItem(kind, key); }
@@ -585,7 +607,7 @@ void ProfilesPanel::duplicate() {
                                  ? QJsonValue(source.designId())
                                  : QJsonValue(QJsonObject{{QStringLiteral("library"), source.library},
                                                           {QStringLiteral("id"), source.id}});
-  // The model names the copy after the source ("Standard 2").
+  // The model names the copy after the source ("Standard (copy)").
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("create_print_profile")},
                       {QStringLiteral("kind"), source.kind},
                       {QStringLiteral("based_on"), basedOn}};

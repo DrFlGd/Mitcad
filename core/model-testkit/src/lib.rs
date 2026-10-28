@@ -12,7 +12,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::time::Duration;
 
 use mitcad_model_base::datum::{CurveGeometry, SurfaceGeometry};
 use mitcad_model_base::exchange::{
@@ -250,6 +251,105 @@ pub struct MockKernel {
     /// behind a section's plane of each box and gives where the plane cuts
     /// it as a cut face; every edge whole and no cut faces otherwise.
     pub cuts_sections: Cell<bool>,
+    /// Section Analysis (mitcad#824): `section` cuts the bounds as
+    /// `section_curves` does (one edge per side of the polygon, one face
+    /// when there are edges, the polygon's perimeter and area); otherwise
+    /// the kernel has no sections.
+    pub sections: Cell<bool>,
+    /// The recompute's workers (mitcad#842): what this kernel and its
+    /// forks did on which threads, and extrusions that wait for one
+    /// another ([`WorkerLog`]); forks share it.
+    pub workers: RefCell<Option<Arc<WorkerLog>>>,
+}
+
+/// What a mock kernel and its forks did, and on which threads (the
+/// recompute's workers, mitcad#842): each operation as it is called and
+/// each extrusion as it begins and ends, with its feature and the thread's
+/// name. The extrusions of the features `together` wait, each, until all
+/// of them have begun or `patience` has passed, so that a test can tell
+/// that they ran at the same time ([`WorkerLog::met`]).
+#[derive(Debug, Default)]
+pub struct WorkerLog {
+    events: Mutex<Vec<WorkerEvent>>,
+    together: BTreeSet<FeatureUid>,
+    patience: Duration,
+    begun: Mutex<BTreeSet<FeatureUid>>,
+    all_begun: Condvar,
+    met: Mutex<BTreeSet<FeatureUid>>,
+}
+
+/// An entry of a [`WorkerLog`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkerEvent {
+    /// The operation (`extrude`, `join`, ...), or `extrusion begins` and
+    /// `extrusion ends`.
+    pub op: &'static str,
+    /// An extrusion's feature.
+    pub feature: Option<FeatureUid>,
+    /// The name of the thread (`mitcad-recompute-worker` on a recompute's
+    /// workers).
+    pub thread: String,
+}
+
+impl WorkerLog {
+    /// A log whose extrusions of `together` wait for one another, each at
+    /// most `patience`.
+    pub fn together(features: impl IntoIterator<Item = FeatureUid>, patience: Duration) -> Self {
+        Self {
+            together: features.into_iter().collect(),
+            patience,
+            ..Self::default()
+        }
+    }
+
+    /// Everything logged so far, in order.
+    pub fn events(&self) -> Vec<WorkerEvent> {
+        self.events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The extrusions of `together` that began while all the others had
+    /// begun too: evaluated at the same time.
+    pub fn met(&self) -> BTreeSet<FeatureUid> {
+        self.met
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    fn push(&self, op: &'static str, feature: Option<FeatureUid>) {
+        let thread = std::thread::current().name().unwrap_or("").to_owned();
+        self.events
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(WorkerEvent {
+                op,
+                feature,
+                thread,
+            });
+    }
+
+    fn extrusion_begins(&self, feature: FeatureUid) {
+        self.push("extrusion begins", Some(feature));
+        if !self.together.contains(&feature) {
+            return;
+        }
+        let mut begun = self.begun.lock().unwrap_or_else(PoisonError::into_inner);
+        begun.insert(feature);
+        self.all_begun.notify_all();
+        let (begun, _) = self
+            .all_begun
+            .wait_timeout_while(begun, self.patience, |seen| !self.together.is_subset(seen))
+            .unwrap_or_else(PoisonError::into_inner);
+        if self.together.is_subset(&begun) {
+            self.met
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert(feature);
+        }
+    }
 }
 
 /// The bounds of what of `b` lies on or below the plane through `point`
@@ -313,6 +413,9 @@ impl MockShape {
 impl MockKernel {
     fn call(&self, op: &'static str) -> Result<(), KernelError> {
         *self.calls.borrow_mut().entry(op).or_default() += 1;
+        if let Some(log) = &*self.workers.borrow() {
+            log.push(op, None);
+        }
         if let Some((on, monitor)) = &*self.cancel_on.borrow()
             && *on == op
         {
@@ -343,6 +446,20 @@ impl MockKernel {
 
     pub fn count(&self, op: &str) -> usize {
         self.calls.borrow().get(op).copied().unwrap_or(0)
+    }
+
+    /// The recompute's workers (mitcad#842, `workers`): an extrusion of
+    /// `feature` begins, or ends.
+    fn extrusion_begins(&self, feature: FeatureUid) {
+        if let Some(log) = &*self.workers.borrow() {
+            log.extrusion_begins(feature);
+        }
+    }
+
+    fn extrusion_ends(&self, feature: FeatureUid) {
+        if let Some(log) = &*self.workers.borrow() {
+            log.push("extrusion ends", Some(feature));
+        }
     }
 
     /// Measure (mitcad#646, `measures_selections`): the planes of an
@@ -655,6 +772,7 @@ impl Kernel for MockKernel {
     fn extrude(&self, spec: &ExtrudeSpec<'_>) -> Result<MockShape, KernelError> {
         self.call("extrude")?;
         let feature = spec.feature;
+        self.extrusion_begins(feature);
         let mut parts = Vec::new();
         for region in spec.regions {
             let start = FaceName::start(feature, region.key.clone());
@@ -718,6 +836,7 @@ impl Kernel for MockKernel {
                 parts: Vec::new(),
             });
         }
+        self.extrusion_ends(feature);
         if parts.len() == 1 {
             return Ok(parts.remove(0));
         }
@@ -2634,6 +2753,25 @@ impl Kernel for MockKernel {
             side_planes: self.side_planes.clone(),
             box_holes: self.box_holes.clone(),
             cuts_sections: self.cuts_sections.clone(),
+            sections: self.sections.clone(),
+            // (The recompute's workers evaluate any feature on a fork,
+            // mitcad#842: every setting goes along.)
+            workers: self.workers.clone(),
+            stop_on_cancel: self.stop_on_cancel.clone(),
+            unsupported: self.unsupported.clone(),
+            piece_boxes: self.piece_boxes.clone(),
+            half_space_cuts: self.half_space_cuts.clone(),
+            box_planes: self.box_planes.clone(),
+            cuts_keep_bounds: self.cuts_keep_bounds.clone(),
+            box_faces: self.box_faces.clone(),
+            stitch_closes: self.stitch_closes.clone(),
+            split_faces: self.split_faces.clone(),
+            piece_points: self.piece_points.clone(),
+            physical: self.physical.clone(),
+            face_areas: self.face_areas.clone(),
+            item_boxes: self.item_boxes.clone(),
+            split_bounds: self.split_bounds.clone(),
+            lists_geometry: self.lists_geometry.clone(),
             ..MockKernel::default()
         })
     }
@@ -2947,6 +3085,63 @@ impl Kernel for MockKernel {
                 faces: faces(k),
             })
             .collect())
+    }
+
+    /// When [`MockKernel::sections`]: the polygon where the plane cuts the
+    /// bounds (`section_curves` of the whole shape, counted as that call
+    /// too), its sides as the edges and its inside as one face; the curves
+    /// and faces are empty shapes.
+    fn section(
+        &self,
+        shape: &MockShape,
+        plane: &mitcad_model_base::datum::DatumPlane,
+    ) -> Result<mitcad_model_base::analysis::Section<MockShape>, KernelError> {
+        if !self.sections.get() {
+            return Err(KernelError::Unsupported("sections"));
+        }
+        self.call("section")?;
+        use mitcad_vec3::{cross, dot, norm, sub};
+        let curves = self.section_curves(shape, None, plane)?;
+        let points: Vec<[f64; 3]> = curves
+            .iter()
+            .filter_map(|c| match c.curve {
+                mitcad_model_base::kernel::Curve3::Line { start, .. } => Some(start),
+                _ => None,
+            })
+            .collect();
+        let length: f64 = curves
+            .iter()
+            .map(|c| match c.curve {
+                mitcad_model_base::kernel::Curve3::Line { start, end } => norm(sub(end, start)),
+                _ => 0.0,
+            })
+            .sum();
+        // The polygon is convex and its corners go round it in order.
+        let area = points
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let q = points[(k + 1) % points.len()];
+                dot(cross(sub(*p, points[0]), sub(q, points[0])), plane.normal())
+            })
+            .sum::<f64>()
+            .abs()
+            / 2.0;
+        let empty = || MockShape {
+            history: "section".to_owned(),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            bounds: None,
+            parts: Vec::new(),
+        };
+        Ok(mitcad_model_base::analysis::Section {
+            curves: empty(),
+            faces: empty(),
+            edge_count: curves.len(),
+            face_count: usize::from(!curves.is_empty()),
+            length,
+            area,
+        })
     }
 
     // Unions within a tolerance (mitcad#397).

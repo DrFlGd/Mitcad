@@ -31,6 +31,8 @@
 //!   (mitcad#640; a component's default material with the component) and
 //!   its **print profiles** by id (mitcad#640; the choices and overrides
 //!   are properties).
+//! - **Tables** (mitcad#667) by name: added, deleted, renamed, their
+//!   columns, and their rows (`row 3 (M5): dk 8.5 mm -> 8.7 mm`).
 //! - **Geometry** (optional, [`DesignDiff::add_geometry`]): the volume and
 //!   area of each body of two computed documents.
 //!
@@ -323,6 +325,8 @@ pub struct DesignDiff {
     /// Drawings of the root and the components (mitcad#707), by id: their
     /// sheets and views.
     pub drawings: Vec<ItemChange>,
+    /// The design's tables (mitcad#667), by name: their columns and rows.
+    pub tables: Vec<ItemChange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry: Option<GeometryDiff>,
 }
@@ -368,6 +372,7 @@ pub fn diff_states(from: &DocState, to: &DocState) -> DesignDiff {
         print_profiles: print_profile_changes(from, to),
         annotations: annotation_changes(from, to),
         drawings: drawing_changes(from, to),
+        tables: table_changes(from, to),
         ..DesignDiff::default()
     };
     diff.finish();
@@ -447,6 +452,7 @@ impl DesignDiff {
             && self.print_profiles.is_empty()
             && self.annotations.is_empty()
             && self.drawings.is_empty()
+            && self.tables.is_empty()
             && self
                 .geometry
                 .as_ref()
@@ -838,6 +844,8 @@ struct Feature {
     name: String,
     type_name: &'static str,
     suppressed: bool,
+    /// The condition it is suppressed under (mitcad#800).
+    suppressed_when: Option<String>,
     component: ComponentUid,
     visible: Option<bool>,
     /// Its definition in the file form without `type`: parameters by name
@@ -878,6 +886,7 @@ fn features(state: &DocState, rename: &dyn Fn(String) -> String) -> Vec<Feature>
                 name: entry.name.clone(),
                 type_name: entry.def.type_name(),
                 suppressed: entry.suppressed,
+                suppressed_when: state.bindings.suppressed_when.get(&entry.uid).cloned(),
                 component: entry.component,
                 visible: state.feature_visibility.get(&entry.uid).copied(),
                 def: value,
@@ -944,6 +953,13 @@ fn feature_changes(a: &Side, b: &Side, xs: &[Feature], ys: &[Feature]) -> Vec<Fe
                         "suppressed",
                         json!(x.suppressed),
                         json!(y.suppressed),
+                    ));
+                }
+                if x.suppressed_when != y.suppressed_when {
+                    fields.push(field_change(
+                        "suppressed_when",
+                        json!(x.suppressed_when),
+                        json!(y.suppressed_when),
                     ));
                 }
                 if x.component != y.component {
@@ -1484,7 +1500,12 @@ fn body_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
                                    "material": attributes.material,
                                    "appearance": attributes.appearance,
                                    "face_appearances": attributes.face_appearances,
-                                   "print_bed_face": attributes.print_bed_face});
+                                   "print_bed_face": attributes.print_bed_face,
+                                   // Bindings (mitcad#800).
+                                   "appearance_expr": attributes.appearance_expr,
+                                   "material_expr": attributes.material_expr,
+                                   "visible_when": attributes.visible_when,
+                                   "face_appearance_exprs": attributes.face_appearance_exprs});
                 (uid, name, value)
             })
             .collect()
@@ -1654,20 +1675,18 @@ fn number(value: f64) -> String {
     format_number(value, DEFAULT_DECIMALS)
 }
 
-/// Changes of the configuration table (mitcad#64): its selectors,
-/// parameters and default, and each row by name (`configurations.M5x16:
-/// dk 8.5 mm -> 8.52 mm`).
+/// Changes of the configuration table (mitcad#64, mitcad#798): its
+/// options, closedness, parameters and default, each row by name
+/// (`configurations.M5x16: dk 8.5 mm -> 8.52 mm`) and each rule by name
+/// (`configurations.rules.Black is short`).
 fn configuration_changes(
     a: &mitcad_model::configurations::Configurations,
     b: &mitcad_model::configurations::Configurations,
 ) -> Vec<FieldChange> {
     let mut out = Vec::new();
     for (field, from, to) in [
-        (
-            "configurations.selectors",
-            json!(a.selectors),
-            json!(b.selectors),
-        ),
+        ("configurations.options", json!(a.options), json!(b.options)),
+        ("configurations.closed", json!(a.closed), json!(b.closed)),
         (
             "configurations.parameters",
             json!(a.parameters),
@@ -1701,9 +1720,6 @@ fn configuration_changes(
                         ));
                     }
                 }
-                if row.select != other.select {
-                    parts.push("selection changed".to_owned());
-                }
                 if row.designation != other.designation {
                     parts.push(format!(
                         "designation {} -> {}",
@@ -1729,6 +1745,251 @@ fn configuration_changes(
                 to: json!(row),
                 text: format!("configuration {} added", row.name),
             });
+        }
+    }
+    // Rules (mitcad#799), by name.
+    let rule = |table: &mitcad_model::configurations::Configurations, name: &str| {
+        table.rules.iter().find(|r| r.name == name).cloned()
+    };
+    for r in &a.rules {
+        let other = rule(b, &r.name);
+        if other.as_ref() == Some(r) {
+            continue;
+        }
+        let text = if other.is_some() {
+            format!("rule {} changed", r.name)
+        } else {
+            format!("rule {} deleted", r.name)
+        };
+        out.push(FieldChange {
+            field: format!("configurations.rules.{}", r.name),
+            from: json!(r),
+            to: json!(other),
+            text,
+        });
+    }
+    for r in &b.rules {
+        if rule(a, &r.name).is_none() {
+            out.push(FieldChange {
+                field: format!("configurations.rules.{}", r.name),
+                from: Value::Null,
+                to: json!(r),
+                text: format!("rule {} added", r.name),
+            });
+        }
+    }
+    out
+}
+
+/// The design's tables (mitcad#667) by name: added, deleted, renamed (the
+/// same columns and rows under another name), and changed ones by their
+/// comment, columns (`column dk added`, `column dk mm -> in`) and rows
+/// (`row 3 (M5): dk 8.5 mm -> 8.7 mm`). Rows are matched by their first
+/// cell where it tells them apart in both tables, else by position.
+fn table_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+    use mitcad_model::tables::Table;
+    let (from, to) = (a.tables(), b.tables());
+    let same_content =
+        |x: &Table, y: &Table| x.comment == y.comment && x.columns == y.columns && x.rows == y.rows;
+    // A table only in `from` with the content of one only in `to`.
+    let mut renamed: HashMap<&str, &str> = HashMap::new();
+    for x in from.iter().filter(|x| !to.contains(&x.name)) {
+        if let Some(y) = to.iter().find(|y| {
+            !from.contains(&y.name) && !renamed.values().any(|n| *n == y.name) && same_content(x, y)
+        }) {
+            renamed.insert(&x.name, &y.name);
+        }
+    }
+    let mut out = Vec::new();
+    for x in from.iter() {
+        if let Some(new) = renamed.get(x.name.as_str()) {
+            out.push(ItemChange {
+                kind: Kind::Modified,
+                uid: None,
+                name: (*new).to_owned(),
+                fields: vec![field_change("name", json!(x.name), json!(new))],
+                text: format!("table {} renamed to {new}", x.name),
+            });
+            continue;
+        }
+        match to.get(&x.name) {
+            None => out.push(ItemChange {
+                kind: Kind::Deleted,
+                uid: None,
+                name: x.name.clone(),
+                fields: Vec::new(),
+                text: format!("table {} deleted", x.name),
+            }),
+            Some(y) => {
+                let fields = table_fields(x, y);
+                if !fields.is_empty() {
+                    let what: Vec<&str> = fields.iter().map(|f| f.text.as_str()).collect();
+                    out.push(ItemChange {
+                        kind: Kind::Modified,
+                        uid: None,
+                        name: y.name.clone(),
+                        text: format!("table {} {}", y.name, what.join("; ")),
+                        fields,
+                    });
+                }
+            }
+        }
+    }
+    for y in to.iter() {
+        if !from.contains(&y.name) && !renamed.values().any(|n| *n == y.name) {
+            out.push(ItemChange {
+                kind: Kind::Added,
+                uid: None,
+                name: y.name.clone(),
+                fields: Vec::new(),
+                text: format!("table {} added", y.name),
+            });
+        }
+    }
+    out
+}
+
+/// What differs between two tables of one name: the comment, the columns
+/// and the rows.
+fn table_fields(
+    x: &mitcad_model::tables::Table,
+    y: &mitcad_model::tables::Table,
+) -> Vec<FieldChange> {
+    use mitcad_model::tables::Table;
+    let mut out = Vec::new();
+    if x.comment != y.comment {
+        out.push(FieldChange {
+            field: "comment".to_owned(),
+            from: json!(x.comment),
+            to: json!(y.comment),
+            text: format!("comment '{}' -> '{}'", x.comment, y.comment),
+        });
+    }
+    let unit_text = |unit: mitcad_model::expr::Unit| {
+        if unit.is_unitless() && !unit.is_text() {
+            "unitless".to_owned()
+        } else {
+            unit.to_string()
+        }
+    };
+    for column in &x.columns {
+        let field = format!("columns.{}", column.name);
+        match y.column(&column.name) {
+            None => out.push(FieldChange {
+                text: format!("column {} deleted", column.name),
+                from: json!(column),
+                to: Value::Null,
+                field,
+            }),
+            Some(other) if other.unit != column.unit => out.push(FieldChange {
+                text: format!(
+                    "column {} {} -> {}",
+                    column.name,
+                    unit_text(column.unit),
+                    unit_text(other.unit)
+                ),
+                from: json!(column),
+                to: json!(other),
+                field,
+            }),
+            Some(_) => {}
+        }
+    }
+    for column in &y.columns {
+        if x.column(&column.name).is_none() {
+            out.push(FieldChange {
+                field: format!("columns.{}", column.name),
+                from: Value::Null,
+                to: json!(column),
+                text: format!("column {} added", column.name),
+            });
+        }
+    }
+    let order = |t: &Table, other: &Table| -> Vec<String> {
+        t.columns
+            .iter()
+            .filter(|c| other.column(&c.name).is_some())
+            .map(|c| c.name.clone())
+            .collect()
+    };
+    if order(x, y) != order(y, x) {
+        out.push(FieldChange {
+            field: "columns".to_owned(),
+            from: json!(order(x, y)),
+            to: json!(order(y, x)),
+            text: "columns reordered".to_owned(),
+        });
+    }
+    // Rows by their first cell when it is the same column in both and
+    // unique in each, else by position.
+    let keys = |t: &Table| -> Option<Vec<String>> {
+        t.columns.first()?;
+        if t.rows.iter().any(|row| row[0].is_empty()) {
+            return None;
+        }
+        let keys: Vec<String> = t
+            .rows
+            .iter()
+            .map(|row| serde_json::to_string(&row[0]).unwrap_or_default())
+            .collect();
+        let unique: HashSet<&String> = keys.iter().collect();
+        (unique.len() == keys.len()).then_some(keys)
+    };
+    let pairs: Vec<(Option<usize>, Option<usize>)> = match (keys(x), keys(y)) {
+        (Some(kx), Some(ky)) if x.columns.first() == y.columns.first() => {
+            let index: HashMap<&String, usize> =
+                ky.iter().enumerate().map(|(j, k)| (k, j)).collect();
+            let matched: Vec<Option<usize>> = kx.iter().map(|k| index.get(k).copied()).collect();
+            merged_order(&matched, ky.len())
+        }
+        _ => (0..x.rows.len().max(y.rows.len()))
+            .map(|i| {
+                (
+                    (i < x.rows.len()).then_some(i),
+                    (i < y.rows.len()).then_some(i),
+                )
+            })
+            .collect(),
+    };
+    for pair in pairs {
+        match pair {
+            (Some(i), None) => out.push(FieldChange {
+                field: format!("rows[{}]", i + 1),
+                from: json!(x.rows[i]),
+                to: Value::Null,
+                text: format!("row {} deleted", x.row_label(i)),
+            }),
+            (None, Some(j)) => out.push(FieldChange {
+                field: format!("rows[{}]", j + 1),
+                from: Value::Null,
+                to: json!(y.rows[j]),
+                text: format!("row {} added", y.row_label(j)),
+            }),
+            (Some(i), Some(j)) => {
+                let mut parts = Vec::new();
+                for (c, column) in y.columns.iter().enumerate() {
+                    let Some(k) = x.column_index(&column.name) else {
+                        continue;
+                    };
+                    let (before, after) = (&x.rows[i][k], &y.rows[j][c]);
+                    let (shown_before, shown_after) = (
+                        before.display(x.columns[k].unit),
+                        after.display(column.unit),
+                    );
+                    if before != after && shown_before != shown_after {
+                        parts.push(format!("{} {shown_before} -> {shown_after}", column.name));
+                    }
+                }
+                if !parts.is_empty() {
+                    out.push(FieldChange {
+                        field: format!("rows[{}]", j + 1),
+                        from: json!(x.rows[i]),
+                        to: json!(y.rows[j]),
+                        text: format!("row {}: {}", y.row_label(j), parts.join(", ")),
+                    });
+                }
+            }
+            (None, None) => {}
         }
     }
     out

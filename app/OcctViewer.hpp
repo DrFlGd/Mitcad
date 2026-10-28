@@ -689,6 +689,11 @@ public:
   // refused, when the click picked nothing (mitcad#474: Create Sketch says
   // why a face cannot take a sketch); once per click.
   std::optional<SelectionItem> takeRefusedClick();
+  // What the last click would have taken of the filter's kinds without the
+  // finer test, whatever it picked (mitcad#844: a plane behind the model
+  // picked where a face the test refuses lies in front of it); nothing
+  // without a test or where a card covers the view.
+  std::optional<SelectionItem> untestedClickItem();
   // The OpenGL version string (with the driver's version), once the view
   // is initialised; for error reports (mitcad#61).
   QString glVersion() const { return m_glVersion; }
@@ -810,6 +815,9 @@ private:
                bool pickable);
   // Shows a body in the visual style; the entry's objects are made here.
   void showBody(BodyEntry& entry);
+  // A body shown elsewhere (mitcad#838): its objects take the placement,
+  // drawn from what they have (no presentation computed again).
+  void placeBody(BodyEntry& entry, const TopLoc_Location& placement);
   void removeBody(BodyEntry& entry);
   // Whether setGhosts() names an occurrence or one it lies in.
   bool isGhosted(const QString& occurrence) const;

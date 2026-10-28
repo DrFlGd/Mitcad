@@ -34,7 +34,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'solid.gear_pair' = 'F7'; 'solid.belt_drive' = 'F8' }
+Ui-Init $App $Out $QtBin @{ 'solid.gear_pair' = 'F7'; 'solid.belt_drive' = 'F8' } -StepPause 0
 
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -102,6 +102,8 @@ Ui-ExpectNew 'Preview Gear Pair: ok' 'module 1.25 previewed' 30
 Ui-Mark
 Ui-Step 'More'                           { Ui-ClickLogged 'Panel Gear Pair input drive_more' }
 Ui-ExpectNew 'Panel Gear Pair input second_offset at' 'the Second Offset shown'
+# The panel's layout settled before the field is clicked, as on Linux.
+Ui-Sync
 Ui-Mark
 Ui-Step 'Second Offset 5'                { Ui-TypeIn 'Panel Gear Pair input second_offset' '5' }
 Ui-ExpectNew 'Gear Pair candidates: ' 'the candidates again for the offset' 30

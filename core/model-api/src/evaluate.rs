@@ -83,6 +83,12 @@ impl<K: Kernel> EvaluateOps<K> for Document<K> {
             None => None,
         };
         let parsed = Expr::parse(&query.expression).map_err(|e| ApiError(e.to_string()))?;
+        // The table columns it looks values up in (mitcad#667): `Screws.dk`.
+        let table_references: Vec<String> = parsed
+            .table_references()
+            .into_iter()
+            .map(|(table, column)| format!("{table}.{column}"))
+            .collect();
         // A text (mitcad#664): `text` is the text; no number, no limits.
         if unit.is_text() {
             let text = parsed
@@ -91,6 +97,7 @@ impl<K: Kernel> EvaluateOps<K> for Document<K> {
             return Ok(json!({
                 "text": text,
                 "references": parsed.references(),
+                "table_references": table_references,
                 "expression": expr::with_decimal_points(&query.expression),
             }));
         }
@@ -107,6 +114,7 @@ impl<K: Kernel> EvaluateOps<K> for Document<K> {
             "value": value.value,
             "text": expr::format_value(value.value, unit, DEFAULT_DECIMALS),
             "references": parsed.references(),
+            "table_references": table_references,
             "expression": expr::with_decimal_points(&query.expression),
         });
         if let Some(id) = parameter {

@@ -18,3 +18,7 @@ mod sketch_tests;
 mod sketch_text_473_tests;
 // Redefine Sketch Plane (mitcad#787).
 mod sketch_plane_tests;
+// Insert Point on a spline (mitcad#836).
+mod sketch_spline_point_836_tests;
+// A selection dragged together (mitcad#837).
+mod sketch_drag_selection_837_tests;

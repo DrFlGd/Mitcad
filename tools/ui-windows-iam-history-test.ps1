@@ -28,7 +28,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{}
+Ui-Init $App $Out $QtBin @{} -StepPause 0
 $testExchange = Join-Path (Split-Path $script:UiApp) 'test_exchange.exe'
 if (-not (Test-Path $testExchange)) { Ui-Fail "no $testExchange" }
 $work = Join-Path $script:UiOut 'files'

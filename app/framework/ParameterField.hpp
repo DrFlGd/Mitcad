@@ -92,6 +92,10 @@ struct ParameterFieldOptions {
 // small editor (its name prefilled with the name typed) and puts its
 // reference in. The field's right-click menu has the same actions.
 //
+// Tables (mitcad#667): typing offers the design's tables with the
+// parameters (choosing one puts `Screws.` in), and after `Screws.` the
+// list offers the table's columns.
+//
 // The list is a child of the field's window, takes no keyboard focus and
 // leaves the field's focus where it is (a table cell's editor stays open,
 // a panel's field is not committed). Logged for UI tests (app/COMMANDS.md).
@@ -112,6 +116,11 @@ public:
   void openBrowser();
   void openCreateEditor();
   void openFormulaEditor();
+  // Reads the design's parameters again (the last ones read while a job
+  // computes the model), as the list does when it opens: what a name
+  // typed is taken against, also by startNaming (mitcad#815: the AppKit
+  // field's tools run without the list).
+  void refreshParameters();
   void startNaming();
   void close(const QString& why = QString());
 
@@ -175,6 +184,12 @@ private:
   Anchor m_anchor;   // where the browser opened
   std::vector<SuggestedParameter> m_parameters;
   QJsonArray m_functions;
+  // The design's tables (mitcad#667): their names are offered with the
+  // parameters, a table's columns after `Table.` (m_columnsOf, empty
+  // while names are offered).
+  std::vector<SuggestedTable> m_tables;
+  QString m_columnsOf;
+  bool fillColumns();
   bool m_inserting = false;
   QString m_logged;
   QString m_loggedPlaces;

@@ -1,0 +1,224 @@
+# SPDX-License-Identifier: MIT
+# Native Projects keys, row editor and drags (mitcad#816): the shared panel's
+# actions through the focused AppKit outline, light and then dark appearance.
+expect-ever 'Projects panel at the start: shown \(no choice yet, projects configured\)'
+wait-log 'Projects panel: 2 projects' 30
+native-resize 1280 820
+native-appearance light
+native-expand projectsTree
+sleep 250
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/edit-light-start.png'
+
+# Return opens the selected design while the outline has the keyboard.
+mark
+native-select projects.row.Nested/base.mitcad
+expect-native-focus projectsTree
+expect-native-selection projectsTree projects.row.Nested/base.mitcad
+key Return
+expect-log 'Projects panel: open Nested/base\.mitcad' 10
+wait-log '^Opened .*/Nested/base\.mitcad$' 30
+expect-native-text native.documentTitle '^base\.mitcad$'
+expect-native-focus projectsTree
+expect-native-selection projectsTree projects.row.Nested/base.mitcad
+expect-native-layout
+
+# Return folds and unfolds a folder, as in the default tree.
+native-select projects.row.Nested/parts/fasteners/
+key Return
+expect-native-visible projects.row.Nested/parts/fasteners/an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row.mitcad false
+expect-native-focus projectsTree
+key Return
+expect-native-text projects.row.Nested/parts/fasteners/an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row.mitcad '^an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row$'
+expect-native-selection projectsTree projects.row.Nested/parts/fasteners/
+expect-native-focus projectsTree
+
+# F2 names the row in its own visible editor; Return takes the name.
+mark
+native-select projects.row.Nested/parts/bracket.mitcad
+expect-native-focus projectsTree
+key F2
+expect-log 'Projects panel: renaming Nested/parts/bracket\.mitcad' 10
+expect-native-focus projects.row.Nested/parts/bracket.mitcad '^bracket$'
+screenshot '${MITCAD_TEST_WORK}/rename-editor-light.png'
+type holder
+expect-native-focus projects.row.Nested/parts/bracket.mitcad '^holder$'
+key Return
+expect-log 'Native Projects editor: taken' 10
+expect-log 'Projects panel: rename parts/bracket\.mitcad to parts/holder\.mitcad' 10
+wait-log 'Projects panel: move recorded as ' 30
+wait-log 'Projects tree: Nested .*parts/holder\.mitcad v' 30
+expect-native-focus projectsTree
+expect-native-text projects.row.Nested/parts/holder.mitcad '^holder$'
+expect-native-selection projectsTree -
+expect-native-layout
+
+# Rename from the context menu; Escape keeps the name.
+mark
+native-context-menu projects.row.Nested/parts/holder.mitcad Rename
+expect-log 'Projects panel: renaming Nested/parts/holder\.mitcad' 10
+expect-native-focus projects.row.Nested/parts/holder.mitcad '^holder$'
+type 'not this name'
+expect-native-focus projects.row.Nested/parts/holder.mitcad '^not this name$'
+key Escape
+expect-log 'Native Projects editor: cancelled' 10
+expect-log 'Projects panel: rename of parts/holder\.mitcad cancelled' 10
+expect-native-focus projectsTree
+expect-native-text projects.row.Nested/parts/holder.mitcad '^holder$'
+expect-native-selection projectsTree projects.row.Nested/parts/holder.mitcad
+expect-no-log 'Projects panel: rename parts/holder'
+
+# New Design from the toolbar: named in the selected folder, then opened.
+mark
+native-select projects.row.Nested/parts/fasteners/
+native-click projectsNewDesign
+expect-log 'Projects panel: naming a new design in Nested/parts/fasteners/' 10
+expect-native-focus 'projects.row.Nested/parts/fasteners/ (new)' '^Design1$'
+screenshot '${MITCAD_TEST_WORK}/new-design-editor-light.png'
+type 'Gear plate'
+key Return
+expect-log 'Projects panel: new design parts/fasteners/Gear plate\.mitcad in ' 10
+wait-log 'Projects panel: new_design recorded as ' 30
+wait-log '^Opened .*/Nested/parts/fasteners/Gear plate\.mitcad$' 30
+expect-native-text native.documentTitle '^Gear plate\.mitcad$'
+expect-native-focus projectsTree
+expect-native-selection projectsTree *
+expect-native-layout
+
+# New Folder from the project's context menu: a refused name says why.
+mark
+native-context-menu projects.row.Nested 'New Folder'
+expect-log 'Projects panel: naming a new folder in Nested$' 10
+expect-native-focus 'projects.row.Nested (new)' '^Folder1$'
+type 'bad/name'
+key Return
+expect-log 'Projects panel: new folder refused: the name "bad/name"' 10
+expect-log '"bad/name" cannot be a name' 10
+expect-native-text native.status 'cannot be a name'
+expect-native-focus projectsTree
+
+# New Folder from the toolbar; Tab takes the name too.
+mark
+native-select projects.row.Nested/parts/
+native-click projectsNewFolder
+expect-log 'Projects panel: naming a new folder in Nested/parts/' 10
+expect-native-focus 'projects.row.Nested/parts/ (new)' '^Folder1$'
+type an-equally-long-synthetic-subfolder-name
+key Tab
+expect-log 'Projects panel: new folder parts/an-equally-long-synthetic-subfolder-name in ' 10
+wait-log 'Projects panel: create_folder recorded as ' 30
+wait-log 'Projects tree: Nested .*parts/an-equally-long-synthetic-subfolder-name/' 30
+expect-native-focus projectsTree
+expect-native-layout
+
+# A drag moves a design into a folder of its project.
+mark
+native-drag projects.row.Nested/spare.mitcad projects.row.Nested/parts/
+expect-log 'Projects panel: dragging Nested/spare\.mitcad' 10
+expect-log 'Projects panel: drag spare\.mitcad to parts/spare\.mitcad' 10
+expect-log 'Native test: row drag .*: moved$' 10
+wait-log 'Projects panel: move recorded as ' 30
+wait-log 'Projects tree: Nested .*parts/spare\.mitcad v' 30
+expect-native-selection projectsTree *
+expect-native-layout
+expect-native-text projects.row.Nested/parts/spare.mitcad '^spare$'
+
+# Between projects: the design starts dragging from its nested row, and
+# the other project's row refuses the drop, with the shared feedback.
+mark
+native-drag projects.row.Nested/parts/spare.mitcad projects.row.Other/elsewhere.mitcad
+expect-log 'Projects panel: dragging Nested/parts/spare\.mitcad' 10
+expect-log 'Native test: row drag .*: refused$' 10
+expect-log 'Projects panel: drop of Nested/parts/spare\.mitcad refused on Other/elsewhere\.mitcad' 10
+expect-native-text native.status 'move only within their project'
+expect-no-log 'Projects panel: drag parts/spare'
+
+# A folder into its own subfolder: refused.
+mark
+native-drag projects.row.Nested/parts/ projects.row.Nested/parts/fasteners/
+expect-log 'Projects panel: dragging Nested/parts/$' 10
+expect-log 'Native test: row drag .*: refused$' 10
+expect-log 'Projects panel: drop of Nested/parts/ refused on Nested/parts/fasteners/' 10
+expect-no-log 'Projects panel: drag parts to'
+
+# A project row is not dragged.
+mark
+native-drag projects.row.Other projects.row.Nested
+expect-log 'Native test: row drag .*: not draggable$' 10
+expect-no-log 'Projects panel: dragging Other'
+expect-native-layout
+
+# Delete asks first: Cancel keeps the design, Backspace and Delete remove it.
+mark
+native-select projects.row.Nested/doomed.mitcad
+expect-native-focus projectsTree
+key Delete
+expect-log 'Projects panel: delete Nested/doomed\.mitcad' 10
+wait-log 'Delete dialog: doomed\.mitcad \(1 designs\)' 10
+focus-dialog '^Delete doomed\.mitcad\?$'
+button '^Cancel$'
+expect-native-dialog-gone '^Delete doomed\.mitcad\?$'
+expect-log 'Delete cancelled' 10
+expect-native-focus projectsTree
+expect-native-selection projectsTree projects.row.Nested/doomed.mitcad
+mark
+key Backspace
+expect-log 'Projects panel: delete Nested/doomed\.mitcad' 10
+wait-log 'Delete dialog: doomed\.mitcad \(1 designs\)' 10
+focus-dialog '^Delete doomed\.mitcad\?$'
+button '^Delete$'
+expect-native-dialog-gone '^Delete doomed\.mitcad\?$'
+wait-log 'Projects panel: delete recorded as ' 30
+expect-native-focus projectsTree
+expect-native-selection projectsTree -
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/edit-light-end.png'
+
+# Dark appearance: a long name's whole text in its editor; Escape keeps it.
+native-appearance dark
+sleep 250
+expect-native-layout
+mark
+native-select projects.row.Nested/parts/fasteners/an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row.mitcad
+key F2
+expect-log 'Projects panel: renaming Nested/parts/fasteners/an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row\.mitcad' 10
+expect-native-focus projects.row.Nested/parts/fasteners/an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row.mitcad '^an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row$'
+screenshot '${MITCAD_TEST_WORK}/rename-editor-dark.png'
+key Escape
+expect-log 'Projects panel: rename of parts/fasteners/an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row\.mitcad cancelled' 10
+expect-native-focus projectsTree
+expect-native-selection projectsTree projects.row.Nested/parts/fasteners/an-unusually-long-synthetic-design-name-kept-in-the-middle-of-its-row.mitcad
+
+# Return opens another project's design.
+mark
+native-select projects.row.Other/elsewhere.mitcad
+key Return
+expect-log 'Projects panel: open Other/elsewhere\.mitcad' 10
+wait-log '^Opened .*/Other/elsewhere\.mitcad$' 30
+expect-native-focus projectsTree
+expect-native-selection projectsTree projects.row.Other/elsewhere.mitcad
+
+# Escape while naming a new design from the context menu makes nothing.
+mark
+native-context-menu projects.row.Other 'New Design'
+expect-log 'Projects panel: naming a new design in Other$' 10
+expect-native-focus 'projects.row.Other (new)' '^Design1$'
+screenshot '${MITCAD_TEST_WORK}/new-design-editor-dark.png'
+key Escape
+expect-log 'Projects panel: new design cancelled' 10
+expect-native-focus projectsTree
+expect-no-log 'New Design: made'
+
+# File > New Design's shortcut names it in the panel too.
+mark
+key ctrl+n
+expect-log 'New Design: in .*/Other$' 10
+expect-log 'Projects panel: naming a new design in Other$' 10
+expect-native-focus 'projects.row.Other (new)' '^Design1$'
+key Escape
+expect-log 'Projects panel: new design cancelled' 10
+expect-native-focus projectsTree
+expect-no-log 'New Design: made'
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/edit-dark-end.png'
+native-appearance light

@@ -762,6 +762,7 @@ int corpus(const fs::path& dir, int every, double min_valid, const mitcad::runs:
   std::vector<std::string> ids;
   std::vector<mitcad::runs::Command> commands;
   std::vector<double> weights;
+  std::vector<std::string> keys;
   for (std::size_t i = 0; i < files.size(); i += static_cast<std::size_t>(every)) {
     const std::string number = std::to_string(i + 1);
     const std::string id = (number.size() < 2 ? "f0" : "f") + number;
@@ -771,6 +772,7 @@ int corpus(const fs::path& dir, int every, double min_valid, const mitcad::runs:
       // Each file in a child process of its own (mitcad#70).
       ids.push_back(id);
       weights.push_back(mitcad::runs::file_weight(files[i]));
+      keys.push_back(files[i]);
       commands.push_back({self, "--corpus-file", files[i], id});
     }
   }
@@ -787,7 +789,7 @@ int corpus(const fs::path& dir, int every, double min_valid, const mitcad::runs:
       ++totals.failed;
     }
     std::fflush(stdout);
-  }, weights);
+  }, weights, keys);
   std::printf("files %d (failed %d), bodies imported %d (not built %d): solids %d (valid %d), sheets %d\n",
               totals.files, totals.failed, totals.bodies, totals.not_built, totals.solids, totals.valid_solids,
               totals.sheets);

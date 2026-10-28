@@ -559,8 +559,8 @@ fn library_items_are_made_and_duplicated() {
     let folder = project_library(&project);
     let path = project.to_string_lossy().to_string();
     let depth = doc.undo_depth();
-    // Duplicate of a base material into the project: `<name> 2`, its id
-    // the name's, with the appearance it carries.
+    // Duplicate of a base material into the project: `<name> (copy)`
+    // (mitcad#828), its id the name's, with the appearance it carries.
     let answer = command(
         &mut doc,
         json!({"cmd": "create_material", "library": "project", "project": path,
@@ -568,14 +568,14 @@ fn library_items_are_made_and_duplicated() {
     );
     assert_eq!(
         (&answer["id"], &answer["library"], &answer["version"]),
-        (&json!("acme-petg-2"), &json!("project"), &json!(1))
+        (&json!("acme-petg-copy"), &json!("project"), &json!(1))
     );
     let libraries = doc.print_libraries(Some(&project));
     let made = libraries
         .find(
             Some(LibraryKind::Project),
             ItemKind::Material,
-            "acme-petg-2",
+            "acme-petg-copy",
         )
         .unwrap();
     let ItemData::Material {
@@ -585,7 +585,7 @@ fn library_items_are_made_and_duplicated() {
     else {
         unreachable!()
     };
-    assert_eq!(material.name, "Acme PETG 2");
+    assert_eq!(material.name, "Acme PETG (copy)");
     assert_eq!(material.based_on.as_deref(), Some("acme/petg"));
     assert_eq!(appearance.as_ref().unwrap().id, "acme_teal");
     // A new empty one.
@@ -593,14 +593,14 @@ fn library_items_are_made_and_duplicated() {
         &mut doc,
         json!({"cmd": "create_material", "library": "project", "project": path}),
     );
-    assert_eq!(answer["id"], "new-material"); // named "New Material" (mitcad#655)
+    assert_eq!(answer["id"], "material-1"); // named "Material 1" (mitcad#655, mitcad#828)
     // The design did not change; each file is an undo step of its own.
     assert_eq!(doc.undo_depth(), depth + 2);
     assert!(doc.custom_materials().is_empty());
     command(&mut doc, json!({"cmd": "undo"}));
-    assert!(!folder.join("materials/new-material.json").exists());
+    assert!(!folder.join("materials/material-1.json").exists());
     command(&mut doc, json!({"cmd": "redo"}));
-    assert!(folder.join("materials/new-material.json").exists());
+    assert!(folder.join("materials/material-1.json").exists());
 
     // Profiles likewise.
     let answer = command(
@@ -608,27 +608,27 @@ fn library_items_are_made_and_duplicated() {
         json!({"cmd": "create_print_profile", "library": "project", "project": path,
                "based_on": {"library": "base", "id": "draft"}}),
     );
-    assert_eq!(answer["id"], "draft-2");
+    assert_eq!(answer["id"], "draft-copy");
     let answer = command(
         &mut doc,
         json!({"cmd": "create_print_profile", "library": "project", "project": path,
                "kind": "printer"}),
     );
-    assert_eq!(answer["id"], "new-printer");
+    assert_eq!(answer["id"], "printer-1");
     let answer = command(
         &mut doc,
-        json!({"cmd": "edit_print_profile", "id": "draft-2", "library": "project",
+        json!({"cmd": "edit_print_profile", "id": "draft-copy", "library": "project",
                "project": path, "values": {"layer_height": 0.24}}),
     );
     assert_eq!(answer["version"], 2);
     assert!(doc.print_profiles().is_empty());
     let answer = command(
         &mut doc,
-        json!({"cmd": "delete_print_profile", "id": "draft-2", "library": "project",
+        json!({"cmd": "delete_print_profile", "id": "draft-copy", "library": "project",
                "project": path}),
     );
     assert_eq!(answer["removed"], json!([]));
-    assert!(!folder.join("print/processes/draft-2.json").exists());
+    assert!(!folder.join("print/processes/draft-copy.json").exists());
 
     // A library's material duplicated into the design: with its
     // appearance, in one undo step.
@@ -649,7 +649,7 @@ fn library_items_are_made_and_duplicated() {
     assert!(doc.appearance("acme_teal").is_none());
 
     // A name a library has gets a counter in the design too (mitcad#655).
-    let mut named = PrintProfile::new("new-process", "New Process", ProfileKind::Process);
+    let mut named = PrintProfile::new("process-1", "Process 1", ProfileKind::Process);
     named.version = Some(1);
     write_item(&folder, &ItemData::Profile(named));
     let made = command(
@@ -660,7 +660,7 @@ fn library_items_are_made_and_duplicated() {
         doc.print_profile(made["id"].as_str().unwrap())
             .unwrap()
             .name,
-        "New Process 2"
+        "Process 2"
     );
 }
 
@@ -924,20 +924,20 @@ fn a_library_is_managed_on_an_empty_design() {
         json!({"cmd": "create_material", "library": "project", "project": path,
                "based_on": "pla"}),
     );
-    assert_eq!(answer["id"], "pla-plastic-2");
-    let file = folder.join(item_path(ItemKind::Material, "pla-plastic-2"));
+    assert_eq!(answer["id"], "pla-plastic-copy");
+    let file = folder.join(item_path(ItemKind::Material, "pla-plastic-copy"));
     let read = |file: &Path| -> Value {
         serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap()
     };
     let item = read(&file);
-    assert_eq!(item["material"]["name"], "PLA Plastic 2");
+    assert_eq!(item["material"]["name"], "PLA Plastic (copy)");
     assert_eq!(item["material"]["based_on"], "pla");
     assert_eq!(item["material"]["class"], "plastic");
     assert_eq!(item["material"]["filament"]["filament_type"], "PLA");
     // Listed in the project's place, the built-in PLA still built in.
     let materials = rows(&doc, "material", &project);
     assert_eq!(
-        row(&materials, "project", "pla-plastic-2")["in_design"],
+        row(&materials, "project", "pla-plastic-copy")["in_design"],
         Value::Null
     );
     assert_eq!(row(&materials, "mitcad", "pla")["read_only"], true);
@@ -945,12 +945,12 @@ fn a_library_is_managed_on_an_empty_design() {
     command(
         &mut doc,
         json!({"cmd": "edit_material", "library": "project", "project": path,
-               "id": "pla-plastic-2", "name": "Bench PLA"}),
+               "id": "pla-plastic-copy", "name": "Bench PLA"}),
     );
     let answer = command(
         &mut doc,
         json!({"cmd": "edit_material", "library": "project", "project": path,
-               "id": "pla-plastic-2", "density": 1.3}),
+               "id": "pla-plastic-copy", "density": 1.3}),
     );
     assert_eq!(answer["version"], 3);
     let item = read(&file);
@@ -969,9 +969,9 @@ fn a_library_is_managed_on_an_empty_design() {
         json!({"cmd": "create_print_profile", "library": "project", "project": path,
                "kind": "printer", "based_on": {"library": "project", "id": "bench-x"}}),
     );
-    assert_eq!(answer["id"], "bench-x-2");
-    let printer = read(&folder.join(item_path(ItemKind::Printer, "bench-x-2")));
-    assert_eq!(printer["profile"]["name"], "Bench X 2");
+    assert_eq!(answer["id"], "bench-x-copy");
+    let printer = read(&folder.join(item_path(ItemKind::Printer, "bench-x-copy")));
+    assert_eq!(printer["profile"]["name"], "Bench X (copy)");
     // As a number, whether the file writes 250 or 250.0.
     assert_eq!(
         printer["profile"]["values"]["max_print_height"].as_f64(),
@@ -981,7 +981,7 @@ fn a_library_is_managed_on_an_empty_design() {
     let answer = command(
         &mut doc,
         json!({"cmd": "delete_material", "library": "project", "project": path,
-               "id": "pla-plastic-2"}),
+               "id": "pla-plastic-copy"}),
     );
     assert_eq!(
         (&answer["kept"], &answer["removed"]),

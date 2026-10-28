@@ -109,23 +109,39 @@ impl PartInfo {
     }
 }
 
-/// The designation of a part made from a source: the row's own, else the
-/// library's pattern with `{standard}`, `{name}`, `{config}`, the row's
-/// selectors and the part's parameters (`{L}`, in millimetres) replaced;
-/// without a pattern the name and the row.
+/// The designation of a part made from a source: the own designation of
+/// the row of its combination (the row `config` with the part's
+/// parameters applied, mitcad#798), else the library's pattern with
+/// `{standard}`, `{name}`, `{config}` (empty when the combination is no
+/// row), the options' values and the part's parameters (`{L}`, in
+/// millimetres) replaced; without a pattern the name and the row.
 pub fn designation(
     source: &LibrarySourceDef,
     config: Option<&str>,
     values: &BTreeMap<String, f64>,
 ) -> String {
     let state = source.design.state().ok();
-    let row = state.as_ref().and_then(|s| {
+    let named = state.as_ref().and_then(|s| {
         let table = &s.configurations;
         match config {
-            Some(name) => table.row(name).cloned(),
-            None => table.default_row().cloned(),
+            Some(name) => table.row(name).map(|r| r.name.clone()),
+            None => table.default_row().map(|r| r.name.clone()),
         }
     });
+    // The design in the part's combination: its row and parameters.
+    let list: Vec<(String, f64)> = values.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let configured = state.as_ref().and_then(|_| {
+        crate::features::derived_part::configured(source, named.as_deref(), &list).ok()
+    });
+    let row = configured.as_ref().and_then(|s| {
+        s.configurations
+            .combination_row(&s.parameters, named.as_deref())
+            .cloned()
+    });
+    let options = configured
+        .as_ref()
+        .map(|s| s.configurations.designation_values(&s.parameters))
+        .unwrap_or_default();
     if let Some(own) = row.as_ref().and_then(|r| r.designation.clone()) {
         return own;
     }
@@ -139,10 +155,8 @@ pub fn designation(
         .replace("{standard}", &source.standard)
         .replace("{name}", &source.label())
         .replace("{config}", row.as_ref().map_or("", |r| r.name.as_str()));
-    if let Some(row) = &row {
-        for (selector, value) in &row.select {
-            text = text.replace(&format!("{{{selector}}}"), value);
-        }
+    for (option, value) in &options {
+        text = text.replace(&format!("{{{option}}}"), value);
     }
     for (name, value) in values {
         text = text.replace(&format!("{{{name}}}"), &super::round(*value));

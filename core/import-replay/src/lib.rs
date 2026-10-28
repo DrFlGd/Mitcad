@@ -134,6 +134,15 @@ pub struct Options {
     pub max_attempts: usize,
     /// Seconds after which no more definitions are tried for an item.
     pub item_seconds: f64,
+    /// A factor on the time an item is tried from its own start first
+    /// (half of `item_seconds`, [`Options::own_start_seconds`];
+    /// mitcad#847): a debug build's checks give their slowdown, so that an
+    /// item that gives its state that way (a path pattern of 372 copies,
+    /// 18 s in a debug build) does not run out of its time on a busy
+    /// machine. The item's other routes keep their times: an item that
+    /// falls back spends each of them in full, and scaled they made it
+    /// several times as slow. 1 by default.
+    pub own_start_scale: f64,
     /// How many history states a fallback may skip at once.
     pub fallback_states: usize,
     /// Compare the final bodies geometrically (surface deviation), not only
@@ -228,6 +237,7 @@ impl Default for Options {
             max_candidates: 20,
             max_attempts: 40,
             item_seconds: 60.0,
+            own_start_scale: 1.0,
             fallback_states: 6,
             compare: true,
             undo_label: None,
@@ -246,6 +256,21 @@ impl Default for Options {
             accept_deviations: AcceptDeviations::None,
             commands: None,
         }
+    }
+}
+
+impl Options {
+    /// The seconds an item is tried from its own start
+    /// ([`Options::own_start_scale`]): half of `item_seconds`, scaled by a
+    /// factor above 0 (else 1).
+    pub fn own_start_seconds(&self) -> f64 {
+        let scale = self.own_start_scale;
+        let scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        self.item_seconds / 2.0 * scale
     }
 }
 
@@ -3576,8 +3601,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// [`Importer::verified_at`] from state `own`, where the replay is,
     /// before the operations no item names that come right before the
     /// item's own (`state`): whether one of its candidates gave `state`, in
-    /// half the item's time. Else nothing is left of the try, and the item
-    /// is tried as one whose state comes right after the one before.
+    /// half the item's time ([`Options::own_start_seconds`]). Else nothing
+    /// is left of the try, and the item is tried as one whose state comes
+    /// right after the one before.
     /// (`target`: the solids of `state`, asked for when first needed.)
     fn tried_from_own_start(
         &mut self,
@@ -3602,7 +3628,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             after: state,
         };
         let depth = self.doc.undo_depth();
-        let budget = self.options.item_seconds / 2.0;
+        let budget = self.options.own_start_seconds();
         match self.try_state(
             at,
             index,

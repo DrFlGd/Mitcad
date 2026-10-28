@@ -685,6 +685,90 @@ void fieldMenuTests() {
   CHECK(edit->cursorPosition() == 0);
 }
 
+// Tables (mitcad#667): `Screws.` and its columns, as `formula_help` gives
+// them.
+QJsonArray designTables() {
+  const auto column = [](const char* name, const char* unit) {
+    return QJsonObject{{QStringLiteral("name"), QString::fromUtf8(name)},
+                       {QStringLiteral("unit"), QString::fromUtf8(unit)}};
+  };
+  return {QJsonObject{{QStringLiteral("name"), QStringLiteral("Screws")},
+                      {QStringLiteral("comment"), QStringLiteral("Socket head cap screws")},
+                      {QStringLiteral("columns"), QJsonArray{column("Size", "Text"), column("d", "mm"),
+                                                             column("dk", "mm"), column("k", "mm")}}},
+          QJsonObject{{QStringLiteral("name"), QStringLiteral("Coins")},
+                      {QStringLiteral("columns"), QJsonArray{column("Name", "Text"), column("Dia", "mm")}}}};
+}
+
+void tableTests() {
+  const std::vector<SuggestedTable> tables = suggestedTables(designTables());
+  CHECK(tables.size() == 2 && tables.front().columns.size() == 4);
+  CHECK(tableNamed(tables, QStringLiteral("Screws")) == &tables.front());
+  CHECK(tableNamed(tables, QStringLiteral("screws")) == nullptr); // names are case-sensitive
+  CHECK(columnLabel(tables.front().columns.front()) == QStringLiteral("Size [Text]"));
+
+  // After the dot, also before anything is typed.
+  ColumnFragment f = columnFragmentAt(QStringLiteral("XLOOKUP(Size; Screws."), 21);
+  CHECK(f.active && f.table == QStringLiteral("Screws") && f.start == 21 && f.length == 0 && f.typed.isEmpty());
+  f = columnFragmentAt(QStringLiteral("INDEX(Screws.dk; 2)"), 14);
+  CHECK(f.active && f.table == QStringLiteral("Screws") && f.start == 13 && f.length == 2 &&
+        f.typed == QStringLiteral("d"));
+  // A number's decimal point, a chain, a name without a dot: none.
+  CHECK(!columnFragmentAt(QStringLiteral("2.5"), 3).active);
+  CHECK(!columnFragmentAt(QStringLiteral("a.b.c"), 5).active);
+  CHECK(!columnFragmentAt(QStringLiteral("Screws"), 6).active);
+  CHECK(!columnFragmentAt(QStringLiteral("Screws.5"), 8).active);
+  // The column's name is no parameter's name being typed.
+  CHECK(!nameFragmentAt(QStringLiteral("Screws.dk"), 9).active);
+  // The lookup functions are reserved names.
+  CHECK(isReservedName(QStringLiteral("XLOOKUP")) && isReservedName(QStringLiteral("match")) &&
+        isReservedName(QStringLiteral("Index")));
+
+  // Columns starting with the filter first, then containing it.
+  std::vector<SuggestedTable::Column> columns = matchColumns(tables.front(), QStringLiteral("d"));
+  CHECK(columns.size() == 2 && columns[0].name == QStringLiteral("d") && columns[1].name == QStringLiteral("dk"));
+  columns = matchColumns(tables.front(), QStringLiteral("k"));
+  CHECK(columns.size() == 2 && columns[0].name == QStringLiteral("k") && columns[1].name == QStringLiteral("dk"));
+  CHECK(matchColumns(tables.front(), QString()).size() == 4);
+  // Tables by name; with comments, by their comments too.
+  CHECK(matchTables(tables, QStringLiteral("scr"), false).size() == 1);
+  CHECK(matchTables(tables, QStringLiteral("cap"), false).empty());
+  CHECK(matchTables(tables, QStringLiteral("cap"), true).size() == 1);
+
+  // A field: `Scr` offers the table, choosing it puts `Screws.` in and the
+  // list goes on with its columns; `d` and Down choose dk.
+  QWidget window;
+  window.resize(640, 480);
+  ParameterSource source{[] { return designParameters(); }, nullptr, [] { return QStringLiteral("mm"); }};
+  source.query = [](const QJsonObject&) {
+    return QJsonObject{{QStringLiteral("functions"), QJsonArray()}, {QStringLiteral("tables"), designTables()}};
+  };
+  setParameterSource(&window, source);
+  auto* edit = new QLineEdit(&window);
+  edit->setGeometry(20, 20, 300, 24);
+  ParameterFieldOptions options;
+  options.label = QStringLiteral("table test");
+  options.create = false;
+  options.anyKind = true;
+  ParameterField* field = ParameterField::attach(edit, options);
+  window.show();
+  edit->setFocus();
+  edit->setText(QStringLiteral("XLOOKUP(Size; "));
+  edit->setCursorPosition(static_cast<int>(edit->text().size()));
+  type(*edit, QStringLiteral("Scr"));
+  CHECK(field->isOpen());
+  CHECK(press(*edit, Qt::Key_Return));
+  QApplication::processEvents(); // the columns are listed from a queued call
+  CHECK(edit->text() == QStringLiteral("XLOOKUP(Size; Screws."));
+  CHECK(field->isOpen());
+  type(*edit, QStringLiteral("d"));
+  CHECK(field->isOpen());
+  CHECK(press(*edit, Qt::Key_Down));
+  CHECK(press(*edit, Qt::Key_Return));
+  CHECK(edit->text() == QStringLiteral("XLOOKUP(Size; Screws.dk"));
+  CHECK(!field->isOpen());
+}
+
 } // namespace
 
 int parameterSuggestTests() {
@@ -697,5 +781,6 @@ int parameterSuggestTests() {
   formulaPrefixTests();
   fieldMenuTests();
   tooltipTests();
+  tableTests();
   return failures;
 }

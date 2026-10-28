@@ -171,6 +171,13 @@ struct NativeMacWindowCallbacks {
   std::function<void()> cancelPointerInteraction;
   // Logical viewport coordinates, with the origin at its top-left corner.
   std::function<void(const QMargins&, const std::vector<QRect>&)> viewportOverlays;
+  // A side card's edge released after a drag (mitcad#818): "projects",
+  // "browser" or "inspector" and the width it remembers, in points.
+  std::function<void(const QString&, int)> cardWidthChosen;
+  // A plain key (Qt::Key) with the Projects outline focused, before default
+  // buttons and document shortcuts; true when the shared panel took it:
+  // Return opens, F2 renames, Delete deletes (mitcad#816).
+  std::function<bool(int)> projectsKey;
 };
 
 #ifdef Q_OS_MACOS
@@ -213,10 +220,20 @@ public:
   void setSketchMode(bool sketching);
   void setProjectsView(void* view, bool shown);
   bool projectsShown() const;
+  // Names a Projects row in place (mitcad#816): the shown outline's row
+  // whose cell has `identifier` edits `text` in its own text field, its
+  // content disclosed first; `finished` gets the name and whether it was
+  // taken. False when the row is not shown. closeProjectsEditor ends an
+  // open editor without calling `finished`.
+  bool editProjectsRow(const QString& identifier, const QString& text,
+                       std::function<void(const QString&, bool)> finished);
+  void closeProjectsEditor();
   void setStatus(const QString& message, bool error = false);
   void setInspectorText(const QString& title, const QString& text);
-  // The shell retains this NSView while installed. nullptr clears it.
-  void setInspectorView(void* view);
+  // The shell retains this NSView while installed. nullptr clears it. A
+  // footer (a command form's OK and Cancel, mitcad#815) stays under the
+  // view, which scrolls above it.
+  void setInspectorView(void* view, void* footer = nullptr);
   void showInspector(bool shown = true);
   void showSidebar(bool shown = true);
   void showHistory(bool shown = true);
@@ -229,6 +246,9 @@ public:
 
   void* nativeWindow() const; // NSWindow*, borrowed.
   void* nativeInspectorHost() const; // NSView*, borrowed.
+  // A side card's remembered width (mitcad#818), named as cardWidthChosen
+  // names it; placed within the canvas as a dragged width is.
+  void setCardWidth(const QString& card, int width);
 
 private:
   std::unique_ptr<NativeMacWindowState> m_state;

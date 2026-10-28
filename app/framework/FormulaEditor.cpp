@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <exception>
 #include <functional>
+#include <utility>
+#include <vector>
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -13,7 +15,9 @@
 #include <QHeaderView>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QKeyEvent>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMouseEvent>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -173,6 +177,7 @@ FormulaEditor::FormulaEditor(ParameterSource source, ParameterFieldOptions optio
   }
   layout->addLayout(limits);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+  m_buttons = buttons;
   layout->addWidget(buttons);
   connect(buttons, &QDialogButtonBox::accepted, this, &FormulaEditor::accept);
   connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
@@ -187,6 +192,29 @@ FormulaEditor::FormulaEditor(ParameterSource source, ParameterFieldOptions optio
   connect(m_expression, &QPlainTextEdit::cursorPositionChanged, debounce, [debounce] { debounce->start(); });
   connect(debounce, &QTimer::timeout, this, &FormulaEditor::updateHelp);
   editor->hovered = [this](int at) { inspectAt(at); };
+  // Completion (mitcad#667): a list of its own under the caret, without
+  // the keyboard, so that the text keeps it.
+  m_completions = new QListWidget(this);
+  m_completions->setObjectName(QStringLiteral("formulaCompletions"));
+  m_completions->setFocusPolicy(Qt::NoFocus);
+  m_completions->setSelectionMode(QAbstractItemView::SingleSelection);
+  m_completions->setUniformItemSizes(true);
+  m_completions->hide();
+  connect(m_completions, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) { complete(item); });
+  m_expression->installEventFilter(this);
+  // The list opens on what is typed only; a caret moved by the arrows or a
+  // click closes it (its keys are then the text's again).
+  connect(m_expression, &QPlainTextEdit::textChanged, this, [this] {
+    if (m_typing != 0) {
+      updateCompletions(m_typing == 1);
+    }
+  });
+  connect(m_expression, &QPlainTextEdit::cursorPositionChanged, this, [this] {
+    if (m_typing == 0 && !m_completing) {
+      hideCompletions();
+    }
+  });
+  loadCompletions();
   filterFunctions({});
   updateHelp();
   fitWindowToContents(this);
@@ -205,6 +233,23 @@ QSize FormulaEditor::sizeHint() const {
 void FormulaEditor::showEvent(QShowEvent* event) {
   QDialog::showEvent(event);
   fitWindowToContents(this);
+  QTimer::singleShot(0, this, &FormulaEditor::logButtons);
+}
+
+void FormulaEditor::logButtons() {
+  // In the main window's coordinates, as the other logged places.
+  QWidget* top = window();
+  while (top->parentWidget() != nullptr) {
+    top = top->parentWidget()->window();
+  }
+  const QPoint origin = top->mapToGlobal(QPoint(0, 0));
+  for (const auto& entry : {qMakePair(QStringLiteral("OK"), QDialogButtonBox::Ok),
+                            qMakePair(QStringLiteral("Cancel"), QDialogButtonBox::Cancel)}) {
+    if (QPushButton* button = m_buttons->button(entry.second)) {
+      const QPoint at = button->mapToGlobal(button->rect().center()) - origin;
+      qDebug().noquote() << QStringLiteral("Formula editor %1 at %2,%3").arg(entry.first).arg(at.x()).arg(at.y());
+    }
+  }
 }
 
 bool FormulaEditor::limitsChanged() const {
@@ -339,6 +384,208 @@ void FormulaEditor::accept() {
     if (expression().isEmpty()) { m_error->setText(tr("Enter a formula.")); return; }
     QDialog::accept();
   } catch (const std::exception& error) { m_error->setText(QString::fromUtf8(error.what())); }
+}
+
+void FormulaEditor::loadCompletions() {
+  try {
+    if (m_source.parameters) {
+      for (const SuggestedParameter& parameter : suggestedParameters(m_source.parameters())) {
+        if (parameter.name != m_options.own) {
+          m_parameterNames << parameter.name;
+        }
+      }
+    }
+    if (m_source.query) {
+      const QJsonObject help = m_source.query({{QStringLiteral("query"), QStringLiteral("formula_help")}});
+      for (const QJsonValue& function : help.value(QStringLiteral("functions")).toArray()) {
+        m_functionNames << function.toObject().value(QStringLiteral("name")).toString();
+      }
+      m_tables = suggestedTables(help.value(QStringLiteral("tables")).toArray());
+    }
+  } catch (const std::exception&) {
+    // A job computes the model: nothing to complete with.
+  }
+  std::sort(m_parameterNames.begin(), m_parameterNames.end(), naturalLess);
+}
+
+void FormulaEditor::hideCompletions() {
+  if (m_completions->isVisible()) {
+    m_completions->hide();
+  }
+  m_loggedCompletions.clear();
+}
+
+void FormulaEditor::updateCompletions(bool mayOpen) {
+  if (m_completing || (!mayOpen && !m_completions->isVisible())) {
+    return;
+  }
+  const QTextCursor cursor = m_expression->textCursor();
+  if (cursor.hasSelection()) {
+    hideCompletions();
+    return;
+  }
+  const QString text = m_expression->toPlainText();
+  const int caret = cursor.position();
+  struct Entry {
+    QString insert;
+    QString about;
+  };
+  std::vector<Entry> entries;
+  QString typed;
+  const ColumnFragment column = columnFragmentAt(text, caret);
+  if (column.active) {
+    if (const SuggestedTable* table = tableNamed(m_tables, column.table)) {
+      for (const SuggestedTable::Column& c : matchColumns(*table, column.typed)) {
+        entries.push_back({c.name, c.unit.isEmpty() ? tr("no unit") : c.unit}); // the unit box's words
+      }
+      m_completionStart = column.start;
+      m_completionLength = column.length;
+      typed = QStringLiteral("%1.%2").arg(table->name, column.typed);
+    }
+  } else {
+    const NameFragment fragment = nameFragmentAt(text, caret);
+    if (fragment.active && !fragment.typed.isEmpty()) {
+      for (const QString& name : std::as_const(m_parameterNames)) {
+        if (name.startsWith(fragment.typed, Qt::CaseInsensitive)) {
+          entries.push_back({name, tr("parameter")});
+        }
+      }
+      for (const SuggestedTable* table : matchTables(m_tables, fragment.typed, false)) {
+        if (table->name.startsWith(fragment.typed, Qt::CaseInsensitive)) {
+          entries.push_back({table->name + QLatin1Char('.'), tr("table")});
+        }
+      }
+      for (const QString& name : std::as_const(m_functionNames)) {
+        if (name.startsWith(fragment.typed, Qt::CaseInsensitive)) {
+          entries.push_back({name + QLatin1Char('('), tr("function")});
+        }
+      }
+      m_completionStart = fragment.start;
+      m_completionLength = fragment.length;
+      typed = fragment.typed;
+    }
+  }
+  // Nothing to offer, or exactly the one name typed already.
+  if (entries.empty() ||
+      (entries.size() == 1 && entries.front().insert == text.mid(m_completionStart, m_completionLength))) {
+    hideCompletions();
+    return;
+  }
+  m_completions->clear();
+  QStringList logged;
+  for (const Entry& entry : entries) {
+    auto* item = new QListWidgetItem(QStringLiteral("%1    %2").arg(entry.insert, entry.about), m_completions);
+    item->setData(Qt::UserRole, entry.insert);
+    logged << entry.insert;
+  }
+  m_completions->setCurrentRow(0);
+  const int rows = std::min(static_cast<int>(entries.size()), 8);
+  const int rowHeight = m_completions->fontMetrics().height() + 6;
+  m_completions->setFixedSize(320, rows * rowHeight + 2 * m_completions->frameWidth() + 2);
+  QPoint at = m_expression->viewport()->mapTo(this, m_expression->cursorRect(cursor).bottomLeft() + QPoint(0, 2));
+  at.setX(std::clamp(at.x(), 0, std::max(0, width() - m_completions->width())));
+  if (at.y() + m_completions->height() > height()) {
+    at.setY(std::max(0, m_expression->viewport()->mapTo(this, m_expression->cursorRect(cursor).topLeft()).y() -
+                            m_completions->height() - 2));
+  }
+  m_completions->move(at);
+  m_completions->show();
+  m_completions->raise();
+  const QString line =
+      QStringLiteral("Formula completions for \"%1\": %2").arg(typed, logged.join(QStringLiteral(", ")));
+  if (line != m_loggedCompletions) {
+    m_loggedCompletions = line;
+    qDebug().noquote() << line;
+  }
+}
+
+void FormulaEditor::complete(QListWidgetItem* item) {
+  if (item == nullptr) {
+    return;
+  }
+  QString insert = item->data(Qt::UserRole).toString();
+  // A `(` or `.` that follows the name already is not put in twice: the
+  // caret goes past it (`MAX|(` gives `MAX(`, `Scr|.dk` gives `Screws.dk`).
+  const QString text = m_expression->toPlainText();
+  const int end = m_completionStart + m_completionLength;
+  const bool follows = (insert.endsWith(QLatin1Char('(')) || insert.endsWith(QLatin1Char('.'))) &&
+                       end < text.size() && text.at(end) == insert.back();
+  if (follows) {
+    insert.chop(1);
+  }
+  QTextCursor cursor = m_expression->textCursor();
+  cursor.setPosition(m_completionStart);
+  cursor.setPosition(end, QTextCursor::KeepAnchor);
+  m_completing = true;
+  cursor.insertText(insert);
+  if (follows) {
+    cursor.movePosition(QTextCursor::NextCharacter);
+  }
+  m_expression->setTextCursor(cursor);
+  m_completing = false;
+  hideCompletions();
+  qDebug().noquote() << QStringLiteral("Formula completion inserted %1: %2").arg(insert, m_expression->toPlainText());
+  // After a table's `Screws.`, its columns.
+  updateCompletions(true);
+}
+
+bool FormulaEditor::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == m_expression && event->type() == QEvent::KeyPress) {
+    const auto* key = static_cast<QKeyEvent*>(event);
+    // Ctrl+Enter is OK: Enter is the multiline text's own.
+    if ((key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter) &&
+        key->modifiers().testFlag(Qt::ControlModifier)) {
+      hideCompletions();
+      accept();
+      return true;
+    }
+    // What the key does to the text, for the list (cleared once it is
+    // handled): typed text may open it, an erase only updates it.
+    const QString typed = key->text();
+    const bool command = (key->modifiers() & (Qt::ControlModifier | Qt::MetaModifier | Qt::AltModifier)) != 0;
+    if (!command && !typed.isEmpty() && typed.at(0).isPrint()) {
+      m_typing = 1;
+    } else if (key->key() == Qt::Key_Backspace || key->key() == Qt::Key_Delete) {
+      m_typing = 2;
+    }
+    if (m_typing != 0) {
+      QTimer::singleShot(0, this, [this] { m_typing = 0; });
+    }
+  }
+  if (watched == m_expression && m_completions != nullptr && m_completions->isVisible()) {
+    if (event->type() == QEvent::ShortcutOverride) {
+      const int key = static_cast<QKeyEvent*>(event)->key();
+      if (key == Qt::Key_Escape || key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Tab) {
+        event->accept();
+        return true;
+      }
+    } else if (event->type() == QEvent::KeyPress) {
+      const auto* key = static_cast<QKeyEvent*>(event);
+      const int count = m_completions->count();
+      switch (key->key()) {
+      case Qt::Key_Up:
+        m_completions->setCurrentRow(std::max(0, m_completions->currentRow() - 1));
+        return true;
+      case Qt::Key_Down:
+        m_completions->setCurrentRow(std::min(count - 1, m_completions->currentRow() + 1));
+        return true;
+      case Qt::Key_Return:
+      case Qt::Key_Enter:
+      case Qt::Key_Tab:
+        complete(m_completions->currentItem());
+        return true;
+      case Qt::Key_Escape:
+        hideCompletions();
+        qDebug().noquote() << QStringLiteral("Formula completions closed (Esc)");
+        return true;
+      default:
+        break;
+      }
+    } else if (event->type() == QEvent::FocusOut) {
+      hideCompletions();
+    }
+  }
+  return QDialog::eventFilter(watched, event);
 }
 
 } // namespace mitcad

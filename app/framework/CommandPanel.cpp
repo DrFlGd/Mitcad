@@ -1324,6 +1324,14 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
         row.combo->clear();
         int pictures = 0;
         for (const auto& [value, label] : options) {
+          if (isChoiceSeparator(value)) {
+            // A line between the options (mitcad#828): disabled, so not
+            // choosable and skipped by the keyboard; its value kept so the
+            // next refresh finds the same options.
+            row.combo->insertSeparator(row.combo->count());
+            row.combo->setItemData(row.combo->count() - 1, value);
+            continue;
+          }
           // A picture beside each option that has one (InputDef::choiceImage).
           const QImage image = input.choiceImage ? input.choiceImage(value) : QImage();
           if (input.choiceIcon) {
@@ -1354,7 +1362,7 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
         }
         QStringList labels;
         for (const auto& option : options) {
-          labels << option.second;
+          labels << (isChoiceSeparator(option.first) ? QStringLiteral("---") : option.second);
         }
         qDebug().noquote() << QStringLiteral("Panel %1 options %2: %3")
                                   .arg(m_def.name, row.key, labels.join(QStringLiteral(" | ")));

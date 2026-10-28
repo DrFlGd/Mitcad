@@ -578,6 +578,16 @@ impl<K: Kernel> AnalysisApi<K> for Document<K> {
                         body["length"].as_f64().unwrap_or(0.0)
                     );
                 }
+                // A plane past every body (mitcad#824).
+                let count = |key: &str| result[key].as_u64().unwrap_or(0);
+                if count("cut") == 0 && count("kept") + count("removed") > 0 {
+                    let _ = writeln!(
+                        text,
+                        "The plane cuts no body: {} kept whole, {} removed whole",
+                        count("kept"),
+                        count("removed")
+                    );
+                }
             }
             TextQuery::CompareStep(q) => {
                 let result = self.compare_step_json(&q)?;
@@ -1027,6 +1037,27 @@ impl<K: Kernel> AnalysisOps<K> for Document<K> {
         if let Some(bed) = self.print_bed_face_json(uid) {
             value["print_bed_face"] = bed;
         }
+        // Bindings (mitcad#800): the expressions the values above follow,
+        // the parameters they use, and why one gives no value.
+        if attributes.has_bindings() {
+            if let Some(text) = &attributes.appearance_expr {
+                value["appearance_expr"] = json!(text);
+            }
+            if let Some(text) = &attributes.material_expr {
+                value["material_expr"] = json!(text);
+            }
+            if let Some(text) = &attributes.visible_when {
+                value["visible_when"] = json!(text);
+            }
+            if !attributes.face_appearance_exprs.is_empty() {
+                value["face_appearance_exprs"] = json!(attributes.face_appearance_exprs);
+            }
+            value["dependencies"] = json!(self.state().body_binding_parameters(uid));
+            let warnings = self.state().body_binding_warnings(uid);
+            if !warnings.is_empty() {
+                value["warnings"] = json!(warnings);
+            }
+        }
     }
 }
 
@@ -1470,15 +1501,15 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
             // sectioned at once (on all cores in the OCCT kernel, mitcad#438).
             let mut bodies = Vec::new();
             let mut items = Vec::new();
+            let mut sides = Vec::new();
             for instance in self.instances().into_iter().filter(|i| {
                 i.visible && (query.bodies.is_empty() || query.bodies.contains(&i.body))
             }) {
                 let occurrence = OccurrencePath(instance.path);
                 let local = self.analysis_body_plane(&fixed, instance.body, Some(&occurrence))?;
-                items.push(SectionInput::Cut(
-                    self.require_body(instance.body)?.clone(),
-                    local,
-                ));
+                let shape = self.require_body(instance.body)?;
+                sides.push(clip_side(self.kernel(), shape, &local));
+                items.push(SectionInput::Cut(shape.clone(), local));
                 bodies.push((
                     json!({"uid": instance.body, "name": instance.name,
                         "occurrence": occurrence, "component": instance.component}),
@@ -1489,12 +1520,15 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
                 plane,
                 bodies,
                 items,
+                sides,
             });
         }
         let plane = self.plane_of(&query.plane)?;
         let mut bodies = Vec::new();
         let mut items = Vec::new();
+        let mut sides = Vec::new();
         for BodyView { uid, name, shape } in self.chosen_bodies(&query.bodies)? {
+            sides.push(clip_side(self.kernel(), shape, &plane));
             items.push(SectionInput::Cut(shape.clone(), plane));
             bodies.push((json!({"uid": uid, "name": name}), name));
         }
@@ -1502,6 +1536,7 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
             plane,
             bodies,
             items,
+            sides,
         })
     }
 
@@ -1626,11 +1661,65 @@ impl<K: Kernel> PreparedQuery<K> {
 
 /// What `section` cuts: the plane (the world's or the bodies'), each body's
 /// own fields of the answer with its name for errors, and each body's
-/// input.
+/// input, and what the clip does with each body (told from its box when
+/// it was prepared, mitcad#824).
 struct PreparedSection<K: Kernel> {
     plane: DatumPlane,
     bodies: Vec<(Value, String)>,
     items: Vec<SectionInput<K>>,
+    sides: Vec<ClipSide>,
+}
+
+/// What Section Analysis' clip does with a body (mitcad#824), as the
+/// bridge's `analysis::clip_side` tells it from the body's box: keeps it
+/// whole (its box behind the plane, touching it at most), removes it whole
+/// (its box on the normal side, touching the plane at most), or cuts it
+/// (the box crosses the plane, or the body has no box).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipSide {
+    Cut,
+    Kept,
+    Removed,
+}
+
+impl ClipSide {
+    fn as_str(self) -> &'static str {
+        match self {
+            ClipSide::Cut => "cut",
+            ClipSide::Kept => "kept",
+            ClipSide::Removed => "removed",
+        }
+    }
+}
+
+/// How far a box may reach past the plane and still lie on one side of it:
+/// OCCT's `Precision::Confusion()`, which `analysis::clip_side` allows.
+const CLIP_SIDE_TOLERANCE: f64 = 1e-7;
+
+/// [`ClipSide`] of `shape` at `plane` (in the shape's coordinates), from
+/// the kernel's box of the shape: the same box the clip reads in the OCCT
+/// kernel, kept with the body once measured.
+fn clip_side<K: Kernel>(kernel: &K, shape: &K::Shape, plane: &DatumPlane) -> ClipSide {
+    let Ok(Some(bounds)) = kernel.bounding_box(shape) else {
+        return ClipSide::Cut;
+    };
+    let normal = plane.normal();
+    // The least and the greatest signed distance of the box's corners.
+    let (mut low, mut high) = (0.0, 0.0);
+    let corners = bounds.min.iter().zip(&bounds.max);
+    for (((min, max), origin), n) in corners.zip(&plane.origin).zip(&normal) {
+        let a = (min - origin) * n;
+        let b = (max - origin) * n;
+        low += a.min(b);
+        high += a.max(b);
+    }
+    if high <= CLIP_SIDE_TOLERANCE {
+        ClipSide::Kept
+    } else if low >= -CLIP_SIDE_TOLERANCE {
+        ClipSide::Removed
+    } else {
+        ClipSide::Cut
+    }
 }
 
 /// A body of [`PreparedSection`].
@@ -1659,7 +1748,10 @@ impl<K: Kernel> PreparedSection<K> {
         let mut sections = kernel.section_all(&cut).into_iter();
         let (mut length, mut area) = (0.0, 0.0);
         let mut bodies = Vec::with_capacity(self.bodies.len());
-        for ((fields, name), item) in self.bodies.iter().zip(&self.items) {
+        // How many bodies the clip cuts, keeps whole and removes whole
+        // (mitcad#824): none cut tells the panel why the section is empty.
+        let mut counts = [0usize; 3];
+        for (((fields, name), item), side) in self.bodies.iter().zip(&self.items).zip(&self.sides) {
             let (edges, faces, body_length, body_area) = match item {
                 SectionInput::Cut(..) => {
                     let section = sections
@@ -1683,11 +1775,19 @@ impl<K: Kernel> PreparedSection<K> {
             body["faces"] = json!(faces);
             body["length"] = json!(body_length);
             body["area"] = json!(body_area);
+            body["clip"] = json!(side.as_str());
+            counts[match side {
+                ClipSide::Cut => 0,
+                ClipSide::Kept => 1,
+                ClipSide::Removed => 2,
+            }] += 1;
             bodies.push(body);
         }
+        let [cut, kept, removed] = counts;
         Ok(
             json!({"plane": {"origin": self.plane.origin, "normal": self.plane.normal()},
-                  "bodies": bodies, "length": length, "area": area}),
+                  "bodies": bodies, "length": length, "area": area,
+                  "cut": cut, "kept": kept, "removed": removed}),
         )
     }
 }

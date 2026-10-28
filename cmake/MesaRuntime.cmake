@@ -183,7 +183,7 @@ if(MITCAD_MESA_DIR)
     # Sketch asks for a plane lets the face behind it be picked; during
     # Extrude a body hidden stays so on Cancel and is no part of OK's undo
     # step; an edit's roll-back keeps it too. Create Sketch's origin planes
-    # only without components, else from the Origin folder (mitcad#294).
+    # in a design with components too, behind its faces (mitcad#844).
     add_test(NAME app.ui-windows-visibility
       COMMAND powershell -NoProfile -ExecutionPolicy Bypass
               -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-visibility-test.ps1"
@@ -250,16 +250,31 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-build"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-build PROPERTIES TIMEOUT 900)
-    # The Timber tool (mitcad#478): synthetic timber, a slot profile and a
-    # wood screw fetched from a local git repository; the pickers apart, a
-    # post, a member on its side, a member by two points, a spacing set and
-    # its edit, a timber junction screwed, the cut list's timber.
-    add_test(NAME app.ui-windows-timber
-      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
-              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-timber-test.ps1"
-              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-timber"
-              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
-    set_tests_properties(app.ui-windows-timber PROPERTIES TIMEOUT 600)
+    # The BUILD tab's TIMBER group (mitcad#478, mitcad#520), synthetic
+    # timber, a slot profile and fasteners fetched from a local git
+    # repository (tools/ui-windows-timber-lib.ps1), in six tests that run
+    # side by side (mitcad#834; once one of over nine minutes):
+    #   timber      the Timber tool: the pickers apart, a post, a member on
+    #               its side, a member by two points, a spacing set and its
+    #               edit, a timber junction screwed, the cut list's timber,
+    #               a tile per size;
+    #   -frames     frames of four members and of slot profiles, mitred, and
+    #               a member standing on a board;
+    #   -wall       Wall: butt and lapped corners, a wall between two, and
+    #               Timber's Two points between studs;
+    #   -openings   the Openings window, walls started on a solid wall and
+    #               across a long room;
+    #   -fasteners  a wall's and a spacing set's fasteners, Swap Fastener;
+    #   -floor-roof a floor, frames as components, a gable roof's nails.
+    foreach(timber_test IN ITEMS timber timber-frames timber-wall timber-openings timber-fasteners
+                                 timber-floor-roof)
+      add_test(NAME app.ui-windows-${timber_test}
+        COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+                -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-${timber_test}-test.ps1"
+                -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-${timber_test}"
+                -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+      set_tests_properties(app.ui-windows-${timber_test} PROPERTIES TIMEOUT 300)
+    endforeach()
 
     # The window's layout chosen in Preferences (mitcad#419): Floating
     # asks to restart, Later and Restart Now (unsaved changes asked about,
@@ -375,6 +390,15 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
               -Out "${CMAKE_BINARY_DIR}/ui-windows-print-fits" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-print-fits PROPERTIES TIMEOUT 360)
+    # Configurations (mitcad#807): the window opens and a choice in the
+    # browser's Configuration bar changes the body (the test driver's
+    # script, shared with the macOS test).
+    add_test(NAME app.ui-windows-configurations
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-configurations-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
+              -Out "${CMAKE_BINARY_DIR}/ui-windows-configurations" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-configurations PROPERTIES TIMEOUT 360)
     # The file dialogs' folders per group (mitcad#498): Import, Export and
     # Open each start in their own last folder, also after a restart.
     add_test(NAME app.ui-windows-dialog-folders
@@ -713,6 +737,16 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Cli "$<TARGET_FILE:mitcad-cli>"
               -Out "${CMAKE_BINARY_DIR}/ui-windows-sketch-spline" -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-sketch-spline PROPERTIES TIMEOUT 300)
+    # Tables in Change Parameters (mitcad#667): a table made and typed in
+    # (a wrong cell refused), a dimension through XLOOKUP with the Formula
+    # Editor's completion of Screws., a cell edit the block follows, a CSV
+    # imported through its preview.
+    add_test(NAME app.ui-windows-tables
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-tables-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-tables"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-tables PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

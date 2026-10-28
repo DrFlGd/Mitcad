@@ -70,6 +70,57 @@ bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendKeyEvent(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendText(const QString& text);
 bool screenshot(const QString& path, QOpenGLWidget* viewport = nullptr);
+// Native tables (mitcad#814): what a cell or label shows (comma-separated
+// states: error, warning, normal, bold, regular, editable, readonly,
+// editing, not-editing, single-line, truncated, in-view; "<table>/<row>/
+// <column>" addresses a cell without an identifier), whether the columns
+// keep the shared header's sizes and stretching (fit, scroll or any), and
+// the focused native dialog's content size.
+bool nativeStyle(const QString& identifier, const QStringList& states, QString& detail);
+bool nativeColumns(const QString& identifier, const QString& mode, QString& detail);
+bool resizeNativeDialog(int width, int height, QString& error);
+// Card widths and windows within the screen (mitcad#818): a drag of a side
+// card's width handle with AppKit mouse events; its width (and content and
+// the free canvas); whether a visible text is shown whole; a smaller visible
+// screen frame for secondary windows, followed as a display change; a
+// secondary window within that frame with visible buttons and a reachable
+// body.
+bool dragCardWidth(const QString& card, int width, QString& error);
+bool cardWidth(const QString& card, int minimum, int maximum, QString& detail);
+bool nameFits(const QRegularExpression& expression, bool expected, QString& detail);
+bool setScreenLimit(int width, int height, QString& error);
+bool windowFits(const QRegularExpression& title, QString& detail);
+// Native Projects rows (mitcad#816): whether outline rows are presented,
+// found without scrolling; a row dragged onto another through the
+// outline's own drag source and drop target (the outcome is logged); the
+// keyboard in a control (with `editor`: a row text editor there whose text
+// matches); the outline's one selected row ("-" none, "*" any), in sight and
+// the same as its presenter's. `detail` says what was found instead.
+bool rowsPresent(const QStringList& identifiers);
+bool dragRow(const QString& from, const QString& to, QString& error);
+bool focusedIn(const QString& identifier, const QRegularExpression* editor, QString& detail);
+bool selectedRow(const QString& outline, const QString& row, QString& detail);
+// mitcad#815: the selection card shows `expected` whole, reachable Create
+// actions without scrolling; a command form keeps captions beside their
+// controls in aligned columns, compact clear/flip controls, OK and Cancel
+// whole under its inputs, and the `required` controls in view.
+bool selectionCard(int expected, QString& error);
+bool commandLayout(const QStringList& required, QString& error);
+// Native tile grids, group lists and utility panels (mitcad#813, mitcad#819):
+// tileAction drives them through their AppKit input paths ("click <grid>
+// <tile>", "star", "group", "slider", "press", ...); tileCheck reads what
+// they show ("count", "pictures", "captions", "layout", "focus", ...).
+bool tileAction(const QStringList& args, QString& error);
+bool tileCheck(const QStringList& args, QString& detail);
+// Shared layout bounds, real pointer input and button order (mitcad#812, #817).
+bool controlBounds(const QString& identifier, double minimumWidth, const QString& labelPattern, QString& error);
+bool buttonOrder(const QStringList& patterns, QString& error);
+bool focused(const QString& identifier);
+bool pointerClick(const QString& identifier, QString& error);
+bool pointerButton(const QRegularExpression& expression, QString& error);
+bool pointerDrag(const QString& identifier, double from, double to, QString& error);
+bool resizeDialog(int width, int height, QString& error);
+bool layoutContract(QString& error);
 #else
 inline bool active() { return false; }
 inline bool nativeFocused() { return false; }
@@ -121,6 +172,30 @@ inline bool sendKey(int, Qt::KeyboardModifiers, const QString&) { return false; 
 inline bool sendKeyEvent(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendText(const QString&) { return false; }
 inline bool screenshot(const QString&, QOpenGLWidget* = nullptr) { return false; }
+inline bool nativeStyle(const QString&, const QStringList&, QString&) { return false; }
+inline bool nativeColumns(const QString&, const QString&, QString&) { return false; }
+inline bool resizeNativeDialog(int, int, QString&) { return false; }
+inline bool dragCardWidth(const QString&, int, QString&) { return false; }
+inline bool cardWidth(const QString&, int, int, QString&) { return false; }
+inline bool nameFits(const QRegularExpression&, bool, QString&) { return false; }
+inline bool setScreenLimit(int, int, QString&) { return false; }
+inline bool windowFits(const QRegularExpression&, QString&) { return false; }
+inline bool rowsPresent(const QStringList&) { return false; }
+inline bool dragRow(const QString&, const QString&, QString&) { return false; }
+inline bool focusedIn(const QString&, const QRegularExpression*, QString&) { return false; }
+inline bool selectedRow(const QString&, const QString&, QString&) { return false; }
+inline bool selectionCard(int, QString&) { return false; }
+inline bool commandLayout(const QStringList&, QString&) { return false; }
+inline bool tileAction(const QStringList&, QString&) { return false; }
+inline bool tileCheck(const QStringList&, QString&) { return false; }
+inline bool controlBounds(const QString&, double, const QString&, QString&) { return false; }
+inline bool buttonOrder(const QStringList&, QString&) { return false; }
+inline bool focused(const QString&) { return false; }
+inline bool pointerClick(const QString&, QString&) { return false; }
+inline bool pointerButton(const QRegularExpression&, QString&) { return false; }
+inline bool pointerDrag(const QString&, double, double, QString&) { return false; }
+inline bool resizeDialog(int, int, QString&) { return false; }
+inline bool layoutContract(QString&) { return false; }
 #endif
 
 } // namespace mitcad::mac::test

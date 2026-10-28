@@ -2498,3 +2498,646 @@ fn text_parameters_in_a_table() {
     assert_eq!(table.lookup("Label"), None);
     assert_eq!(table.evaluate_text("Label & Name").unwrap(), "Lid!Lid");
 }
+
+// ------------------------------------------------- table lookups (mitcad#667)
+
+type MockColumn = (&'static str, Unit, Vec<TableCell<'static>>);
+
+/// A table of the mock lookup: its name and columns, the first column
+/// naming the rows.
+struct MockTable {
+    name: &'static str,
+    columns: Vec<MockColumn>,
+}
+
+/// Parameters and tables, as a document's parameter table gives them.
+struct Tables {
+    params: Params,
+    tables: Vec<MockTable>,
+}
+
+impl Lookup for Tables {
+    fn lookup(&self, name: &str) -> Option<Quantity> {
+        self.params.lookup(name)
+    }
+
+    fn lookup_text(&self, name: &str) -> Option<String> {
+        self.params.lookup_text(name)
+    }
+
+    fn column(&self, table: &str, column: &str) -> Result<TableColumn<'_>, ColumnError> {
+        let table = self
+            .tables
+            .iter()
+            .find(|t| t.name == table)
+            .ok_or(ColumnError::NoTable)?;
+        let (_, unit, cells) = table
+            .columns
+            .iter()
+            .find(|(name, ..)| *name == column)
+            .ok_or(ColumnError::NoColumn)?;
+        let labels = table.columns[0].2.clone();
+        Ok(TableColumn::new(*unit, cells.clone()).with_labels(labels))
+    }
+}
+
+/// An empty cell in [`number_cells`].
+const EMPTY: f64 = f64::NAN;
+
+/// Number cells, [`EMPTY`] for an empty one.
+fn number_cells(values: &[f64]) -> Vec<TableCell<'static>> {
+    values
+        .iter()
+        .map(|&n| {
+            if n.is_nan() {
+                TableCell::Empty
+            } else {
+                TableCell::Number(n)
+            }
+        })
+        .collect()
+}
+
+fn text_cells(texts: &[&'static str]) -> Vec<TableCell<'static>> {
+    texts.iter().copied().map(TableCell::Text).collect()
+}
+
+/// The parameters of [`params`] with `Size = 'M5'` and `Shaft = 5 mm`,
+/// and three tables.
+fn tables() -> Tables {
+    let mut params = params();
+    params.0.push(("Size", Value::Text("M5".to_owned())));
+    params.0.push(("Shaft", Value::Number(len(5.0))));
+    let screws = MockTable {
+        name: "Screws",
+        columns: vec![
+            ("Size", Unit::TEXT, text_cells(&["M3", "M4", "M5", "M6"])),
+            ("d", Unit::MM, number_cells(&[3.0, 4.0, 5.0, 6.0])),
+            ("dk", Unit::MM, number_cells(&[5.5, 7.0, 8.5, EMPTY])),
+            ("k", Unit::MM, number_cells(&[3.0, 4.0, 5.0, 6.0])),
+            (
+                "Count",
+                Unit::NONE,
+                number_cells(&[10.0, 20.0, EMPTY, 40.0]),
+            ),
+            (
+                "Note",
+                Unit::MM,
+                number_cells(&[EMPTY, EMPTY, EMPTY, EMPTY]),
+            ),
+            // A reserved word as a column's name.
+            ("in", Unit::IN, number_cells(&[0.125, 0.25, 0.25, 0.5])),
+        ],
+    };
+    // Unsorted, with a key twice.
+    let steps = MockTable {
+        name: "Steps",
+        columns: vec![
+            ("d", Unit::MM, number_cells(&[10.0, 4.0, 6.0, 8.0, 4.0])),
+            (
+                "Pitch",
+                Unit::MM,
+                number_cells(&[1.5, 0.7, 1.0, 1.25, 0.75]),
+            ),
+        ],
+    };
+    let inch = MockTable {
+        name: "Inch",
+        columns: vec![
+            ("Size", Unit::TEXT, text_cells(&["1/4", "1/2"])),
+            ("d", Unit::IN, number_cells(&[0.25, 0.5])),
+            ("Angle", Unit::DEG, number_cells(&[30.0, 45.0])),
+        ],
+    };
+    Tables {
+        params,
+        tables: vec![screws, steps, inch],
+    }
+}
+
+/// The value of `expression` with [`tables`].
+fn look(expression: &str) -> Result<Value, EvalError> {
+    parse(expression).eval_value(&tables(), &ctx())
+}
+
+/// The number of `expression` with [`tables`].
+fn look_num(expression: &str) -> Quantity {
+    parse(expression)
+        .eval(&tables(), &ctx())
+        .unwrap_or_else(|e| panic!("{expression:?}: {e}"))
+}
+
+/// The millimetres of `expression` with [`tables`], a length.
+fn look_mm(expression: &str) -> f64 {
+    let q = look_num(expression);
+    assert_eq!(q.dims, Dims::LENGTH, "{expression:?}");
+    q.value
+}
+
+/// The unitless number of `expression` with [`tables`].
+fn look_n(expression: &str) -> f64 {
+    let q = look_num(expression);
+    assert_eq!(q.dims, Dims::NONE, "{expression:?}");
+    q.value
+}
+
+/// The error of `expression` with [`tables`], as a value.
+fn look_err(expression: &str) -> EvalError {
+    look(expression).expect_err(expression)
+}
+
+#[test]
+fn column_references_parse_and_print() {
+    let e = parse("XLOOKUP(Size;Screws.Size;Screws.dk; 1 mm)");
+    assert_eq!(e.to_string(), "xlookup(Size; Screws.Size; Screws.dk; 1 mm)");
+    assert_eq!(parse(&e.to_string()), e);
+    let NodeKind::Call { args, .. } = &e.root().kind else {
+        panic!("{e}");
+    };
+    let column = NodeKind::Column {
+        table: "Screws".to_owned(),
+        column: "Size".to_owned(),
+    };
+    assert_eq!(args[1].kind, column);
+    // Parameters and columns apart, each once.
+    let e = parse("INDEX(Screws.k; MATCH(Size; Screws.Size)) + MAX(Screws.k; d1)");
+    assert_eq!(e.references(), ["Size", "d1"]);
+    assert_eq!(e.table_references(), [("Screws", "k"), ("Screws", "Size")]);
+    let text = "INDEX(Screws.k; 1)";
+    let parsed = parse(text);
+    let spans = parsed.column_reference_spans();
+    assert_eq!(spans.len(), 1);
+    let (table, column, span) = spans[0];
+    assert_eq!((table, column), ("Screws", "k"));
+    assert_eq!(&text[span.start..span.end], "Screws.k");
+    // A lookup is not a constant, though it names no parameter.
+    let e = parse("XLOOKUP('M5'; Screws.Size; Screws.dk)");
+    assert!(e.references().is_empty());
+    assert!(!e.is_constant());
+    // A column may have a reserved word as its name.
+    let e = parse("max(Screws.in)");
+    assert_eq!(e.table_references(), [("Screws", "in")]);
+    // Function names in any case.
+    assert_eq!(parse("Index(Screws.dk; 1)"), parse("index(Screws.dk; 1)"));
+}
+
+#[test]
+fn exact_lookups() {
+    // The examples of the design note.
+    assert_eq!(look_mm("XLOOKUP(Size; Screws.Size; Screws.dk)"), 8.5);
+    assert_eq!(look_mm("INDEX(Screws.k; MATCH(Size; Screws.Size))"), 5.0);
+    assert_eq!(look_n("MATCH('M4'; Screws.Size)"), 2.0);
+    assert_eq!(look_n("MATCH('M4'; Screws.Size; 0)"), 2.0);
+    assert_eq!(look_mm("XLOOKUP('M3'; Screws.Size; Screws.dk; 0; 0)"), 5.5);
+    assert_eq!(look_mm("INDEX(Screws.dk; 2)"), 7.0);
+    // Number keys: a unitless key is read in the default unit.
+    assert_eq!(look_mm("XLOOKUP(4; Screws.d; Screws.k)"), 4.0);
+    assert_eq!(look_mm("XLOOKUP(4 mm; Screws.d; Screws.k)"), 4.0);
+    assert_eq!(look_mm("XLOOKUP(0.4 cm; Screws.d; Screws.k)"), 4.0);
+    assert_eq!(look_n("MATCH(Shaft; Screws.d)"), 3.0);
+    // Equal as `==` compares, within its tolerance.
+    assert_eq!(look_mm("XLOOKUP(4 + 1e-12; Screws.d; Screws.k)"), 4.0);
+    // The first matching row wins.
+    assert_eq!(look_n("MATCH(4; Steps.d)"), 2.0);
+    assert_eq!(look_mm("XLOOKUP(4; Steps.d; Steps.Pitch)"), 0.7);
+    // Texts are compared with their case.
+    let e = look_err("MATCH('m5'; Screws.Size)");
+    assert!(matches!(e, EvalError::NotFound { .. }), "{e}");
+    // Inside other formulas, and through `let`.
+    let text = "LET(s; 'M4'; XLOOKUP(s; Screws.Size; Screws.d) * 2)";
+    assert_eq!(look_mm(text), 8.0);
+    let text = "XLOOKUP(5; Screws.d; Screws.Size) & '!'";
+    assert_eq!(look(text), Ok(Value::Text("M5!".to_owned())));
+    let text = "IF(XLOOKUP(Size; Screws.Size; Screws.d) > 4; 1; 2)";
+    assert_eq!(look_n(text), 1.0);
+}
+
+#[test]
+fn approximate_lookups() {
+    // Steps.d is 10, 4, 6, 8, 4 (unsorted); Pitch 1.5, 0.7, 1, 1.25, 0.75.
+    // xlookup -1: exact, else the next smaller.
+    for (key, pitch) in [
+        ("5", 0.7),
+        ("Shaft", 0.7),
+        ("9", 1.25),
+        ("8", 1.25),
+        ("99", 1.5),
+    ] {
+        let text = format!("XLOOKUP({key}; Steps.d; Steps.Pitch; 0; -1)");
+        assert_eq!(look_mm(&text), pitch, "{text}");
+    }
+    // xlookup 1: exact, else the next larger.
+    for (key, pitch) in [("5", 1.0), ("1", 0.7), ("6", 1.0), ("9", 1.5)] {
+        let text = format!("XLOOKUP({key}; Steps.d; Steps.Pitch; 0; 1)");
+        assert_eq!(look_mm(&text), pitch, "{text}");
+    }
+    // match: 1 is the next smaller, -1 the next larger.
+    assert_eq!(look_n("MATCH(5; Steps.d; 1)"), 2.0);
+    assert_eq!(look_n("MATCH(5; Steps.d; -1)"), 3.0);
+    assert_eq!(look_n("MATCH(9; Steps.d; 1)"), 4.0);
+    assert_eq!(look_n("MATCH(9; Steps.d; -1)"), 1.0);
+    assert_eq!(look_n("MATCH(6; Steps.d; -1)"), 3.0);
+    // Nothing above or below the key.
+    let e = look_err("MATCH(20; Steps.d; -1)");
+    assert!(matches!(e, EvalError::NotFound { .. }), "{e}");
+    assert_eq!(
+        e.to_string(),
+        "no row of Steps.d is 20 mm or more at byte 0"
+    );
+    let e = look_err("MATCH(1; Steps.d; 1)");
+    assert_eq!(e.to_string(), "no row of Steps.d is 1 mm or less at byte 0");
+    // Exact by default.
+    let e = look_err("MATCH(5; Steps.d)");
+    assert_eq!(e.to_string(), "no row of Steps.d is 5 mm at byte 0");
+    // The approximate modes need a number key.
+    for text in [
+        "MATCH('M5'; Screws.Size; 1)",
+        "XLOOKUP('M5'; Screws.Size; Screws.d; 0; -1)",
+    ] {
+        let e = look_err(text);
+        assert!(matches!(e, EvalError::ApproximateText { .. }), "{text}");
+    }
+}
+
+#[test]
+fn units_through_a_lookup() {
+    let tables = tables();
+    let as_unit = |text: &str, unit: Unit| parse(text).eval_as(&tables, &ctx(), unit);
+    // An `in` column into an `mm` parameter.
+    let q = as_unit("XLOOKUP('1/4'; Inch.Size; Inch.d)", Unit::MM).unwrap();
+    assert_eq!(q.dims, Dims::LENGTH);
+    assert_close(q.value, 6.35);
+    assert_close(look_mm("INDEX(Screws.in; 4)"), 12.7);
+    // A key in millimetres in an inch column; a unitless one in the
+    // default unit.
+    assert_eq!(look_n("MATCH(12.7 mm; Inch.d)"), 2.0);
+    assert_eq!(look_n("MATCH(12.7; Inch.d)"), 2.0);
+    // An angle column.
+    let q = as_unit("XLOOKUP('1/2'; Inch.Size; Inch.Angle)", Unit::DEG).unwrap();
+    assert_close(q.value, Unit::DEG.to_canonical(45.0));
+    // A unitless column gives a number, promoted in a length parameter.
+    let text = "XLOOKUP('M4'; Screws.Size; Screws.Count)";
+    assert_eq!(look_n(text), 20.0);
+    assert_eq!(as_unit(text, Unit::MM), Ok(len(20.0)));
+    assert_eq!(as_unit(text, Unit::NONE), Ok(Quantity::unitless(20.0)));
+    // A length column in a unitless parameter is refused.
+    let text = "XLOOKUP('M4'; Screws.Size; Screws.d)";
+    assert!(as_unit(text, Unit::NONE).is_err());
+    // A text column gives a text; a text in a number parameter is refused.
+    let text = "XLOOKUP(5 mm; Screws.d; Screws.Size)";
+    assert_eq!(parse(text).eval_text(&tables, &ctx()), Ok("M5".to_owned()));
+    let e = as_unit(text, Unit::MM).unwrap_err();
+    assert!(matches!(e, EvalError::NotNumber { .. }), "{e}");
+    let text = "XLOOKUP('M5'; Screws.Size; Screws.d)";
+    let e = parse(text).eval_text(&tables, &ctx()).unwrap_err();
+    assert!(matches!(e, EvalError::NotText { .. }), "{e}");
+    // A unitless key or column next to the other's dimension, as rule 3.
+    assert_eq!(look_n("MATCH(Shaft; Screws.d)"), 3.0);
+    assert_eq!(look_n("MATCH(20 mm; Screws.Count)"), 2.0);
+}
+
+#[test]
+fn keys_not_found() {
+    let e = look_err("XLOOKUP('M7'; Screws.Size; Screws.dk)");
+    assert!(matches!(e, EvalError::NotFound { .. }), "{e}");
+    assert_eq!(e.to_string(), "no row of Screws.Size is 'M7' at byte 0");
+    let e = look_err("MATCH(7; Screws.d)");
+    assert_eq!(e.to_string(), "no row of Screws.d is 7 mm at byte 0");
+    // `if_not_found` instead, in the results' dimension.
+    assert_eq!(look_mm("XLOOKUP('M7'; Screws.Size; Screws.dk; 1 mm)"), 1.0);
+    assert_eq!(look_mm("XLOOKUP('M7'; Screws.Size; Screws.dk; 2)"), 2.0);
+    let text = "XLOOKUP(7; Screws.d; Screws.Size; 'none')";
+    assert_eq!(look(text), Ok(Value::Text("none".to_owned())));
+    // Evaluated anyway: a value error in it counts only when it is used,
+    let text = "XLOOKUP('M5'; Screws.Size; Screws.dk; 1 / 0)";
+    assert_eq!(look_mm(text), 8.5);
+    let e = look_err("XLOOKUP('M7'; Screws.Size; Screws.dk; 1 / 0)");
+    assert!(matches!(e, EvalError::DivisionByZero { .. }), "{e}");
+    // and its kind and dimension must agree with the results'.
+    for text in [
+        "XLOOKUP('M5'; Screws.Size; Screws.dk; 30 deg)",
+        "XLOOKUP('M5'; Screws.Size; Screws.dk; 'none')",
+        "XLOOKUP('M5'; Screws.Size; Screws.dk; Nothing)",
+    ] {
+        let e = look_err(text);
+        assert!(
+            matches!(
+                e,
+                EvalError::DimensionMismatch { .. }
+                    | EvalError::MixedValues { .. }
+                    | EvalError::UnknownReference { .. }
+            ),
+            "{text}: {e}"
+        );
+    }
+    // A unitless result next to a fallback with a unit is promoted, as
+    // with `if`.
+    let text = "XLOOKUP('M4'; Screws.Size; Screws.Count; 1 mm)";
+    assert_eq!(look_mm(text), 20.0);
+    // IFERROR catches it.
+    let text = "IFERROR(XLOOKUP('M7'; Screws.Size; Screws.dk); 3 mm)";
+    assert_eq!(look_mm(text), 3.0);
+    assert_eq!(look_n("IFERROR(MATCH('M7'; Screws.Size); 0)"), 0.0);
+    let text = "IFERROR(XLOOKUP('M5'; Screws.Size; Screws.dk); 3 mm)";
+    assert_eq!(look_mm(text), 8.5);
+    // As does an `if` branch not taken.
+    let text = "IF(1; 2 mm; XLOOKUP('M7'; Screws.Size; Screws.dk))";
+    assert_eq!(look_mm(text), 2.0);
+}
+
+#[test]
+fn empty_cells_and_rows_out_of_range() {
+    // Screws.dk is empty in row 4, labelled M6.
+    let e = look_err("XLOOKUP('M6'; Screws.Size; Screws.dk)");
+    assert!(matches!(e, EvalError::EmptyCell { row: 4, .. }), "{e}");
+    assert_eq!(e.to_string(), "Screws.dk is empty in row 4 (M6) at byte 27");
+    for text in [
+        "XLOOKUP('M6'; Screws.Size; Screws.dk; 1 mm)",
+        "INDEX(Screws.dk; 4)",
+    ] {
+        let e = look_err(text);
+        assert!(matches!(e, EvalError::EmptyCell { .. }), "{text}: {e}");
+    }
+    assert_eq!(look_mm("IFERROR(INDEX(Screws.dk; 4); 9 mm)"), 9.0);
+    // Empty key cells are skipped.
+    assert_eq!(look_n("MATCH(40; Screws.Count)"), 4.0);
+    assert_eq!(look_n("MATCH(30; Screws.Count; 1)"), 2.0);
+    let e = look_err("MATCH(0; Screws.Note; -1)");
+    assert!(matches!(e, EvalError::NotFound { .. }), "{e}");
+    // INDEX takes the whole part of its row, which must be in the column.
+    assert_eq!(look_mm("INDEX(Screws.dk; 2.9)"), 7.0);
+    for (text, expected) in [
+        ("INDEX(Screws.dk; 5)", 5.0),
+        ("INDEX(Screws.dk; 0)", 0.0),
+        ("INDEX(Screws.dk; -1)", -1.0),
+        ("INDEX(Screws.dk; 0.5)", 0.0),
+    ] {
+        let e = look_err(text);
+        let EvalError::RowOutOfRange { row, rows, .. } = &e else {
+            panic!("{text}: {e}");
+        };
+        assert_eq!((*row, *rows), (expected, 4), "{text}");
+    }
+    assert_eq!(
+        look_err("INDEX(Screws.dk; 5)").to_string(),
+        "row 5 is outside the rows of Screws.dk (1 to 4) at byte 17"
+    );
+    assert_eq!(look_n("IFERROR(INDEX(Screws.dk; 9); 0)"), 0.0);
+    let e = look_err("INDEX(Screws.dk; 1 mm)");
+    assert!(matches!(e, EvalError::NotDimensionless { .. }), "{e}");
+}
+
+#[test]
+fn lookup_type_errors() {
+    // A text key in a number column, a number key in a text column.
+    let e = look_err("XLOOKUP('M5'; Screws.d; Screws.dk)");
+    assert_eq!(
+        e,
+        EvalError::NotNumber {
+            span: Span::new(8, 12)
+        }
+    );
+    let e = look_err("XLOOKUP(5; Screws.Size; Screws.dk)");
+    assert!(matches!(e, EvalError::NotText { .. }), "{e}");
+    let e = look_err("MATCH(Size; Screws.d)");
+    assert!(matches!(e, EvalError::NotNumber { .. }), "{e}");
+    // A number key of another dimension.
+    for text in [
+        "XLOOKUP(30 deg; Screws.d; Screws.dk)",
+        "MATCH(30 deg; Inch.d)",
+    ] {
+        let e = look_err(text);
+        assert!(matches!(e, EvalError::DimensionMismatch { .. }), "{text}");
+    }
+    // Type errors are not caught by IFERROR.
+    for text in [
+        "IFERROR(XLOOKUP(5; Screws.Size; Screws.dk); 0)",
+        "IFERROR(MATCH('M5'; Screws.d); 0)",
+        "IFERROR(XLOOKUP(30 deg; Screws.d; Screws.dk); 0)",
+    ] {
+        let e = look_err(text);
+        assert!(
+            matches!(
+                e,
+                EvalError::NotText { .. }
+                    | EvalError::NotNumber { .. }
+                    | EvalError::DimensionMismatch { .. }
+            ),
+            "{text}: {e}"
+        );
+    }
+    // Keys and results of one table.
+    let e = look_err("XLOOKUP('M5'; Screws.Size; Inch.d)");
+    assert!(matches!(e, EvalError::DifferentTables { .. }), "{e}");
+    // Unknown tables and columns, at their names.
+    let text = "XLOOKUP('M5'; Bolts.Size; Bolts.dk)";
+    let e = look_err(text);
+    assert!(matches!(e, EvalError::UnknownTable { .. }), "{e}");
+    assert_eq!(e.to_string(), "unknown table 'Bolts' at byte 14");
+    let span = e.span().unwrap();
+    assert_eq!(&text[span.start..span.end], "Bolts");
+    let text = "XLOOKUP('M5'; Screws.Size; Screws.dx)";
+    let e = look_err(text);
+    assert!(matches!(e, EvalError::UnknownColumn { .. }), "{e}");
+    assert_eq!(
+        e.to_string(),
+        "table 'Screws' has no column 'dx' at byte 34"
+    );
+    let span = e.span().unwrap();
+    assert_eq!(&text[span.start..span.end], "dx");
+    // A lookup without tables (the trait's default) knows none.
+    let e = try_eval("INDEX(Screws.dk; 1)", &[]).unwrap_err();
+    assert!(matches!(e, EvalError::UnknownTable { .. }), "{e}");
+    let closure = |_: &str| -> Option<Quantity> { None };
+    let e = parse("MAX(Screws.dk)").eval(&closure, &ctx()).unwrap_err();
+    assert!(matches!(e, EvalError::UnknownTable { .. }), "{e}");
+}
+
+#[test]
+fn aggregates_take_columns() {
+    // Their non-empty cells.
+    assert_eq!(look_mm("MAX(Screws.dk)"), 8.5);
+    assert_eq!(look_mm("MIN(Screws.dk)"), 5.5);
+    assert_eq!(look_n("SUM(Screws.Count)"), 70.0);
+    assert_eq!(look_mm("AVERAGE(Screws.d)"), 4.5);
+    assert_eq!(look_mm("MEDIAN(Steps.d)"), 6.0);
+    assert_close(look_mm("MAX(Screws.in)"), 12.7);
+    // Beside values, unitless ones promoted.
+    assert_eq!(look_mm("MIN(Screws.d; 2)"), 2.0);
+    assert_eq!(look_mm("MAX(Screws.d; Steps.d)"), 10.0);
+    assert_eq!(look_mm("SUM(Screws.d; 1 cm)"), 28.0);
+    // Columns of only empty cells.
+    assert_eq!(look_mm("SUM(Screws.Note)"), 0.0);
+    let e = look_err("MAX(Screws.Note)");
+    assert!(matches!(e, EvalError::NoValues { .. }), "{e}");
+    assert_eq!(look_n("IFERROR(AVERAGE(Screws.Note); 1)"), 1.0);
+    assert_eq!(look_n("MAX(Screws.Note; 3)"), 3.0);
+    // Text columns and other dimensions are refused.
+    let e = look_err("MAX(Screws.Size)");
+    assert!(matches!(e, EvalError::NotNumber { .. }), "{e}");
+    let e = look_err("SUM(Screws.d; 30 deg)");
+    assert!(matches!(e, EvalError::DimensionMismatch { .. }), "{e}");
+    // Without columns, as before: min and max still need two values.
+    let e = parse_err("max(5)").kind;
+    assert!(matches!(e, ParseErrorKind::WrongArgumentCount { .. }));
+    assert_eq!(num("max(1; 5)"), 5.0);
+}
+
+#[test]
+fn columns_outside_lookups_are_refused() {
+    for (text, column, at) in [
+        ("Screws.dk", "Screws.dk", Span::new(0, 9)),
+        ("Screws.dk + 1 mm", "Screws.dk", Span::new(0, 9)),
+        ("-Screws.dk", "Screws.dk", Span::new(1, 10)),
+        ("(Screws.dk)", "Screws.dk", Span::new(1, 10)),
+        ("IF(1; Screws.dk; 0)", "Screws.dk", Span::new(6, 15)),
+        (
+            "XLOOKUP(Screws.d; Screws.d; Screws.dk)",
+            "Screws.d",
+            Span::new(8, 16),
+        ),
+        (
+            "MATCH(1; Screws.d; Screws.k)",
+            "Screws.k",
+            Span::new(19, 27),
+        ),
+        ("INDEX(Screws.dk; Screws.k)", "Screws.k", Span::new(17, 25)),
+        ("PRODUCT(Screws.d)", "Screws.d", Span::new(8, 16)),
+        ("SUM(Screws.d mm)", "Screws.d", Span::new(4, 12)),
+        ("SUM(Screws.d * 2)", "Screws.d", Span::new(4, 12)),
+        ("LET(c; Screws.d; SUM(c))", "Screws.d", Span::new(7, 15)),
+    ] {
+        let e = parse_err(text);
+        let kind = ParseErrorKind::ColumnOutsideLookup(column.to_owned());
+        assert_eq!((e.kind, e.span), (kind, at), "{text}");
+    }
+    assert_eq!(
+        parse_err("Screws.dk * 2").to_string(),
+        "Screws.dk is a column: look a value up with XLOOKUP or INDEX at byte 0"
+    );
+    // A value where a column must be.
+    for (text, function, argument) in [
+        ("INDEX(2; 1)", "index", 1),
+        ("XLOOKUP('M5'; 'M5'; Screws.dk)", "xlookup", 2),
+        ("XLOOKUP('M5'; Screws.Size; d1)", "xlookup", 3),
+        ("MATCH('M5'; Size)", "match", 2),
+    ] {
+        let kind = ParseErrorKind::ColumnExpected { function, argument };
+        assert_eq!(parse_err(text).kind, kind, "{text}");
+    }
+    assert_eq!(
+        parse_err("INDEX(2; 1)").to_string(),
+        "argument 1 of 'index' must be a column such as Table.Column at byte 6"
+    );
+    // The dot only between names, with no spaces.
+    for text in ["Screws .dk", "Screws. dk", "Screws.", ".dk"] {
+        let e = parse_err(text);
+        assert_eq!(e.kind, ParseErrorKind::UnexpectedChar('.'), "{text}");
+    }
+    let e = parse_err("Screws.dk.x");
+    assert!(matches!(e.kind, ParseErrorKind::Unexpected { .. }), "{e}");
+    // A tree built by hand is refused when evaluated.
+    let column = Node::new(
+        NodeKind::Column {
+            table: "Screws".to_owned(),
+            column: "dk".to_owned(),
+        },
+        Span::new(0, 9),
+    );
+    let e = Expr::from_node(column.clone())
+        .eval_value(&tables(), &ctx())
+        .unwrap_err();
+    assert!(matches!(e, EvalError::ColumnOutsideLookup { .. }), "{e}");
+    let one = Node::new(NodeKind::Number(1.0), Span::default());
+    let index = Node::new(
+        NodeKind::Call {
+            function: Function::Index,
+            args: vec![one, column],
+        },
+        Span::default(),
+    );
+    let e = Expr::from_node(index).eval(&tables(), &ctx()).unwrap_err();
+    assert!(matches!(e, EvalError::NotColumn { .. }), "{e}");
+}
+
+#[test]
+fn unsupported_and_invalid_modes() {
+    // Wildcard matching and the search order are refused.
+    let e = look_err("XLOOKUP('M5'; Screws.Size; Screws.dk; 0; 2)");
+    assert!(matches!(e, EvalError::LookupUnsupported { .. }), "{e}");
+    assert_eq!(
+        e.to_string(),
+        "wildcard matching (mode 2) is not supported at byte 41"
+    );
+    let e = look_err("XLOOKUP('M5'; Screws.Size; Screws.dk; 0; 0; 1)");
+    assert!(matches!(e, EvalError::LookupUnsupported { .. }), "{e}");
+    let e = parse_err("XLOOKUP('M5'; Screws.Size; Screws.dk; 0; 0; 1; 1)").kind;
+    assert!(matches!(e, ParseErrorKind::WrongArgumentCount { .. }));
+    // Not value errors: IFERROR does not catch them.
+    let e = look_err("IFERROR(XLOOKUP('M5'; Screws.Size; Screws.dk; 0; 2); 0)");
+    assert!(matches!(e, EvalError::LookupUnsupported { .. }), "{e}");
+    // Other modes.
+    for (text, expected) in [
+        ("XLOOKUP('M5'; Screws.Size; Screws.dk; 0; 3)", 3.0),
+        ("XLOOKUP(5; Screws.d; Screws.dk; 0; 0.5)", 0.5),
+        ("MATCH('M5'; Screws.Size; 2)", 2.0),
+        ("MATCH(5; Screws.d; -2)", -2.0),
+    ] {
+        let e = look_err(text);
+        let EvalError::InvalidMode { mode, .. } = &e else {
+            panic!("{text}: {e}");
+        };
+        assert_eq!(*mode, expected, "{text}");
+    }
+    let e = look_err("MATCH(5; Screws.d; 1 mm)");
+    assert!(matches!(e, EvalError::NotDimensionless { .. }), "{e}");
+    let e = parse_err("MATCH('M5')").kind;
+    assert!(matches!(e, ParseErrorKind::WrongArgumentCount { .. }));
+}
+
+#[test]
+fn lookup_function_names_stay_parameter_names() {
+    // As the text functions' (rule 29): functions only before `(`.
+    for name in ["Index", "index", "Match", "MATCH", "XLookup", "xlookup"] {
+        assert!(is_valid_name(name), "{name}");
+        assert!(!is_newly_reserved(name), "{name}");
+    }
+    let vars = [("Index", len(3.0)), ("match", len(1.0))];
+    assert_eq!(try_eval("Index * 2 + match", &vars), Ok(len(7.0)));
+    // The names of a column reference are not renamed as parameters.
+    let renamed = HashMap::from([("Max".to_owned(), "Max_1".to_owned())]);
+    assert_eq!(
+        rename_names("Max + max(T.Max) + Max.x", &renamed),
+        "Max_1 + max(T.Max) + Max.x"
+    );
+    // Help for the functions, with examples that parse.
+    for function in [Function::XLookup, Function::Match, Function::Index] {
+        let help = assistance::function_help(function);
+        assert!(Expr::parse(help.example).is_ok(), "{}", help.name);
+    }
+    let text = "XLOOKUP(Size; Screws.Size; ";
+    assert_eq!(
+        assistance::signature_at(text, text.len()),
+        Some((Function::XLookup, 2))
+    );
+}
+
+#[test]
+fn expressions_without_columns_read_as_before() {
+    // A dot that is no column reference reads as it did; numbers keep
+    // their points.
+    assert_eq!(num("1.5 + .5 + 2."), 4.0);
+    assert!(Expr::parse("d1.5").is_err());
+    assert!(Expr::parse("d1 .5").is_err());
+    assert_eq!(num("max(1,5; 2)"), 2.0);
+    for text in [
+        "sum(1; 2)",
+        "min(1 mm; 2)",
+        "median(1; 2; 3)",
+        "average(2; 4)",
+    ] {
+        let e = parse(text);
+        assert_eq!(parse(&e.to_string()), e, "{text}");
+        assert!(e.table_references().is_empty(), "{text}");
+    }
+}

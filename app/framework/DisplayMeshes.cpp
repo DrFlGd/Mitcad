@@ -165,8 +165,11 @@ DisplayMeshing meshForDisplay(const DisplayShapes& shapes, ModelJob& job, Displa
       // Meshed to the end: a face still without a triangulation is one
       // OCCT's mesher fails on. The view draws the others and does not
       // mesh the body again on the UI thread, where meshing such a face
-      // again could hold the window without end (mitcad#589).
-      if (!job.control().is_cancelled() && meshing.bodies == pending.size()) {
+      // again could hold the window without end (mitcad#589). So too when
+      // a cancel abandoned a face that did not end (mitcad#846): the view
+      // draws the faces meshed by then, and never meshes that face itself.
+      const bool abandoned = meshing.report.abandoned > 0;
+      if ((!job.control().is_cancelled() && meshing.bodies == pending.size()) || abandoned) {
         for (std::size_t i = 0; i < pending.size(); ++i) {
           meshed[i]->set_display_meshed();
           if (!io::has_triangulation(pending[i])) {
@@ -232,7 +235,13 @@ void logDisplayMeshing(const DisplayMeshing& meshing, const QString& label) {
                               .arg(meshing.tier == DisplayTier::Interactive ? QStringLiteral(" (interactive)")
                                                                             : QString());
   }
-  if (meshing.incomplete > 0) {
+  if (meshing.report.abandoned > 0) {
+    qWarning().noquote() << QStringLiteral("Display meshes of %1: cancelled, %2 faces that did not end abandoned; "
+                                           "%3 bodies drawn without the faces not meshed by then")
+                                .arg(label)
+                                .arg(static_cast<qulonglong>(meshing.report.abandoned))
+                                .arg(static_cast<qulonglong>(meshing.incomplete));
+  } else if (meshing.incomplete > 0) {
     qWarning().noquote() << QStringLiteral("Display meshes of %1: %2 bodies with faces that could not be meshed "
                                            "(not drawn)")
                                 .arg(label)

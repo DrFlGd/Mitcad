@@ -114,127 +114,6 @@ bool fetchAndReport(QWidget* parent, const QStringList& urls, const std::functio
 } // namespace
 
 // ---------------------------------------------------------------------------
-// SizeChooser
-
-SizeChooser::SizeChooser(QWidget* parent) : QWidget(parent) {
-  m_form = new QFormLayout(this);
-  m_form->setContentsMargins(0, 0, 0, 0);
-}
-
-void SizeChooser::setTable(const QJsonObject& configurations, const QString& row) {
-  m_filling = true;
-  while (m_form->rowCount() > 0) {
-    m_form->removeRow(0);
-  }
-  m_combos.clear();
-  m_selectors.clear();
-  m_rows = configurations.value(QStringLiteral("rows")).toArray();
-  m_row.clear();
-  for (const QJsonValue& selector : configurations.value(QStringLiteral("selectors")).toArray()) {
-    m_selectors << selector.toString();
-  }
-  if (m_rows.isEmpty()) {
-    m_filling = false;
-    emit rowChanged(m_row);
-    return;
-  }
-  const QString first = row.isEmpty() ? str(configurations, "default") : row;
-  QJsonObject start = m_rows.first().toObject();
-  for (const QJsonValue& value : m_rows) {
-    if (str(value.toObject(), "name") == first) {
-      start = value.toObject();
-    }
-  }
-  if (m_selectors.isEmpty()) {
-    // Rows chosen by their names.
-    auto* combo = new QComboBox;
-    combo->setObjectName(QStringLiteral("librarySize0"));
-    for (const QJsonValue& value : m_rows) {
-      combo->addItem(str(value.toObject(), "name"));
-    }
-    combo->setCurrentText(str(start, "name"));
-    m_form->addRow(tr("Size:"), combo);
-    m_combos << combo;
-    connect(combo, &QComboBox::currentIndexChanged, this, [this] { choose(); });
-  } else {
-    for (int i = 0; i < m_selectors.size(); ++i) {
-      auto* combo = new QComboBox;
-      combo->setObjectName(QStringLiteral("librarySize%1").arg(i));
-      m_form->addRow(m_selectors[i] + QLatin1Char(':'), combo);
-      m_combos << combo;
-      connect(combo, &QComboBox::currentIndexChanged, this, [this, i] {
-        if (!m_filling) {
-          fill(i + 1);
-          choose();
-        }
-      });
-    }
-    // The values of the first selector, then the start row's.
-    const QJsonObject select = start.value(QStringLiteral("select")).toObject();
-    for (int i = 0; i < m_combos.size(); ++i) {
-      fill(i);
-      m_combos[i]->setCurrentText(str(select, m_selectors[i].toUtf8().constData()));
-    }
-  }
-  m_filling = false;
-  choose();
-}
-
-void SizeChooser::fill(int from) {
-  const bool filling = m_filling;
-  m_filling = true;
-  for (int i = from; i < m_combos.size() && i < m_selectors.size(); ++i) {
-    QStringList values;
-    for (const QJsonValue& value : m_rows) {
-      const QJsonObject select = value.toObject().value(QStringLiteral("select")).toObject();
-      bool matches = true;
-      for (int j = 0; j < i; ++j) {
-        matches = matches && select.value(m_selectors[j]).toString() == m_combos[j]->currentText();
-      }
-      const QString v = select.value(m_selectors[i]).toString();
-      if (matches && !values.contains(v)) {
-        values << v;
-      }
-    }
-    const QString keep = m_combos[i]->currentText();
-    m_combos[i]->clear();
-    m_combos[i]->addItems(values);
-    if (values.contains(keep)) {
-      m_combos[i]->setCurrentText(keep);
-    }
-  }
-  m_filling = filling;
-}
-
-void SizeChooser::choose() {
-  if (m_filling) {
-    return;
-  }
-  QString found;
-  if (m_selectors.isEmpty()) {
-    found = m_combos.isEmpty() ? QString() : m_combos.first()->currentText();
-  } else {
-    for (const QJsonValue& value : m_rows) {
-      const QJsonObject row = value.toObject();
-      const QJsonObject select = row.value(QStringLiteral("select")).toObject();
-      bool matches = true;
-      for (int i = 0; i < m_selectors.size() && i < m_combos.size(); ++i) {
-        matches = matches && select.value(m_selectors[i]).toString() == m_combos[i]->currentText();
-      }
-      if (matches) {
-        found = str(row, "name");
-        break;
-      }
-    }
-  }
-  if (found != m_row) {
-    m_row = found;
-    qInfo().noquote() << QStringLiteral("Library size %1").arg(m_row);
-    emit rowChanged(m_row);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // LibrariesDialog
 
 LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
@@ -560,6 +439,8 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
       qInfo().noquote() << QStringLiteral("Library browser size %1").arg(row);
     }
   });
+  // An option chosen may make other fields (mitcad#810): the tab order again.
+  connect(m_size, &SizeChooser::optionsChanged, this, &LibraryBrowser::orderFields);
   // A background fetch at start-up that brought something new while the
   // browser is open (mitcad#576): listed, the selection kept.
   connect(&LibraryAutoUpdate::instance(), &LibraryAutoUpdate::updated, this, [this] {
@@ -775,19 +656,32 @@ void LibraryBrowser::showVersion() {
   details << QStringLiteral("<p>%1</p>").arg(licence);
   details << tr("<p><b>Attribution:</b> %1</p>").arg(escaped(attribution));
   m_details->setText(details.join(QString()));
+  // An open table's options, filtered by the rules (mitcad#810): asked of
+  // the library's component at the version shown.
+  m_size->setOptionsQuery(libraryOptionsQuery(libraryCommand, str(item, "url"), str(item, "library"), rev,
+                                              str(item, "id")));
   m_size->setTable(component.value(QStringLiteral("configurations")).toObject());
   m_insert->setEnabled(true);
-  // Tab order: results, version, sizes, linked or copy, the buttons.
-  QWidget* previous = m_version;
-  for (QComboBox* combo : m_size->combos()) {
-    setTabOrder(previous, combo);
-    previous = combo;
-  }
-  setTabOrder(previous, m_link);
+  orderFields();
   qInfo().noquote() << QStringLiteral("Library browser selected %1/%2: version %3, size %4, licence %5")
                            .arg(str(item, "library"), str(item, "id"), m_version->currentText(),
                                 m_size->row().isEmpty() ? QStringLiteral("-") : m_size->row(),
                                 license.isEmpty() ? QStringLiteral("none") : license);
+  if (m_size->isOpen()) {
+    qInfo().noquote() << QStringLiteral("Library browser options of %1/%2: %3")
+                             .arg(str(item, "library"), str(item, "id"), m_size->summary());
+  }
+}
+
+void LibraryBrowser::orderFields() {
+  // Tab order: results, version, sizes or options, linked or copy, the
+  // buttons.
+  QWidget* previous = m_version;
+  for (QWidget* field : m_size->fields()) {
+    setTabOrder(previous, field);
+    previous = field;
+  }
+  setTabOrder(previous, m_link);
 }
 
 void LibraryBrowser::getLibrary() {
@@ -877,6 +771,9 @@ void LibraryBrowser::insert() {
   choice.component = str(item, "id");
   choice.name = str(item, "name");
   choice.config = m_size->row();
+  // An open table: the options chosen (mitcad#810), the row their
+  // combination matches as `config`, else none.
+  choice.parameters = m_size->parameters();
   choice.license = item.value(QStringLiteral("license")).toString();
   choice.link = m_link->isChecked();
   // Its mount frames at the version shown (mitcad#525).

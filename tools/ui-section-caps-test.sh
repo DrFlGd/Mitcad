@@ -4,6 +4,7 @@
 # check-all sources: app/MainWindowSection.cpp app/framework/SectionWorker.cpp app/framework/SectionWorker.hpp
 # check-all sources: app/framework/CommandSession.cpp app/framework/DocumentSession.cpp app/commands/InspectCommands.cpp
 # check-all sources: core/cpp/bridge/analysis.cpp core/model-api/src/analysis.rs core/ffi/src/lib.rs geometry/io/src/mesh.cpp
+# check-all sources: core/model/src/document/analyses.rs
 # The caps of Section Analysis through the real UI (mitcad#382), on a design
 # of the root and two components, each with a block:
 #   - Each component's caps take its timeline colour (the band under its
@@ -19,6 +20,9 @@
 #     panel's area and length arrive, measured there too. Cancel while the
 #     round at x = 12 runs: it ends as cancelled, the blocks are whole
 #     again, nothing of it is shown or measured.
+#   - A section turned about an axis (mitcad#823): YZ turned 45 degrees
+#     about Z through a 10 mm cube's middle reads 141.42 mm²; kept, edited
+#     with its Axis and Angle, and saved with them.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-section-caps-test.sh [screenshot.png]
@@ -178,5 +182,53 @@ tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q '"origin":\[12,0,0\]}}: 3 bodies f
 [ "$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -c '^Inspect Section Analysis: area ')" = 0 ] ||
   ui_fail "the cancelled round's section was measured"
 echo "ok   nothing of the cancelled round shown, the app goes on"
+
+# A section turned about an axis (mitcad#823): a 10 mm cube about the Z
+# axis through its middle, YZ turned 45 degrees about Z cuts it along its
+# diagonal, 10 x 10 sqrt(2) = 141.42 mm².
+echo "--- Turned 45 degrees about an axis through the cube's middle"
+ui_stop_app
+cat > "$WORK/cube.json" << EOF
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-5, -5], "width": 10, "height": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}}
+]
+EOF
+CUBE=$WORK/cube.mitcad
+"$CLI" run "$WORK/cube.json" --save "$CUBE" > "$WORK/cli-cube.log" 2>&1 || { cat "$WORK/cli-cube.log"; ui_fail "mitcad-cli (cube)"; }
+ui_start_app --open "$CUBE"
+ui_step "fit (F6)"                         ui_key F6
+ui_expect_log "Bodies shown: " "the cube shown"
+ui_mark
+ui_step "section analysis (search)"        ui_command "Section Analysis"
+ui_step "pick YZ"                          ui_click_logged "Datum yz"
+ui_expect_new "Section Analysis Faces/Plane: 1 plane [plane yz]" "YZ picked"
+ui_expect_new "Inspect Section Analysis: area 100, length 40" "the cube cut square across at x = 0" 10
+ui_step "the Axis input"                   ui_click_logged "Panel Section Analysis input axis"
+ui_step "pick the Z axis"                  ui_click_logged "Datum z"
+ui_expect_new "Section Analysis Axis: 1 axis [axis z]" "Z the axis"
+ui_expect_new "Manipulator Section Analysis angle at" "a ring about the axis"
+ui_mark
+ui_step "45 degrees"                       ui_type_in "Panel Section Analysis input angle" "45"
+ui_expect_new "Inspect Section Analysis: area 141.42" "the cut along the diagonal: 141.42 mm²" 10
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Kept Section Analysis as Section1" "kept in the document"
+ui_expect_new "Browser Root/Analysis/Section1 at" "listed in the Analysis folder"
+ui_double_click_expect "Browser Root/Analysis/Section1" "Editing analysis Section1 with Section Analysis" \
+  "its panel opens"
+ui_expect_new "Section Analysis Axis: 1 axis [axis z]" "with its axis"
+ui_expect_new "Inspect Section Analysis: area 141.42" "and its angle" 10
+ui_step "close (Escape)"                   ui_key Escape
+ui_expect_new "Command Section Analysis cancelled" "closed unchanged"
+ui_mark
+ui_step "save (Ctrl+S)"                    ui_key ctrl+s
+ui_expect_new "Saved $CUBE" "saved"
+turned=$(python3 -c 'import json, sys
+a = json.load(open(sys.argv[1]))["analyses"][0]
+print(a["plane"], a["axis"], round(a["angle"], 6))' "$CUBE") || ui_fail "no analyses in the file"
+[ "$turned" = "yz z 0.785398" ] || ui_fail "the file's turned section: $turned"
+echo "ok   saved with its axis and angle"
 
 ui_finish "UI section caps test"

@@ -20,9 +20,29 @@
 #   (mitcad#642): about ten times its usual time, so that only a large
 #   regression fails, as the recompute speed tests do.
 #
+# With SLOWER the imports also try an item from its own start, the route
+# tried first, SLOWER times as long (mitcad-cli import-f3d
+# --own-start-time-scale, mitcad#847): an item that gives its state that
+# way hangs on that time (30 s, half of the item's), and a debug build's
+# path pattern that takes 18 s by itself ran past it when the designs
+# started at once beside the rest of the corpus step on a busy machine.
+# The item's other routes keep their times: the items that fall back by
+# design spend each of them in full, and with all of them scaled a sweep
+# that passes over itself took 362 s instead of 95 s.
+#
 # Skipped when none of the designs is found.
 #
-#   cmake -DCLI=<mitcad-cli> -DWORK=<dir> [-DSLOWER=<factor>] -P f3d-designs.cmake
+# With RUNNER (mitcad_run_parallel) each design is checked in a child
+# process of its own, several at once (MITCAD_CORPUS_JOBS, not 1; the
+# longest first by the designs' own times when the test runner gives them,
+# mitcad#832); each child is this script with DESIGN and DESIGN_FILE. A
+# child may commit the larger of MITCAD_CORPUS_MEMORY and 4G (a design's
+# import has taken over 2G) and has no time limit of its own (the designs'
+# limits above and ctest's TIMEOUT hold); each child gets SLOWER, for
+# its time limit and its own-start time.
+#
+#   cmake -DCLI=<mitcad-cli> -DWORK=<dir> [-DSLOWER=<factor>] [-DRUNNER=<mitcad_run_parallel>]
+#         -P f3d-designs.cmake
 
 cmake_minimum_required(VERSION 3.24)
 
@@ -128,7 +148,31 @@ function(hundredths seconds out)
   set(${out} "${digits}" PARENT_SCOPE)
 endfunction()
 
+# A size as MITCAD_CORPUS_MEMORY gives it (bytes, or with K, M or G) in
+# MiB; 0 for none.
+function(size_mib text out)
+  string(TOUPPER "${text}" text)
+  if(text MATCHES "^([0-9]+)([KMG]?)I?B?$")
+    set(value "${CMAKE_MATCH_1}")
+    if(CMAKE_MATCH_2 STREQUAL "G")
+      math(EXPR value "${value} * 1024")
+    elseif(CMAKE_MATCH_2 STREQUAL "K")
+      math(EXPR value "${value} / 1024")
+    elseif(CMAKE_MATCH_2 STREQUAL "")
+      math(EXPR value "${value} / 1048576")
+    endif()
+    set(${out} "${value}" PARENT_SCOPE)
+  else()
+    set(${out} 0 PARENT_SCOPE)
+  endif()
+endfunction()
+
 set(folders "")
+if(DEFINED DESIGN)
+  # A child of the parallel run: the one design, its file found already.
+  set(found_ids "${DESIGN}")
+  set(path_${DESIGN} "${DESIGN_FILE}")
+endif()
 foreach(variable MITCAD_F3D_CORPUS MITCAD_F3D_BACKUP)
   if(DEFINED ENV{${variable}})
     string(REPLACE ";" ":" value "$ENV{${variable}}")
@@ -140,7 +184,7 @@ foreach(variable MITCAD_F3D_CORPUS MITCAD_F3D_BACKUP)
     endforeach()
   endif()
 endforeach()
-if(NOT folders)
+if(NOT folders AND NOT DEFINED DESIGN)
   message("f3d designs: skipped (MITCAD_F3D_CORPUS and MITCAD_F3D_BACKUP name no folder)")
   return()
 endif()
@@ -152,7 +196,11 @@ foreach(design IN LISTS designs)
   list(GET fields 0 id)
   list(APPEND wanted "${id}")
 endforeach()
-set(found_ids "")
+if(DEFINED DESIGN)
+  set(folders "")
+else()
+  set(found_ids "")
+endif()
 foreach(folder IN LISTS folders)
   file(GLOB_RECURSE files "${folder}/*.f3d")
   list(SORT files)
@@ -177,6 +225,49 @@ if(NOT found_ids)
 endif()
 
 file(MAKE_DIRECTORY "${WORK}")
+set(jobs "$ENV{MITCAD_CORPUS_JOBS}")
+if(DEFINED RUNNER AND NOT DEFINED DESIGN AND NOT jobs STREQUAL "1")
+  # Each design in a child process of its own; the runner prints their
+  # lines in this order and "FAILED <id>: ..." for a child that failed.
+  set(memory "$ENV{MITCAD_CORPUS_MEMORY}")
+  if(NOT memory STREQUAL "none" AND NOT memory STREQUAL "0")
+    size_mib("${memory}" memory)
+    if(memory LESS 4096)
+      set(memory 4096)
+    endif()
+    set(memory "${memory}M")
+  endif()
+  set(list "${WORK}/designs.txt")
+  file(WRITE "${list}" "")
+  set(not_found "")
+  foreach(design IN LISTS designs)
+    string(REPLACE "|" ";" fields "${design}")
+    list(GET fields 0 id)
+    list(FIND found_ids "${id}" at)
+    if(at EQUAL -1)
+      list(APPEND not_found "${id}")
+      continue()
+    endif()
+    set(slower "")
+    if(DEFINED SLOWER)
+      set(slower "\t-DSLOWER=${SLOWER}")
+    endif()
+    file(APPEND "${list}" "${id}\t${CMAKE_COMMAND}\t-DCLI=${CLI}\t-DWORK=${WORK}${slower}\t-DDESIGN=${id}\t"
+                          "-DDESIGN_FILE=${path_${id}}\t-P\t${CMAKE_CURRENT_LIST_FILE}\n")
+  endforeach()
+  foreach(id IN LISTS not_found)
+    message("f3d designs: ${id} not found, not checked")
+  endforeach()
+  execute_process(COMMAND "${RUNNER}" --memory "${memory}" --file-timeout 0 "${list}"
+                  RESULT_VARIABLE status OUTPUT_VARIABLE out ERROR_VARIABLE out)
+  string(REGEX REPLACE "\n$" "" shown "${out}")
+  message("${shown}")
+  if(NOT status EQUAL 0)
+    message(FATAL_ERROR "f3d designs: a design failed (FAILED lines above), or ${RUNNER} could not run them "
+                        "(exit ${status})")
+  endif()
+  return()
+endif()
 set(problems "")
 foreach(design IN LISTS designs)
   string(REPLACE "|" ";" fields "${design}")
@@ -200,13 +291,19 @@ foreach(design IN LISTS designs)
   string(REPLACE "," ";" inferred "${inferred}")
   list(FIND found_ids "${id}" at)
   if(at EQUAL -1)
-    message("f3d designs: ${id} not found, not checked")
+    if(NOT DEFINED DESIGN)
+      message("f3d designs: ${id} not found, not checked")
+    endif()
     continue()
+  endif()
+  set(own_start "")
+  if(DEFINED SLOWER)
+    set(own_start --own-start-time-scale "${SLOWER}")
   endif()
   string(TIMESTAMP started "%s")
   execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env MITCAD_IMPORT_TRACE=1
-            "${CLI}" import-f3d "${path_${id}}" --report "${WORK}/${id}.json"
+            "${CLI}" import-f3d "${path_${id}}" --report "${WORK}/${id}.json" ${own_start}
     OUTPUT_FILE "${WORK}/${id}.txt" ERROR_FILE "${WORK}/${id}.trace" RESULT_VARIABLE status)
   string(TIMESTAMP ended "%s")
   math(EXPR took "${ended} - ${started}")

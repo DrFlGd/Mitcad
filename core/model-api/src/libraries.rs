@@ -72,6 +72,18 @@ named_enum! {
         "update_library_parts" => UpdateLibraryParts {
             changes: Vec<ChangeInput>,
         },
+        /// Option values chosen, with the cascade of the rules (mitcad#797,
+        /// `configurations.rs`).
+        "configure" => Configure {
+            values: serde_json::Map<String, Value>,
+        },
+        /// One configuration row per key of a table column, setting an
+        /// option to it (mitcad#806).
+        "generate_configuration_rows" => GenerateConfigurationRows {
+            table: String,
+            column: String,
+            option: String,
+        },
     }
 }
 
@@ -112,12 +124,34 @@ impl<K: Kernel> LibrariesCrateOps<K> for Document<K> {
     fn run_library_command(&mut self, command: LibraryCommand) -> Result<Value, ApiError> {
         Ok(match command {
             LibraryCommand::SetConfigurations { configurations } => {
-                self.set_configurations(configurations.unwrap_or_default())?;
-                json!({"rows": self.configurations().rows.len()})
+                let set = self.set_configurations(configurations.unwrap_or_default())?;
+                json!({
+                    "rows": self.configurations().rows.len(),
+                    "options": set.options,
+                    "added": set.added,
+                    "warnings": set.warnings,
+                })
             }
             LibraryCommand::ApplyConfiguration { name } => {
                 let changed = self.apply_configuration(&name)?;
-                json!({"changed": changed})
+                json!({
+                    "changed": changed,
+                    "moves": super::configurations::moves_json(self.configuration_moves()),
+                })
+            }
+            LibraryCommand::Configure { values } => self.configure_command(&values)?,
+            LibraryCommand::GenerateConfigurationRows {
+                table,
+                column,
+                option,
+            } => {
+                let generated = self.generate_configuration_rows(&table, &column, &option)?;
+                json!({
+                    "rows": generated.rows,
+                    "added": generated.added,
+                    "updated": generated.updated,
+                    "moves": super::configurations::moves_json(self.configuration_moves()),
+                })
             }
             LibraryCommand::UpdateLibraryParts { changes } => {
                 // BUILD's library sources (mitcad#375).
@@ -173,14 +207,19 @@ impl<K: Kernel> LibrariesCrateOps<K> for Document<K> {
             .iter()
             .filter_map(|c| {
                 let library = c.library.as_ref()?;
-                Some(json!({
+                let mut part = json!({
                     "component": c.uid,
                     "name": c.name,
                     "linked": c.link.is_some(),
                     "occurrences": a.occurrences_of(c.uid).count(),
                     "library": library,
                     "version": library.version_text(),
-                }))
+                });
+                // Inserted with options (mitcad#801).
+                if let Some(options) = super::component_options::options_json(self, c.uid) {
+                    part["options"] = options;
+                }
+                Some(part)
             })
             .collect();
         let mut parts = parts;
@@ -242,6 +281,10 @@ impl<K: Kernel> LibrariesCrateOps<K> for Document<K> {
                     "part_number": row.part_number,
                     "supplier_url": row.supplier_url,
                 });
+                // A component with options (mitcad#801).
+                if let Some(options) = super::component_options::options_json(self, row.component) {
+                    value["options"] = options;
+                }
                 if !keys.is_empty() {
                     let mut properties = serde_json::Map::new();
                     for key in keys {

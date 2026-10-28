@@ -74,7 +74,7 @@ param(
 Ui-Init $App $Out $QtBin @{
   'sketch.create' = 'F7'; 'inspect.properties' = 'F8'; 'file.export' = 'F9'; 'file.import' = 'F11'
   'file.save_to_project' = 'F12'; 'make.print3d' = 'Shift+F9'; 'file.project_settings' = 'Shift+F11'
-  'solid.helix' = 'Shift+F7' }
+  'solid.helix' = 'Shift+F7' } -StepPause 0
 $work = Join-Path $script:UiOut 'files'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null

@@ -2,7 +2,9 @@
 //! The design decoded from definitions records (`mitcad_ipt::testdesign`)
 //! replayed by the import on the model's mock geometry kernel: the
 //! parameters with their expressions, the sketch with its constraints and
-//! dimensions, and the extrusion, all parametric.
+//! dimensions, and the extrusion, all parametric. (Here and not in
+//! `core/ipt`, whose reader needs neither the model nor the import:
+//! mitcad#831.)
 
 use mitcad_import::{NoGeometry, Options, Outcome, import_design};
 use mitcad_ipt::dc::Definitions;

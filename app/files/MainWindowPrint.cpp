@@ -39,7 +39,9 @@
 #include "../framework/TestSync.hpp"
 #include "../print/ImportDetailsDialog.hpp"
 #include "../print/PrintImportSummary.hpp"
+#include "../print/PrintItemsHost.hpp"
 #include "../print/PrintLibrary.hpp"
+#include "../print/SlicerImport.hpp"
 #include "Print3d.hpp"
 #include "mitcad/geometry/import.hpp"
 
@@ -188,7 +190,8 @@ QVector<QStringList> MainWindow::processOwnSettings() const {
 
 QString MainWindow::newDesignProfile(const QString& kind, const QString& /*current*/) {
   // In this design, made the design's choice in the same undo step
-  // (mitcad#655): the model names it ("New Printer", "New Printer 2", ...);
+  // (mitcad#655): the model names it ("Printer 1", "Printer 2", ...,
+  // mitcad#828);
   // Save to puts it into a library.
   const QJsonObject create{{QStringLiteral("cmd"), QStringLiteral("create_print_profile")},
                            {QStringLiteral("kind"), kind},
@@ -225,52 +228,18 @@ void MainWindow::importPrintSettings(const std::shared_ptr<PrintImport>& target)
     showError(changeBlockedReason());
     return;
   }
-  const QString path = dialogOpenFileName(this, tr("Import from Slicer"),
-                                          dialogStartFolder(DialogGroup::Import, QString()), slicerFileFilter());
+  // The import Printers and Processes and My Library share (mitcad#829):
+  // into the design, whose root chooses the printer and process read in
+  // the import's one undo step. A refusal shows as any model command's.
+  const QString path = chooseSlicerFile(this);
   if (path.isEmpty()) {
     return;
   }
-  rememberDialogFolder(DialogGroup::Import, path);
-  // Into the design, whose root chooses the printer and process read.
-  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("import_print_profile")},
-                      {QStringLiteral("path"), path},
-                      {QStringLiteral("into"), QStringLiteral("design")}};
-  if (!projectFolder().isEmpty()) {
-    command.insert(QStringLiteral("project"), projectFolder());
+  DesignItemsHost host(*this);
+  SlicerImportResult result;
+  if (runSlicerImport(host, path, QStringLiteral("design"), QStringLiteral("3D Print"), &result)) {
+    target->summary = result.summary;
   }
-  QJsonObject result;
-  if (!runModelCommand(command, &result)) {
-    return;
-  }
-  const QString file = QFileInfo(path).fileName();
-  // The problems by the plain names of their keys (mitcad#655).
-  PrintKeyTable keys;
-  try {
-    keys = PrintKeyTable(queryObject({{QStringLiteral("query"), QStringLiteral("print_keys")}}));
-  } catch (const std::exception&) {
-    // Without the names: as reported.
-  }
-  const PrintImportSummary summary = printImportSummary(file, QStringLiteral("design"), result, &keys);
-  target->summary = summary;
-  const auto names = [&result](const char* field) {
-    QStringList list;
-    for (const QJsonValue& value : result.value(QLatin1String(field)).toArray()) {
-      list << value.toObject().value(QStringLiteral("name")).toString();
-    }
-    return list.join(QStringLiteral(", "));
-  };
-  const QJsonObject report = result.value(QStringLiteral("report")).toObject();
-  qInfo().noquote() << QStringLiteral("Imported print settings from %1: printers: %2; processes: %3; materials: %4; "
-                                      "mapped %5, kept %6, left out: %7%8")
-                           .arg(file, names("printers"), names("processes"), names("materials"))
-                           .arg(report.value(QStringLiteral("mapped")).toInt())
-                           .arg(report.value(QStringLiteral("kept")).toInt())
-                           .arg(summary.leftOut.isEmpty() ? QStringLiteral("nothing")
-                                                          : summary.leftOut.join(QStringLiteral("; ")),
-                                summary.problems.isEmpty()
-                                    ? QString()
-                                    : QStringLiteral("; not read: %1").arg(summary.problems.join(QStringLiteral("; "))));
-  qInfo().noquote() << QStringLiteral("3D Print import: %1").arg(summary.line);
 }
 
 CommandDef MainWindow::printersCommand() {
@@ -322,7 +291,9 @@ CommandDef MainWindow::print3dCommand() {
     for (const LibraryItem& item : std::as_const(items)) {
       options.append({item.key(), item.name});
     }
-    // Last: a new one, made the design's and opened (mitcad#655).
+    // Last: a new one, made the design's and opened (mitcad#655), below a
+    // line that sets the action apart from the profiles (mitcad#828).
+    options.append({choiceSeparatorPrefix() + QStringLiteral("new"), QString()});
     options.append({QString::fromLatin1(kNewProfile),
                     kind == QStringLiteral("printer") ? tr("New printer…") : tr("New process…")});
     return options;

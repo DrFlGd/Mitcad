@@ -4,7 +4,7 @@
 //! mode decides, measures and classifies each as it ends, reports failures
 //! at once, adds the runs to the profiles and writes the end report.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
@@ -14,6 +14,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::changed;
 use crate::concurrency;
+use crate::corpus::{self, Demand, FileRun, Room};
 use crate::ctest::{self, TestDef};
 use crate::options::{self, Budget, Mode, Options};
 use crate::profile::{self, Defaults, Machine, Prediction, Profiles, ResultKind};
@@ -165,6 +166,14 @@ struct Test {
     rerun: Option<u64>,
     first: Option<ResultKind>,
     outcome: Option<Outcome>,
+    /// A corpus test (`profile::Kind::Corpus`): its files' times come from
+    /// the profiles and go back to them (`corpus`).
+    corpus: bool,
+    /// Its files' last runs, from the profiles.
+    files: BTreeMap<String, FileRun>,
+    /// Variables for its ctest: a planned corpus test's children at once
+    /// and their memory limit (`plan_corpus`).
+    env: Vec<(String, String)>,
 }
 
 impl Test {
@@ -220,6 +229,69 @@ impl Test {
     }
 }
 
+/// Plans the corpus tests' children from their files' history
+/// (`corpus::allocate`, mitcad#832): each corpus test with recorded files
+/// gets its children at once and their memory limit as variables, and the
+/// prediction and the memory limit of a test running that many. The corpus
+/// tests without such a history keep their caller's settings and
+/// predictions, which are kept out of the room the planned ones share.
+/// `floor`: the caller's limit per child; `ceiling`: the most a limit is.
+fn plan_corpus(tests: &mut [Test], room: Room, margin: f64, factor: f64, floor: u64, ceiling: u64) {
+    let mut planned: Vec<(usize, Demand)> = Vec::new();
+    let mut reserved_cores = 0.0_f64;
+    let mut reserved_memory = 0_u64;
+    for (i, t) in tests.iter().enumerate() {
+        if !t.corpus {
+            continue;
+        }
+        match Demand::of(&t.files) {
+            Some(demand) => planned.push((i, demand)),
+            None => {
+                reserved_cores += t.prediction.cores;
+                reserved_memory = reserved_memory.saturating_add(t.prediction.memory);
+            }
+        }
+    }
+    if planned.is_empty() {
+        return;
+    }
+    let demands: Vec<Demand> = planned.iter().map(|(_, demand)| *demand).collect();
+    let child_memory: Vec<u64> = demands.iter().map(|d| d.child_memory(margin)).collect();
+    let shared = Room {
+        cores: room.cores.saturating_sub(reserved_cores.ceil() as usize),
+        memory: room.memory.saturating_sub(reserved_memory),
+    };
+    let children = corpus::allocate(&demands, &child_memory, shared);
+    let rows = planned.iter().zip(&children).zip(&child_memory);
+    for (((i, demand), count), memory) in rows {
+        let count = *count;
+        let limit = demand.child_limit(factor, floor, ceiling);
+        let raw = corpus::PARENT_MEMORY + count as u64 * demand.peak;
+        let prediction = Prediction {
+            wall: demand.wall(count),
+            cores: count as f64,
+            memory: corpus::PARENT_MEMORY + count as u64 * *memory,
+            memory_raw: raw,
+            known: true,
+        };
+        let t = &mut tests[*i];
+        t.prediction = prediction;
+        t.predicted = prediction;
+        // Its history ran other numbers of children: its limit follows the
+        // children it has now.
+        t.limit_facts.peak_p90 = raw;
+        t.limit_facts.kind_memory = raw;
+        t.limit_facts.spread = 1.0;
+        t.env = vec![
+            (corpus::JOBS.to_owned(), count.to_string()),
+            (
+                corpus::MEMORY.to_owned(),
+                format!("{}M", limit.div_ceil(1 << 20)),
+            ),
+        ];
+    }
+}
+
 /// The machine over the run, weighted by the time between samples.
 #[derive(Default)]
 struct Samples {
@@ -257,6 +329,9 @@ pub struct Runner<'o> {
     finished: usize,
     records: Vec<(String, profile::Run)>,
     saved: usize,
+    /// The corpus tests' file runs (`corpus`), and how many are saved.
+    file_records: Vec<(String, Vec<(String, FileRun)>)>,
+    saved_files: usize,
     changes: Vec<(String, String)>,
     samples: Samples,
     stop: Option<String>,
@@ -382,6 +457,9 @@ impl<'o> Runner<'o> {
                 rerun: None,
                 first: None,
                 outcome: None,
+                corpus: kind == profile::Kind::Corpus,
+                files: history.files.clone(),
+                env: Vec::new(),
                 def,
             });
         }
@@ -395,6 +473,21 @@ impl<'o> Runner<'o> {
                 tests[i].lane = scheduling;
             }
         }
+        let budget = o.memory_budget.bytes(memory);
+        let ceiling = (memory as f64 * 0.95) as u64;
+        // The corpus tests' children at once from their files' history.
+        if o.corpus_children {
+            let floor = std::env::var(corpus::MEMORY)
+                .ok()
+                .and_then(|text| options::parse_size(&text).ok())
+                .filter(|&bytes| bytes > 0)
+                .unwrap_or(corpus::DEFAULT_CHILD_LIMIT);
+            let room = Room {
+                cores,
+                memory: budget,
+            };
+            plan_corpus(&mut tests, room, o.margin, o.limit_factor, floor, ceiling);
+        }
         // Longest first counts the chains waiting behind a test.
         let walls: Vec<f64> = tests.iter().map(|t| t.prediction.wall).collect();
         let mut successors = vec![Vec::new(); tests.len()];
@@ -406,7 +499,6 @@ impl<'o> Runner<'o> {
         for (t, rank) in tests.iter_mut().zip(schedule::ranks(&walls, &successors)) {
             t.rank = rank;
         }
-        let budget = o.memory_budget.bytes(memory);
         let ui_cap = profiles.ui_caps.get(concurrency::PLATFORM);
         let ui_learnt = concurrency::effective_cap(ui_cap, concurrency::learning_bound(ui_bound));
         let limits = Limits {
@@ -436,7 +528,7 @@ impl<'o> Runner<'o> {
                 .unwrap_or(options::default_jobs(cores, false, known, total)),
             ui_bound,
             ui_learnt,
-            ceiling: (memory as f64 * 0.95) as u64,
+            ceiling,
             fixed_basis,
             cgroup: o.cgroups && sys::cgroups_available(),
             machine,
@@ -451,6 +543,8 @@ impl<'o> Runner<'o> {
             finished: 0,
             records: Vec::new(),
             saved: 0,
+            file_records: Vec::new(),
+            saved_files: 0,
             changes: Vec::new(),
             samples: Samples::default(),
             stop: None,
@@ -502,6 +596,9 @@ impl<'o> Runner<'o> {
             }
             if let Some(room) = t.ui_room {
                 flags.push(format!("UI room {room}"));
+            }
+            for (name, value) in &t.env {
+                flags.push(format!("{name}={value}"));
             }
             for lock in &t.def.resource_locks {
                 flags.push(format!("RESOURCE_LOCK {lock}"));
@@ -578,6 +675,28 @@ impl<'o> Runner<'o> {
             .collect();
         if !lane.is_empty() {
             println!("Priority lane: {}", lane.join(", "));
+        }
+        let planned: Vec<String> = self
+            .tests
+            .iter()
+            .filter(|t| !t.env.is_empty())
+            .map(|t| {
+                let value = |name: &str| {
+                    t.env
+                        .iter()
+                        .find(|(k, _)| k == name)
+                        .map(|(_, v)| v.as_str())
+                };
+                let jobs = value(corpus::JOBS).unwrap_or("?");
+                let limit = value(corpus::MEMORY).unwrap_or("?");
+                format!("{} {jobs} ({limit} each)", t.def.name)
+            })
+            .collect();
+        if !planned.is_empty() {
+            println!(
+                "Corpus children from the files' history: {}",
+                planned.join(", ")
+            );
         }
         if self.o.mode == Mode::Schedule && self.tests.iter().any(|t| t.ui) {
             println!("{}", self.ui_line());
@@ -825,6 +944,7 @@ impl<'o> Runner<'o> {
             limit,
             seq: self.seq,
             cgroup: self.cgroup,
+            env: self.test_env(i),
         };
         let timeout = t.def.timeout.unwrap_or(DEFAULT_TIMEOUT);
         match sys::spawn(&spec) {
@@ -868,8 +988,62 @@ impl<'o> Runner<'o> {
         }
     }
 
+    /// The tables of a corpus test's files (`corpus`): the one it reads,
+    /// its files' last times from the profiles, and the one it appends its
+    /// children's runs to (only when the run records).
+    fn corpus_tables(&self, i: usize) -> (PathBuf, PathBuf) {
+        let dir = self.out.join("corpus");
+        let name = file_name(&self.tests[i].def.name);
+        (
+            dir.join(format!("{name}.files.tsv")),
+            dir.join(format!("{name}.runs.tsv")),
+        )
+    }
+
+    fn records_files(&self) -> bool {
+        self.o.record && self.profiles.is_some()
+    }
+
+    /// The variables of a test's ctest: a planned corpus test's children
+    /// and their limit, and for every corpus test the tables of its files
+    /// (written here, the record emptied).
+    fn test_env(&self, i: usize) -> Vec<(String, String)> {
+        let t = &self.tests[i];
+        let mut env = t.env.clone();
+        if !t.corpus {
+            return env;
+        }
+        let (files, runs) = self.corpus_tables(i);
+        if let Some(dir) = files.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        let path = |p: &PathBuf| p.to_string_lossy().into_owned();
+        if !t.files.is_empty() && fs::write(&files, corpus::table(&t.files)).is_ok() {
+            env.push((corpus::FILES.to_owned(), path(&files)));
+        }
+        if self.records_files() && fs::write(&runs, "").is_ok() {
+            env.push((corpus::RECORD.to_owned(), path(&runs)));
+        }
+        env
+    }
+
+    /// The runs a corpus test's children recorded, kept for the profiles.
+    fn take_file_runs(&mut self, i: usize) {
+        if !self.tests[i].corpus || !self.records_files() {
+            return;
+        }
+        let (_, runs) = self.corpus_tables(i);
+        let text = fs::read_to_string(&runs).unwrap_or_default();
+        let rows = corpus::parse_record(&text, unix_now());
+        if !rows.is_empty() {
+            let name = self.tests[i].def.name.clone();
+            self.file_records.push((name, rows));
+        }
+    }
+
     /// Measures, classifies and records a test that ended.
     fn finish(&mut self, i: usize, mut active: Active, exit: sys::Exit) {
+        self.take_file_runs(i);
         let usage = active.process.usage();
         let wall = active.start.elapsed().as_secs_f64();
         let end = self.started.elapsed().as_secs_f64();
@@ -1049,19 +1223,29 @@ impl<'o> Runner<'o> {
         self.append_status(&line);
     }
 
-    /// Adds the runs recorded since the last save to the profile file.
+    /// Adds the runs recorded since the last save to the profile file, and
+    /// the corpus tests' file runs.
     fn save(&mut self) {
-        if !self.o.record || self.saved == self.records.len() {
+        if !self.o.record {
             return;
         }
         let Some(path) = &self.profiles else {
             return;
         };
-        let runs = &self.records[self.saved..];
-        let load = self.o.sensitive_load;
-        match profile::save_runs(path, runs, &self.machine, load) {
-            Ok(()) => self.saved = self.records.len(),
-            Err(e) => eprintln!("testrun: {e}"),
+        if self.saved < self.records.len() {
+            let runs = &self.records[self.saved..];
+            let load = self.o.sensitive_load;
+            match profile::save_runs(path, runs, &self.machine, load) {
+                Ok(()) => self.saved = self.records.len(),
+                Err(e) => eprintln!("testrun: {e}"),
+            }
+        }
+        if self.saved_files < self.file_records.len() {
+            let rows = &self.file_records[self.saved_files..];
+            match profile::save_files(path, rows, unix_now()) {
+                Ok(()) => self.saved_files = self.file_records.len(),
+                Err(e) => eprintln!("testrun: {e}"),
+            }
         }
     }
 

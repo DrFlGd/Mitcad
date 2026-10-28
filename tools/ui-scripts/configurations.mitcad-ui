@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: MIT
+# Configurations (mitcad#807) on Windows and macOS (and wherever the test
+# driver runs), on configurations.json: Color and Length as options, the row
+# Short and the rule Black is short. The Configurations window opens with
+# its options and rows, and a choice in the browser's Configuration bar
+# changes the body.
+expect-ever 'View area'
+wait-idle
+expect-ever 'Configuration bar: Color = White \(Black \| White\); Length = 1500 mm'
+expect-ever 'Configuration bar Length at'
+
+# The window: its options and its row.
+mark
+command solid.configurations
+focus-dialog '^Configurations$'
+expect-log 'Configurations window opened'
+expect-ever 'Configurations options: Color \(Black, White\) = White; Length \(300 mm'
+expect-ever 'Configurations rows: open, .*Short: Color = White, Length = 800 mm'
+expect-ever 'Configurations tab Rows at'
+key Escape
+focus-main
+
+# A choice in the bar: Length typed into its field; the body follows.
+capture-undo-depth before
+mark
+focus-widget configurationField_Length
+key ctrl+a
+type 1200
+key Return
+expect-log 'Configuration chosen: Length = 1200'
+expect-log 'Configuration bar: Color = White \(Black \| White\); Length = 1200 mm'
+wait-idle
+expect-model-bodies 1 480000
+expect-undo-depth ${before} 1

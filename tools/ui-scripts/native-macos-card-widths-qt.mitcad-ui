@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: MIT
+# The Floating Qt Projects card opens as wide as the native card was left:
+# both use the shared projects/cardWidth setting (mitcad#818); run by
+# ui-macos-native-card-widths-test.sh with --ui=qt.
+expect-ever 'Projects panel: card width 700 \(remembered\)' 30
+expect-setting projects/cardWidth 700

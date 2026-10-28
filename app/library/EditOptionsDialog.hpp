@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+// Edit Options… of an inserted component (mitcad#810; app/COMMANDS.md,
+// "Options of library parts"): the options of a library part, a linked
+// design or a BUILD part, which belong to the component and so to all of
+// its occurrences (docs/configurations.md, "Inserted components").
+//
+// Above, a chooser per option filtered by the source's rules
+// (OptionChooser); below, each option's expression: a constant the
+// chooser writes, or a formula of the design's own parameters (the field's
+// suggestions, and the Formula Editor from its fx button or menu), which
+// binds the option: the component then follows the parameter, and its
+// chooser shows the value it gets. OK keeps the expressions in one undo
+// step (`set_component_parameters`, run by the caller).
+//
+// Logged for the UI tests: "Edit Options <option> expression at x,y" and
+// "Edit Options OK at x,y" (in the main window, as the panels' places;
+// Return in an expression field may take a suggestion instead of OK),
+// "Edit Options bound <option> =
+// <expression>" and the chooser's "Edit Options options: ..." lines.
+
+#include <QDialog>
+#include <QHash>
+#include <QJsonObject>
+#include <QString>
+#include <QStringList>
+#include <QTimer>
+
+#include "PartOptions.hpp"
+
+class QFormLayout;
+class QLabel;
+class QLineEdit;
+class QPushButton;
+
+namespace mitcad {
+
+class OptionChooser;
+
+class EditOptionsDialog : public QDialog {
+  Q_OBJECT
+
+public:
+  // `query` runs the model's queries (a failure as {"error": {"message"}});
+  // `component` the inserted component's uid, `name` as the browser shows it.
+  EditOptionsDialog(JsonRunner query, const QString& component, const QString& name, QWidget* parent = nullptr);
+
+  // Whether the component has options (else the dialog says why and has
+  // nothing to keep).
+  bool hasOptions() const { return m_has; }
+  // Every option's expression ({"Color": "'Black'", "Length": "Shelf_L"}),
+  // as `set_component_parameters` keeps them.
+  QJsonObject parameters() const;
+  // "Color = 'Black', Length = Shelf_L".
+  QString summary() const;
+
+  void accept() override;
+
+protected:
+  void showEvent(QShowEvent* event) override;
+
+private:
+  // The expressions' fields again from the chooser's answer.
+  void fillExpressions();
+  void expressionEdited(const QString& option);
+  void logPlaces() const;
+
+  QString m_component;
+  OptionChooser* m_chooser = nullptr;
+  QFormLayout* m_expressionsForm = nullptr;
+  QLabel* m_intro = nullptr;
+  QHash<QString, QLineEdit*> m_expressions;
+  QStringList m_order;
+  // The options bound to the design's parameters: option -> formula.
+  QJsonObject m_bound;
+  bool m_read = false; // the component's own expressions were read
+  bool m_has = false;
+  QPushButton* m_ok = nullptr;
+  QTimer m_placesTimer;
+};
+
+} // namespace mitcad

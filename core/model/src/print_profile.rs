@@ -456,12 +456,38 @@ pub fn value_of(def: &KeyDef, value: &Value) -> Result<print_keys::Value, String
 }
 
 /// A new item's name without one given (mitcad#655), the same pattern for
-/// every kind: `New Printer`, then `New Printer 2`, `New Printer 3`, ...
+/// every kind: `Printer 1`, then `Printer 2`, `Printer 3`, ... Never
+/// `New …` (mitcad#828): beside 3D Print's New printer… a `New Printer`
+/// read as the action twice.
 pub fn new_item_name(kind: &str, n: usize) -> String {
-    if n <= 1 {
-        format!("New {kind}")
+    format!("{kind} {n}")
+}
+
+/// A copy's name (mitcad#828): its source's with ` (copy)`, then ` (copy
+/// 2)`, ` (copy 3)`, ... the first that `taken` does not hold. A copy of a
+/// copy counts on from its source's name: `PLA (copy)` copied is `PLA
+/// (copy 2)`, not `PLA (copy) (copy)`.
+pub fn copy_name(name: &str, taken: impl Fn(&str) -> bool) -> String {
+    let base = copy_base(name.trim());
+    std::iter::once(format!("{base} (copy)"))
+        .chain((2..).map(|n| format!("{base} (copy {n})")))
+        .find(|candidate| !taken(candidate))
+        .expect("a free name")
+}
+
+/// A name without a copy's ` (copy)` or ` (copy <n>)` at its end.
+fn copy_base(name: &str) -> &str {
+    let Some(open) = name.strip_suffix(')').and_then(|rest| rest.rfind(" (copy")) else {
+        return name;
+    };
+    let inner = &name[open + " (copy".len()..name.len() - 1];
+    let counted = inner
+        .strip_prefix(' ')
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+    if (inner.is_empty() || counted) && open > 0 {
+        &name[..open]
     } else {
-        format!("New {kind} {n}")
+        name
     }
 }
 
@@ -584,5 +610,23 @@ mod tests {
             Some(&json!("Bambu Lab X1 Carbon 0.4 nozzle"))
         );
         assert_eq!(dialect_value(&value, Dialect::PrusaSlicer), None);
+    }
+
+    #[test]
+    fn new_and_copied_items_are_named() {
+        // mitcad#828: never "New …"; a copy " (copy)", then " (copy 2)".
+        assert_eq!(new_item_name("Process", 1), "Process 1");
+        assert_eq!(new_item_name("Printer", 3), "Printer 3");
+        let free = |_: &str| false;
+        assert_eq!(copy_name("PLA", free), "PLA (copy)");
+        assert_eq!(copy_name("PLA (copy)", free), "PLA (copy)");
+        assert_eq!(copy_name("PLA (copy 4)", free), "PLA (copy)");
+        let taken = |name: &str| name == "PLA (copy)" || name == "PLA (copy 2)";
+        assert_eq!(copy_name("PLA", taken), "PLA (copy 3)");
+        assert_eq!(copy_name("PLA (copy)", taken), "PLA (copy 3)");
+        // Not a copy's mark: kept whole.
+        assert_eq!(copy_name("Bench (copying)", free), "Bench (copying) (copy)");
+        assert_eq!(copy_name("Bench (copy x)", free), "Bench (copy x) (copy)");
+        assert_eq!(copy_name("(copy)", free), "(copy) (copy)");
     }
 }

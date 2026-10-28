@@ -44,7 +44,7 @@ param(
 Ui-Init $App $Out $QtBin @{
   'sheet.bend' = 'F7'; 'sheet.fold' = 'F8'; 'sheet.cut' = 'F9'; 'sheet.corner_relief' = 'F11'
   'sheet.unfold' = 'F12'; 'sheet.refold' = 'F5'; 'sheet.corner_round' = 'Shift+F2'
-  'sheet.corner_chamfer' = 'F3'; 'sheet.flat_pattern' = 'F4' }
+  'sheet.corner_chamfer' = 'F3'; 'sheet.flat_pattern' = 'F4' } -StepPause 0
 $work = Join-Path $script:UiOut 'files'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null

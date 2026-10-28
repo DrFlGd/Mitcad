@@ -239,9 +239,7 @@ impl<K: Kernel> EvalContext<'_, K> {
     /// An entry of the timeline.
     pub(crate) fn feature_entry(&self, uid: FeatureUid) -> Result<Arc<FeatureEntry>, String> {
         self.env
-            .features
-            .iter()
-            .find(|f| f.uid == uid)
+            .feature(uid)
             .cloned()
             .ok_or_else(|| format!("feature {uid} does not exist"))
     }
@@ -250,7 +248,7 @@ impl<K: Kernel> EvalContext<'_, K> {
     /// The read covers the feature's whole result, so a change of the
     /// feature evaluates the reader again.
     pub fn feature_tool(&mut self, uid: FeatureUid) -> Result<K::Shape, String> {
-        let result = self.env.history.iter().find(|r| r.uid == uid);
+        let result = self.env.result_of(uid);
         let output = result.and_then(|r| r.output.as_ref());
         self.reads
             .push(Read::Output(uid, output.map(|o| o.version)));
@@ -288,7 +286,7 @@ impl<K: Kernel> EvalContext<'_, K> {
         &mut self,
         uid: FeatureUid,
     ) -> Result<Vec<BodyUid>, String> {
-        let result = self.env.history.iter().find(|r| r.uid == uid);
+        let result = self.env.result_of(uid);
         let output = result.and_then(|r| r.output.as_ref());
         self.reads
             .push(Read::Output(uid, output.map(|o| o.version)));
@@ -314,7 +312,7 @@ impl<K: Kernel> EvalContext<'_, K> {
         &mut self,
         uid: FeatureUid,
     ) -> Result<BodyChanges<K::Shape>, String> {
-        let result = self.env.history.iter().find(|r| r.uid == uid);
+        let result = self.env.result_of(uid);
         let output = result.and_then(|r| r.output.as_ref());
         self.reads
             .push(Read::Output(uid, output.map(|o| o.version)));
@@ -342,7 +340,7 @@ impl<K: Kernel> EvalContext<'_, K> {
         &mut self,
         uid: FeatureUid,
     ) -> Result<Vec<crate::transform::Transform>, String> {
-        let result = self.env.history.iter().find(|r| r.uid == uid);
+        let result = self.env.result_of(uid);
         let output = result.and_then(|r| r.output.as_ref());
         self.reads
             .push(Read::Output(uid, output.map(|o| o.version)));

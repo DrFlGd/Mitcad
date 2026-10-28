@@ -274,6 +274,7 @@ pub fn spawn(spec: &Spec) -> io::Result<Process> {
     let mut command = Command::new(&spec.program);
     command
         .args(&spec.args)
+        .envs(spec.env.iter().map(|(k, v)| (k, v)))
         .stdin(Stdio::null())
         .stdout(log)
         .stderr(errors)

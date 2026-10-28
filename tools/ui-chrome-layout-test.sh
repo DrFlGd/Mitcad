@@ -307,12 +307,6 @@ echo "--- 5. The next start: Docked by the preference; Floating and the Card bac
 ui_start_app --no-native-dialogs --open "$FILE"
 ui_expect_log "Chrome: docked (the preference)" "Docked by the preference"
 grep -q '^Floating cards: ' "$UI_LOG" && ui_fail "Floating cards in the Docked layout"
-# The design opens with the root active and Component1 beside it, so Create
-# Sketch leaves the origin planes out (mitcad#294): Component1 is activated
-# again, as it was when the sketches were drawn.
-ui_mark
-ui_step "activate Component1 (radio)"     ui_click_logged "Browser radio Root/Component1:1"
-ui_expect_new "Activated Component1" "Component1 active again"
 ui_step "create a Docked sketch"          ui_create_sketch xy
 ui_expect_log "Palette Finish Sketch at" "Docked palette finish is laid out"
 ui_mark

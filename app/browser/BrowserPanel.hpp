@@ -167,14 +167,6 @@ public:
   // height, before its first layout, falls back to the viewport).
   int availableHeight() const;
   void setAvailableHeight(std::function<int()> height);
-  // While Create Sketch waits for a plane that the view does not show
-  // (mitcad#694): the Origin folder opened and its XY, XZ and YZ rows not
-  // greyed, as rows a click picks the plane with; its light bulb does not
-  // change. Off again, the folder is open or folded as it was before.
-  // Logged: "Browser offers the origin planes: <folder> open; XY, XZ, YZ
-  // pickable" and "Browser no longer offers the origin planes: <folder>
-  // folded" (or "open", as it was).
-  void offerOriginPlanes(bool offer);
   // Renames a row in place.
   void startRename(const BrowserNode& node);
   // Closes an open rename editor without renaming; false when none is open.
@@ -210,6 +202,10 @@ public:
   // (the tree moves right of it); in rowsRegion. Logged with the rows
   // ("Browser scroll bar at x,y", either bar).
   void setScrollBarOnLeft(bool left);
+  // A bar above the rows (mitcad#807: the Configuration bar), which the
+  // panel takes: its height counts in contentHeight while it is shown, and
+  // with the Rows background it is in rowsRegion on a box of its own.
+  void setTopBar(QWidget* bar);
 
 signals:
   // With the Rows background, rowsRegion changed (the rows scrolled, opened,
@@ -291,9 +287,7 @@ private:
   QSet<QString> m_foldedSelection; // the selection Collapse All left; showSelection does not reveal it again
   bool m_building = false;
   bool m_originShown = false;        // the Origin folder's light bulb, as last rebuilt
-  bool m_originOffered = false;      // offerOriginPlanes
-  bool m_originWasExpanded = false;  // the folder before the offer
-  // The origin's rows greyed by its light bulb, the planes not while offered.
+  // The origin's rows greyed by its light bulb.
   void styleOriginRows(QTreeWidgetItem* folder);
   QString m_logged;
   QSet<QString> m_loggedPlaces; // what logLayout logged a place for, and has not logged out of sight
@@ -311,6 +305,7 @@ private:
   // changes ("uid@occurrence", empty: none).
   void hoverJoint(const QTreeWidgetItem* item);
   QString m_hoveredJoint;
+  QWidget* m_topBar = nullptr; // setTopBar (mitcad#807)
 };
 
 } // namespace mitcad

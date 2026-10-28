@@ -253,6 +253,16 @@ public:
   void paste();
   // Whether the clipboard holds a sketch fragment.
   bool canPaste() const;
+  // Insert Point (mitcad#836, `sketch.insert_spline_point`): a point on the
+  // spline `curve` where it is nearest to the view position `screen` (the
+  // context menu's right click, a double-click on the curve). A fitted
+  // spline gets a fit point between its neighbours, a spline by control
+  // points a control point by knot insertion that keeps its shape. One
+  // undo step; false, with the model's reason shown, when refused.
+  bool insertSplinePoint(const QString& curve, const QPointF& screen);
+  // The spline of this sketch, not projected, under a view position;
+  // empty when there is none (Insert Point is offered only there).
+  QString splineAt(const QPointF& screen) const;
 
   // --- Options of the sketch palette
   bool construction() const { return m_construction; }
@@ -469,6 +479,10 @@ private:
   void startDrag();
   void applyDrag();
   void endDrag();
+  // The selected points and curves of this sketch when `entity` is one of
+  // several of them (mitcad#837): a press on it drags them together.
+  // Empty otherwise.
+  QStringList selectionDraggedWith(const QString& entity) const;
   // A modal dialog took the input mid-drag (a long computation's progress,
   // P7), and with it the release: the drag ends when the model is free.
   void interruptDrag();
@@ -535,6 +549,9 @@ private:
   QPointF m_rightPressPosition;
   Qt::KeyboardModifiers m_pressModifiers;
   QString m_dragEntity;
+  // The selection dragged together with m_dragEntity (mitcad#837); empty
+  // when only m_dragEntity is dragged.
+  QStringList m_dragSelection;
   QString m_dragDimension; // a dimension's text
   V2 m_dragStart;
   V2 m_dragLast;

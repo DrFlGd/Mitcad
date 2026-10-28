@@ -27,6 +27,9 @@ struct MountPart {
   bool link = true;
   // The manifest's `mounts` of the component.
   QJsonArray frames;
+  // insert_component's `parameters`: an open table's options chosen
+  // (mitcad#810); empty for none.
+  QJsonObject parameters;
 };
 
 // The command's id, started by Insert from Library for a part with frames.

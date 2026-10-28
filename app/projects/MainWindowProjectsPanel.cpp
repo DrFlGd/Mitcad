@@ -404,7 +404,8 @@ void MainWindow::newDesign() {
     m_projectsPanel->startNewDesign(root, folder);
     return;
   }
-  // Without the panel (the AppKit frontend): the name asked.
+  // Without the panel: the name asked. Both frontends have it; the AppKit
+  // one names the design in its native outline (mitcad#816).
   bool accepted = false;
   QString name =
       dialogText(this, tr("New Design"), tr("The new design's name:"), tr("Design1"), &accepted).trimmed();
@@ -524,7 +525,12 @@ void MainWindow::createDesignInProject(const QString& root, const QString& path)
   }
   qInfo().noquote() << QStringLiteral("New Design: made %1").arg(file);
   QString error;
-  if (!openFile(file, error)) {
+  // With its Component1 active, as the file stores it (mitcad#844): its
+  // first sketch and feature go into it, as in the untitled new design.
+  m_openingNewDesign = true;
+  const bool opened = openFile(file, error);
+  m_openingNewDesign = false;
+  if (!opened) {
     m_locks->designOpened(m_filePath, wasReadOnly); // the open design stays
     if (!error.isEmpty()) {
       sheetWarning(this, tr("New Design"), tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(file), error));

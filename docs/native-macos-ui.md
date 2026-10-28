@@ -155,6 +155,108 @@ Text editors keep their normal editing keys; document shortcuts do not
 intercept input in an attached modal sheet. In Save with Description,
 Command+Return saves and plain Return inserts a newline.
 
+### Part catalogue and Part Picker
+
+Insert from Library, Community Library and the Part Picker present the
+shared part catalogue (`PartGrid`) with a dedicated adapter
+(`platform/macos/NativeCollection.mm`, mitcad#813) rather than generic
+rows. The groups are a source list of readable width with the shared
+folding, Favourites artwork and a star on each library group; the search,
+licence filters, system, Star and the tile-size slider keep their rows; the
+parts are an NSCollectionView of the shared pictures, names, sizes, stars,
+use counts and greyed refusals. The slider sizes the native tiles as it
+sizes Qt's. A click makes a tile current and is the Qt view's click (the
+picker chooses the part); a second click or Return activates it (Insert
+from Library inserts); the arrows, Home and End move between tiles, Up and
+Down in the search too; Command+D and Command+Shift+D star the part and the
+group. Resting on a tile shows the larger picture with its supplier, part
+number, library and licence in a card that never takes the keyboard.
+
+The adapter reads only properties of the shared widgets, so another picker
+can reuse it without platform code: `nativeTileCatalogue` on the composite;
+on an icon-mode list `nativeTileKeyRole`, `nativeTileImageRole`,
+`nativeTilePreviewRole`, `nativeTileSubtitleRole`, `nativeTileStarRole`
+(turned on and off with `setData`), `nativeTileBadgeRole` and
+`nativeTileDisabledRole`, with the tooltip role as the hover details; on
+the group tree `nativeGroupKeyRole`, `nativeStarRole` and
+`nativeStarMethod`, an invokable of the composite. Any other icon-mode list
+becomes the same grid with its decoration and display roles. A QSplitter's
+panes keep its sizes and stretch factors, a draggable divider and each
+pane's minimum, so the catalogue and the part details share the dialog as
+in Qt.
+
+The modeless Part Picker opens through the shared `showDialog` in a
+floating AppKit utility panel (`nativeUtilityWindow`, mitcad#819). It does
+not take the keyboard from the document: a click on a tile chooses the part
+while keys still reach the running command; the panel becomes key only for
+its search. A pinned picker stays when its command ends and the next
+command takes the same panel over; reopening brings it forward without
+activation. Close, Escape in the panel, Command+W and its close button hide
+the presenter and return the keyboard to the document. The panel keeps its
+frame under `partPicker/nativeFrame`; the hidden Qt presenter never appears
+on screen. The BUILD commands' Part tile (`InputDef::choiceTile` with
+`onButton`) is a native tile with the chosen part's picture and name that
+opens the picker, as in the shared command panel.
+
+`app.ui-macos-native-library` builds a local library of a pictured screw
+and nut and checks, in light and dark appearance, Insert from Library and
+Community Library: two pictured tiles with readable captions and contrast,
+a readable group list, group selection, folding and stars, the library
+search, a tile's star and Favourites, the hover card, three tile sizes
+through the shared slider, usable bounds at normal and narrow sizes, Return
+on the grid and a double click inserting parts. `app.ui-macos-native-part-picker`
+builds two pictured slot profiles and starts BUILD Profile: its Part tile
+opens the panel with pictures and groups and no Qt window; a click chooses
+the 30 profile while the document keeps the keyboard; pinning survives the
+command's Escape and the next Profile; Close and Command+W return the
+keyboard to the document, where Escape still ends the command. The dialog
+fixtures now open through `showDialog` as well, so their native captures
+are AppKit windows, not a harness's Qt window.
+
+### Converted layouts and dialog buttons
+
+Dialogs, Settings and other secondary windows convert their shared Qt
+layouts into one constraint-based AppKit container
+(`app/platform/macos/NativeLayout.mm`); pages shown in the document's cards
+(inspector, sketch palette) keep their stacks within the cards' own width
+rules. Grids, forms and box layouts keep
+the presenter's sizing contract: explicit minimum and maximum sizes; the
+minimum and preferred widths of text fields, spin boxes, sliders, combo
+boxes, labels and item views; size policies, stretch factors, spans,
+alignment, spacing and margins. Extra space goes to stretched rows or
+columns in their ratio, else to expanding ones, else to those that can
+grow, as in Qt. A hidden widget leaves neither space nor spacing. Forms
+keep the platform's field growth, label alignment and form alignment, so
+labels share one column and fields start on one edge. Heights keep AppKit's
+control metrics. The root fills its window, so stretched and expanding rows
+take extra height. Preferred sizes stay below the window's own size
+priority; minimum sizes hold against resizing, so a window cannot become
+narrower than its fields' usable widths. Qt size hints of widgets are read
+when a presenter is converted; a nested layout's natural size comes from its
+native items, and a line edit keeps at least Qt's 17-character width.
+
+Converted button boxes use the macOS role order: help, reset, apply and
+other helper actions on the left; destructive actions set apart; then
+alternate and rejecting actions, with the primary accepting action
+rightmost. Added, removed or hidden buttons and changed roles rearrange the
+row. Return belongs to the presenter's default button and does nothing while
+that button is unavailable; Escape belongs to the rejecting buttons, and the
+window's cancel action rejects a dialog without one.
+
+`app.ui-macos-native-dialog-layout` first checks these rules with synthetic
+presenters: field widths, label and field columns, side-by-side slider
+forms, a spanning row over stretched grid columns, hiding and showing,
+unambiguous layout, and the role order with its gaps, Return, Escape, a
+helper action and later role changes. Then, in light and dark appearance, it
+opens Parameters, New Project, Settings > Navigation, Insert from Library,
+Render Image and Library Parts at the normal and a narrow document size and
+at each dialog's narrowest size. It asserts the visible, unclipped and
+unobstructed bounds of the search field, the author's name and email and the
+speed sliders beside their labels; left-to-right button bounds with the
+primary action rightmost; real AppKit pointer clicks and slider drags; Tab
+from name to email; Return while Create is unavailable; and Escape without
+creating, inserting or rendering anything.
+
 The #187 keyboard changes were initially integrated without executing builds
 or tests at the owner's request. On 2026-10-23, the physical M1 Max native
 workflow passed whole AppKit Undo/Redo events, cancellation preserving the
@@ -164,6 +266,177 @@ its own key window before posting events; simulated delegate notifications
 alone do not establish AppKit keyboard focus (mitcad#559). This scoped run
 does not complete the full keyboard matrix. Outstanding manual scenarios
 remain in [the macOS checklist](macos-trackpad-checklist.md).
+
+### Tables and cell editing
+
+Native dialog tables present the shared item views' semantic roles rather
+than generic text rows (mitcad#814). A cell whose edit the model refused
+(`NativeRefusedRole`, which the Qt delegate also paints) has the system red
+text on a light red fill; `Qt::FontRole` keeps bold section rows such as
+Parameters' groups; `Qt::ForegroundRole` and `Qt::BackgroundRole` apply,
+with the theme's error, warning, disabled and placeholder colours mapped to
+AppKit's dynamic colours. An emphasized selection shows the selection's own
+text, as the Qt delegate leaves selected cells to the highlighted-text
+colour. Labels styled with the theme's error or warning colour, such as a
+refusal's reason below the table, carry that tone as the
+`semanticTextTone` property and show it in AppKit. Cell text stays on one
+line, elided as the view's text elide mode says; it never wraps into a
+fixed-height row.
+
+Tree and table columns follow the shared header: section sizes, hidden
+sections, and stretching (`QHeaderView::Stretch` or a stretched last
+section). Stretching columns take the width the others leave; below their
+minimum the table scrolls sideways, as in the shared view. A tree's first
+column keeps its shared width, which includes the tree's indentation, rather
+than widening for deeper rows. Rows are flat, without AppKit's inset table
+padding.
+
+In a cell editor, Return commits the value, refused or not, without
+pressing the dialog's default button; Escape discards the edit without
+closing the dialog; Tab and Shift+Tab commit and edit the next or previous
+editable cell of the row. In a dialog the table keeps the keyboard focus
+after an edit and after a row is selected, so arrow keys work and F2 edits
+the current cell; a cell without a native editor passes F2 to the shared
+presenter. An open edit keeps its cell: reloads, selection updates and
+rebuilds of the native view wait until it ends, and when the model rebuilds
+its rows (Parameters does after each change) the edited row is found again
+by its stable identifier. Only a row that disappeared closes its editor
+without committing. Ending an edit that changed nothing sets nothing.
+Document cards keep leaving keys to the document window.
+
+`app.ui-macos-native-tables` exercises these in light and dark appearance
+with the `--demo` block: an invalid `30 deg` length committed with Return
+and `45 deg` with Tab both keep 20 mm and the 48,000 mm³ body, keep
+Parameters open and show the refused cell and red reason; Escape, F2 and a
+correction to 25 mm follow. It checks section rows, read-only cells and the
+column sizes at the shared dialog size and a narrow size, and a local
+synthetic library's long name and path in Libraries. Its probes read the
+actual text colours, cell fill pixels, fonts and column geometry.
+
+### Card widths and windows within the screen
+
+Projects, Browser and the inspector are widened or narrowed by dragging
+their inner edge: the right edge of Projects and Browser, the left edge of
+the inspector, which show the resize cursor (mitcad#818). A card is at
+least 230 points (Projects, for its toolbar's fixed buttons), 180 points
+(Browser) or 300 points (the inspector, the width its forms are laid out
+for), and at most two thirds of the canvas less its margins, as the shared
+Floating card. With cards on both sides, at least 160 points of canvas stay
+free between them: the inspector narrows first, then the left cards. A
+compact window narrows the cards without changing the widths remembered
+for a larger one. Releasing the edge saves the width: Projects in the
+shared `projects/cardWidth`, so that the Floating Qt card opens as wide,
+Browser in `browser/cardWidth` and the inspector in `inspector/cardWidth`.
+The Qt Browser and command cards keep their fixed widths. The handles are
+accessibility splitters named Projects width, Browser width and Inspector
+width. Each layout gives the name column of the Projects and Browser
+outlines the width the card leaves after the other columns (Projects'
+compact marks keep theirs), also for an outline made inside a card that
+opens at a remembered width.
+
+Secondary windows scroll their whole body above the dialog's buttons,
+which stay visible at the bottom. A window opens at the size its presenter
+requests, or taller when its content needs it, always within the visible
+frame of its screen (without the menu bar and the Dock), title bar
+included; a sheet fits below its host's title bar and toolbar. Required
+Auto Layout sizes of the controls enlarge the scrolled body instead of the
+window; a body wider than the window scrolls horizontally. Display changes
+and moves to another screen make a window smaller and move it inside the
+visible frame again, never larger. The shared Qt Appearances dialog has
+the same arrangement: its body is a `FittingScrollArea` within the
+screen's available area. That scroll area is marked `nativeWindowBody`, so
+the AppKit conversion lays it out inline in the window's own scrolling
+body rather than as a nested scroll view.
+
+`app.ui-macos-native-card-widths` drags each edge with AppKit mouse events,
+checking pointer routing and the resize cursor, with a project and a body
+whose synthetic names are elided at the default widths and shown whole
+after widening. It checks the minimums, the free canvas, a compact
+900 × 640 window and the widths after a relaunch in the native and the Qt
+frontend. Appearances is checked within a 900 × 520 visible frame applied
+as a test display change, with its buttons visible and its whole body
+reachable, in light and dark appearance. `app.ui-macos-dialogs` checks
+the Qt Appearances dialog at its opening size and compact. Physical
+trackpad drags and real display changes remain manual checks.
+
+### Projects keys, names and moves
+
+The native Projects outline keeps the shared panel's tree contract
+(mitcad#816). With the outline focused, Return opens the selected design
+(a folder or project folds), F2 renames and Delete or Backspace deletes,
+before default buttons and document shortcuts, exactly as the default
+tree's keys do. Deletion keeps the shared confirmation, refusals and error
+messages. Selecting a row or opening a design keeps the outline's keyboard
+focus; a context menu no longer rebuilds the native controls.
+
+New Design, New Folder and Rename name the row in the visible outline: its
+own text field becomes editable on an opaque text background with the
+whole name selected, scrolling a long name on one line. Return, Enter and
+Tab take the name, Escape keeps the old one, and clicking elsewhere takes
+it, as the default tree's editor does; focus then returns to the outline.
+The shared panel validates the name and runs the same project commands. A
+collapsed Projects card discloses its rows before naming.
+
+A design or folder moves by dragging it onto a folder, the project or a
+design (its folder) of the same project. The row under the pointer is the
+target; the panel's own rules decide which targets accept the drop.
+Refused drops get the shared feedback, including the message for a drop
+on another project. Nothing leaves the outline. Selection after an edit,
+move or deletion follows the shared panel, which selects no row whose name
+changed. `app.ui-macos-native-projects-edit` exercises keyboard, pointer
+and context-menu paths with nested synthetic projects and long names, in
+both appearances and after reopening the application. Its row drag uses
+the outline's own drag source and drop target; pointer feel in a real
+drag session remains a manual check.
+
+### Compact selection and command cards
+
+The inspector card measures its content at the card's actual width, after
+AppKit has wrapped its text, and adds a command form's action row; the
+isolated `fittingSize` of the content alone was too low and made the
+selection card scroll (mitcad#815). A later change of the content's
+height, such as the selection card's text and Create row filled in after
+the card is shown, lays the cards out again. The selection card's Create row, like
+every converted tool button whose text is under its icon, is a row of
+tiles: the shared artwork at the button's own icon size over its whole
+name on up to two lines, the entire tile one pointer target with hover,
+pressed and checked highlights.
+
+A command form follows the shared panel's form: the command's CAD artwork
+and name, then Change Parameters, in its title row; captions beside their
+controls in an `NSGridView` whose caption column wraps a caption longer
+than 110 points; headings, lists, cut scopes and notes without a label
+across both columns. Hidden inputs hide their grid rows, so no row's
+layout depends on views that AppKit detaches. Selections show their
+colour swatch and a compact clear control, Flip the shared flip artwork
+as a toggle, a choice's `onButton` its small icon (3D Print's Edit), note
+rows their icon buttons, text buttons and links, and `labelFor`,
+`enabled` and `autoText` follow the state. OK and Cancel (3D Print's Send)
+are a footer that the window keeps under the inputs, which scroll above
+it, as the shared panel's page does.
+
+Each value field has the shared `fx` button beside it. Its menu lists the
+design's parameters by the shared suggestion rules, with those the field
+cannot take disabled and the reason in their tooltip, then Name This
+Value, Create User Parameter…, Edit Formula… and the functions. A chosen
+name goes into the field as typed text. Name This Value, Create User
+Parameter… and Edit Formula… run the shared `ParameterField` workflow and
+its dialogs on a hidden Qt proxy of the field, in a parentless window that
+is never shown and carries the main window's parameter source; what they
+write goes into the AppKit field. A dialog chosen in the menu opens on the
+event loop's next turn after the menu has closed, never inside its
+tracking. F5 or Option-Esc completes a parameter name.
+
+`app.ui-macos-native-forms` opens a synthetic box in light and dark
+appearance. At 1280 × 820 and 900 × 640 points it checks that a face's
+selection card shows Extrude, Create Sketch and Hole whole, inside the
+card, without scrolling and as hit-test targets, then starts Hole,
+Extrude and Create Sketch through those tiles. For Extrude it checks
+captions beside their controls in aligned columns, compact clear and flip
+controls, the CAD artwork, and OK, Cancel, Local bodies, Flip, both `fx`
+buttons and Change Parameters in view, then creates, inserts, names and
+edits a parameter through the `fx` menu and the shared dialogs. For 3D
+Print it checks Send and Cancel whole under the scrolling inputs.
 
 ## Qt cards on macOS
 

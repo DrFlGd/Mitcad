@@ -4,7 +4,7 @@
 use std::fmt;
 
 use super::Span;
-use super::ast::{Arity, BinaryOp, Constant, Function, Node, NodeKind};
+use super::ast::{Arity, BinaryOp, ColumnPlace, Constant, Function, Node, NodeKind};
 use super::lexer::{Tok, Token, lex, text_of};
 use super::units::{Unit, base_unit, is_unit_name, unit_power};
 
@@ -79,6 +79,15 @@ pub enum ParseErrorKind {
     ReservedLocalName(String),
     /// A name given twice in one `let`.
     DuplicateLocalName(String),
+    /// A column reference (`Screws.dk`, mitcad#667) where a value is
+    /// expected; the text is the reference.
+    ColumnOutsideLookup(String),
+    /// A value where a lookup function needs a column (mitcad#667);
+    /// `argument` counts from 1.
+    ColumnExpected {
+        function: &'static str,
+        argument: usize,
+    },
 }
 
 impl fmt::Display for ParseError {
@@ -147,6 +156,14 @@ impl fmt::Display for ParseError {
             ParseErrorKind::DuplicateLocalName(name) => {
                 write!(f, "'{name}' is named twice in 'let'")?;
             }
+            ParseErrorKind::ColumnOutsideLookup(column) => write!(
+                f,
+                "{column} is a column: look a value up with XLOOKUP or INDEX"
+            )?,
+            ParseErrorKind::ColumnExpected { function, argument } => write!(
+                f,
+                "argument {argument} of '{function}' must be a column such as Table.Column"
+            )?,
         }
         write!(f, " at byte {}", self.span.start)
     }
@@ -174,6 +191,7 @@ pub(crate) fn parse(text: &str) -> Result<Node, ParseError> {
         return Err(parser.unexpected(token, "an operator or the end of the expression"));
     }
     check_depth(&node)?;
+    check_columns(&node)?;
     Ok(node)
 }
 
@@ -413,6 +431,22 @@ impl Parser<'_> {
 
     fn name(&mut self, token: Token) -> Result<Node, ParseError> {
         let name = self.source(token).to_owned();
+        if self.eat(Tok::Dot).is_some() {
+            // `Table.Column` (mitcad#667); the lexer gives a dot only before
+            // a name start, so a name follows. A column may have a reserved
+            // name (`in`, `Max`).
+            let column = match self.peek() {
+                Some(t) if t.tok == Tok::Ident => t,
+                Some(t) => return Err(self.unexpected(t, "a column name")),
+                None => return Err(self.end_error("a column name")),
+            };
+            self.pos += 1;
+            let kind = NodeKind::Column {
+                table: name,
+                column: self.source(column).to_owned(),
+            };
+            return Ok(Node::new(kind, self.span_from(token.span.start)));
+        }
         if self.peek_tok() == Some(Tok::LParen) {
             // `PI()`: a constant with an empty argument list.
             if let Some(constant) = Constant::from_name(&name)
@@ -466,7 +500,11 @@ impl Parser<'_> {
         self.close_paren()?;
         let span = self.span_from(name_token.span.start);
         let arity = function.arity();
-        if !arity.accepts(args.len()) {
+        // `min(Screws.d)`: one column holds the values (mitcad#667).
+        let one_column = args.len() == 1
+            && function.column_place(0) == ColumnPlace::Allowed
+            && matches!(args[0].kind, NodeKind::Column { .. });
+        if !arity.accepts(args.len()) && !one_column {
             let suggestion = if args.len() < arity.min() {
                 self.separate_arguments(&self.tokens[first..last], span)
             } else {
@@ -679,13 +717,61 @@ fn check_depth(root: &Node) -> Result<(), ParseError> {
             | NodeKind::Reference(_)
             | NodeKind::Local(_)
             | NodeKind::UnitText(_)
-            | NodeKind::Text(_) => {}
+            | NodeKind::Text(_)
+            | NodeKind::Column { .. } => {}
             NodeKind::Neg(x) | NodeKind::WithUnit { value: x, .. } => stack.push((x, depth + 1)),
             NodeKind::Binary { lhs, rhs, .. } => {
                 stack.push((lhs, depth + 1));
                 stack.push((rhs, depth + 1));
             }
             NodeKind::Call { args, .. } => stack.extend(args.iter().map(|a| (a, depth + 1))),
+        }
+    }
+    Ok(())
+}
+
+/// Refuses column references (mitcad#667) outside the arguments that take
+/// them ([`Function::column_place`]), and values where a column must be,
+/// without recursion. Errors come in source order.
+fn check_columns(root: &Node) -> Result<(), ParseError> {
+    let mut stack = vec![(root, false)];
+    while let Some((node, allowed)) = stack.pop() {
+        match &node.kind {
+            NodeKind::Column { table, column } if !allowed => {
+                return Err(ParseError::new(
+                    ParseErrorKind::ColumnOutsideLookup(format!("{table}.{column}")),
+                    node.span,
+                ));
+            }
+            NodeKind::Number(_)
+            | NodeKind::Constant(_)
+            | NodeKind::Reference(_)
+            | NodeKind::Local(_)
+            | NodeKind::UnitText(_)
+            | NodeKind::Text(_)
+            | NodeKind::Column { .. } => {}
+            NodeKind::Neg(x) | NodeKind::WithUnit { value: x, .. } => stack.push((x, false)),
+            NodeKind::Binary { lhs, rhs, .. } => {
+                stack.push((rhs, false));
+                stack.push((lhs, false));
+            }
+            NodeKind::Call { function, args } => {
+                for (i, arg) in args.iter().enumerate() {
+                    let required = function.column_place(i) == ColumnPlace::Required;
+                    if required && !matches!(arg.kind, NodeKind::Column { .. }) {
+                        return Err(ParseError::new(
+                            ParseErrorKind::ColumnExpected {
+                                function: function.name(),
+                                argument: i + 1,
+                            },
+                            arg.span,
+                        ));
+                    }
+                }
+                for (i, arg) in args.iter().enumerate().rev() {
+                    stack.push((arg, function.column_place(i) != ColumnPlace::No));
+                }
+            }
         }
     }
     Ok(())

@@ -85,7 +85,11 @@ tools/dev-env/build-root.sh run --bind <data folder> <root> <home> bash -lc 'cma
 `<home>`, each `--bind` folder (at the same path), `/tmp` (shared, so
 Xvfb display numbers do not clash with the host's), the user's runtime
 folder (so `check-all.sh` gets its memory-capped `systemd-run --user`
-scope) and the network. The environment is cleared but for the `MITCAD_*`
+scope) and the network. The test runner's history (`<home>/.mitcad`, the
+time and memory of each test, [tools/testrun](../tools/testrun/README.md))
+is the user's own `~/.mitcad`, shared both ways: a new root schedules from
+what the host's runs learnt, its runs add to it, and neither side falls
+back to an older copy. The environment is cleared but for the `MITCAD_*`
 variables (corpora, test slots) and the build parallelism
 (`CMAKE_BUILD_PARALLEL_LEVEL`, `CARGO_BUILD_JOBS`,
 `VCPKG_MAX_CONCURRENCY`); a `MITCAD_*` path outside the bound folders is
@@ -381,7 +385,9 @@ fresh process with `info <design> --timings`, without a result store. Report
 the feature recompute times separately from process wall time and peak
 resident memory (`/usr/bin/time -l` on macOS reports the latter in bytes).
 The CLI's `--timings` report does not measure viewport meshing or display.
-`MITCAD_TEST_ONLY` selects `guarded` geometry tests by a name substring.
+`MITCAD_TEST_ONLY` selects `guarded` geometry tests by a name substring;
+`test_geometry --part <name>` runs one part of the suite (`--list` names
+them; each is the ctest `geometry.suite.<name>`, mitcad#832).
 Legacy groups that call their cases directly still run, so inspect the
 test entry point before treating a filtered invocation as one isolated
 case. Keep workload, compiler flags, thread
@@ -1243,8 +1249,8 @@ It checks at two depths:
 |---|---|
 | configure, build | Compiler warnings fail the check (an incremental build only shows those of what it compiled). |
 | fmt, clippy, deps | clippy's target dir is `build/dev/clippy`, kept across syncs. |
-| ctest | The tests whose sources changed (below), without the corpus group, through the test runner (below); `cli.perf_*` and the Linux UI ctests run serially. |
-| corpus | `f3d.corpus*`, `f3d.models_loft`, `freecad.corpus`, `ipt.corpus`, several at once (`--corpus-tests`), each importing several files at once (`--corpus-jobs`, `MITCAD_CORPUS_JOBS`). By default all their children together fit the run's memory limit less 1G at `MITCAD_CORPUS_MEMORY` (1536M) each, and the cores of a test slot; about the square root of that many tests run at once (12G, 32 cores and three slots: two tests, three files each), each child within 300 s (`MITCAD_CORPUS_TIMEOUT`). Every corpus test is a row of the table. `auto` runs them only when `CORPUS_SOURCES` or the corpus files differ from every passing run on the machine (`~/.cache/mitcad/corpus-passed`). `CORPUS_SOURCES`: the readers and the import, the bridge's kernel and import files (`core/ffi/src/kernel`, `*_import.rs`, `ipt_history.rs`, `exchange.rs`, `memory.rs`, `core/cpp`; not `lib.rs` or other families' files), the geometry, `mitcad-cli`'s imports (`tools/cli/import.cpp`, not `main.cpp`), the build files, the OCCT port, and the resolved dependencies of the import's crates (`cargo tree` of `CORPUS_CRATES`, instead of `Cargo.toml` and `Cargo.lock`, so a crate added for something else does not count). Changes in `core/model` alone don't trigger it: use `--corpus always` when they may affect imports. |
+| ctest | The tests whose sources changed (below), without the corpus group, through the test runner (below); `cli.perf_*` run serially. The Linux UI ctests (`app.ui-linux-*`, each on a hidden X server of its own) run beside the others, within the runner's UI entries at once (mitcad#832). The geometry suite runs as one ctest per part (`geometry.suite.<part>`). |
+| corpus | `f3d.corpus*`, `f3d.models_loft`, `freecad.corpus`, `ipt.corpus`, several at once (`--corpus-tests`), each importing several files at once (`--corpus-jobs`, `MITCAD_CORPUS_JOBS`). By default the test runner gives each corpus test its files at once from its profile (`mitcad-testrun --corpus-children`, mitcad#832; [tools/testrun/README.md](../tools/testrun/README.md#corpus-tests)): every run records each file's time and peak, and the next starts the longest files first and shares the machine's cores and the run's memory budget among the corpus tests by their work, a long test more children and a short one fewer, each child's memory limit twice its test's largest file's peak, never below `MITCAD_CORPUS_MEMORY` (1536M). A test without that history yet, every test with `--corpus-jobs`, and ctest -j without the runner take the fixed plan: all their children together fit the run's memory limit less 1G at `MITCAD_CORPUS_MEMORY` each, and the cores of a test slot; about the square root of that many tests run at once (12G, 32 cores and three slots: two tests, three files each). Each child runs within 300 s (`MITCAD_CORPUS_TIMEOUT`); `f3d.corpus_designs` checks its designs at once, each in a child of its own, at least 4G each and without the time limit (the designs have their own), and a debug build's imports try an item from its own start, the route tried first, three times as long (`--own-start-time-scale`, mitcad#847), so that an item's outcome does not hang on the load beside it. Every corpus test is a row of the table. `auto` runs them only when `CORPUS_SOURCES` or the corpus files differ from every passing run on the machine (`~/.cache/mitcad/corpus-passed`). `CORPUS_SOURCES`: the readers and the import, the bridge's kernel and import files (`core/ffi/src/kernel`, `*_import.rs`, `ipt_history.rs`, `exchange.rs`, `memory.rs`, `core/cpp`; not `lib.rs` or other families' files), the geometry, `mitcad-cli`'s imports (`tools/cli/import.cpp`, not `main.cpp`), the build files, the OCCT port, and the resolved dependencies of the import's crates (`cargo tree` of `CORPUS_CRATES`, instead of `Cargo.toml` and `Cargo.lock`, so a crate added for something else does not count). Changes in `core/model` alone don't trigger it: use `--corpus always` when they may affect imports. |
 | `ui-<name>` | The `tools/ui-*-test.sh` whose sources changed (below), four at a time, longest first, 30 min limit each (`UI_TIMEOUT`); `ui-compute` runs alone at the end (flaky under load). A test that fails among the others without crashing runs once more alone after them: a pass shows as `ok-again` and counts, so load flakiness stays visible without failing the check; a second failure, or a crash, fails it (mitcad#657). |
 
 ctests by what changed (`--ctest auto`, the default; mitcad#134): each

@@ -329,7 +329,9 @@ if(BUILD_TESTING)
   # the bodies stored in the files, and imported from the files' own
   # streams (mitcad#34); skipped without them.
   add_test(NAME f3d.models_loft COMMAND test_f3d_import --models)
-  set_tests_properties(f3d.models_loft PROPERTIES SKIP_RETURN_CODE 77)
+  # Labelled corpus: the test runner hands it its models' times and plans
+  # its children as the corpus tests' (tools/testrun, mitcad#832).
+  set_tests_properties(f3d.models_loft PROPERTIES SKIP_RETURN_CODE 77 LABELS corpus)
 
   # Cargo runs with the toolchain Corrosion builds with, as the build does.
   # Without RUSTUP_TOOLCHAIN this cargo, which is not a rustup proxy, calls
@@ -409,10 +411,10 @@ if(BUILD_TESTING)
   mitcad_cargo_test(core.model_api mitcad-model-api)
   # The drawing layout and writers above the model (mitcad#777).
   mitcad_cargo_test(core.model_drawing mitcad-model-drawing)
-  # BUILD planning above the model, below the api (mitcad#777).
-  mitcad_cargo_test(core.model_build mitcad-model-build)
-  # Comparison of two designs above the model (mitcad#777).
-  mitcad_cargo_test(core.model_diff mitcad-model-diff)
+  # BUILD planning (core/model-build) and the comparison of two designs
+  # (core/model-diff) have no tests of their own and no test binary
+  # (`test = false`, mitcad#831): their tests are core.model.build-* and
+  # core.model.files.
   # The model's tests through the JSON api, a small crate per area
   # (mitcad#777, core/model-tests/README.md).
   mitcad_cargo_test(core.model.api mitcad-model-tests-api)
@@ -433,6 +435,20 @@ if(BUILD_TESTING)
   mitcad_cargo_test(core.model.files mitcad-model-tests-files)
   mitcad_cargo_test(core.model.build-frames mitcad-model-tests-build-frames)
   mitcad_cargo_test(core.model.build-timber mitcad-model-tests-build-timber)
+  # The imports' tests that need the whole model and its api (mitcad#831).
+  mitcad_cargo_test(core.model.imports mitcad-model-tests-imports)
+  # The model's tests of designs with several components again with
+  # recompute workers (mitcad#842): MITCAD_RECOMPUTE_WORKERS makes every
+  # document's recomputes evaluate independent components' features
+  # ahead, and the tests must pass as with one thread.
+  foreach(area assembly links joints)
+    set(workers_test core.model.${area}.workers)
+    add_test(NAME ${workers_test}
+             COMMAND "${CMAKE_COMMAND}" "-DLIST=${CMAKE_CURRENT_BINARY_DIR}/cargo-test/tests-debug.tsv"
+                     -P "${CMAKE_CURRENT_SOURCE_DIR}/cargo-tests.cmake" -- run mitcad-model-tests-${area})
+    set_tests_properties(${workers_test} PROPERTIES FIXTURES_REQUIRED cargo_tests_debug
+                         ENVIRONMENT "MITCAD_RECOMPUTE_WORKERS=4")
+  endforeach()
   # Parameter expressions and the print settings' key map, crates below
   # the model (mitcad#777).
   mitcad_cargo_test(core.expr mitcad-expr)
@@ -454,12 +470,11 @@ if(BUILD_TESTING)
   # The crates split from the replay (mitcad#785): the .solidcraft import
   # on the reader's test designs with the mock kernel; the replay's core
   # (its unit tests; the replay's own tests are core.import's) and its
-  # families: joints, sheet metal, primitives (their unit tests, if any).
+  # families: sheet metal (its unit tests); joints and primitives have none
+  # and no test binary (`test = false`, mitcad#831).
   mitcad_cargo_test(core.import-solidcraft mitcad-import-solidcraft)
   mitcad_cargo_test(core.import-replay mitcad-import-replay)
-  mitcad_cargo_test(core.import-joints mitcad-import-joints)
   mitcad_cargo_test(core.import-sheet mitcad-import-sheet)
-  mitcad_cargo_test(core.import-primitives mitcad-import-primitives)
   # The appearances family (mitcad#791).
   mitcad_cargo_test(core.import-appearances mitcad-import-appearances)
   # The imports' crates split from mitcad-import (mitcad#775): what they
@@ -604,8 +619,10 @@ if(BUILD_TESTING)
     # check-all's 8 cargo jobs of the machine's cores, so there the build
     # runs beside the tests that do not need it (C++, geometry, CLI, UI),
     # one cargo build at a time (RESOURCE_LOCK), instead of alone for its
-    # ten minutes.
-    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # ten minutes. Windows likewise: its cargo jobs follow the available
+    # memory (cargo-tests.cmake, mitcad#796) and its merge checks and
+    # release run the tests through the test runner.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR WIN32)
       set(cargo_build_alone RESOURCE_LOCK cargo_build)
     else()
       set(cargo_build_alone RUN_SERIAL TRUE)

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-// Light bulbs in every mode (mitcad#295) and the origin planes of Create
-// Sketch's plane pick (mitcad#294, mitcad#474: its banner and the picks it
-// refuses) in the main window.
+// Light bulbs in every mode (mitcad#295) and Create Sketch's plane pick
+// (mitcad#474: its banner and the picks it refuses; mitcad#844: the origin
+// planes behind the model) in the main window.
 #include "MainWindow.hpp"
 
 #include <QtLogging>
@@ -44,25 +44,6 @@ QString MainWindow::activeCommandName() const {
   }
 }
 
-// "No components" counts neither the active component nor a root without
-// bodies of its own: a new design's empty Component1 is active under an
-// empty root, and its first sketch starts on the origin planes; so does a
-// design whose bodies are all the active component's. Another component,
-// or the root's bodies beside the active component, is where sketches
-// usually start instead (a component's sketch may attach there), and the
-// planes would only cover it; the Origin folder shows them on request.
-bool MainWindow::sketchShowsOrigin() const {
-  for (const DocumentSnapshot::Component& component : m_snapshot.components) {
-    if (component.uid == m_snapshot.activeComponent) {
-      continue;
-    }
-    if (component.uid != QStringLiteral("C0") || !component.bodies.isEmpty()) {
-      return false;
-    }
-  }
-  return true;
-}
-
 void MainWindow::logSketchPicks() {
   if (!qEnvironmentVariableIsSet("MITCAD_LOG_PICKS")) {
     return;
@@ -96,10 +77,12 @@ void MainWindow::updateModeBanner() {
     // Create Sketch's plane, or an annotation's pick (mitcad#702).
     m_modeBanner->setText(m_mode == Mode::PickPlane ? pickPlaneText() : annotationPickText());
   }
-  // The origin planes startSketch offered in the browser (mitcad#694) go
-  // with the pick: the sketch started, Esc, another document.
-  if (m_mode != Mode::PickPlane && m_controller != nullptr) {
-    m_controller->browser()->offerOriginPlanes(false);
+  // The planes startSketch put behind the model for the pick (mitcad#844)
+  // go back with it: the sketch started, Esc, another document. A command's
+  // session sets them for its own inputs (CommandSession::activate).
+  if (m_mode != Mode::PickPlane && m_mode != Mode::Command && !m_session) {
+    m_viewer->setPlanesBehind(false);
+    m_viewer->setPlanesByDepth(false);
   }
 }
 

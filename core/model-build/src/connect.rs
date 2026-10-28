@@ -217,6 +217,7 @@ pub(crate) fn request_of(reference: &PartRef, with: &LibrarySourceDef) -> PartIn
         component: Some(reference.component.clone()),
         config: reference.config.clone(),
         source: None,
+        parameters: BTreeMap::new(),
     }
 }
 

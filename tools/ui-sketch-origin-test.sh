@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/sketch app/MainWindow.cpp app/MainWindowVisibility.cpp app/browser
+# check-all sources: app/sketch app/MainWindow.cpp app/MainWindowVisibility.cpp app/browser app/projects tools/cli
 # The sketch's own origin and axes in a new design, whose Origin folder's
 # light bulb is off (mitcad#739), through the real UI:
 #   - A new design starts with the design's origin hidden in the view and
@@ -18,13 +18,21 @@
 #     never switched ("Visibility Root/Origin" is never logged).
 #   - Editing an existing sketch (the XZ one) draws its origin and axes
 #     too, and its origin is snapped to.
+#   - New Design in a project (mitcad#844; the project made with
+#     mitcad-cli): the new design opens with its Component1 active, Create
+#     Sketch shows the origin planes, XY clicked in the view starts the
+#     sketch in Component1, and the light bulb stays off.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-origin-test.sh
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
-trap 'ui_cleanup' EXIT
+CLI=${UI_CLI:-$(cd "$(dirname "$UI_APP")/.." && pwd)/tools/cli/mitcad-cli}
+WORK=$(mktemp -d /tmp/mitcad-ui-sketch-origin.XXXXXX)
+trap 'ui_cleanup; rm -rf -- "${WORK:?}"' EXIT
+# The Projects panel lists the test's own projects, not the user's.
+export MITCAD_PROJECTS_DIR=$WORK/projects
 
 HIDDEN="Design origin hidden in the view; the Origin folder's light bulb off"
 SHOWN="Design origin shown in the view; the Origin folder's light bulb off"
@@ -159,5 +167,37 @@ ui_wait_idle
 ui_sync
 expect_origin_off "after the edit"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+ui_stop_app
+
+echo "--- New Design in a project: Component1 active, the origin planes for the pick (mitcad#844)"
+PROJECT=$MITCAD_PROJECTS_DIR/Shop
+mkdir -p "$MITCAD_PROJECTS_DIR"
+"$CLI" project create "$PROJECT" --author "Ada Tester <ada@example.invalid>" --design base.mitcad \
+  > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli project create"; }
+ui_start_app --open "$PROJECT/base.mitcad"
+ui_expect_log "base.mitcad" "a design of the project opened"
+ui_mark
+ui_step "new design (Ctrl+N)"            ui_key ctrl+n
+ui_expect_new "New Design: in " "a design of the current project, not an untitled one"
+ui_expect_new "Projects panel: naming a new design in " "named in the Projects panel" 20
+ui_step "take its name (Enter)"          ui_key Return
+ui_expect_new "New Design: made " "made as a version" 20
+ui_expect_new "Opened the new design with Component1 active" "the new design opens with Component1 active" 20
+[ -f "$PROJECT/Design1.mitcad" ] || ui_fail "the new design is not in the project"
+ui_focus_main
+expect_origin_off "the new design"
+ui_mark
+ui_step "create sketch on XY"            ui_create_sketch xy
+ui_expect_new "Create Sketch: origin planes shown" "the origin planes shown for the pick"
+ui_expect_new "$SHOWN" "the design's origin shown for the pick, its light bulb off"
+ui_expect_new "Sketch started on xy" "XY clicked in the view starts the sketch"
+ui_expect_new "Sketch Sketch1 is in Component1" "the sketch is Component1's"
+expect_origin_off "the new design's sketch"
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "the new design's sketch finished"
+ui_wait_idle
+ui_sync
+expect_origin_off "after the new design's sketch"
 
 ui_finish "UI sketch origin test"

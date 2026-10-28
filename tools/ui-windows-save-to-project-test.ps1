@@ -28,7 +28,7 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 # The saved shortcut of the command's former id.
-Ui-Init $App $Out $QtBin @{ 'file.move_to_project' = 'F12' }
+Ui-Init $App $Out $QtBin @{ 'file.move_to_project' = 'F12' } -StepPause 0
 
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1

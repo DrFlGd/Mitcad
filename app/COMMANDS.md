@@ -147,7 +147,8 @@ Modifiers:
   `label` without it; mitcad#545: a pattern's length row says Spacing or
   Extent by its Distance Type). The Qt panel changes it as the state
   changes and logs it (`Panel Rectangular Pattern label distance1:
-  Extent`), the value lines use it; the AppKit inspector shows `label`.
+  Extent`), the value lines use it; the AppKit inspector changes its
+  caption too (mitcad#815).
 - `withHeading(text)`: a bold heading row above the input, shown and
   hidden with it: the first input of a group (Thread's and Hole's Extra
   clearance: Radial clearance and Flank clearance, shown for modelled
@@ -235,8 +236,8 @@ Modifiers:
   `DocumentHost::chooseInCommand(command, key, value)` (the main window's
   `CommandSession::choose`, as the drop-down chooses: `onChange` runs and
   the preview follows; false when that command does not run). BUILD's
-  Part and Connector open the part picker so. The AppKit frontend shows no
-  button.
+  Part and Connector open the part picker so. The AppKit inspector shows
+  the button beside its drop-down (mitcad#815).
 - `withChoiceTile(tile)` (mitcad#427): a choice with a button
   (`withButton`) shown as a tile instead: `tile(state)` gives a
   `ChoiceTile` (the chosen option's picture, its name and a smaller line
@@ -284,7 +285,8 @@ Modifiers:
   <command> note <key>: <text> [<button>] ...` when it changes, the
   buttons' places `Panel <command> action <key>.<index> at x,y`. 3D
   Print's Materials and Own settings rows and Import from slicer… with
-  its line under it; the AppKit form shows the text and native buttons.
+  its line under it; the AppKit form shows the text with its icon buttons
+  and links, and its text buttons under it (mitcad#815).
 - `withButtonIcon(icon)` (mitcad#655): the button of `withButton` as a small
   icon (`app/icons`) with its tooltip, the text its accessible name: 3D
   Print's Edit.
@@ -299,6 +301,13 @@ Modifiers:
   small, bold and not choosable; a frontend without headings lists it,
   and choosing it changes nothing (none uses it since 3D Print's boxes
   show no places).
+- A choice whose value starts with `choiceSeparatorPrefix()`
+  (`__separator/`, `isChoiceSeparator`) is a separator line between the
+  options (mitcad#828), its label empty: the Qt panel inserts a disabled
+  separator (not choosable, skipped by the arrow keys), the AppKit form a
+  separator item, the log lists it as `---`, and a script that chooses it
+  is refused. 3D Print's Printer and Process boxes set New printer… /
+  New process… apart from the profiles with one.
 - `Inspection::viewHint`: a line over the top of the view while the
   command waits for something there (BUILD's first part: `Click a plane
   or a face, or press Enter`), logged `View hint <command>: <text>`.
@@ -1368,17 +1377,25 @@ it stays as the panel closes, Undo and Redo, saved.
 
 Create Sketch (`MainWindow::startSketch`) sketches on the selected plane or
 planar face; with none, it waits for a pick (`Mode::PickPlane`). It shows
-the origin planes for the pick only while the design has no components
-(mitcad#294; `sketchShowsOrigin`), not counting the active component and a
-root without bodies of its own: a new design's empty Component1 under its
-empty root shows them, and so does a design whose bodies are all the active
-component's. With another component, or the root's bodies beside the
-active component, sketches usually start on their faces or on a
-construction plane; the hint says that the browser's Origin folder shows
-the origin planes, which can then be picked. Light bulbs work during the
-pick (mitcad#295): hiding a body lets the faces behind it be picked, and
-the pick places are logged again. Logs: `Create Sketch: origin planes
-shown` (`not shown (the design has components)`).
+the origin planes for the pick in every design, whatever the Origin
+folder's light bulb says (mitcad#844, replacing mitcad#294's rule that
+left them out of designs with components): a view state for the pick only
+(`inputActivated` with construction geometry), the light bulb untouched,
+so after the pick the origin is as the bulb says. The planes come behind
+the model's faces for picking (`OcctViewer::setPlanesBehind` and
+`setPlanesByDepth`, as a placement input's do, mitcad#656, mitcad#762):
+a click where a face lies in front of a plane, or where a plane runs
+through a body, picks the face, also another component's while a
+component is active; a click on a plane where no face is picks the
+plane. A click on a face the pick refuses (not planar, or left out by the
+design policy, which the view's filter does not take) is refused with its
+reason also where a plane lies behind it, never picked through it
+(`OcctViewer::untestedClickItem`). `updateModeBanner` puts the pick order
+back when the pick ends.
+The browser's XY, XZ and YZ rows pick the plane too, greyed or not.
+Light bulbs work during the pick (mitcad#295): hiding a body lets the
+faces behind it be picked, and the pick places are logged again. Logs:
+`Create Sketch: origin planes shown`.
 
 The new sketch opens upright (mitcad#692): `MainWindow::createSketch`
 sends `sketch.create` with `upright`, and the model stores the own frame
@@ -1480,7 +1497,13 @@ tool previews, the snap marker, DOF). Clicks on glyphs and dimension
 values select them (`SelectKind::SketchConstraint`, `SketchDimension`; a
 fixed entity's lock is `fix:<entity>`); double-click on a value edits it;
 dragging a value moves it; dragging a sketch point or curve drags it with
-the solver (`sketch.drag` per move, merged into one step).
+the solver (`sketch.drag` per move, merged into one step). A press on one
+of several selected curves and points drags the whole selection together
+(mitcad#837): each move is one `sketch.drag` with `entities` (the selected
+points and curves of the sketch) and `by`, the offset that brings the
+grabbed point to the cursor; a press on an unselected one drags only it,
+and the press does not change the selection
+(`SketchController::selectionDraggedWith`).
 
 ### A sketch tool
 
@@ -1522,6 +1545,23 @@ only for such a spline. `SketchOverlay` draws the glyph of a tangent or
 curvature with `at` beside that point. `tools/ui-sketch-spline-test.sh` and
 `tools/ui-windows-sketch-spline-test.ps1` (ctest
 `app.ui-windows-sketch-spline`) draw both.
+
+Insert Point on a spline (mitcad#836; commands.md, "Insert Point on a
+spline"): the sketch's context menu offers **Insert Point** when the one
+item selected is a spline (fitted or by control points, not projected,
+not an offset's) and the right click was on it
+(`SketchController::splineAt`); a double-click on a spline that the first
+click selected does the same where it was double-clicked (after the
+edit-panel double-clicks of texts, patterns and offsets).
+`SketchController::insertSplinePoint` sends `sketch.insert_spline_point`
+with the place on the curve nearest the click, one `SketchOp`: one undo
+step, `Insert Spline Point in <sketch>`. A fitted spline gets a fit point
+between its neighbours; a spline by control points a control point by
+knot insertion, its shape unchanged until the new point is dragged. A
+refusal shows `Insert Point: <reason>`. Logged `Inserted point p12 into
+c3 at 20.000,5.000` and, for the double-click, `Double-click on c3:
+Insert Point`. No UI test script of its own; the model tests are
+`core/model-tests/sketch/src/sketch_spline_point_836_tests.rs`.
 
 - `move(snap)`, `press(snap)`, `release`, `doubleClick` get the cursor
   snapped (`SketchSnap`: points, origin, midpoints, centres, quadrants,
@@ -2212,7 +2252,12 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   no new revision, so a design opened unmodified stays unmodified; the
   file stores what is active when it is saved, as before). Logged when the
   file had another one active: `Opened with the root active; C1 was
-  active in the file (unmodified)`. Then `BrowserController::designOpened`
+  active in the file (unmodified)`. The one exception is New Design in a
+  project (`createDesignInProject`, mitcad#844): the design it made opens
+  with the component its file stores as active, Component1, as the
+  untitled design at the start does (`m_openingNewDesign`; logged as
+  `Opened the new design with Component1 active`). Then
+  `BrowserController::designOpened`
   makes the browser rebuild with the rows' default states
   (`BrowserPanel::designOpened` forgets what the design before left open)
   and, once the panel shows with its size (a design opened at the start
@@ -2472,7 +2517,7 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   `analyses` query, `DocumentSnapshot::analyses`), after the root's other
   rows. Light bulb: `set_analysis_visible`; showing one hides the others,
   as one section cuts the bodies at a time. Double-click and Edit Section
-  Analysis open its panel with its plane, offset and flip
+  Analysis open its panel with its plane, offset, flip, axis and angle
   (`DocumentHost::editAnalysis`); Rename, Delete (`rename_analysis`,
   `delete_analysis`); the folder's menu starts a new Section Analysis or
   a new Print Analysis. An
@@ -2493,6 +2538,22 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   caps use those clipped faces. Section area and outline length count
   visible occurrences. Regression: `tools/ui-macos-section-test.sh` checks
   the actual retained volumes and world bounds, plus screenshots.
+- **Section angle** (mitcad#823): after Distance, Section Analysis has
+  Axis (0 or 1 axial items, `axisOf`: a straight edge, a sketch line, a
+  construction axis or an origin axis) and Angle (`0 deg`, a ring
+  manipulator about the axis at its point nearest the picked plane's
+  centre, its 0 along the plane's normal across the axis, as Plane at
+  Angle draws its ring). `sectionPlane`, `build` and `load` pass and
+  restore `angle` (radians), `axis` and `axis_occurrence` (the picked
+  axis' occurrence path); the model turns the plane about the axis
+  before Distance moves it along the turned normal and Flip reverses the
+  normal, so the arrow keeps moving along the shown plane's normal. OK
+  with an Angle other than 0 and no axis fails on Axis ("Select an axis
+  for the angle."); an axis along the plane's normal fails in the model
+  (the preview says the plane cannot be found). Drawing section views of
+  the analysis follow the angle. Test: `tools/ui-section-caps-test.sh`
+  (a 10 mm cube cut through its middle at 45 degrees about Z: area
+  141.42 mm², kept, edited with its Axis and Angle, saved).
 - **Edit Appearances** (`solid.appearances`, mitcad#46; also Appearance...
   in a body's browser menu and in the view's menu of bodies, faces, edges
   and vertices): the `appearances` query's library and the design's own
@@ -2573,6 +2634,14 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   in the browser and leave the other sources working.
   `MITCAD_TEXTURE_FIXTURES` answers the requests from files
   (`<folder>/<host>/<path>`) for UI tests.
+  The dialog stays within the screen's available area, title bar
+  included (mitcad#818): its body (the lists, the preview and fields and
+  the faces) is a `FittingScrollArea` that scrolls on a lower screen, with
+  the dialog's buttons below it; it opens at 820 x 780 where the screen has
+  room, follows changes of the screen (`keepWindowOnScreen`) and can be
+  made compact by the user. Regressions: `tools/ui-appearance-fit-test.sh`
+  (a 600-pixel Xvfb screen, Floating and Docked) and
+  `app.ui-macos-dialogs`.
 - **Change Parameters** (`solid.parameters`; `sketch.parameters` in
   SKETCH > MODIFY): each cell change is one
   model command and undo step; a bare number gets the parameter's unit;
@@ -2690,8 +2759,10 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
     out, when short, else `Could not change Shop PETG. Check its values
     and try again.`). Every line field has one white fill, set or
     empty (only the placeholder is grey); a disabled field's grey fill is
-    for read only. New items are named alike: `New Printer`, `New
-    Process`, `New Material`, then `… 2`.
+    for read only. New items are named alike: `Printer 1`, `Process
+    1`, `Material 1`, then `… 2` (never `New …`, which read as 3D
+    Print's New process…, mitcad#828); a copy `<name> (copy)`, then
+    `(copy 2)`.
   - **Two states** (mitcad#655, the owner's option A): an item is
     built-in (MitCad's, read-only) or the user's own; the lists and the 3D
     Print and Property Sets boxes show no places, no place icons or
@@ -2710,7 +2781,7 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
     design's at once, in one undo step: a new or duplicated printer or
     process becomes the design's (`create_print_profile` with `choose`), a
     material is selected in Materials (Assign gives it to the bodies). A
-    copy is named after its source (`PLA Plastic 2`). Nothing is written
+    copy is named after its source (`PLA Plastic (copy)`). Nothing is written
     to a library until Save to; Duplicate of a built-in item is the way to
     change one.
   - **Save to** shows only for the user's own item that is in no library
@@ -2846,7 +2917,20 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   for an item the design does not use; logged `Profile used in this design: <kind>
   <name>`, its place `Profiles use at x,y`). Edit on Slicer default opens
   the window with nothing selected, the same from 3D Print and Property
-  Sets. Logs `Printers and processes
+  Sets. **Import from Slicer…** at the top right (mitcad#829, where My
+  Library has it) is 3D Print's Import from slicer…, the one
+  implementation the three windows share (`print/SlicerImport.*`,
+  `SlicerImportBar`): the same file dialog, `import_print_profile` with
+  `into` `design` (the root chooses the printer and process read, one
+  undo step `Import Print Settings plate.3mf`), its line (`plate.3mf
+  imported`) and **Details…** (Import Details) before it; the process
+  read (else the printer) is then selected in the list, the design's,
+  "Used in this design"; Save to puts it into a library. It works while
+  3D Print's panel is open too (`canChangePrintSettings`). Logged as 3D
+  Print's: `Imported print settings from <file>: printers: …`,
+  `Profiles import: <line>` (refused: `Profiles import refused:
+  <reason>`, the reason on the line), places `Profiles import at x,y`,
+  `Profiles details at x,y`. Logs `Printers and processes
   opened`, `Profiles: <n> items` with `Profiles row: <kind>/<id> <name>
   (<place>)[, the design's]`, `Profile selected: <kind> <name> (<place>)`,
   `Profile shown: <kind> <name> (<place>)[, read only]` with `Profile
@@ -2888,8 +2972,35 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   not MitCad's, which the library's item carries, shows as an entry of
   its own with the item's colour. **Import from Slicer…** at the top
   right reads a slicer's 3MF or preset into the library shown
-  (`import_print_profile` with `into` `user` or `project`, the file
-  dialog of 3D Print's Import from slicer…); its line (`plate.3mf
+  (`import_print_profile` with `into` `user` or `project`; 3D Print's
+  import, `SlicerImportBar`, mitcad#829). With an installed Bambu-family
+  slicer found (mitcad#830, `slicer_presets`: Bambu Studio, OrcaSlicer,
+  QIDI Studio; the Flatpak's too) the button is **Import from Slicer ▾**,
+  a menu of **From a file…** and **Presets of Bambu Studio…** for each
+  slicer found (`OrcaSlicer (Flatpak)`; logged `My Library import menu:
+  From a file… | Presets of Bambu Studio…`), looked for again at each
+  click; Printers and Processes has the same. Presets of… opens **Import
+  Presets** (`print/SlicerPresetsDialog.*`, modal): the slicer at the top
+  (a box when several were found), the user's presets under
+  **Printers**, **Processes** and **Filaments**, a box each, each group's
+  box ticking all or none of it. A preset whose name the target (the
+  library shown; the design in Printers and Processes) has already is in
+  the warning colour with the tooltip "My library has a process of this
+  name", unticked, with its own **Copy** (the default: `Fine 2`) or
+  **Override** (the existing item's next version) beside it; **Same
+  name:** above the list sets them all, shown only with such rows. New
+  presets are ticked. **Import** (Alt+I; disabled with nothing ticked)
+  runs `import_slicer_presets` with the ticked ones (their inherited
+  values filled in from the slicer's system presets; into the design one
+  undo step `Import Presets of Bambu Studio`), the line saying `2 presets
+  imported into My library` and Details… the report; Cancel imports
+  nothing (`Slicer presets cancelled`). Logs `Slicer presets opened:
+  <slicer>, <n> presets`, `Slicer presets row: <kind> <name>,
+  ticked|unticked[, same name: <tooltip>, copy|override]`, `Slicer
+  presets ticked: <n>`, `Slicer presets choice: <name> copy|override`,
+  `Slicer presets same name: copy|override` and the places `Slicer
+  presets <what> at x,y` (`slicer`, `same_all`, `import`, `cancel`,
+  `item <name>`: its box) (`tools/ui-my-library-test.sh`). Its line (`plate.3mf
   imported into My library`) and **Details…** (Import Details) beside
   it. The open design does not change: when the window closes after a
   change, the open Materials and Printers and Processes windows read the
@@ -2994,6 +3105,98 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   dimension's tooltip ends with the mark and the model's message (the
   `sketch` query's `limited` and `limit_message`). Test:
   `tools/ui-parameter-limits-test.sh`.
+- **Configurations** (mitcad#807; the design note
+  [docs/configurations.md](../docs/configurations.md), the model's side:
+  [Configurations](../core/model-api/src/commands.md#configurations-options-rows-and-rules)):
+  `solid.configurations` (Configurations…, beside Change Parameters in
+  SOLID > MODIFY and in the Edit menu) opens `ConfigurationsDialog`, a
+  window of its own (not modal, as Change Parameters; the same in the
+  Floating and Docked layouts) with the tabs Options, Rows and Rules. Every
+  edit is one model command and one undo step; a refused one stays in its
+  cell in red with the reason, and the message line says it.
+  - **Options**: the options in choice order. Rows are dragged into their
+    order (`InternalMove`; items take no drops, so an option never lands
+    under another) or moved with Move Up and Move Down; either is
+    `set_configurations` with the new `options`. Add Option… offers the
+    user parameters that are no option yet and New Parameter (name, unit,
+    value): `add_parameter` (for a new one) and `set_configurations` as one
+    undo step `Add Option <name>`. Remove Option takes it out of `options`
+    and out of the rows (the parameter stays). Domain (double-click or Edit
+    Domain…: List, one value per line, the parameter's `values` limit;
+    Range, its `min`, `max` and `step`; Table Column (Alt+T, mitcad#849),
+    a column of the design's tables as the `values` limit `Table.Column`,
+    offered from `formula_help`'s `tables` by the option's kind (a text
+    option text columns, a number option the others); Free; a text option
+    is a list, a column or free) is one `set_parameter`, sending only the
+    limits that change. A column domain shows as the column and its values
+    (`Screws.Size: M3, M4, M5`; `configurations::valuesColumn`).
+    Default is the option's own value (its parameter's constant), edited
+    through `configure`, so the cascade runs; Comment is `set_parameter`
+    `comment`; Driven marks an option whose expression is a formula (the
+    `configure` query's `driven`): its Default is not edited.
+  - **Rows**: a `QTableWidget` with Name, a column per option (texts
+    without quotes, numbers as their expressions), a closed table's other
+    `parameters`, Designation, Part Number and Supplier URL; Closed; Add
+    Row (the next free `Row<n>`, with the options' expressions as they are
+    now), Generate Rows from Table… (mitcad#849: the window `Generate Rows
+    from Table` chooses a table of the design, its key column and an option
+    or a user parameter, offering first the column an option's values come
+    from and that option (`configurations::keyOption`); Generate sends
+    `generate_configuration_rows`, one undo step, and the message line says
+    which rows it added or updated, with any moves; disabled while the
+    design has no tables), Delete Row, Set as Default (the default row's
+    name is bold) and Apply (`apply_configuration`; the moves in the message
+    line and the status bar). A cell edit is `set_configurations` with the table; a typed
+    text gets quotes for a text option and the unit for a bare number
+    (`configurations::rowExpression`). Before an option's value is written,
+    the row's combination is tried with the `configure` query's `values`
+    (nothing changes): a `refused` answer refuses the cell with the rule's
+    name and message, and nothing is sent (decision 4: rules hold
+    everywhere). Each row is tried so whenever the window reads the model:
+    a row that breaks a rule is marked in the cells of the options the
+    refusal names (else in its name) with the rule in the tooltip. The line
+    above the sheet names the row the options match (`row` of the query).
+  - **Rules**: `makeConfigurationRulesPage` (`browser/ConfigurationRulesPage.cpp`,
+    a `ConfigurationPage` the window refreshes with itself): the rule block
+    editor of mitcad#808, [The rule block editor](#the-rule-block-editor).
+  - **The Configuration bar** (`ConfigurationBar`): the top of the browser
+    (`BrowserPanel::setTopBar`: counted in `contentHeight`, so the
+    Floating card grows with it, and a box of its own in the Rows
+    background's `rowsRegion`), hidden while the design has no options and
+    no rows. A row combo (`apply_configuration`; `No row` while the options
+    match none), then a chooser per option in choice order from the
+    `configure` query: a combo of the `allowed` list, a field and a
+    `QSlider` for an `allowed` range with both bounds (positions by its
+    step, else 100; a released handle or a key sends the number in mm or
+    rad), a field alone for a range without both bounds or a free option,
+    the value alone for a driven one. A value the rules do not allow now is
+    shown but not offered. A choice is `configure` with that option's value
+    (a text option's text, a number option's expression with the unit for a
+    bare number: `configurations::chooserValue`), one undo step. The
+    answer's `moves` show as a notice under the choosers and in the status
+    bar (`Length 1500 mm → 1000 mm: Black is short`); a `refused` answer or
+    a refusal shows in red. The widgets are made again only when the
+    choices change; refreshed with the browser.
+  - **Change Parameters** marks an option with the configurations icon on
+    its name (the tooltip: an option, driven); an option the rules narrow
+    now (`restricted_by`) shows the narrowed range's bounds in grey in
+    Min, Max and Step where the parameter has no limit of its own (as a
+    feature's fixed limits), else in their tooltips, and a narrowed list in
+    the Value tooltip.
+  - **The JSON** is read and made in one place,
+    `browser/ConfigurationsData.*` (plain Qt Core, `app.unit`:
+    `app/tests/configurations_data.cpp`): the table (what the window does
+    not edit, `rules` and unknown fields, goes back unchanged), the option
+    reports, moves and refusals, and the commands.
+  Tests: `tools/ui-configurations-test.sh` (Linux: two options and a row
+  made and applied, a choice in the bar, a rule's move as a notice, a row
+  value refused with the rule's name), `tools/ui-configuration-tables-test.sh`
+  (Linux, mitcad#849: a table column as an option's domain, rows generated
+  from the table, a combination in table rule built and saved, and a
+  generated row applied with the rule's move), `app.ui-windows-configurations` and
+  `app.ui-macos-configurations` (the driver script
+  `tools/ui-scripts/configurations.mitcad-ui`: the window opens, a choice
+  in the bar changes the body).
 - **Property Sets** (mitcad#496): `view.property_sets` (the command
   search: the selected body or component, else the root), the browser's
   menus of a body (after Appearance...) and of a component (after Design
@@ -3028,6 +3231,110 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   value, a body in each of its places; the component and visibility
   filters still apply. A search the model cannot read finds nothing and is
   logged.
+
+### The rule block editor
+
+The Rules tab of the Configurations window (mitcad#808; design:
+docs/configurations.md, "Block editor", decision 6) is native Qt, with no
+dependency of its own: `configurations/RulesPage` (the tab), on
+`configurations/RuleCanvas` (the palette and a `QGraphicsView` canvas)
+and `configurations/RuleBlocks` (plain Qt Core: a rule as blocks, read
+from and written to the model's JSON). `browser/ConfigurationRulesPage.cpp`
+gives the window `makeConfigurationRulesPage`, a `RulesSource` on its
+`DocumentHost`: the `configurations` query (the table and its
+`problems`), the `configure` query (which options are numbers), the
+`check_rules` query, `formula_help`'s `tables` (the design's tables and
+their columns, for combination in table), and `set_configurations` with the table as the model
+has it (through the configurations' JSON adapter, so the options and rows
+go back unchanged) and the page's `rules`; Undo and Redo are the model's
+`undo` and `redo`.
+
+- **The list**: a rule per row, its name (edited in place: double-click,
+  F2; Add opens the new rule's name at once; an empty or taken name is
+  refused), the enabled check and a warning mark whose tooltip says why:
+  `Not saved: fill its empty sockets`, `Not saved: its else has no action`,
+  `Not saved: <the model's refusal>`, or the model's `problems` that name
+  the rule. Add, Duplicate (`<name> 2`), Delete; Insert and Delete in the
+  list.
+- **Blocks** (`RuleBlocks`): a rule's `when`, `require` and the values of
+  its actions are expression text in the model. Each is read into blocks:
+  compare (`==`, `=`, `<>`, `!=`, `<`, `<=`, `>`, `>=`, one at the top),
+  `and`/`or`/`not` (any case), is one of (`or(x == a; x == b; …)`: one name
+  compared with values), names, numbers with a unit (`1000 mm`, `-5 mm`,
+  `10 mm^2`), texts, table columns (`Colors.Name`), parentheses around any
+  of them. Everything else is a formula block holding its text. A block
+  keeps the exact text it was read from and prints it while neither it
+  nor a block in it changes, so a rule that is opened and saved keeps its
+  text character for character; an edited block prints canonically
+  (`Color == 'Black'`, `and(a; b)`, a comparison in a comparison in
+  parentheses). An action object of the JSON becomes a block per key
+  (`{"option": "Depth", "min": …, "max": …}`: min and max) and is written
+  back as one object; an action or field the editor does not know is kept
+  as it is (`OtherAction`, the rule's other fields, `comment`).
+- **The canvas**: the rule's frame with `when` (or `always`), `then` and
+  `else`; value blocks with a plug on their left, action blocks with a
+  notch and a tab, empty sockets and the end of a list (`+`) dashed, a slot
+  before each action and `+ action` after the last. A value or logic block
+  fits only a value socket (an empty one, or a value it replaces, or the
+  `+` of and, or, is one of, allow only, exclude); an action fits only a
+  then or else slot; the Rule group's entries (when … then, then (always),
+  else) apply to the whole rule. A palette entry dragged over the canvas
+  highlights where it would go (by the mouse's own press, move and
+  release: no platform drag and drop); a block is moved the same way, and
+  deleted when dropped on the palette. A new name, number, text, column or
+  formula opens its editor at once (a name with the first option, an
+  action with the first option, min, max and step with the first number
+  option); fields (an action's option, a comparison's operator as a menu,
+  a message, a table, its columns `Color=Color, Length=Length`) open on a
+  click, blocks on a double-click; a formula opens in the Formula Editor
+  (`FormulaEditor`, any kind) and is read into blocks again.
+- **Combination in table** (`in_table`, mitcad#806, #849): a new block
+  opens its table at once, completed from the design's tables as it is
+  typed. A table of the design maps each option to its column of the same
+  name (else of the same name in another case), keeping the mappings the
+  table still has (`rules::inTableColumns`), so the block and its table are
+  one complete edit that the model takes. Its columns field opens `Table
+  Columns`, a column of the table (or none) per option; for a table the
+  design does not have, the columns are typed (`Color=Color,
+  Length=Length`).
+- **Keyboard**: the palette takes Enter on an entry (put at the canvas's
+  focus: its socket or slot, else after the focused action, else the
+  then's end or the first empty socket); the canvas takes Left and Right
+  (the blocks in order), Up and Down (the nearest place in the row above
+  or below), Enter or F2 (edit; on a socket or a slot: the palette),
+  Delete or Backspace (the block; on `when` or `else`: that section), the
+  menu key or Shift+F10 (Edit, Edit as Formula…, Move Up, Move Down,
+  Delete; Add When, Apply Always, Add Else, Remove Else). The labels
+  `&Rules`, `&Palette` and `&Blocks` and the buttons `&Add`, `D&uplicate`,
+  `&Delete`, `View as &Text` and `Chec&k Rules` take Alt.
+- **Saving**: each edit is `set_configurations` at once, one undo step
+  (`Edit Configurations`), when every rule is complete (a name, no empty
+  socket, an else with an action: the model keeps no empty else). A new
+  block whose editor opens at once and the value typed in it are one
+  edit, said when the editor closes (as the block came when Esc cancels
+  or nothing changed): an empty text is never a step of its own. An edit
+  that leaves an empty socket, or that the model refuses, stays on the
+  page (marked in the list, a line under the canvas says why) until an
+  edit completes it; Ctrl+Z in the page takes such edits back one by one,
+  then runs the design's Undo; the platform's Redo keys its Redo. A refresh
+  of the window keeps them.
+- **View as Text**: the selected rule in the expression language, a line
+  per part (`when Color == 'Black'`, `then Length max 1000 mm`, `else …`,
+  `always` without a when). **Check Rules**: the `check_rules` report's
+  `lines` (else its parts in words), under the canvas; with changes not
+  saved yet it says that the saved rules were checked.
+- The editor follows the theme's palette (its block colours are the same
+  in both themes; sockets and fields use the palette's base and text) and
+  is the same in the Floating and Docked layouts.
+
+Tests: `app.unit` (`app/tests/rule_blocks.cpp`: the round trip of every
+rule of the design note and of commands.md, and of rules with formula
+blocks; canonical text; the edits; the page on a design of the test's
+own; a combination in table whose columns follow its table) and
+`tools/ui-configuration-rules-test.sh` (Linux: "Black is short"
+built from the palette with the mouse in Docked, the Configuration bar's
+Length limited by it, View as Text; a rule built with the keyboard only in
+Floating; Check Rules lists a value that is never allowed).
 
 ## Joints
 
@@ -4092,7 +4399,11 @@ button build.timber at x,y` (`build.wall`, `build.floor_roof`: the shown
 page's command buttons). Tests: `tools/ui-timber-test.sh` (Timber's modes
 on a wall's members: no Frame mode, Two points between studs, On a
 member's preview staying the click's), `tools/ui-windows-timber-test.ps1`
-(ctest `app.ui-windows-timber`; each section with its own tool).
+(ctest `app.ui-windows-timber`; each section with its own tool) and
+`tools/ui-windows-timber-frames-test.ps1` (`app.ui-windows-timber-frames`:
+mitred frames of members and profiles, a member on a board). The Windows
+TIMBER tests (six ctests `app.ui-windows-timber*`, run side by side,
+mitcad#834) share `tools/ui-windows-timber-lib.ps1`.
 
 Frames' logs (mitcad#479, mitcad#520): `BUILD parts wood: <n> (<m> in the
 design)`, `BUILD wall adds to Component1; fasteners on; 2 x Wood screw at each
@@ -4136,13 +4447,16 @@ remembered; a start on another body's face; a wall across a long room
 modelled as one body, Auto to its far wall, the plates spliced, a refused
 preview still naming the wall, mitcad#536), `tools/ui-timber-floor-roof-test.sh` (Floor / Roof: a floor
 with blocking, Timber Frame showing its values; a roof on two walls from
-the view's context menu, the kind remembered), `tools/ui-windows-timber-test.ps1` (a wall, after Place no
+the view's context menu, the kind remembered), `tools/ui-windows-timber-wall-test.ps1` (a wall, after Place no
 ghost and Enter refused, mitcad#513; butting walls from its side near
 end A, flush with it, an Offset typed moving it once, and from its end
 B's face; with Lapped plates an L wall from near its end and a T wall
 from mid-side, the choice remembered; the run meeting the wall
-opposite; a floor with Floor / Roof; a wall across a long room, Auto, its
-plates spliced, mitcad#536). The three Linux tests share
+opposite), `tools/ui-windows-timber-openings-test.ps1` (the Openings
+window; a start on a solid wall's faces; a wall across a long room, Auto,
+its plates spliced, mitcad#536), `tools/ui-windows-timber-floor-roof-test.ps1`
+(a floor with Floor / Roof; frames as components, a gable roof's
+nails). The three Linux tests share
 `tools/ui-timber-lib.sh` (the synthetic library and the log helpers).
 
 Fasteners' logs (mitcad#497): `BUILD timber fasteners: set off; 2 x Wood
@@ -4155,8 +4469,8 @@ length ...; a set of 6, 12 junction(s) fastened`, `BUILD swap fastener
 starts with 2 fastener(s), <key>`, `Inspect Swap Fastener: swap 2
 fastener(s) (wood, 2 x Wood screw 5x80) for Ring nail 3.1x90`, `Swapped 2
 fastener(s) for Ring nail 3.1x90 (3.1x90); <warnings>`. Tests:
-`tools/ui-timber-fasteners-test.sh`, `tools/ui-windows-timber-test.ps1`
-(section 13; both libraries have a pan-head connector screw whose name
+`tools/ui-timber-fasteners-test.sh`, `tools/ui-windows-timber-fasteners-test.ps1`
+(both libraries have a pan-head connector screw whose name
 comes first: the first time's fastener is still the countersunk wood
 screw, mitcad#516, the Linux one marked `wood.default`, the Windows one
 by the head-top rule).
@@ -4516,6 +4830,16 @@ settings in the user's settings (`ViewSettings`, group `view`);
   round that runs, Cancel while one runs), `tools/ui-windows-section-pick-test.ps1` (ctest
   `app.ui-windows-section-pick`; the same rounds), `app.unit`
   (`tests/section_worker.cpp`: superseded, waiting, stopped rounds).
+- **Section Analysis past every body** (mitcad#824): when the `section`
+  query's answer cuts no body (`cut` 0, a zero area and outline), the
+  panel shows a warning in the warning colour instead of the zero totals
+  (`sectionMissWarning` in `commands/InspectCommands.cpp`): all bodies
+  removed, `The plane is beyond the bodies: it cuts them all away. Change
+  Distance or turn on Flip.`; all kept whole, `The plane is beyond the
+  bodies: it cuts nothing.`; some of each, `The plane passes between the
+  bodies: it cuts none of them.` The log line is `Inspect Section
+  Analysis: <the warning>`. A saved analysis' Browser row does not say so
+  (it would need the clip). Test: `tools/ui-section-beyond-test.sh`.
 
 - **Rendered** (`view.rendered`, in View > Visual Style; only when the
   render worker `mitcad-render`, which every build has, is next to the
@@ -4754,6 +5078,9 @@ UI thread.
 | `browser/TimelineWidget.*` | the timeline with the marker and playback buttons |
 | `browser/TimelineSearch.*` | the timeline search's words and filters (mitcad#179) |
 | `browser/ParametersDialog.*` | Change Parameters |
+| `browser/ConfigurationsDialog.*`, `browser/ConfigurationBar.*`, `browser/ConfigurationRulesPage.cpp`, `browser/ConfigurationsData.*` | Configurations (mitcad#807): the window, the browser's Configuration bar, the Rules page's place (mitcad#808), the configurations' JSON |
+| `configurations/RuleBlocks.*`, `configurations/RuleCanvas.*`, `configurations/RulesPage.*` | the rule block editor (mitcad#808): a rule's blocks and their JSON, the palette and the canvas, the Rules tab ([The rule block editor](#the-rule-block-editor)) |
+| `browser/TablesPage.*` | Change Parameters' Tables tab (mitcad#667): the design's tables, the grid with its header boxes, Import Table's preview |
 | `browser/DecimalAlign.*`, `browser/DecimalAlignDelegate.*` | numbers on a shared decimal axis in the parameter table (mitcad#566): the split of a number text, the column layout, the table delegate |
 | `browser/PropertySetsDialog.*` | Property Sets (mitcad#496): a body's, an occurrence's and a component's property sets, in-place editing, Add, Remove, Property Types |
 | `browser/AppearanceDialog.*` | Edit Appearances |
@@ -4779,6 +5106,8 @@ UI thread.
 | `print/MaterialsDialog.*`, `print/ProfilesDialog.*` | Materials (Edit Materials, Material...) and Printers and Processes (Edit Printers and Processes, Edit of Printer and Process) (mitcad#655): each window a panel (`MaterialsPanel`, `ProfilesPanel`) on the design, which My Library shares (mitcad#704) |
 | `print/MyLibraryDialog.*`, `print/PrintItemsHost.*` | My Library (Tools › My Library…, mitcad#704) and what the panels work through: the open design's model (`DesignItemsHost`) or a model of My Library's own (`LibraryItemsHost`) |
 | `print/PrintImportSummary.*`, `print/ImportDetailsDialog.*` | an import's line under Import from slicer… and Details…, each distinct problem once with the number of profiles that had it (mitcad#654, mitcad#655) |
+| `print/SlicerImport.*` | Import from Slicer… (mitcad#829): the one import of 3D Print, Printers and Processes and My Library (file dialog, `import_print_profile`, log) and the windows' row with its line and Details… (`SlicerImportBar`), with the menu of an installed slicer's presets (mitcad#830) |
+| `print/SlicerPresetsDialog.*` | Import Presets (mitcad#830): an installed Bambu-family slicer's user presets to tick, same names marked with Copy or Override |
 | `framework/NoteRow.*`, `view/BuildVolume.cpp` | the panel's note row (mitcad#655); Show Build Volume (mitcad#640) |
 | `update/` | automatic updates ([docs/updates.md](../docs/updates.md)); the download in a private, random-named temp folder on Windows and macOS; on Windows, `mitcad-updater.exe` hashes the installer again through a handle without write or delete sharing and runs it only when it matches `--sha256` from the verified manifest (mitcad#603, `UpdaterChecks.hpp`); on macOS, verified disk image, read-only mount, signature-preserving copy, atomic bundle exchange after quit, rollback and Launch Services relaunch |
 | `report/` | feedback and error reports ([below](#feedback-and-error-reports)): `ReportCenter` (Help › Send Feedback, the offers, the delivery), `ReportDialogs` (the form, the screenshot's crop, the preview), `ReportText` (masking, crash files, duplicate keys, the issue form's address; Qt Core, `app.unit`), `CrashHandler` (the signal and exception handlers, plain C++, also in `mitcad-render`) |
@@ -4961,9 +5290,11 @@ sizes and a hole table (PDF, SVG, DXF, DWG): File › Export Drawing
   Process each a box of `Slicer default` (always first; choosing it takes
   the design's choice away, `remove_property`) and the choosable printers
   or processes (`library_items`) by name in a steady order, no places, so a choice never moves them, the full name shown
-  (elided in the middle only when it must), and last **New printer…** /
+  (elided in the middle only when it must), and last, below a separator
+  line (`choiceSeparatorPrefix()`, mitcad#828), **New printer…** /
   **New process…** (`MainWindow::newDesignProfile`: a new profile in this
-  design, `create_print_profile` with `choose`: its choice in the same
+  design named by the model, `Process 1`, `Process 2`, ...,
+  `create_print_profile` with `choose`: its choice in the same
   undo step, nothing written to a library (Save to puts it in one), and
   opened in Printers and Processes; logged `3D Print <kind> new: <name> (<key>)`). A
   choice changes the design at once, one undo step (`set_property` of the
@@ -5553,7 +5884,9 @@ Floating layout the card's grip along its right edge
 least 180 px, at most two thirds of the view; `projects/cardWidth`), in
 the Docked one the dock's own edge (a resize while the left button is
 held, `ProjectsPanel::dockWidthChosen`, restored with `resizeDocks` at the
-start and when the panel is shown; `projects/dockWidth`).
+start and when the panel is shown; `projects/dockWidth`). The AppKit
+frontend's Projects card shares `projects/cardWidth` (mitcad#818,
+[docs/native-macos-ui.md](../docs/native-macos-ui.md)).
 
 | Command | What |
 |---|---|
@@ -5828,7 +6161,7 @@ SOLID tab's ASSEMBLE group.
 
 | Command | What it does | Model command / bridge |
 |---|---|---|
-| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), the results as the part picker's grid (`PartGrid`, [Part picker](#part-picker): groups with Favourites and In this design, the libraries' groups as a tree (mitcad#527), stars, the tiles' size, the hover's larger picture; an index's libraries not fetched in "Libraries to get"; a double click or Return inserts), details with the licence and the attribution, the version (newest first) and the size (cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317); a part whose manifest lists mount frames goes on to Place Component (below, mitcad#525), any other is dropped in at the origin as before | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |
+| `insert.library_component` Insert from Library | `LibraryBrowser`: search (words, a licence filter, items without a licence only when asked), the results as the part picker's grid (`PartGrid`, [Part picker](#part-picker): groups with Favourites and In this design, the libraries' groups as a tree (mitcad#527), stars, the tiles' size, the hover's larger picture; an index's libraries not fetched in "Libraries to get"; a double click or Return inserts), details with the licence and the attribution, the version (newest first) and the size (a closed table's cascaded combo boxes per option, `SizeChooser`; an open table's chooser per option filtered by the rules, mitcad#810, [Options of library parts](#options-of-library-parts)), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317); a part whose manifest lists mount frames goes on to Place Component (below, mitcad#525), any other is dropped in at the origin as before | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`, `library_configure`; then `insert_component` with `library` (and `parameters`) |
 | `insert.mount_part` Place Component (mitcad#525, `commands/MountCommands.cpp`) | Insert from Library starts it for a part whose manifest lists mount frames (`mounts`, [docs/libraries.md](../docs/libraries.md#mount-frames)); not in the ribbon. Place On (a flat face or a plane for a face or grid frame; for a foot frame any face of the part with the grid, the cell under the click, so that the planes of the frames of the parts already placed, which lie in the cells' faces, take no clicks; a round face, a circular edge or an axis for a shaft or hole frame; none: a drop-in), Mount Frame (the part's frames, the first chosen), Rotate (about the frame's z; on a grid quarter turns), Offset, Flip (a plane's other side, a hole's other end). A click snaps the frame to the pick face to face, its way towards the viewer kept with it (`towardViewer`: a hole's end); the preview shows the part there (`analysis_shape` `mount_preview`) with a marker on its frame, the panel the frame, where it goes (a grid's cells) and how it may move, or why it cannot (a taken cell). **Place** (Enter) places it and the panel stays for the next one; **Shift + click** places at once; Enter without a pick drops it in at the origin as before, to be joined later with Joint, whose origins take its frames (its component's joint origins, the browser's Joints rows); **Close** (Esc) keeps what was placed | `mount_preview` while the inputs change; `insert_component` with `mount` (without: as before) |
 | `tools.library_parts` Library Parts... | `LibraryPartsDialog`: each part's recorded version and size, another version or size, Show Changes, Update; Check for Newer Versions and Get Missing Libraries fetch (the latter after showing the addresses, which come from the design); the Parts List tab (Copy as CSV) | `library_parts`, `parts_list`, `library_show`, `library_diff`, `library_fetch`; then `update_library_parts` |
 | `tools.libraries` Libraries... | `LibrariesDialog`: the sources (settings `libraries/sources`: URL or folder, on or off, and Auto-update, mitcad#576; the defaults are MitCad's fastener library and the community index, both with Auto-update off), the columns On, Auto-update (tooltip "Fetch this library when MitCad starts"; greyed out, its state kept, while the source is off), Source, Library, Versions, Licence; Add URL, Add Folder, Remove, Fetch Selected, Fetch All | `library_list`, `library_fetch` |
@@ -6065,6 +6398,90 @@ group) and the Windows timber test's part 7; the per-size counts
 In this design with the sizes the design uses) and the Linux timber
 fasteners test (`In this design` with the row), the data in
 `tests/part_picker_data.cpp` (`UsedCounts`).
+
+### Options of library parts
+
+`library/OptionChooser.*`, `library/PartOptions.*`,
+`library/EditOptionsDialog.*` (mitcad#810; the design in
+[docs/configurations.md](../docs/configurations.md), "Part pickers and
+BUILD" and "Inserted components"). A library part, a BUILD part or a
+linked design whose configuration table is **open** (`options`, not
+`closed`) is chosen by its options rather than only by its rows.
+
+- **The choosers** (`OptionChooser`): a chooser per option, in the
+  options' order: a combo box for a list (its allowed values), a number
+  field for a range or a free number (its range and step, in the option's
+  unit; the value is taken on Enter or Tab), a text field for a free
+  text; a driven option (a formula, or bound to the parent) shows its
+  value, read-only, its expression in the tooltip. The tooltip names what
+  is allowed and the rules that narrow it. Each change asks the
+  `configure` answer with the options chosen up to it; the later options
+  keep their values where the rules still allow them (asked again one by
+  one, in order) and move where they do not, and the notice under the
+  choosers lists the moves with their rules (`Length 1200 mm → 1000 mm:
+  Black is short`). A combination the rules refuse is not taken: the
+  choosers go back and the notice, in the error colour, says why. A
+  **closed** table (and one of the old form, `selectors`) looks as it
+  does today: a combo box per option of the values its rows have, or the
+  rows by name (`librarySize<n>`). An open table whose options cannot be
+  read (a library or model without the answer) falls back to its rows.
+- **Insert from Library**: the browser's size is the choosers
+  (`SizeChooser` is `OptionChooser`), asked of the library's component at
+  the version shown (`library_configure`); Tab goes from Version through
+  the choosers to Linked. Insert sends `insert_component` with
+  `parameters`, the options as constants (`{"Color": "'Black'",
+  "Length": "800 mm"}`), and `library.config` the row the combination
+  matches, none when it matches no row (so a combination without a row
+  counts under the component in In this design and the tiles' `×N`).
+  Place Component (mitcad#525) sends the same `parameters`.
+- **BUILD's part picker**: the rows of an open table stay tiles (presets
+  of the options; favourites and use counts per row as before,
+  mitcad#491, mitcad#518), and the options of the tile chosen show under
+  the grid. A click chooses the part with them, and a change of an option
+  chooses it again: the command's Part takes an **options key**, the
+  tile's key with the matching row and the options (`lib|comp|row?{json}`,
+  `build::optionsKey`); `Catalog::find` gives the part with them,
+  `build_place`'s `part` carries `parameters`, the Part drop-down lists
+  it in place of its tile with the option values.
+- **Edit Options…** (a library part's or a linked design's row in the
+  browser, after Property Sets…): `EditOptionsDialog`, titled `Edit
+  Options - <name>`: the choosers of the inserted component (the
+  `configure` query with `component`, its own expressions first), and an
+  expression field per option with the parameter suggestions and the
+  Formula Editor (fx). A constant there chooses the option; a formula of
+  the design's parameters (`Shelf_W - 2 * Wall`) binds it, and its
+  chooser then shows the value it gets. OK keeps every option's
+  expression in one undo step (`set_component_parameters`); the options
+  belong to the component, so all of its occurrences follow.
+
+| Model entry | Used for |
+|---|---|
+| library command `library_configure` (`url`, `id`, `rev`, `component`, `values`) | Insert from Library, BUILD's picker: the `configure` answer on the library component's design |
+| query `configure` with `component` (uid), `values`, `parameters` (the bound expressions; left out the first time: the component's own) | Edit Options… |
+| `set_component_parameters` (`component`, `parameters`) | Edit Options…' OK |
+| `insert_component`'s and `build_place`'s `parameters` | the options chosen |
+
+Logs (the prefix is `Library` in Insert from Library, `Part picker` in
+BUILD's picker, `Edit Options` in the dialog): `<prefix> options: Color =
+Black, Length = 800 mm (no row)` (or `(row Standard)`; a driven option
+`(driven)`), `<prefix> option <name> allowed <300 mm … 1000 mm, step 10
+mm | Black, White | any>[ (<rules>)]`, `<prefix> option <name> chosen:
+<value>`, `<prefix> option moves: <move>; ...`, `<prefix> option refused:
+<why>`, `<prefix> options not read (<why>): the rows instead`, `<prefix>
+size <row>` (a closed table); `Library browser options of
+<library>/<component>: <options>`, `Inserted component <name> with
+options Color = 'Black', Length = 800 mm (no row|row <row>)`, `Part
+picker options of <tile>: <options>`, `Part picker chose
+<library>/<component> with options <options>`, `Edit Options opened for
+<name>`, `Edit Options <option> expression at x,y` and `Edit Options OK at x,y` (in the main window,
+as the panels' places), `Edit Options bound <option> = <expression>`,
+`Edit Options unbound <option>`, `Edit Options accepted: <option> =
+<expression>, ...`, `Edit Options of <name>: ...` (the command run),
+`Edit Options of <name>: no options (<why>)`. Tests:
+`tools/ui-part-options-test.sh` (an open table's options in Insert from
+Library, one narrowed by a rule; Length bound to the design's parameter
+in Edit Options and following it; a closed table as before), the answers
+and requests in `tests/part_options.cpp` (test_app).
 
 ### Design policy
 
@@ -7280,14 +7697,13 @@ next screenshot.
 | `Cosmetic threads shown: 1` | the cosmetic threads drawn as rings changed |
 | `Sketches shown: F1, …` | the sketches the view shows |
 | `Sketch Sketch1 shown for the edit of Extrude1` (`for Extrude`), `Sketch Sketch1 hidden again after the edit of Extrude1`, `Sketch Sketch1 stays shown after … (its light bulb)` | a command started with a sketch it uses whose light bulb is off, and ended: the sketch shown for its time, then back to its light bulb (mitcad#546) |
-| `Timing refresh: 36.5 ms`, `Timing display: 1093 ms, 166 bodies, 166 new`, `Timing hover: …`, `Timing frame: …`, `Timing open: …` | with `MITCAD_LOG_TIMING=1` (`framework/Diagnostics.hpp`): how long the steps take, for `tools/perf-measure.sh` |
+| `Timing refresh: 36.5 ms`, `Timing display: 1093 ms, 166 bodies, 166 new` (`, 1 placed`: bodies only placed elsewhere, their drawn objects moved, mitcad#838), `Timing hover: …`, `Timing frame: …`, `Timing open: …` | with `MITCAD_LOG_TIMING=1` (`framework/Diagnostics.hpp`): how long the steps take, for `tools/perf-measure.sh` |
 | `Selected: 1 face [face F2:end(…) of F2.b0]`, `Context menu: A \| B` | outside commands |
 | `Context menu Solid: Press Pull \| Fillet \| More`, `Context menu Solid More: Draft \| Hole` (`BUILD`, `Construct`), `Context menu Delete: Delete Member \| Delete Body \| Delete Component`, `Deleted member <name>` (`spacing set of <name>`), `Deleted body Body1`, `Deleted component Component1:1` | the view's context menu's submenus (mitcad#494; [The view's context menu](#the-views-context-menu)) and what Delete did, one undo step each; `tools/ui-context-menu-test.sh` |
 | `Eye click Root/Bodies/Body1 (press)` (`(double-click)`) | a click on a light bulb in the browser, before its `Visibility …` line; the press, its moves and its release belong to the light bulb and never reach the tree's selection (mitcad#344; `tools/ui-browser-test.sh`, `tools/ui-windows-browser-test.ps1`) |
 | `Context menu Hide: Hide Body \| Hide Component` (`Hide 2 Bodies`, `Hide 2 Components`; the submenu of the view's context menu, mitcad#347), `Hid body Body2`, `Hid component Component1:1` | Hide > Hide Body / Hide Component: `set_body_visible` for the bodies of the selected faces, edges, vertices and bodies, `set_occurrence_visible` for their occurrences (none for the root's bodies, so no Hide Component), each once, as the browser's light bulbs do (`BrowserController::hideBodies`, `hideOccurrences`), one undo step; `tools/ui-hide-menu-test.sh` |
 | `Find in Design opened`, `Find in Design found: 5 bodies, 0 components`, `Find in Design: hid 3 bodies` (`showed`, `1 component`; `selected …`, `appearance for N bodies`), `Find in Design button at x,y`, `Find in Design field\|components\|bodies\|visibility\|show\|hide\|appearance\|select\|all\|none\|close at x,y`, `Find in Design row N at x,y` | the Find in Design window (mitcad#350): the results after each search, what each button did (bodies by uid and components by occurrence, each once), and where the controls and the rows in sight are; the field is also logged as `Dialog field Find in Design: <text>`; `tools/ui-find-in-design-test.sh` |
-| `Create Sketch: select a plane`, `Create Sketch: origin planes shown` (`not shown (the design has components)`), `Create Sketch picked …`, `Sketch started on xy, origin (0, 0, 0)`, `Editing sketch F1 (Sketch1)`, `Sketch finished` | sketch mode |
-| `Browser offers the origin planes: Root/Origin open; XY, XZ, YZ pickable`, `Browser no longer offers the origin planes: Root/Origin folded` (`open`, as it was before) | Create Sketch waits for a plane that the view does not show (mitcad#694: the design has components and the Origin's light bulb is off): the browser's Origin folder is opened and its XY, XZ and YZ rows are not greyed for the pick (a click on one starts the sketch on it), then folded back as it was when the pick ends (`BrowserPanel::offerOriginPlanes`; `tools/ui-visibility-test.sh`, `app.ui-windows-visibility`) |
+| `Create Sketch: select a plane`, `Create Sketch: origin planes shown`, `Create Sketch picked …`, `Sketch started on xy, origin (0, 0, 0)`, `Editing sketch F1 (Sketch1)`, `Sketch finished` | sketch mode |
 | `Sketch view x0,y0 x1,y1 x2,y2` | where sketch points (0, 0), (100, 0), (0, 100) are in the window, when it changed (`ui_sketch_click x y`) |
 | `Sketch plane centred on the origin: origin at 812.00,410.00; free area centre at 812.00,410.00` (`on the view's middle`, `on the sketch's face`) | the view turned to a sketch plane (a sketch entered, Look At): the point it centred, where the sketch's origin and the middle of the free area are in the window (mitcad#738; the middle of the sketch's face, mitcad#772) |
 | `Sketch axes drawn: origin at 812,456 in the view; x axis 300,456 to 1400,456; y axis 812,900 to 812,60` (`outside the view`; an axis `none`) | in sketch mode, the sketch's own origin and its x and y axes as the overlay draws them (window pixels; each axis across the view from its negative to its positive end, `none` when the plane is seen edge on or the axis misses the view), whatever the Origin folder's light bulb says (mitcad#739, `SketchOverlay::logAxes`); when it changed, logged when the overlay paints and with `Sketch view` (a Windows session without a desktop never paints), again at every sketch edit (`tools/ui-sketch-origin-test.sh`, `app.ui-windows-sketch-origin`) |
@@ -7346,6 +7762,9 @@ next screenshot.
 | `Parameters dialog opened`, `Parameters: d1 = width + 5 mm (35 mm); …`, `Parameters d1 expression at x,y` (name, unit, expression, comment), `Parameters add/delete/OK at x,y`, `Added parameter width = 30 mm`, `Parameter d1 expression: width + 5 mm = 35 mm`, `Parameter width expression: d2 / 2 refused: <reason>`, `Delete parameter w refused: <reason>` | Change Parameters (places in the main window's coordinates) |
 | `Parameters d1 min\|max\|step\|strict at x,y`, `Parameters d1 slider at x,y`, `Parameters d1 slider handle at x,y`, `Parameters only limited at x,y`, `Parameter d1 max: 50 = 50 mm`, `Parameter d1 limited: <the model's limit_message>`, `Parameters: d1 = 60 mm (50 mm ▲max); …`, `Parameters limited: d1 = 60 mm → 50 mm ▲max (<the Value cell's tooltip, lines joined with "; ">)` / `none`, `Parameter d1 typed 70 mm: d1: 70 mm will be limited to 50 mm (▲max)` (`within its limits`, `will be refused: <reason>`), `Parameter d1 slider: 40 mm = 40 mm`, `Parameters only limited: on: d1` | Change Parameters' limits (mitcad#665); `tools/ui-parameter-limits-test.sh` |
 | `Parameters during command Extrude editing Extrude1`, `Parameters closed: back to Extrude`, `Panel Extrude parameters at x,y`, `Sketch Sketch1 dimensions after the parameter change: width 50.000, d2 40.000`, `Extrude: parameter depth changed; the preview follows`, `Command Extrude: 1 parameter change(s) kept`, `Parameter d3 is held by the open panel of Extrude1` | Change Parameters while a sketch or a feature is edited (mitcad#564, [Browser, timeline and parameters](#browser-timeline-and-parameters)) |
+| `Configurations window opened`, `Configurations page Rows`, `Configurations options: Color (Black, White) = White; Length (300 mm … 2000 mm, step 10 mm) = 1500 mm` / `none`, `Configurations rows: open, default none, current Row1: Row1: Color = White, Length = 1500 mm`, `Configurations row issues: Row2: <the refusal>` / `none`, `Configurations tab Rows at x,y`, `Configurations add option\|remove option\|edit domain\|move up\|move down\|closed\|add row\|delete row\|set as default\|apply at x,y`, `Configurations option Length domain\|default\|comment at x,y`, `Configurations row Row1 Length at x,y` (a cell: the row and the column's header), `Add Option dialog opened: Color, Length, New Parameter`, `Configurations added option Color`, `Configurations added row: Row1`, `Configurations row Row1 Length: 800`, `Configurations row Row2 Length: 1500 refused: <reason>`, `Configurations option Length default: 1200`, `Configurations applied Row1; moves: <notice>`, `Option Length domain: range 300 mm … 2000 mm, step 10 mm` (`column Screws.Size`), `Option Domain dialog opened for Size`, `Configurations generate rows at x,y`, `Generate Rows dialog opened: Screws.Size for Size`, `Configurations generated rows from Screws.Size for Size: 3 rows from Screws: added M3, M4, M5` (`; updated M4`, `all up to date`), `Configurations generate rows from Screws.Size for Size refused: <reason>` | the Configurations window (mitcad#807, #849; places in the main window's coordinates) |
+| `Configuration bar: Color = White (Black \| White); Length = 1200 mm (300 mm … 2000 mm, step 10 mm); row none` / `none`, `Configuration bar row at x,y`, `Configuration bar Length at x,y`, `Configuration bar Length slider at x,y`, `Configuration chosen: Color = Black`, `Configuration row chosen: Row1`, `Configuration moves: Length 1200 mm → 1000 mm: Black is short`, `Configuration refused: <why>`, `Parameters options: Color; Length (narrowed by Black is short: 300 mm … 1000 mm, step 10 mm)` / `none` | the Configuration bar in the browser and the options in Change Parameters (mitcad#807) |
+| `Rules: 2`, `Rules row Black is short: enabled, ok` (`disabled`; `Not saved: fill its empty sockets`, a problem), `Rules add\|duplicate\|delete\|text\|check at x,y`, `Rules row Black is short at x,y`, `Rules naming Rule 1`, `Rules saved: <edit>`, `Rules not saved yet: <edit>`, `Rules refused: <edit>: <reason>`, `Rules rename refused: <reason>`, `Rules undo: the last change not saved` (`the design's last step`), `Rule palette compare at x,y` (each entry by its id: `when`, `always`, `else`, `and`, `or`, `not`, `compare`, `one_of`, `option`, `parameter`, `number`, `text`, `column`, `formula`, `allow_only`, `exclude`, `min`, `max`, `step`, `require`, `forbid`, `in_table`), `Rule palette drag max`, `Rule palette chooses for then.1 slot`, `Rule canvas when.0 socket at x,y` (each place: `rule frame`, `when label`, `then label`, `when block`, `when socket`, `when.2 add`, `then.1 slot`, `then.0 option`, `when op`, `then.1 message`, `then.0 table`, `then.0 columns`; `… out of sight` scrolled away), `Rule canvas target when socket`, `Rule canvas drag then.0 block`, `Rule canvas focus then.0.0 socket`, `Rule canvas editing then.0.0 block: 1000 mm` (`… cancelled`), `Rule canvas formula when: <text>`, `Rule edited Black is short: Put max in then.0` (`Rule when`, `Set when.1 to 'Black'`, `Move …`, `Delete …`), `Rule as text Black is short: when Color == 'Black' / then Length max 1000 mm`, `Rule canvas columns of Screws: Length=Length, Size=Size` (`none`), `Rule canvas columns dialog for then.0 of Screws`, `Check Rules: <line>`, `Check Rules never allowed: Length 2500 mm`, `Context menu: Edit \| Edit as Formula… \| Delete` | the Rules tab and its block editor (mitcad#808, [The rule block editor](#the-rule-block-editor); places in the main window's coordinates); `tools/ui-configuration-rules-test.sh` |
 | `Property Sets opened for F2.b0, O1`, `Property sets of Body Panel, Occurrence Wall:1, Component Wall: N properties`, `Property sets row: component Identity/Mark = W-12 (user)` (`(user, inherited)`, `(ifc, edited)`, `(computed)`), `Property sets <level> <set>/<key> value at x,y`, `Property sets add\|remove\|types\|computed\|close at x,y`, `Editing property <level> <set>/<key>` (`as a choice: EI30 \| EI60 \| EI90`), `Property sets choice at x,y`, `Property <level> <set>/<key> set: W-20`, `… chosen: EI60`, `…: <text> refused: <reason>`, `Added property <set>/<key> (<type>)`, `Removed property …`, `Property type defined: <name> (<base>)`, `Property type removed: <name>`, `Find in Design property search: <reason>` | Property Sets and its property search (mitcad#496; places in the main window's coordinates); `tools/ui-property-sets-test.sh`, `tools/ui-windows-property-sets-test.ps1` |
 | `Build parts list columns: Mark, FireRating`, `Build parts list row: Wall: W-20 \| EI60`, `Parts list columns at x,y` | the Parts List's property columns (mitcad#496): the keys and each row's values; the field's place |
 | `Panel Fillet input sets.1.radius at x,y`, `Panel Fillet input add sets at x,y`, `… input remove sets.1 at x,y`, `… input up_sections.2 at x,y`, `… input down_sections.0 at x,y` | a list's rows and buttons, an ordered selection's buttons |
@@ -7405,6 +7824,7 @@ next screenshot.
 | `Computing set_parameter started` … `Computing set_parameter done in <ms> ms (<n> evaluated)` (a model command's job is named by its `cmd` and logged only when it takes over 50 ms; `Computing preview …` for a panel's preview, which has no progress dialog (mitcad#634) and logs `Computing preview: cancel requested after <ms> ms` when Esc, Cancel or a newer input stops it), `Command set_parameter cancelled`, `Command undo refused: the model is busy computing`, `Preview Extrude: cancelled`, `Extrude: OK cancelled`, `Extrude: OK not done`, `Parameter d1 expression: 70 cancelled`, `Finish Sketch cancelled: Sketch1 stays open`, `Command Extrude: the timeline stays rolled back`, `Drag of p3 ended by a dialog`, `Manipulator Extrude distance dragged to 25 (ended by a dialog)`, `Context menu dropped: the model is computing` | commands and previews as jobs: a cancel, a call that came while a job ran (refused, or waiting until it is done), a drag the progress dialog ended |
 | `Display meshes of part.mitcad: 2 bodies in <ms> ms on the model's thread` (also `of <cmd>`, `of preview`, `of preview refinement`; only when it meshed any; a preview's end in ` (interactive)`) | the view's meshes of the shown, previewed and tool bodies made at the end of the job (`framework/DisplayMeshes`, mitcad#398; the job's stage reads "Meshing the bodies for display"). A preview's are the interactive tier's (mitcad#635): stand-ins, copies of its bodies meshed with planes through a faster triangulation (the same nodes and deviation), the bodies themselves left for the final tier |
 | `Drag proxy Extrude: shown for distance 12 mm (the exact preview at 5 mm) at 60.000,50.000,26.000`, `Drag proxy Extrude: hidden: <why>` (`the exact preview shows 12 mm`, `a value was typed`, `an input changed the command's structure`, `no exact preview is shown`, `the command was committed`, `the command was cancelled`), `Drag proxy Extrude: not shown: <why>` (`not for these inputs`: a taper, an extent to an object or through all, a wrap, a start at an object, another input changed; `the exact preview's tool is not the prism of its values`), `Drag proxy Extrude distance: 44 inputs, 44 proxy updates (every 64.0 ms median, 81.0 ms p95), 5 exact previews (every 560.0 ms median, 610.0 ms p95), 120 frames in 3120 ms; proxy update 0.150 ms median, 0.400 ms max` (at the release), `Drag proxy Extrude: the exact preview of 27.5 mm replaced it 540 ms after the release`; with `MITCAD_LOG_TIMING=1` each update: `Drag proxy Extrude distance: 12 mm over the exact 5 mm at 60.000,50.000,26.000 in 0.120 ms` | Extrude's provisional tool while a handle is dragged (mitcad#636, `framework/CommandSessionProxy.cpp`): the exact preview's tool changed to the dragged value at once, amber and see-through with dashed edges, where its component's occurrences put it, until the exact preview of that value replaces it. A drag's line counts what was delivered (snapped inputs), the proxy updates drawn, the exact previews shown while the button was held and the frames submitted (`OcctViewer::framesDrawn`, not fenced) apart; `tools/ui-drag-proxy-test.sh` |
+| `Drag proxy Move/Copy: shown for tx 12 mm (the exact preview at 0 mm) at 12.000,0.000,10.000` (`rz 30 deg`), `Drag proxy Move/Copy: hidden: <why>` (`the exact preview shows 12 mm`, …, as Extrude's), `Drag proxy Move/Copy: not shown: <why>` (`no motion of these inputs`: Rotate, Point to Point and Point to Position, whose motions depend on picked geometry; `not for these inputs`: a value that is not a number; `no exact preview to start from`), `Drag proxy Move/Copy tx: 44 inputs, 44 proxy updates (…), 1 exact previews (…), 120 frames in 3120 ms; …` (at the release), `Drag proxy Move/Copy: the exact preview of 27.5 mm replaced it 120 ms after the release` | Move/Copy's provisional motion while a handle of Free Move or Translate is dragged (mitcad#838, `CommandDef::dragMotion`, `framework/CommandSessionProxy.cpp`, `commands/MoveDragMotion.cpp`): the bodies or components the exact preview moved are drawn where the dragged value puts them, their meshes only placed elsewhere (no model preview, no meshing), until the exact preview of that value replaces them; while the button is held the exact preview waits until the pointer rests for 250 ms. `at`: where the middle of the first moved body is drawn. `tools/ui-move-drag-test.sh` |
 | `Preview tool at 60.000,50.000,22.500` (`none`) | where the preview draws its tool, the middle of its box in the design: at each placement of its component's occurrences (the report's `tool_instances`, mitcad#636) |
 | `Preview extended tool: 10.0,-3.7,-3.7 to 10.0,43.7,23.7` (`none`) | a split's or trim's tool as the feature extends it (`CommandDef::extendedToolPreview`, mitcad#712): its box in the design, logged when it changes; `none` while Extend is off or the tool is a body or sketch curves |
 | `Preview Extrude: refining the display meshes of 2 bodies`, `Preview Extrude: display meshes refined` | a preview shown in the interactive tier, once a drag has ended and no input changed for 250 ms: its bodies meshed in the final tier in a job of their own (`Display meshes of preview refinement: …`), which changes nothing in the model, and drawn instead of their stand-ins (mitcad#635). OK meshes them in its own job when this has not happened yet |
@@ -7666,6 +8086,136 @@ by an outer body, in both Docked and Floating layouts.
 
 Agents should name features and use `group_features` for contiguous modeling
 stages, as described in [the MCP guide](../docs/mcp.md#keep-an-assistant-built-timeline-readable).
+
+## Tables (mitcad#667)
+
+Change Parameters has two tabs, **Parameters** (Alt+P: the table above)
+and **Tables** (Alt+T; `browser/TablesPage.*`): the design's tables of
+data that formulas look up with XLOOKUP, MATCH and INDEX
+([docs/table-lookups.md](../docs/table-lookups.md); the model's side:
+[commands.md, "Tables" and "Tables as CSV"](../core/model-api/src/commands.md)).
+The tab works while a sketch or a panel is open, as the Parameters tab
+does (its commands go through `DocumentHost::runParameterCommand` then;
+a panel's expressions follow a renamed table). The note about what is
+being edited stands above both tabs.
+
+- **The list** on the left (`tablesList`), from the `tables` query; New
+  (Alt+N, the add icon), Delete (Alt+D, the delete icon) and Rename (Alt+R)
+  above it, as the Parameters tab has User Parameter and Delete (+ and −
+  on macOS, `mac::styleListButtons`), Import CSV… (Alt+I) and Export CSV…
+  (Alt+X) below it. **New** asks for a name (`New Table`, `Table1` by
+  default; a table's name is taken from the parameters' namespace, so the
+  model refuses a parameter's) and makes the table with a `Key` column of
+  texts, a `Value` column in the document's length unit and one empty row
+  (`set_table`). **Rename** (`Rename Table`) runs `rename_table`: the
+  formulas follow. **Delete** runs `delete_table`; the model refuses it
+  while a parameter uses the table, naming them, and the reason shows
+  under the grid. With no table the right side says so, with an example
+  formula.
+- **The selected table** on the right: its comment (Alt+O), Add Row
+  (Alt+W, after the current row), Remove Row (Alt+V), ▲ ▼, Add Column
+  (Alt+L, after the current column, in the length unit), Remove Column
+  (Alt+M), ◀ ▶, and the grid (`tablesGrid`). Each header cell holds the
+  column's name (`tablesColumnName`) and a unit box (`tablesColumnUnit`:
+  mm, cm, m, in, ft, deg, rad, no unit, Text, and a unit read from a file
+  such as `mm^2`). Enter in a column's name or in the comment applies it
+  (`rename_table_column`, `set_table`, as the field loses the keyboard)
+  and goes on in the grid: it is never the dialog's OK. The unit changes
+  only by a choice in the box's open list (Alt+Down, F4 or Space opens
+  it): the wheel, the arrow keys and letters do nothing while it is
+  closed. A new unit converts the column's numbers so that the values stay
+  (25.4 mm becomes 1 in; rounded to 12 significant digits, so mm → in → mm
+  gives the numbers back), and the status bar says so (`dk: mm → in, the
+  numbers converted (25.4 → 1). Undo brings the old numbers back.`);
+  between no unit and a unit, or between lengths and angles, the numbers
+  stay; into Text a number becomes its text, out of it a text that is a
+  number becomes the number (others are refused by the model). Tab goes
+  from the comment through the names and units to the grid.
+- **Cells**: typing over a cell (or F2, a double-click) edits it; Enter
+  commits, Enter again goes to the cell below (never the dialog's OK);
+  Delete empties it. A Text column's cell is its text; a number column's
+  cell is a plain number in the column's unit (`8,5` too), or a number
+  with a unit of the column's kind, converted (`0.25 in` in an mm column
+  is 6.35, as the CSV import reads it); an empty one is null; anything
+  else goes to the model as typed, which refuses it. Every commit, and
+  every row, column and unit change, is one `set_table` of the whole table
+  (one undo step, `Edit Table Screws`); a commit that changes nothing runs
+  nothing. A refused cell or column name keeps what was typed in red with
+  the model's reason as its tooltip and under the grid (`Screws, row 2,
+  column dk: <reason>`), as a refused parameter cell does, until it is
+  typed again; the document is unchanged.
+- **Used by** names the parameters that use the table (`used_by`), and
+  the query's `problems` (first cells that repeat) show in red below it.
+- **Import CSV…** (`Import Table from CSV`) reads the file and shows
+  **Import Table** (`tableImportPreview`) from `table_csv_preview`: the
+  table's name (the file's name made a valid name, editable; the preview
+  follows a new one), whether it makes a new table or replaces one (`Makes
+  a new table Screws.`, `Replaces the table Screws (2 row(s)).`), the
+  summary, the columns with their units (a renamed
+  column as `<the file's name> in the file`, an inferred unit as `unit
+  read from the cells`), the rows, the refused cells in red, the
+  parameters whose values change (`d3: 10 mm → 9 mm`) and those that would
+  fail. Refused cells and failing parameters refuse the import: Import is
+  then disabled, as it is for a file that changes nothing. **Import** runs
+  `import_table_csv` (one undo step, `Import Table Screws`); Cancel leaves
+  the design as it is. The configuration options an import or a table edit
+  moved off removed values (`moves` of the answer, mitcad#806, #849) show
+  in the status bar and are logged as `Configuration moves: <notice>`.
+- **Export CSV…** (`Export Table to CSV`, suggesting `<name>.csv`)
+  writes the `table_csv` query's text.
+- **Completion.** The parameter suggestions of expression fields
+  (`ParameterField`) list the tables matching the name typed after the
+  parameters (`Screws`, its columns as the value); choosing one puts
+  `Screws.` in and the list goes on with its columns; after `Screws.` the
+  list offers the columns matching what is typed (`columnFragmentAt`,
+  `matchColumns` in `ParameterSuggest`). The Formula Editor completes as
+  it is typed (`formulaCompletions`, a list under the caret without the
+  keyboard): a name offers the parameters, the tables (`Screws.`) and the
+  functions (`XLOOKUP(`) starting with it, `Screws.` the table's columns;
+  Up and Down choose, Enter or Tab puts the choice in, Esc closes the list
+  only. The list opens only on typed text (Backspace updates a list that
+  is open); a caret moved by the arrows or a click closes it, so Up, Down,
+  Enter and Tab stay the text's (a new line in a long LET). A `(` or `.`
+  that already follows the name is not put in twice (`MAX|(` gives
+  `MAX(`, `Scr|.dk` gives `Screws.dk`; the fields' suggestions do the
+  same for a table). The column lists show units in the unit box's words
+  (`mm`, `no unit`, `Text`). Ctrl+Enter is the Formula Editor's OK (Enter
+  is the text's). The tables come from `formula_help`'s `tables`; XLOOKUP,
+  MATCH and INDEX are reserved names and in its function catalogue.
+
+Logs: `Parameters tab Tables at x,y`, `Parameters tab shown: Tables`,
+`Parameters formula at x,y`, `Tables: Screws (2 columns, 3 rows)` /
+`none`, `Table Screws columns: Size [Text], dk [mm]`, `Table Screws rows:
+[["M4",7],["M5",8.5]]` (the cells as JSON), `Table Screws used by: d3` /
+`none`, `Table Screws refused cells: row 2 dk: abc (<reason>)` / `none`,
+`Tables new|rename|delete|import|export|add row|remove row|row up|row
+down|add column|remove column|column left|column right|comment at x,y`,
+`Tables list Screws at x,y`, `Tables column 1 name|unit at x,y`, `Tables
+cell 2 1 at x,y` (row, column, from 1; cells in sight), `New Table dialog
+opened: Table1`, `Table Screws created`, `New table Screws refused:
+<reason>`, `Table Screws row 2 dk: 8.5`, `Table Screws row 2 dk: abc
+refused: <reason>`, `Table Screws changed parameters: d3` / `none`,
+`Table Screws column 1 renamed: Key -> Size`, `Table Screws column 1
+name: x y refused: <reason>`, `Table Screws column dk unit: mm -> in`, `Table Screws: dk: mm → in, the
+numbers converted (25.4 → 1). Undo brings the old numbers back.`,
+`Table Screws row added|row removed|row moved|column added|column
+removed|column moved: …`, `Table Screws renamed to Bolts`, `Deleted table
+Screws`, `Delete table Screws refused: <reason>`, `Table import preview
+of Screws.csv as Screws: <summary>`, `Table import column dk [mm]` (`
+(Head diameter in the file, unit read from the cells)`), `Table import
+rows: [[…]]`, `Table import refused line 3 dk: <reason>`, `Table import
+changes d3: 10 mm -> 9 mm`, `Table import fails d3: <error>`, `Imported
+table Screws from Screws.csv: <summary>`, `Import of a table from
+Screws.csv cancelled|refused: <reason>`, `Exported table Screws to
+<path>: 3 row(s)`, `Parameter suggestions for d3 expression
+"Screws.d": d, dk`, `Parameter suggestions for … "Scr": …; tables:
+Screws`, `Parameter table inserted Screws. into …`, `Parameter column
+inserted dk into …`, `Formula completions for "Screws.": Size, dk`,
+`Formula completion inserted dk: <text>`, `Formula completions closed
+(Esc)`, `Formula editor OK|Cancel at x,y`. Tests:
+`tools/ui-tables-test.sh`, `app.ui-windows-tables`
+(`tools/ui-windows-tables-test.ps1`, by the keyboard), `parameter_suggest`
+in `test_app` (`tableTests`).
 
 ## Formula builder (mitcad#668)
 
@@ -8429,3 +8979,70 @@ as drawn, points on an image and its plane, the log line; plain Qt Core),
   `app.ui-windows-image-references`): inserted on a plate's top from a
   BMP file, calibrated by two clicks and 80 typed, edited (opacity,
   Through Bodies), hidden, saved, opened again and shown.
+
+## Bindings: Follow Option, Suppress When, Show When
+
+Values that follow expressions of parameters (mitcad#809; the model's
+mitcad#800 and its `expression` fields of `set_body_appearance`,
+`set_face_appearance`, `set_body_material`, `suppress_feature`,
+`set_body_visible` and `set_occurrence_visible`, see
+`core/model-api/src/commands.md`, "Bindings: values from expressions").
+The code: `browser/Bindings.*` (the dialogs, the switch() form, the fx
+badge), `BrowserController::{suppressWhen, showBodyWhen,
+showOccurrenceWhen, followOption}` and the menus.
+
+- **The menus.** A body's browser row: **Show When…** after Hide/Show, and
+  the submenu **Follow Option** (**Appearance…**, **Material…**, for the
+  selected bodies as Appearance… is) after Material…; an occurrence's
+  row: **Show When…** after Hide/Show; a feature's menu (the timeline's,
+  and its rows in the browser): **Suppress When…** after Suppress
+  Features. The view's menu: **Follow Option** after Material… (bodies,
+  or faces for the appearance), and **Show When…** for one body. The
+  browser's submenu is logged `Context menu Follow Option: Appearance… |
+  Material…` before the menu's own line, as the view's submenus are, so
+  that `ui_menu_choose "Follow Option" "Appearance..."` takes it.
+- **Suppress When… and Show When…** (`ConditionDialog`, titled `Suppress
+  Extrude2 When`, `Show Body1 When`, `Show Board:1 When`): an expression
+  field (`bindingCondition`, the parameters' suggestions) with **Formula
+  Editor…**, **Remove Condition** (when there is one), OK and Cancel. OK
+  runs the command with `expression` (one undo step: `Suppress Extrude2
+  When`; an empty field removes the condition and keeps the value), and
+  logs `Suppress Extrude2 when Holes = 'No'`, `Show Body1 when …`, `…
+  removed`, or `… refused: <reason>`. Logged: `Condition dialog <title>:
+  <condition or none>`, `Condition field|formula|remove|OK at x,y`.
+- **Follow Option…** (`FollowOptionDialog`, titled `Appearance of Body1
+  Follows Option`, `Material of 2 Bodies Follows Option`, `Appearance of a
+  Face of Body1 Follows Option`): **Option** lists the options of the
+  configuration (the `configure` query, mitcad#798) and then the other
+  user parameters; a table of the option's values (its `domain` list, or a
+  parameter's `values` limit; **Add Value** and **Remove Value**) and a
+  result per value, an editable combo of the appearances (`appearances`)
+  or materials (`materials`) by name: a name or an id typed in is kept
+  (the model warns about one it does not know); **Other values** is the
+  `switch()`'s default (empty: the first row's result). The table writes
+  `switch(Color; 'Black'; 'paint_black'; 'Red'; 'paint_red'; 'paint_black')`
+  (`OptionMapping`), which also reads such an expression back into the
+  table; any other form is kept as it is (shown under the table) until the
+  table changes, and **Formula Editor…** edits the text. OK sets it for
+  every target (one undo step, the command's own for one target, `<title>`
+  for several) and logs `Appearance of Body1 follows switch(…)`; **Remove
+  Expression** removes it. Logged: `Follow Option <title>: option Color, 2
+  value(s); …`, `Follow Option values of Color: Black, Red`, `Follow Option
+  expression: …` at each change, `Follow Option option|value N|result
+  N|otherwise|add|formula|remove|OK at x,y`.
+- **The marks.** A bound body's, occurrence's or feature's browser row has
+  the fx badge on its icon (`boundIcon`) and the expressions (and a body's
+  warnings) in its tooltip, logged `Browser fx Root/Bodies/Body1:
+  Appearance = switch(…)` at each rebuild; a feature suppressed by a
+  condition has the badge in the timeline and `Suppressed when …` in its
+  tooltip. `DocumentSnapshot` reads `suppressed_when`, `visible_when`,
+  `appearance_expr`, `material_expr`, `face_appearance_exprs` and a body's
+  `warnings`.
+- **By hand.** Appearance…, Material…, the light bulbs, Hide and Suppress
+  Features send the value, which removes the expression in the same undo
+  step (the model's rule).
+- Tests: `tools/ui-bindings-test.sh`: Body1's appearance bound to the text
+  parameter Color through Follow Option > Appearance… (its allowed values,
+  two results typed), Color = 'Red' in Change Parameters turns it red, Box2
+  suppressed by `Holes = 'No'` and back with Holes = 'Yes', Appearance… by
+  hand ends the binding and undo brings it back.

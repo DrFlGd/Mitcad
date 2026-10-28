@@ -50,7 +50,7 @@ reports and tests last. The [index](#index) below lists every patch.
 | [multi-turn-faces.md](docs/multi-turn-faces.md) | 0510–0512, 0560, 0591–0593 | mitcad#235, mitcad#349, mitcad#380 | booleans on faces and edges that run many turns |
 | [offset-projection-and-pipes.md](docs/offset-projection-and-pipes.md) | 0100, 0960, 1030 | mitcad#172, mitcad#504, mitcad#539 | the offset, the projection's boundary search, the pipe's guide trihedron |
 | [fillet-replay-0550-0692.md](docs/fillet-replay-0550-0692.md) | 0550, 0580, 0581, 0600, 0620, 0650, 0651, 0670, 0671, 0690–0692 | mitcad#235, mitcad#343 | fillets and chamfers of stored designs: pockets, ribs, teeth, threads, recesses |
-| [fillet-replay-0700-0772.md](docs/fillet-replay-0700-0772.md) | 0700, 0720, 0721, 0740–0742, 0750, 0770–0772 | mitcad#343, mitcad#415 | notched blends, a thread's crest, a block on a post, a housing's corner |
+| [fillet-replay-0700-0772.md](docs/fillet-replay-0700-0772.md) | 0700, 0720, 0721, 0740–0742, 0750, 0770–0772, 1060 | mitcad#343, mitcad#415, mitcad#840 | notched blends, a thread's crest, a block on a post, a housing's corner, a slot beside a ledge |
 | [fillet-replay-0790-0822.md](docs/fillet-replay-0790-0822.md) | 0790, 0800–0803, 0820–0822 | mitcad#343, mitcad#422 | a thread's run-out, traits of stored bodies, a key's lenses |
 | [fillet-replay-0870-0911.md](docs/fillet-replay-0870-0911.md) | 0870, 0880, 0890, 0891, 0900–0911 | mitcad#343 | narrow bands, strips, slivers, a bar's rim and notch walls, OnSame ends |
 | [fillet-replay-0930-0942.md](docs/fillet-replay-0930-0942.md) | 0930–0933, 0940–0942 | mitcad#343, mitcad#495 | a ring's rims, roundings ending on a rod, a key, a chamfer that hung |
@@ -316,3 +316,4 @@ mitcad#77 and mitcad#79; their column names each one's report.
 | [1030](docs/offset-projection-and-pipes.md#1030-geomfill-guide-trihedron-ac-second-derivative-of-the-binormal) | mitcad#539 | pipes: the guide trihedron's second derivative of the binormal |
 | [1040](docs/booleans-and-face-merge.md#1040-shapeupgrade-unifysamedomain-signed-angle-to-a-reversed-axis) | mitcad#642 | face merge: the signed angle to a reversed axis |
 | [1050](docs/repeated-work.md#1050-shapefix-self-intersecting-wire-edges-read-once) | mitcad#642 | ShapeFix: a wire's edges read once |
+| [1060](docs/fillet-replay-0700-0772.md#1060-chfi3d-under-anothers-ball-not-past-its-other-face) | mitcad#840 | 0700's stripes under another's ball: not past the blend's other face |

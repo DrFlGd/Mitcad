@@ -25,6 +25,7 @@
 #include <TopoDS_Shape.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
 
 namespace mitcad {
 
@@ -75,5 +76,25 @@ struct DragProxy {
 // across its fixed plane: the proxy is then not shown.
 std::optional<DragProxy> applyDragProxy(const ProxyMesh& mesh, const DragProxyRule& rule,
                                         const std::vector<gp_Dir>& axes);
+
+// A provisional motion (mitcad#838, CommandDef::dragMotion): what a drag
+// does to each body an exact preview draws.
+enum class MotionSide {
+  None,       // stays where the exact preview draws it
+  Shape,      // its shape moved (or made) by the command, in its component's
+              // coordinates: drawn at its placement times the change
+  Occurrence, // in an occurrence the command places elsewhere: the change,
+              // taken into the design, before its placement
+};
+
+// Where a body the exact preview draws at `placement` (into the design) is
+// drawn while a drag takes the command's motion from `from` (the exact
+// preview's) to `to`, both in the coordinates `frame` puts into the design.
+gp_Trsf draggedPlacement(const gp_Trsf& placement, MotionSide side, const gp_Trsf& from, const gp_Trsf& to,
+                         const gp_Trsf& frame);
+
+// Whether two motions are the same: each entry of their matrices within
+// `tolerance` (mm for the translations).
+bool sameMotion(const gp_Trsf& a, const gp_Trsf& b, double tolerance = 1e-9);
 
 } // namespace mitcad

@@ -28,7 +28,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'view.find_in_design' = 'F7'; 'view.property_sets' = 'F8'; 'build.parts_list' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'view.find_in_design' = 'F7'; 'view.property_sets' = 'F8'; 'build.parts_list' = 'F9' } -StepPause 0
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }

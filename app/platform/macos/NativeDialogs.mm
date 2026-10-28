@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include "NativeKeys.hpp"
+#include "NativeTableCells.hpp"
+#include "NativeWindowFit.hpp"
+#include "NativeCollection.hpp"
+#include "NativeLayout.hpp"
 #include "../NativeDialogs.hpp"
+#include "NativeControls.hpp"
 
 #import <AppKit/AppKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -32,6 +37,7 @@
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
+#include <QHash>
 #include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QKeyEvent>
@@ -94,6 +100,7 @@ class NativeMenuPopup;
 @interface MitcadNativeModelNode : NSObject {
 @public
   QPersistentModelIndex index;
+  QString identifier; // NativeControlIdentifierRole, which outlives a model reset
   NSMutableArray<MitcadNativeModelNode*>* children;
 }
 @end
@@ -134,8 +141,21 @@ class NativeMenuPopup;
   mitcad::AppKitWidgetView* owner;
   int binding;
   QPersistentModelIndex index;
+  // The shared roles' text colour and fill outside an emphasized selection
+  // (nil: the defaults), and whether an edit is being discarded.
+  NSColor* tone;
+  NSColor* fill;
+  BOOL discarding;
+  BOOL finishing; // Return, Escape or Tab ends the edit (finishEditing:, modelEditNext)
+  // The row's stable NativeControlIdentifierRole (its first column's), which
+  // finds the row again after the model rebuilt it (mitcad#814).
+  QString rowIdentifier;
 }
 - (void)checked:(id)sender;
+// Ends this cell's text edit: commits it or discards it, keeping the table
+// focused. NO when the cell is not being edited.
+- (BOOL)finishEditing:(BOOL)commit;
+- (void)applyTone;
 @end
 
 // Only opted-in models forward hover. Persistent indices become invalid
@@ -149,7 +169,7 @@ class NativeMenuPopup;
 - (void)publishHover:(BOOL)entered;
 @end
 
-@interface MitcadNativeWindowTarget : NSObject <NSWindowDelegate> {
+@interface MitcadNativeWindowTarget : NSObject <NSWindowDelegate, MitcadNativeShortcutTarget> {
 @public
   mitcad::NativeDialogController* owner;
 }
@@ -312,7 +332,7 @@ NSScrollView* scroll(NSView* document, CGFloat height = 160) {
   view.hasHorizontalScroller = YES;
   view.autohidesScrollers = YES;
   view.documentView = document;
-  if ([document isKindOfClass:NSStackView.class]) {
+  if ([document isKindOfClass:NSStackView.class] || [document isKindOfClass:MitcadNativeLayoutView.class]) {
     document.translatesAutoresizingMaskIntoConstraints = NO;
     [document.leadingAnchor constraintEqualToAnchor:view.contentView.leadingAnchor].active = YES;
     [document.topAnchor constraintEqualToAnchor:view.contentView.topAnchor].active = YES;
@@ -344,6 +364,18 @@ void pumpNativeEvents(const std::function<bool()>& complete) {
   }
 }
 
+// A tool button with its text under its icon is a tile (MitcadNativeTileButton,
+// mitcad#815: the selection card's Create row), with its own icon size.
+bool tileButton(const QAbstractButton* button) {
+  const auto* tool = qobject_cast<const QToolButton*>(button);
+  return tool != nullptr && tool->toolButtonStyle() == Qt::ToolButtonTextUnderIcon &&
+         !button->property("nativeHoverEvents").toBool();
+}
+
+int buttonIconPixels(const QAbstractButton* button) {
+  return tileButton(button) ? std::max(16, button->iconSize().width()) : 18;
+}
+
 void updateButtonPresentation(NSButton* native, QAbstractButton* button) {
   const auto* tool = qobject_cast<QToolButton*>(button);
   const auto style = tool == nullptr ? Qt::ToolButtonTextBesideIcon : tool->toolButtonStyle();
@@ -352,9 +384,19 @@ void updateButtonPresentation(NSButton* native, QAbstractButton* button) {
   NATIVE_STRING(native, title, iconOnly ? QString() : title(button->text()));
   NATIVE_SET(native, imagePosition, textOnly ? NSNoImage : iconOnly || button->text().isEmpty() ? NSImageOnly
                                             : style == Qt::ToolButtonTextUnderIcon ? NSImageAbove : NSImageLeading);
-  NATIVE_STRING(native, accessibilityLabel, plain(title(button->text().isEmpty() ? button->toolTip() : button->text())));
+  // A tile's caption may break its name over two lines; it is one name.
+  const QString name = tileButton(button) && !button->accessibleName().isEmpty() ? button->accessibleName()
+                       : button->text().isEmpty() ? button->toolTip() : button->text();
+  NATIVE_STRING(native, accessibilityLabel, plain(title(name)));
   NATIVE_STRING(native, toolTip, plain(button->toolTip().isEmpty() ? button->text() : button->toolTip()));
 }
+
+// Presenters whose native outline moves rows by dragging (mitcad#816).
+QHash<const QAbstractItemView*, NativeRowMoves>& rowMovesRegistry() {
+  static QHash<const QAbstractItemView*, NativeRowMoves> moves;
+  return moves;
+}
+NSPasteboardType const kNativeRowDragType = @"org.mitcad.native-row";
 
 } // namespace
 
@@ -410,6 +452,35 @@ public:
   }
   void* nativeView() const override { return (__bridge void*)m_root; }
   QWidget* source() const { return m_source; }
+  // A secondary window keeps the presenter's trailing dialog buttons below
+  // its scrolling body (NativeWindowFit.hpp), visible however tall the body
+  // is: their stack, empty for a presenter without such buttons.
+  NSStackView* detachFooter() {
+    if (m_footer == nil) {
+      m_footer = stack();
+      m_footer.accessibilityIdentifier = @"native.secondary.footer";
+      placeFooter();
+    }
+    return m_footer;
+  }
+  void placeFooter() {
+    for (NSView* child in [m_footer.arrangedSubviews copy]) { [m_footer removeArrangedSubview:child]; [child removeFromSuperview]; }
+    auto* layout = m_source != nullptr ? qobject_cast<QBoxLayout*>(m_source->layout()) : nullptr;
+    QLayoutItem* last = layout != nullptr && layout->direction() == QBoxLayout::TopToBottom && layout->count() > 0
+                            ? layout->itemAt(layout->count() - 1) : nullptr;
+    auto* buttons = last != nullptr ? qobject_cast<QDialogButtonBox*>(last->widget()) : nullptr;
+    NSView* row = nil;
+    for (const Binding& binding : m_bindings) {
+      if (buttons != nullptr && binding.widget.data() == buttons) { row = binding.view; break; }
+    }
+    m_footer.edgeInsets = row != nil ? NSEdgeInsetsMake(8, 16, 16, 16) : NSEdgeInsetsMake(0, 0, 0, 0);
+    m_footer.hidden = row == nil;
+    if (row != nil) {
+      if ([row.superview isKindOfClass:NSStackView.class]) { [(NSStackView*)row.superview removeArrangedSubview:row]; }
+      [row removeFromSuperview];
+      add(m_footer, row);
+    }
+  }
   void focusInitial() {
     NSControl* first = nil;
     for (const Binding& binding : m_bindings) {
@@ -427,6 +498,15 @@ public:
     checkModelPresentation();
     refreshPresenters();
   }
+  // The presenter widgets this view shows. Child windows (context menus,
+  // message boxes) never are: their coming and going must not replace the
+  // native controls and their keyboard focus (mitcad#816).
+  QList<QWidget*> structureWidgets() const {
+    QList<QWidget*> widgets = m_source->findChildren<QWidget*>();
+    const QWidget* window = m_source->window();
+    widgets.removeIf([window](const QWidget* widget) { return widget->window() != window; });
+    return widgets;
+  }
   void refreshPresenters() {
     if (m_source == nullptr || m_refreshing) {
       return;
@@ -434,13 +514,18 @@ public:
     m_refreshTimer.stop();
     m_refreshing = true;
     if (m_structureDirty) {
-      const auto widgets = m_source->findChildren<QWidget*>();
+      const auto widgets = structureWidgets();
       bool changed = widgets.size() != static_cast<qsizetype>(m_widgetTree.size());
       for (qsizetype i = 0; !changed && i < widgets.size(); ++i) {
         changed = widgets[i] != m_widgetTree[static_cast<std::size_t>(i)];
       }
-      m_structureDirty = false;
-      if (changed) { rebuild(); }
+      // A rebuild would replace an edited cell: it waits (mitcad#814).
+      if (changed && editingCell()) {
+        mac::logNativeCellEdit("a presenter structure change waits for the edit", m_root);
+      } else {
+        m_structureDirty = false;
+        if (changed) { rebuild(); }
+      }
     }
     // Actions may replace/delete controls or models. All presenter access
     // uses QPointer; retained AppKit views never keep raw QWidget pointers.
@@ -485,7 +570,9 @@ public:
         }
         auto state = button->isChecked() ? NSControlStateValueOn : NSControlStateValueOff;
         if (binding.iconKey != button->icon().cacheKey()) {
-          native.image = button->icon().isNull() ? nil : image(button->icon().pixmap(18, 18));
+          native.image = button->icon().isNull() ? nil
+                                                 : image(button->icon().pixmap(buttonIconPixels(button),
+                                                                               buttonIconPixels(button)));
           ++g_widgetPropertyWrites;
           binding.iconKey = button->icon().cacheKey();
         }
@@ -498,7 +585,12 @@ public:
         NATIVE_SET(native, state, state);
         if (auto* push = qobject_cast<QPushButton*>(widget)) {
           if (push->isDefault()) { NATIVE_STRING(native, keyEquivalent, QStringLiteral("\r")); }
-          else if ([native.keyEquivalent isEqualToString:@"\r"]) { NATIVE_STRING(native, keyEquivalent, QString()); }
+          else if ([native.keyEquivalent isEqualToString:@"\r"]) {
+            // A rejecting button that stops being the default keeps Escape (mitcad#817).
+            auto* box = qobject_cast<QDialogButtonBox*>(push->parentWidget());
+            const bool rejecting = box != nullptr && box->buttonRole(push) == QDialogButtonBox::RejectRole;
+            NATIVE_STRING(native, keyEquivalent, rejecting ? QStringLiteral("\033") : QString());
+          }
         }
       } else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
         observeModel(binding, combo->model(), static_cast<int>(i));
@@ -585,6 +677,15 @@ public:
           } else { NATIVE_STRING(((NSTextField*)binding.control), stringValue, labelText(text)); }
         }
         if (binding.linkText != nil) { NATIVE_SET(binding.linkText, hidden, !links || !pixmap.isNull()); }
+        // The theme's semantic error/warning text, such as a refusal's
+        // in-dialog reason (mitcad#814).
+        // Compares the applied state, not AppKit's colour objects.
+        const int tone = mac::nativeTextToneKind(text);
+        if (binding.textTone != tone) {
+          ((NSTextField*)binding.control).textColor = mac::nativeTextTone(tone);
+          binding.textTone = tone;
+          ++g_widgetPropertyWrites;
+        }
       } else if (auto* group = qobject_cast<QGroupBox*>(widget)) {
         if (group->isCheckable() && binding.control != nil) {
           if (!binding.presentationInitialized || binding.labelText != group->title()) {
@@ -593,6 +694,13 @@ public:
             NATIVE_STRING(((NSButton*)binding.control), title, title(group->title()));
           }
           NATIVE_SET(((NSButton*)binding.control), state, group->isChecked() ? NSControlStateValueOn : NSControlStateValueOff);
+        }
+      } else if (auto* box = qobject_cast<QDialogButtonBox*>(widget)) {
+        // A button added, removed or given another role (mitcad#817).
+        MitcadNativeLayoutView* row = (MitcadNativeLayoutView*)binding.view;
+        if ([row isKindOfClass:MitcadNativeLayoutView.class] && !sameText(row.contentKey, mac::layout::buttonRoleKey(box))) {
+          arrangeButtons(box, row);
+          ++g_widgetPropertyWrites;
         }
       } else if (auto* spin = qobject_cast<QSpinBox*>(widget)) {
         NATIVE_SET(binding.stepper, minValue, spin->minimum());
@@ -848,6 +956,7 @@ public:
     cell->owner = this;
     cell->binding = id;
     cell->index = index;
+    cell->rowIdentifier = index.siblingAtColumn(0).data(NativeControlIdentifierRole).toString();
     [m_cells addObject:cell];
     if (index.flags().testFlag(Qt::ItemIsUserCheckable) && index.data(Qt::CheckStateRole).isValid()) {
       NSButton* check;
@@ -912,6 +1021,18 @@ public:
       [field.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:inset].active = YES;
       [field.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4].active = YES;
       [field.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor].active = YES;
+      // The shared delegate's cell states (mitcad#814): refused values,
+      // section rows' fonts and muted or coloured text, on one elided line.
+      if (!view->property("nativeSourceList").toBool()) { mac::elideNativeCell(field, view->textElideMode()); }
+      const mac::NativeCellStyle style = mac::nativeCellStyle(index, view);
+      field.font = style.font;
+      cell->tone = style.text;
+      cell->fill = style.fill;
+      [cell applyTone];
+      if (auto* tree = qobject_cast<QTreeView*>(view); tree != nullptr && index.column() == 0 &&
+          field.toolTip.length == 0 && tree->isFirstColumnSpanned(index.row(), index.parent())) {
+        field.toolTip = field.stringValue; // a section row's whole name
+      }
     }
     return cell;
   }
@@ -919,14 +1040,127 @@ public:
     if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size() || !index.isValid()) { return; }
     auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
     if (view != nullptr && view->isEnabled() && index.flags().testFlag(Qt::ItemIsEnabled) && view->model() == index.model()) {
+      QPointer<AppKitWidgetView> alive(this);
       view->model()->setData(index, value, role);
+      // A reload deferred while this cell was edited follows now.
+      if (alive != nullptr) { scheduleRefresh(); }
     }
+  }
+  // A cell edit ended by its keys: what waited for it follows (mitcad#814).
+  void cellEditEnded() { scheduleRefresh(); }
+  // The current row with a stable NativeControlIdentifierRole in its first
+  // column, such as an edited row after the model rebuilt its rows.
+  static QModelIndex stableRow(const QAbstractItemView* view, const QString& identifier) {
+    QAbstractItemModel* model = view->model();
+    if (identifier.isEmpty() || model == nullptr || model->rowCount(view->rootIndex()) == 0) { return {}; }
+    const QModelIndexList found = model->match(model->index(0, 0, view->rootIndex()), NativeControlIdentifierRole,
+                                               identifier, 1, Qt::MatchExactly | Qt::MatchRecursive);
+    return found.isEmpty() ? QModelIndex() : found.first();
+  }
+  // Whether one of this view's model cells has the field editor. Its edit
+  // keeps its cell until it ends, as the shared view keeps its editor.
+  bool editingCell() const {
+    NSResponder* responder = m_root.window.firstResponder;
+    if (![responder isKindOfClass:NSTextView.class] || !((NSTextView*)responder).isFieldEditor) { return false; }
+    id edited = ((NSTextView*)responder).delegate;
+    return [edited isKindOfClass:NSTextField.class] &&
+           [((NSTextField*)edited).delegate isKindOfClass:MitcadNativeModelCell.class] &&
+           [(NSView*)edited isDescendantOf:m_root];
+  }
+  // Starts editing a cell's own text field, as the shared view's editor.
+  bool beginCellEdit(NSTableView* table, NSInteger row, NSInteger column) {
+    if (row < 0 || column < 0 || row >= table.numberOfRows || column >= table.numberOfColumns ||
+        table.tableColumns[static_cast<NSUInteger>(column)].hidden) { return false; }
+    NSView* cell = [table viewAtColumn:column row:row makeIfNecessary:YES];
+    if (![cell isKindOfClass:NSTableCellView.class]) { return false; }
+    NSTextField* field = ((NSTableCellView*)cell).textField;
+    if (field == nil || !field.editable || !field.enabled) { return false; }
+    // A cell of a column scrolled out of a narrow table is only a temporary
+    // view: edit the one the table shows once the cell is scrolled in.
+    [table scrollRowToVisible:row];
+    [table scrollColumnToVisible:column];
+    table.needsLayout = YES;
+    [table layoutSubtreeIfNeeded];
+    [table displayIfNeeded];
+    if (NSView* live = [table viewAtColumn:column row:row makeIfNecessary:NO];
+        [live isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)live).textField != nil) {
+      field = ((NSTableCellView*)live).textField;
+    }
+    if (field.window != nil && [table.window makeFirstResponder:field]) {
+      mac::selectEditedText(field);
+      return true;
+    }
+    // AppKit's own cell editing finds the view the table shows.
+    [table editColumn:column row:row withEvent:nil select:YES];
+    NSView* edited = [table viewAtColumn:column row:row makeIfNecessary:NO];
+    return [edited isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)edited).textField.currentEditor != nil;
+  }
+  // F2 on a focused table edits its current cell, as in the shared view;
+  // a cell without a native editor lets the presenter answer the key (it
+  // may say why the cell cannot be edited).
+  bool modelEditKey(NSTableView* table) {
+    QPointer<AppKitWidgetView> alive(this);
+    const int id = modelBinding(table);
+    if (m_refreshing || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return false; }
+    QPointer<QAbstractItemView> view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
+    const NSInteger row = table.selectedRow;
+    MitcadNativeModelNode* node = nodeAt(table, row);
+    if (view == nullptr || node == nil || !node->index.isValid()) { return false; }
+    const QModelIndex current = view->currentIndex();
+    const int column = current.isValid() && current.siblingAtColumn(0) == QModelIndex(node->index).siblingAtColumn(0)
+                           ? current.column() : 0;
+    if (beginCellEdit(table, row, [table columnWithIdentifier:ns(QString::number(column))])) { return true; }
+    if (alive == nullptr || view == nullptr) { return true; }
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_F2, Qt::NoModifier);
+    QCoreApplication::sendEvent(view.data(), &press);
+    return true;
+  }
+  // Tab and Shift+Tab in a cell editor: commit, then edit the next editable
+  // cell of the row; past the last one the table keeps the focus.
+  bool modelEditNext(NSControl* field, bool backwards) {
+    QPointer<AppKitWidgetView> alive(this);
+    NSTableView* table = mac::owningTable(field);
+    if (table == nil) { return false; }
+    const NSInteger row = [table rowForView:field];
+    const NSInteger column = [table columnForView:field];
+    if (row < 0 || column < 0) { return false; }
+    NSWindow* window = table.window;
+    NSObject* delegate = (NSObject*)((NSTextField*)field).delegate;
+    MitcadNativeModelCell* cell =
+        [delegate isKindOfClass:MitcadNativeModelCell.class] ? (MitcadNativeModelCell*)delegate : nil;
+    if (cell != nil) { cell->finishing = YES; }
+    const BOOL committed = [window makeFirstResponder:table]; // commits through the cell
+    if (cell != nil) { cell->finishing = NO; }
+    if (!committed || alive == nullptr) { return true; }
+    scheduleRefresh();
+    for (NSInteger next = column + (backwards ? -1 : 1); next >= 0 && next < table.numberOfColumns;
+         next += backwards ? -1 : 1) {
+      if (beginCellEdit(table, row, next)) { return true; }
+    }
+    // Document cards leave keys to the document window, as after Return.
+    if (![window isKindOfClass:MitcadNativeSecondaryWindow.class]) { [window makeFirstResponder:nil]; }
+    return true;
   }
   void modelSelection(NSTableView* table) {
     QPointer<AppKitWidgetView> alive(this);
     const int id = modelBinding(table);
     if (m_refreshing || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return; }
-    if (table.window != nil && ![table.window makeFirstResponder:nil]) { return; }
+    // Pending edits elsewhere end first. In a dialog the table keeps the
+    // keyboard focus for arrow keys and F2, as the shared view does
+    // (mitcad#814); document cards leave keys to the document window unless
+    // the table has them already, for its next arrow, Return or rename key
+    // (mitcad#816).
+    NSResponder* focus = [table.window isKindOfClass:MitcadNativeSecondaryWindow.class] ? table : nil;
+    // A selection that keeps the edited cell's row keeps its edit (mitcad#814).
+    NSTextField* edited = mac::editedCellField(table);
+    const NSInteger editedRow = edited != nil ? [table rowForView:edited] : -1;
+    const bool keepEdit = editedRow >= 0 && [table.selectedRowIndexes containsIndex:static_cast<NSUInteger>(editedRow)];
+    if (edited != nil) {
+      mac::logNativeCellEdit(keepEdit ? "a selection keeps the edited row" : "a selection of another row ends the edit",
+                             edited);
+    }
+    if (!keepEdit && table.window != nil && table.window.firstResponder != table &&
+        ![table.window makeFirstResponder:focus]) { return; }
     if (alive == nullptr) { return; }
     auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
     if (view == nullptr || view->selectionModel() == nullptr) { return; }
@@ -936,8 +1170,8 @@ public:
     const QModelIndex clicked = modelIndex(table, currentRow, std::max<NSInteger>(0, table.clickedColumn));
     for (NSUInteger row = table.selectedRowIndexes.firstIndex; row != NSNotFound;
          row = [table.selectedRowIndexes indexGreaterThanIndex:row]) {
-      MitcadNativeModelNode* node = nodeAt(table, static_cast<NSInteger>(row));
-      if (node != nil && node->index.isValid()) { selection.select(node->index, node->index); }
+      const QModelIndex index = liveIndex(table, nodeAt(table, static_cast<NSInteger>(row)));
+      if (index.isValid()) { selection.select(index, index); }
     }
     QPointer<QAbstractItemView> presenter(view);
     view->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
@@ -950,12 +1184,29 @@ public:
     }
   }
   QModelIndex modelIndex(NSTableView* table, NSInteger row, NSInteger col) {
-    MitcadNativeModelNode* node = nodeAt(table, row);
-    return node == nil ? QModelIndex() : QModelIndex(node->index).siblingAtColumn(static_cast<int>(col));
+    const QModelIndex index = liveIndex(table, nodeAt(table, row));
+    return index.isValid() ? index.siblingAtColumn(static_cast<int>(col)) : QModelIndex();
+  }
+  // A model reset invalidates the native nodes until the queued refresh
+  // presents the new rows. Meanwhile a row with a stable identifier still
+  // finds its new index, so input then reaches the row it was meant for.
+  QModelIndex liveIndex(NSTableView* table, MitcadNativeModelNode* node) {
+    if (node == nil) { return {}; }
+    if (node->index.isValid()) { return QModelIndex(node->index); }
+    const int id = modelBinding(table);
+    if (node->identifier.isEmpty() || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return {}; }
+    auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
+    QAbstractItemModel* model = view == nullptr ? nullptr : view->model();
+    if (model == nullptr || model->rowCount(view->rootIndex()) == 0) { return {}; }
+    const QModelIndexList found = model->match(model->index(0, 0, view->rootIndex()), NativeControlIdentifierRole,
+                                               node->identifier, 1, Qt::MatchExactly | Qt::MatchRecursive);
+    if (found.isEmpty()) { return {}; }
+    node->index = found.first();
+    return found.first();
   }
   void modelActivated(NSTableView* table) {
     QPointer<AppKitWidgetView> alive(this);
-    if (table.window != nil && ![table.window makeFirstResponder:nil]) { return; }
+    if (table.window != nil && table.window.firstResponder != table && ![table.window makeFirstResponder:nil]) { return; }
     if (alive == nullptr) { return; }
     const int id = modelBinding(table);
     if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return; }
@@ -969,7 +1220,7 @@ public:
         NSView* cell = [table viewAtColumn:column row:row makeIfNecessary:YES];
         if ([cell isKindOfClass:NSTableCellView.class]) {
           NSTextField* field = ((NSTableCellView*)cell).textField;
-          if (field.editable) { [table.window makeFirstResponder:field]; [field selectText:nil]; return; }
+          if (field.editable) { [table.window makeFirstResponder:field]; mac::selectEditedText(field); return; }
         }
       }
       QPointer<QAbstractItemView> presenter(view);
@@ -1002,6 +1253,96 @@ public:
     if (auto* view = qobject_cast<QTreeView*>(m_bindings[static_cast<std::size_t>(id)].widget)) {
       view->setExpanded(node->index, expanded);
     }
+  }
+  // Row drags within an outline whose presenter opted in (mitcad#816). The
+  // presenter decides every target; the outline only carries the gesture,
+  // with the row under the pointer as the target as in the default tree.
+  const NativeRowMoves* rowMoves(NSTableView* table) const {
+    const int id = modelBinding(table);
+    if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return nullptr; }
+    auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget.data());
+    if (view == nullptr) { return nullptr; }
+    const auto found = rowMovesRegistry().constFind(view);
+    return found == rowMovesRegistry().cend() ? nullptr : &found.value();
+  }
+  bool rowsDraggable(NSTableView* table, NSIndexSet* rows) {
+    const NativeRowMoves* moves = rowMoves(table);
+    if (moves == nullptr || !moves->draggable || rows.count != 1) { return false; }
+    const auto draggable = moves->draggable;
+    return draggable(liveIndex(table, nodeAt(table, static_cast<NSInteger>(rows.firstIndex))));
+  }
+  id<NSPasteboardWriting> rowDragWriter(NSTableView* table, MitcadNativeModelNode* node) {
+    const NativeRowMoves* moves = rowMoves(table);
+    const QModelIndex index = liveIndex(table, node);
+    if (moves == nullptr || !moves->draggable) { return nil; }
+    const auto draggable = moves->draggable;
+    if (!draggable(index)) { return nil; }
+    m_draggedRow = index;
+    NSPasteboardItem* item = [NSPasteboardItem new];
+    [item setString:ns(index.data(NativeControlIdentifierRole).toString()) forType:kNativeRowDragType];
+    return item;
+  }
+  void rowDragBegan(NSTableView* table) {
+    const NativeRowMoves* moves = rowMoves(table);
+    if (moves == nullptr || !m_draggedRow.isValid() || m_rowDragging) { return; }
+    m_rowDragging = true;
+    if (moves->dragging) {
+      const auto dragging = moves->dragging;
+      dragging(QModelIndex(m_draggedRow), true);
+    }
+  }
+  MitcadNativeModelNode* rowUnder(NSOutlineView* table, id<NSDraggingInfo> info) {
+    const NSInteger row = [table rowAtPoint:[table convertPoint:info.draggingLocation fromView:nil]];
+    return row < 0 ? nil : (MitcadNativeModelNode*)[table itemAtRow:row];
+  }
+  NSDragOperation rowDropValidate(NSOutlineView* table, id<NSDraggingInfo> info, id proposed, NSInteger child) {
+    const NativeRowMoves* moves = rowMoves(table);
+    if (moves == nullptr || !moves->allowed || info.draggingSource != table || !m_draggedRow.isValid()) {
+      return NSDragOperationNone;
+    }
+    MitcadNativeModelNode* over = rowUnder(table, info);
+    const auto allowed = moves->allowed;
+    if (over == nil || !allowed(QModelIndex(m_draggedRow), liveIndex(table, over))) { return NSDragOperationNone; }
+    // Never between rows: the presenter maps a design to its own folder.
+    if (over != proposed || child != NSOutlineViewDropOnItemIndex) {
+      [table setDropItem:over dropChildIndex:NSOutlineViewDropOnItemIndex];
+    }
+    return NSDragOperationMove;
+  }
+  bool rowDropAccept(NSOutlineView* table, id<NSDraggingInfo> info) {
+    const NativeRowMoves* moves = rowMoves(table);
+    if (moves == nullptr || !moves->allowed || !moves->drop || info.draggingSource != table || !m_draggedRow.isValid()) {
+      return false;
+    }
+    MitcadNativeModelNode* over = rowUnder(table, info);
+    const auto allowed = moves->allowed;
+    const auto drop = moves->drop;
+    const QModelIndex dragged(m_draggedRow);
+    if (over == nil || !allowed(dragged, liveIndex(table, over))) { return false; }
+    m_draggedRow = QPersistentModelIndex();
+    drop(dragged, liveIndex(table, over));
+    return true;
+  }
+  void rowDragEnded(NSOutlineView* table, NSPoint screenPoint, NSDragOperation operation) {
+    const NativeRowMoves* moves = rowMoves(table);
+    const QPersistentModelIndex dragged = m_draggedRow;
+    const bool began = m_rowDragging;
+    m_draggedRow = QPersistentModelIndex();
+    m_rowDragging = false;
+    if (moves == nullptr) { return; }
+    const auto drop = moves->drop;
+    const auto dragging = moves->dragging;
+    if (operation == NSDragOperationNone && dragged.isValid() && drop) {
+      // A refused release gets the presenter's own feedback.
+      MitcadNativeModelNode* over = nil;
+      if (table.window != nil) {
+        const NSPoint local = [table convertPoint:[table.window convertPointFromScreen:screenPoint] fromView:nil];
+        const NSInteger row = [table rowAtPoint:local];
+        if (row >= 0) { over = (MitcadNativeModelNode*)[table itemAtRow:row]; }
+      }
+      drop(QModelIndex(dragged), liveIndex(table, over));
+    }
+    if (began && dragging) { dragging(QModelIndex(dragged), false); }
   }
 
 protected:
@@ -1068,6 +1409,8 @@ private:
     bool presentationInitialized = false;
     bool dirty = true;
     bool selectionDirty = true;
+    mac::NativeColumnState sections; // the shared header last applied to the columns
+    int textTone = 0;                // a label's applied semantic tone (nativeTextToneKind)
   };
   void scheduleRefresh() {
     if (m_source != nullptr && !m_refreshTimer.isActive()) { m_refreshTimer.start(0); }
@@ -1199,6 +1542,15 @@ private:
   }
   NSView* renderLayout(QLayout* layout) {
     if (layout == nullptr) { return nil; }
+    // A window's grids, forms and boxes share one sizing contract
+    // (mitcad#812): Qt's minimum/preferred sizes, stretch, size policies,
+    // spans, field growth and label alignment. Pages hosted in the document's
+    // cards (inspector, sketch palette) keep their stacks within the cards'
+    // own width rules.
+    if (!m_source->isWindow()) { return renderStackLayout(layout); }
+    return mac::layout::build(layout, [this](QLayoutItem* item) { return renderItem(item); }, false);
+  }
+  NSView* renderStackLayout(QLayout* layout) {
     if (auto* grid = qobject_cast<QGridLayout*>(layout)) {
       NSStackView* rows = stack();
       for (int row = 0; row < grid->rowCount(); ++row) {
@@ -1251,6 +1603,28 @@ private:
     result.spacing = std::max(6, layout->spacing());
     for (int i = 0; i < layout->count(); ++i) { add(result, renderItem(layout->itemAt(i))); }
     return result;
+  }
+  // Orders the box's bound buttons by role again, also after additions,
+  // removals and role changes. Escape belongs to the rejecting buttons;
+  // the refresh gives Return to the presenter's default button.
+  void arrangeButtons(QDialogButtonBox* box, NSView* row) {
+    std::vector<NSView*> natives;
+    for (QAbstractButton* button : box->buttons()) {
+      NSView* native = nil;
+      for (const Binding& binding : m_bindings) {
+        if (binding.widget.data() == button) { native = binding.view; break; }
+      }
+      if ([native isKindOfClass:NSButton.class]) {
+        NSButton* control = (NSButton*)native;
+        if (box->buttonRole(button) == QDialogButtonBox::RejectRole) {
+          if (![control.keyEquivalent isEqualToString:@"\r"]) { control.keyEquivalent = @"\033"; }
+        } else if ([control.keyEquivalent isEqualToString:@"\033"]) {
+          control.keyEquivalent = @"";
+        }
+      }
+      natives.push_back(native);
+    }
+    mac::layout::arrangeButtons(row, box, natives);
   }
   NSView* renderItem(QLayoutItem* item) {
     if (item == nullptr) { return nil; }
@@ -1340,15 +1714,20 @@ private:
         hover.target = m_target;
         hover.action = @selector(perform:);
         view = hover;
+      } else if (tileButton(button)) {
+        MitcadNativeTileButton* tile = [[MitcadNativeTileButton alloc] initWithIconSize:buttonIconPixels(button)];
+        tile.target = m_target;
+        tile.action = @selector(perform:);
+        view = tile;
       } else {
         view = [NSButton buttonWithTitle:ns(title(button->text())) target:m_target action:@selector(perform:)];
       }
-      view.bezelStyle = NSBezelStyleRounded;
+      if (!tileButton(button)) { view.bezelStyle = NSBezelStyleRounded; }
       if (qobject_cast<QCheckBox*>(widget) != nullptr) { [view setButtonType:NSButtonTypeSwitch]; }
       else if (qobject_cast<QRadioButton*>(widget) != nullptr) { [view setButtonType:NSButtonTypeRadio]; }
       else if (button->isCheckable()) { [view setButtonType:NSButtonTypePushOnPushOff]; }
       if (!button->icon().isNull()) {
-        view.image = image(button->icon().pixmap(18, 18));
+        view.image = image(button->icon().pixmap(buttonIconPixels(button), buttonIconPixels(button)));
       }
       updateButtonPresentation(view, button);
       if (widget->objectName().startsWith(QStringLiteral("palette_"))) {
@@ -1406,12 +1785,11 @@ private:
       return body;
     }
     if (auto* buttons = qobject_cast<QDialogButtonBox*>(widget)) {
-      NSStackView* row = stack(true);
-      NSView* spring = [NSView new];
-      [spring setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
-      add(row, spring);
-      for (QAbstractButton* button : buttons->buttons()) { add(row, renderWidget(button)); }
+      // The macOS role order, not buttons()'s grouping by role (mitcad#817).
+      for (QAbstractButton* button : buttons->buttons()) { renderWidget(button); }
+      NSView* row = mac::layout::buttonRow();
       bind(widget, row);
+      arrangeButtons(buttons, row);
       return row;
     }
     if (auto* toolbar = qobject_cast<QToolBar*>(widget)) {
@@ -1439,6 +1817,14 @@ private:
       }
       return row;
     }
+    if (widget->property("nativeTileCatalogue").toBool()) {
+      // A tile catalogue keeps its groups, rows and pictured grid (mitcad#813).
+      if (NSView* catalogue = mac::nativeTileCatalogue(widget, [this](QWidget* child) { return renderWidget(child); },
+                                                       m_tileViews)) {
+        bind(widget, catalogue);
+        return catalogue;
+      }
+    }
     if (auto* view = qobject_cast<QAbstractItemView*>(widget)) { return renderModel(view); }
     if (qobject_cast<QPlainTextEdit*>(widget) != nullptr || qobject_cast<QTextEdit*>(widget) != nullptr) {
       NSTextView* view = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 440, 130)];
@@ -1465,15 +1851,18 @@ private:
       return body;
     }
     if (auto* area = qobject_cast<QScrollArea*>(widget)) {
+      // A body that scrolls only to keep its Qt window on the screen: the
+      // secondary window scrolls its whole body (NativeWindowFit.hpp).
+      if (area->property("nativeWindowBody").toBool()) { return renderWidget(area->widget()); }
       NSView* content = renderWidget(area->widget());
       NSScrollView* view = scroll(content, std::max(100, std::min(340, area->minimumHeight())));
       bind(widget, view);
       return view;
     }
     if (auto* split = qobject_cast<QSplitter*>(widget)) {
-      NSStackView* view = stack(split->orientation() == Qt::Horizontal);
+      // Panes in the splitter's sizes and stretch, with dividers (mitcad#813).
+      NSView* view = mac::nativeSplitView(split, [this](QWidget* pane) { return renderWidget(pane); });
       bind(widget, view);
-      for (int i = 0; i < split->count(); ++i) { add(view, renderWidget(split->widget(i))); }
       return view;
     }
     if (auto* frame = qobject_cast<QFrame*>(widget)) {
@@ -1573,6 +1962,12 @@ private:
     return tabs;
   }
   NSView* renderModel(QAbstractItemView* view) {
+    // Icon-mode lists are tile grids with their pictures (mitcad#813).
+    if (auto tiles = mac::createNativeTileGrid(view)) {
+      NSView* grid = (__bridge NSView*)tiles->nativeView();
+      m_tileViews.push_back(std::move(tiles));
+      return grid;
+    }
     const bool hierarchical = qobject_cast<QTreeView*>(view) != nullptr;
     NSTableView* table = hierarchical ? [[MitcadNativeOutline alloc] initWithFrame:NSMakeRect(0, 0, 520, 180)]
                                      : [[MitcadNativeTable alloc] initWithFrame:NSMakeRect(0, 0, 520, 180)];
@@ -1591,7 +1986,11 @@ private:
     table.dataSource = m_target;
     table.target = m_target;
     table.doubleAction = @selector(doubleClick:);
-    table.columnAutoresizingStyle = NSTableViewUniformColumnAutoresizingStyle;
+    // A source list's name column takes a width change; its compact marks
+    // keep theirs, as in the shared panel (mitcad#818).
+    table.columnAutoresizingStyle = view->property("nativeSourceList").toBool()
+                                        ? NSTableViewFirstColumnOnlyAutoresizingStyle
+                                        : NSTableViewUniformColumnAutoresizingStyle;
     const int count = view->model() == nullptr ? 1 : std::max(1, view->model()->columnCount(view->rootIndex()));
     for (int i = 0; i < count; ++i) {
       NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:ns(QString::number(i))];
@@ -1617,9 +2016,38 @@ private:
     if (view->maximumHeight() < QWIDGETSIZE_MAX) {
       [box.heightAnchor constraintLessThanOrEqualToConstant:view->maximumHeight()].active = YES;
     }
+    if (hierarchical && rowMovesRegistry().contains(view)) {
+      // Rows move by dragging within this outline only (mitcad#816).
+      [table registerForDraggedTypes:@[kNativeRowDragType]];
+      [table setDraggingSourceOperationMask:NSDragOperationMove forLocal:YES];
+      [table setDraggingSourceOperationMask:NSDragOperationNone forLocal:NO];
+    }
     const int id = bind(view, box);
     m_bindings[static_cast<std::size_t>(id)].table = table;
     table.identifier = ns(QString::number(id));
+    // A tree or table keeps its shared header's section sizes, stretching
+    // columns and hidden sections, in flat rows like the shared view's,
+    // instead of generic widths that scroll sideways (mitcad#814).
+    if (!view->property("nativeSourceList").toBool() && mac::nativeHeader(view) != nullptr) {
+      const CGFloat rowHeight = table.rowHeight;
+      table.style = NSTableViewStylePlain;
+      table.rowHeight = rowHeight;
+      table.intercellSpacing = NSMakeSize(0, table.intercellSpacing.height);
+      if (auto* grid = qobject_cast<QTableView*>(view)) {
+        // The shared table's own row height, such as a list table's 28.
+        table.rowHeight = std::max<CGFloat>(table.rowHeight,
+                                            grid->verticalHeader()->defaultSectionSize() - table.intercellSpacing.height);
+      }
+      if (tree != nullptr) {
+        // The shared first section's width includes the tree's indentation;
+        // AppKit would widen the outline column for deeper rows instead.
+        auto* outline = (NSOutlineView*)table;
+        outline.autoresizesOutlineColumn = NO;
+        outline.indentationPerLevel = tree->indentation();
+      }
+      mac::applyNativeColumns(table, view, m_bindings[static_cast<std::size_t>(id)].sections);
+      mac::followNativeColumns(table);
+    }
     return box;
   }
   NSMutableArray<MitcadNativeModelNode*>* modelNodes(QAbstractItemView* view, const QModelIndex& parent) {
@@ -1630,6 +2058,7 @@ private:
       if (auto* list = qobject_cast<QListView*>(view)) { if (list->isRowHidden(row)) { continue; } }
       MitcadNativeModelNode* node = [MitcadNativeModelNode new];
       node->index = view->model()->index(row, 0, parent);
+      node->identifier = node->index.data(NativeControlIdentifierRole).toString();
       node->children = modelNodes(view, node->index);
       [nodes addObject:node];
     }
@@ -1641,6 +2070,39 @@ private:
     if (binding.rootIndex != view->rootIndex()) {
       binding.rootIndex = view->rootIndex();
       binding.dirty = true;
+    }
+    // The shared header's sizes, stretch and hidden sections (mitcad#814).
+    if (!view->property("nativeSourceList").toBool() &&
+        mac::applyNativeColumns(binding.table, view, binding.sections)) { ++g_widgetPropertyWrites; }
+    // An open cell editor keeps its row until the edit ends (modelEdit then
+    // refreshes), unless the model replaced that row: the shared view closes
+    // such an editor without committing, and its table keeps the focus.
+    bool refocus = false;
+    if (binding.dirty && view->model() != nullptr) {
+      if (NSTextField* edited = mac::editedCellField(binding.table)) {
+        NSObject* delegate = (NSObject*)edited.delegate;
+        MitcadNativeModelCell* cell =
+            [delegate isKindOfClass:MitcadNativeModelCell.class] ? (MitcadNativeModelCell*)delegate : nil;
+        if (cell != nil && cell->index.isValid()) {
+          mac::logNativeCellEdit("a model refresh waits for the edit", edited);
+          return;
+        }
+        // A rebuilt model has new indices for the same rows: the edited row,
+        // found by its stable identifier, keeps its edit (mitcad#814).
+        const NSInteger nativeColumn = [binding.table columnForView:edited];
+        const QModelIndex row = cell != nil ? stableRow(view, cell->rowIdentifier) : QModelIndex();
+        if (row.isValid() && nativeColumn >= 0) {
+          cell->index = row.siblingAtColumn(
+              qt(binding.table.tableColumns[static_cast<NSUInteger>(nativeColumn)].identifier).toInt());
+          mac::logNativeCellEdit("a model refresh rebuilt the edited row; its edit stays", edited);
+          return;
+        }
+        mac::logNativeCellEdit("a model refresh removed the edited row; its edit is discarded", edited);
+        if (cell != nil) { cell->discarding = YES; }
+        [edited abortEditing];
+        if (cell != nil) { cell->discarding = NO; }
+        refocus = true;
+      }
     }
     if (binding.dirty) {
       binding.selectionDirty = true;
@@ -1667,8 +2129,17 @@ private:
         };
         expand(expand, binding.nodes);
       }
+      if (refocus && [binding.table.window isKindOfClass:MitcadNativeSecondaryWindow.class]) {
+        [binding.table.window makeFirstResponder:binding.table];
+      }
     }
+    // AppKit ends a cell's edit when it selects rows: the shared selection
+    // follows once the edit ends (mitcad#814).
     if (binding.selectionDirty && view->selectionModel() != nullptr) {
+      if (NSTextField* edited = mac::editedCellField(binding.table)) {
+        mac::logNativeCellEdit("a selection update waits for the edit", edited);
+        return;
+      }
       binding.selectionDirty = false;
       NSMutableIndexSet* selected = [NSMutableIndexSet new];
       for (NSInteger row = 0; row < binding.table.numberOfRows; ++row) {
@@ -1691,15 +2162,20 @@ private:
     detachBindings();
     for (MitcadNativeModelCell* cell in m_cells) { cell->owner = nullptr; }
     m_cellViews.clear();
+    m_tileViews.clear();
     for (NSView* child in [m_root.arrangedSubviews copy]) { [m_root removeArrangedSubview:child]; [child removeFromSuperview]; }
     m_bindings.clear();
     ++m_generation;
     m_structureDirty = false;
     for (const auto& object : m_observed) { if (object) { object->removeEventFilter(this); } }
     m_observed.clear();
+    // A window's root fills it, so stretched and expanding rows take extra
+    // height as in the Qt layout (mitcad#812).
+    if (m_source->isWindow()) { m_root.distribution = NSStackViewDistributionFill; }
     add(m_root, renderWidget(m_source));
+    if (m_footer != nil) { placeFooter(); }
     m_widgetTree.clear();
-    for (QWidget* widget : m_source->findChildren<QWidget*>()) { m_widgetTree.emplace_back(widget); }
+    for (QWidget* widget : structureWidgets()) { m_widgetTree.emplace_back(widget); }
     // ChildAdded arrives before QWidget construction finishes. Observe the
     // completed tree in this coalesced rebuild, never cast that child early.
     m_observed.push_back(m_source.data());
@@ -1712,20 +2188,33 @@ private:
   QTimer m_refreshTimer;
   MitcadNativeWidgetTarget* m_target = nil;
   NSStackView* m_root = nil;
+  NSStackView* m_footer = nil; // detachFooter
   std::vector<Binding> m_bindings;
   std::vector<std::pair<QPointer<QWidget>, std::unique_ptr<AppKitWidgetView>>> m_cellViews;
+  // Tile grids and catalogues (NativeCollection.hpp) keep their own bindings.
+  std::vector<std::unique_ptr<NativeWidgetView>> m_tileViews;
   NSHashTable<MitcadNativeModelCell*>* m_cells = [NSHashTable weakObjectsHashTable];
   std::vector<QPointer<QObject>> m_observed;
   std::vector<QPointer<QWidget>> m_widgetTree;
   quint64 m_generation = 0;
   bool m_structureDirty = false;
   bool m_refreshing = false;
+  QPersistentModelIndex m_draggedRow; // an outline row being dragged (mitcad#816)
+  bool m_rowDragging = false;
 };
 
 #undef NATIVE_SET
 #undef NATIVE_STRING
 
 quint64 nativeWidgetPropertyWrites() { return g_widgetPropertyWrites; }
+
+void setNativeRowMoves(QAbstractItemView* view, NativeRowMoves moves) {
+  if (view == nullptr) { return; }
+  if (!rowMovesRegistry().contains(view)) {
+    QObject::connect(view, &QObject::destroyed, [view] { rowMovesRegistry().remove(view); });
+  }
+  rowMovesRegistry().insert(view, std::move(moves));
+}
 
 class NativeDialogController final : public QObject {
 public:
@@ -1740,14 +2229,20 @@ public:
     const QSize requested = widget->size().expandedTo(widget->sizeHint());
     const CGFloat width = std::clamp<CGFloat>(requested.width(), 380, 1000);
     const CGFloat height = std::clamp<CGFloat>(requested.height(), 140, 740);
-    m_window = [[MitcadNativeSecondaryWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
+    // A modeless utility presenter (the part picker) floats in a panel that
+    // leaves the keyboard with the document (mitcad#819).
+    m_window = widget->property("nativeUtilityWindow").toBool() && !modal
+        ? mac::nativeUtilityPanel(NSMakeRect(0, 0, width, height))
+        : [[MitcadNativeSecondaryWindow alloc] initWithContentRect:NSMakeRect(0, 0, width, height)
                                          styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
                                            backing:NSBackingStoreBuffered defer:NO];
     m_window.releasedWhenClosed = NO;
     m_window.title = ns(widget->windowTitle());
     m_window.identifier = @"native.secondary";
     m_window.delegate = m_target;
-    m_window.contentView = view;
+    // The body scrolls above the buttons; show() fits the window to its
+    // content within the visible screen (mitcad#818).
+    m_window.contentView = nativeScrollingContent(view, m_view->detachFooter());
     m_window.minSize = NSMakeSize(360, 160);
     if (auto* dialog = qobject_cast<QDialog*>(widget)) {
       connect(dialog, &QDialog::finished, this, [this](int result) { finish(result); });
@@ -1780,8 +2275,13 @@ public:
     m_view->refresh();
     NSWindow* host = m_host;
     if (m_presentAsSheet && host != nil) {
+      fitNativeWindowToScreen(m_window, host);
       [host beginSheet:m_window completionHandler:nil];
-    } else { [m_window center]; [m_window makeKeyAndOrderFront:nil]; }
+    } else if ([m_window isKindOfClass:MitcadNativeUtilityPanel.class]) {
+      // In its kept place, in front, without taking the keyboard (mitcad#819).
+      mac::restoreNativeUtilityFrame(m_window, m_widget, host);
+      [m_window orderFront:nil];
+    } else { [m_window center]; fitNativeWindowToScreen(m_window, nil); [m_window makeKeyAndOrderFront:nil]; }
     m_view->focusInitial();
   }
   int exec() {
@@ -1833,6 +2333,7 @@ public:
     const bool sheet = m_window.sheetParent != nil;
     const bool restore = m_restoreHost || m_window.isKeyWindow ||
         (sheet && (key == nil || key == m_host || key == g_documentWindow));
+    if ([m_window isKindOfClass:MitcadNativeUtilityPanel.class]) { mac::saveNativeUtilityFrame(m_window, m_widget); }
     if (m_window.sheetParent != nil) { [m_window.sheetParent endSheet:m_window returnCode:result]; }
     [m_window orderOut:nil];
     if (restore && m_host != nil) {
@@ -2322,7 +2823,16 @@ QColor getNativeColor(const QColor& initial, QWidget* parent, const QString& tex
 void showNativeWidget(QWidget* widget) {
   if (widget == nullptr) { return; }
   for (NativeDialogController* controller : g_modeless) {
-    if (controller->widget() == widget) { [controller->window() makeKeyAndOrderFront:nil]; return; }
+    if (controller->widget() != widget) { continue; }
+    if ([controller->window() isKindOfClass:MitcadNativeUtilityPanel.class]) {
+      // Brought forward without the keyboard; a closed panel is being
+      // destroyed and a new one replaces it (mitcad#819).
+      if (!controller->window().visible) { continue; }
+      [controller->window() orderFront:nil];
+      return;
+    }
+    [controller->window() makeKeyAndOrderFront:nil];
+    return;
   }
   auto* controller = new NativeDialogController(widget, false);
   g_modeless.push_back(controller);
@@ -2545,11 +3055,100 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 - (void)outlineViewItemDidCollapse:(NSNotification*)notification {
   if (owner != nullptr) { owner->modelExpanded(notification.object, notification.userInfo[@"NSObject"], false); }
 }
+// Opted-in row drags within one outline (mitcad#816).
+- (id<NSPasteboardWriting>)outlineView:(NSOutlineView*)view pasteboardWriterForItem:(id)item {
+  return owner == nullptr ? nil : owner->rowDragWriter(view, item);
+}
+- (void)outlineView:(NSOutlineView*)view draggingSession:(NSDraggingSession*)session
+    willBeginAtPoint:(NSPoint)point forItems:(NSArray*)items {
+  (void)session; (void)point; (void)items;
+  if (owner != nullptr) { owner->rowDragBegan(view); }
+}
+- (NSDragOperation)outlineView:(NSOutlineView*)view validateDrop:(id<NSDraggingInfo>)info
+                  proposedItem:(id)item proposedChildIndex:(NSInteger)index {
+  return owner == nullptr ? NSDragOperationNone : owner->rowDropValidate(view, info, item, index);
+}
+- (BOOL)outlineView:(NSOutlineView*)view acceptDrop:(id<NSDraggingInfo>)info item:(id)item childIndex:(NSInteger)index {
+  (void)item; (void)index;
+  return owner != nullptr && owner->rowDropAccept(view, info);
+}
+- (void)outlineView:(NSOutlineView*)view draggingSession:(NSDraggingSession*)session
+       endedAtPoint:(NSPoint)point operation:(NSDragOperation)operation {
+  (void)session;
+  if (owner != nullptr) { owner->rowDragEnded(view, point, operation); }
+}
 @end
 
 @implementation MitcadNativeModelCell
 - (void)controlTextDidEndEditing:(NSNotification*)notification {
-  if (owner != nullptr && index.isValid()) { owner->modelEdit(binding, index, QString::fromUtf8([(NSTextField*)notification.object stringValue].UTF8String), Qt::EditRole); }
+  if (!finishing) { mitcad::mac::logNativeCellEdit("an edit ends without Return, Escape or Tab", self); }
+  // A read-only cell's text is only selected, and a discarded edit is not
+  // the model's (mitcad#814).
+  if (discarding || ![(NSTextField*)notification.object isEditable]) { return; }
+  const QString text = QString::fromUtf8([(NSTextField*)notification.object stringValue].UTF8String);
+  // An edit that changed nothing sets nothing: an empty cell's "" is no new
+  // value of the model's (mitcad#814).
+  if (index.isValid() && text == mitcad::plain(index.data().toString())) { return; }
+  if (owner != nullptr && index.isValid()) { owner->modelEdit(binding, index, text, Qt::EditRole); }
+}
+- (void)viewWillMoveToWindow:(NSWindow*)window {
+  if (window == nil && self.textField.currentEditor != nil) {
+    mitcad::mac::logNativeCellEdit("an edited cell leaves its window", self);
+  }
+  [super viewWillMoveToWindow:window];
+}
+// The shared editor's keys: Return commits, Escape discards, Tab commits
+// and moves on, each without reaching the dialog's default or cancel button.
+- (BOOL)control:(NSControl*)control textView:(NSTextView*)textView doCommandBySelector:(SEL)command {
+  (void)textView;
+  if (control != self.textField || !self.textField.editable) { return NO; }
+  if (command == @selector(insertNewline:)) { return [self finishEditing:YES]; }
+  if (command == @selector(cancelOperation:)) { return [self finishEditing:NO]; }
+  if (command == @selector(insertTab:) || command == @selector(insertBacktab:)) {
+    return owner != nullptr && owner->modelEditNext(control, command == @selector(insertBacktab:));
+  }
+  return NO;
+}
+- (BOOL)finishEditing:(BOOL)commit {
+  NSTextField* field = self.textField;
+  NSWindow* window = self.window;
+  if (field == nil || window == nil || field.currentEditor == nil || !field.editable) { return NO; }
+  finishing = YES;
+  if (!commit) {
+    discarding = YES;
+    [field abortEditing];
+    discarding = NO;
+    if (index.isValid()) { field.stringValue = mitcad::ns(mitcad::plain(index.data().toString())); }
+  }
+  // Committing ends the field editor through controlTextDidEndEditing. In a
+  // dialog the focus returns to the table, as the shared view's editor
+  // closes; document cards leave keys to the document window.
+  NSTableView* table = mitcad::mac::owningTable(self);
+  const BOOL dialog = [window isKindOfClass:MitcadNativeSecondaryWindow.class];
+  [window makeFirstResponder:(dialog && table != nil) ? (NSResponder*)table : nil];
+  finishing = NO;
+  // A reload, selection or structure change that waited for the edit.
+  if (owner != nullptr) { owner->cellEditEnded(); }
+  return YES;
+}
+- (void)applyTone {
+  // An emphasized selection shows the selection's own text, as the shared
+  // delegate leaves selected cells to the highlighted-text colour.
+  const BOOL emphasized = self.backgroundStyle == NSBackgroundStyleEmphasized;
+  NSColor* color = (tone == nil || emphasized) ? NSColor.labelColor : tone;
+  if (self.textField != nil && ![self.textField.textColor isEqual:color]) { self.textField.textColor = color; }
+  if (fill != nil) { self.needsDisplay = YES; }
+}
+- (void)setBackgroundStyle:(NSBackgroundStyle)style {
+  [super setBackgroundStyle:style];
+  [self applyTone];
+}
+- (void)drawRect:(NSRect)dirty {
+  if (fill != nil && self.backgroundStyle != NSBackgroundStyleEmphasized) {
+    [fill setFill];
+    NSRectFillUsingOperation(NSIntersectionRect(self.bounds, dirty), NSCompositingOperationSourceOver);
+  }
+  [super drawRect:dirty];
 }
 - (void)checked:(id)sender {
   if (owner != nullptr && index.isValid()) { owner->modelEdit(binding, index, [(NSButton*)sender state] == NSControlStateValueOn ? Qt::Checked : Qt::Unchecked, Qt::CheckStateRole); }
@@ -2594,12 +3193,44 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 
 @implementation MitcadNativeWindowTarget
 - (BOOL)windowShouldClose:(NSWindow*)sender { (void)sender; return owner == nullptr ? YES : owner->closeRequested(); }
+// A utility panel's presenter shortcuts (MitcadNativeUtilityPanel, mitcad#819).
+- (BOOL)mitcadDispatchShortcut:(NSEvent*)event { return owner != nullptr && owner->dispatchShortcut(event); }
 @end
+
+namespace {
+// Table keys come before the window's key equivalents (mitcad#814): Return
+// and Escape in a cell editor end that edit rather than pressing the
+// dialog's default or cancel button; F2 on a focused table edits its
+// current cell, as in the shared view.
+BOOL tableKeyEquivalent(NSWindow* window, NSEvent* event) {
+  const NSEventModifierFlags modifiers = event.modifierFlags &
+      (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
+  if (event.type != NSEventTypeKeyDown || modifiers != 0) { return NO; }
+  NSResponder* responder = window.firstResponder;
+  const unsigned short key = event.keyCode;
+  if (key == 36 || key == 76 || key == 53) { // Return, keypad Enter, Escape
+    if (![responder isKindOfClass:NSTextView.class] || !((NSTextView*)responder).isFieldEditor) { return NO; }
+    id edited = ((NSTextView*)responder).delegate;
+    if (![edited isKindOfClass:NSTextField.class]) { return NO; }
+    id cell = ((NSTextField*)edited).delegate;
+    return [cell isKindOfClass:MitcadNativeModelCell.class] && [(MitcadNativeModelCell*)cell finishEditing:key != 53];
+  }
+  if (key == 120 && [responder isKindOfClass:NSTableView.class]) { // F2
+    id target = ((NSTableView*)responder).delegate;
+    if ([target isKindOfClass:MitcadNativeWidgetTarget.class]) {
+      MitcadNativeWidgetTarget* widgets = (MitcadNativeWidgetTarget*)target;
+      return widgets->owner != nullptr && widgets->owner->modelEditKey((NSTableView*)responder);
+    }
+  }
+  return NO;
+}
+} // namespace
 
 @implementation MitcadNativeSecondaryWindow
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
   if ([self.firstResponder isKindOfClass:MitcadNativeShortcutField.class])
     return [(MitcadNativeShortcutField*)self.firstResponder performKeyEquivalent:event];
+  if (tableKeyEquivalent(self, event)) return YES;
   const QKeySequence sequence = mitcad::mac::keySequence(event);
   if (!sequence.isEmpty() && sequence[0].keyboardModifiers() == Qt::NoModifier &&
       (sequence[0].key() == Qt::Key_Return || sequence[0].key() == Qt::Key_Enter) &&
@@ -2662,12 +3293,38 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
   MitcadNativeWidgetTarget* target = (MitcadNativeWidgetTarget*)self.delegate;
   if (target != nil && target->owner != nullptr) { target->owner->modelContext(self, [self convertPoint:event.locationInWindow fromView:nil]); }
 }
+// MITCAD_LOG_NATIVE_EDITS: who gives a table the focus (mitcad#814).
+- (BOOL)becomeFirstResponder {
+  const BOOL accepted = [super becomeFirstResponder];
+  if (accepted) { mitcad::mac::logNativeCellEdit("the table takes the keyboard focus", self); }
+  return accepted;
+}
 @end
 
 @implementation MitcadNativeOutline
+- (BOOL)becomeFirstResponder {
+  const BOOL accepted = [super becomeFirstResponder];
+  if (accepted) { mitcad::mac::logNativeCellEdit("the outline takes the keyboard focus", self); }
+  return accepted;
+}
 - (void)rightMouseDown:(NSEvent*)event {
   MitcadNativeWidgetTarget* target = (MitcadNativeWidgetTarget*)self.delegate;
   if (target != nil && target->owner != nullptr) { target->owner->modelContext(self, [self convertPoint:event.locationInWindow fromView:nil]); }
+}
+// Control-click opens the presenter's own context menu too (mitcad#816).
+- (NSMenu*)menuForEvent:(NSEvent*)event {
+  MitcadNativeWidgetTarget* target = (MitcadNativeWidgetTarget*)self.delegate;
+  if (target != nil && target->owner != nullptr) { target->owner->modelContext(self, [self convertPoint:event.locationInWindow fromView:nil]); }
+  return nil;
+}
+// Only rows of a presenter that moves them by dragging (mitcad#816). The
+// presenter alone decides, from anywhere on the row as the default tree's
+// press-and-move does; AppKit's point heuristics for the cell under the
+// pointer (such as its selectable label) must not refuse a row it offers.
+- (BOOL)canDragRowsWithIndexes:(NSIndexSet*)rows atPoint:(NSPoint)point {
+  (void)point;
+  MitcadNativeWidgetTarget* target = (MitcadNativeWidgetTarget*)self.delegate;
+  return target != nil && target->owner != nullptr && target->owner->rowsDraggable(self, rows);
 }
 @end
 

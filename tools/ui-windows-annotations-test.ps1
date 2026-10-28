@@ -28,7 +28,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'view.annotations' = 'F8'; 'view.export_snapshot' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'view.annotations' = 'F8'; 'view.export_snapshot' = 'F9' } -StepPause 0
 
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -97,6 +97,8 @@ Ui-Step 'close (Enter)'                    { Ui-Key 'Return' }
 Ui-ExpectNew 'Closed Measure' 'measure closed'
 Ui-Mark
 Ui-Step 'measure (I)'                      { Ui-Key 'i' }
+# Started before its pick, as the Linux test waits for it.
+Ui-ExpectNew 'Command Measure started' 'measure started again'
 Ui-Step 'pick Body1''s top rim'            { Ui-ClickPick 'edge F2.b0/E{F2:end(r{c1})|' }
 Ui-ExpectNew 'Inspect Measure: length 31.416, radius 5, diameter 10' 'the rim measured'
 Wait-Enabled 'Measure Keep'

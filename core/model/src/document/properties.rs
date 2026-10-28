@@ -117,7 +117,9 @@ impl DocState {
         match owner {
             PropertyOwner::Component(c) => self.assembly.exists(c),
             PropertyOwner::Occurrence(o) => self.assembly.occurrence(o).is_some(),
-            PropertyOwner::Body(b) => self.features.iter().any(|f| f.uid == b.feature),
+            // (By the features' index: the design file and the importers
+            // ask for every body, mitcad#841.)
+            PropertyOwner::Body(b) => self.position(b.feature).is_some(),
         }
     }
 }

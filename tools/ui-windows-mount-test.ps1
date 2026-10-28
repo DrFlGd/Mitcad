@@ -36,7 +36,7 @@ trap { Ui-Fail "the test script stopped: $_ $($_.InvocationInfo.PositionMessage)
 
 Ui-Init $App $Out $QtBin @{
   'assemble.joint_origin' = 'F7'; 'tools.libraries' = 'F8'; 'insert.library_component' = 'F9'
-  'assemble.joint' = 'F11'; 'tools.publish_library' = 'F12' }
+  'assemble.joint' = 'F11'; 'tools.publish_library' = 'F12' } -StepPause 0
 
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
@@ -148,6 +148,18 @@ function Add-Source([string]$Path) {
   Ui-ExpectNew "Library source added: $Path" 'the source added'
 }
 
+# Close-Libraries: Close (Alt+C) in the Libraries dialog, which has the
+# keys. Its button clicks a moment after the key (Qt's animateClick) and
+# nothing is logged for it: the main window takes keys again once the
+# dialog's window is gone.
+function Close-Libraries {
+  $dialog = $script:UiTarget
+  Ui-Step 'close (Alt+C)'                  { Ui-Key 'alt+c' }
+  for ($i = 0; $i -lt 50 -and (Ui-Windows '^Libraries$') -contains $dialog; $i++) { Start-Sleep -Milliseconds 200 }
+  if ((Ui-Windows '^Libraries$') -contains $dialog) { Ui-Fail 'the Libraries dialog did not close' }
+  Ui-FocusMain
+}
+
 # Insert "search" id [-Copy]: Insert from Library, the part searched (its
 # id), linked or a copy, Insert: Place Part starts for a part with frames.
 function Insert([string]$Search, [string]$Id, [switch]$Copy) {
@@ -241,8 +253,7 @@ Ui-Step 'and the other (Alt+R)'            { Ui-Key 'alt+r' }
 Add-Source $library
 Ui-Step 'Fetch All (Alt+F)'                { Ui-Key 'alt+f' }
 Ui-ExpectNew "Library fetched: library Test mounts (test-mounts) from $library" 'fetched' 30
-Ui-Step 'close (Alt+C)'                    { Ui-Key 'alt+c' }
-Ui-FocusMain
+Close-Libraries
 
 Write-Host '--- 1. Gridfinity: a baseplate dropped in, bins on its cells'
 Insert 'Baseplate' 'baseplate' -Copy
@@ -317,8 +328,7 @@ if ($env:MITCAD_GRIDFINITY_LIBRARY -and (Test-Path (Join-Path $env:MITCAD_GRIDFI
   Add-Source $env:MITCAD_GRIDFINITY_LIBRARY
   Ui-Step 'Fetch All (Alt+F)'              { Ui-Key 'alt+f' }
   Ui-ExpectNew "Library fetched: library $($manifest.name) ($($manifest.id))" "the model's library fetched" 60
-  Ui-Step 'close (Alt+C)'                  { Ui-Key 'alt+c' }
-  Ui-FocusMain
+  Close-Libraries
   Ui-Mark
   Ui-Step 'Insert from Library (F9)'       { Ui-Key 'F9' }
   Ui-FocusDialog '^Insert from Library$'
@@ -428,8 +438,7 @@ Ui-FocusDialog '^Libraries$'
 Add-Source $mine
 Ui-Step 'Fetch All (Alt+F)'                { Ui-Key 'alt+f' }
 Ui-ExpectNew "Library fetched: library My screws (my-screws) from $mine" 'the own library fetched' 30
-Ui-Step 'close (Alt+C)'                    { Ui-Key 'alt+c' }
-Ui-FocusMain
+Close-Libraries
 Ui-Mark
 Ui-Step 'Insert from Library (F9)'         { Ui-Key 'F9' }
 Ui-FocusDialog '^Insert from Library$'

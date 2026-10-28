@@ -29,6 +29,7 @@
 #include <TopoDS_Shape.hxx>
 #include <gp_Dir.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Trsf.hxx>
 
 #include "DragProxy.hpp"
 #include "Selection.hpp"
@@ -173,6 +174,13 @@ struct ChoiceIcon {
 // a small disabled line that cannot be chosen; a frontend without headings
 // lists it, and choosing it changes nothing.
 inline QString choiceHeadingPrefix() { return QStringLiteral("__heading/"); }
+
+// A choice whose value starts with this is a separator line between the
+// options (mitcad#828: 3D Print's New printer… / New process… stands apart
+// from the profiles above it). Its label is empty; it cannot be chosen and
+// the keyboard skips it. A script that chooses it is refused.
+inline QString choiceSeparatorPrefix() { return QStringLiteral("__separator/"); }
+inline bool isChoiceSeparator(const QString& value) { return value.startsWith(choiceSeparatorPrefix()); }
 
 // One input of a feature command's panel.
 struct InputDef {
@@ -329,7 +337,7 @@ struct InputDef {
   // part picker, mitcad#418). It changes nothing itself; what it opens may
   // choose an option later through the main window
   // (DocumentHost::chooseInCommand, CommandSession::choose). A frontend
-  // without such a button (the AppKit inspector) shows none.
+  // without such a button shows none.
   QString buttonText;
   QString buttonTooltip;
   std::function<void(const CommandState&, const CommandContext&)> onButton;
@@ -399,8 +407,7 @@ struct InputDef {
 
   // The label in a state, where it follows other inputs (a pattern's length
   // row says Spacing or Extent by its Distance Type, mitcad#545); `label`
-  // when unset. A frontend that builds its labels once (the AppKit
-  // inspector) shows `label`.
+  // when unset. A frontend that builds its labels once shows `label`.
   std::function<QString(const CommandState&)> labelFor;
 
   // A bold heading above the row, shown and hidden with it: the first
@@ -788,6 +795,28 @@ struct Inspection {
   Record record;
 };
 
+// The rigid motion a command's handles drive (Move/Copy, mitcad#838;
+// CommandDef::dragMotion): what it worked out of the model when an exact
+// preview was asked for, so that a drag moves the preview's bodies without
+// asking the model again.
+struct DragMotion {
+  // The motion the inputs give what the command moves, in the coordinates
+  // `frame` puts into the design; none when the inputs give none (a value
+  // that is not a number). It must not query the model.
+  std::function<std::optional<gp_Trsf>(const CommandState&)> of;
+  // Where those coordinates are in the design: the placement of the first
+  // occurrence of the component the command works in (identity in the
+  // root).
+  gp_Trsf frame;
+  // What moves, wherever the exact preview draws it: these bodies (uids),
+  // the bodies the command makes (`made`: copies), and the bodies of these
+  // occurrences (paths of uids from the root, "O1/O4") and of the
+  // occurrences in them.
+  QStringList bodies;
+  bool made = false;
+  QStringList occurrences;
+};
+
 struct CommandDef {
   enum class Kind {
     Feature, // a panel with inputs that adds or edits a feature
@@ -937,6 +966,14 @@ struct CommandDef {
   std::function<std::optional<DragProxyRule>(const CommandState& shown, const CommandState& now,
                                              const QString& key, double value)>
       dragProxy;
+  // A provisional motion while a handle is dragged (mitcad#838,
+  // framework/CommandSessionProxy.cpp): asked with the inputs of each exact
+  // preview while the model is idle (it may query), the motion they give.
+  // While a handle is held, the bodies the exact preview moves or places
+  // are drawn where the dragged value puts them (their meshes only moved,
+  // no model preview), and the exact preview waits for the drag to pause
+  // or end. None: the exact previews only.
+  std::function<std::optional<DragMotion>(const CommandState&, const CommandContext&)> dragMotion;
   // The mouse moved onto another item of the view (an invalid one: off the
   // bodies); true when it changed the state, so that the markers are drawn
   // again (no preview is computed for it).

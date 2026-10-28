@@ -680,19 +680,32 @@ pub struct CheckContext<'a> {
     pub(crate) uid: FeatureUid,
     pub(crate) earlier: &'a [Arc<FeatureEntry>],
     pub(crate) all: &'a [Arc<FeatureEntry>],
+    /// Where the features of `all` are (mitcad#841).
+    pub(crate) index: &'a crate::feature_index::FeatureIndex,
 }
 
 impl CheckContext<'_> {
     /// A feature before the one being checked.
     pub fn feature(&self, uid: FeatureUid) -> Result<&FeatureEntry, String> {
-        if let Some(entry) = self.earlier.iter().find(|f| f.uid == uid) {
-            return Ok(entry);
-        }
-        if uid == self.uid {
-            return Err("a feature cannot refer to itself".to_owned());
-        }
-        match self.all.iter().find(|f| f.uid == uid) {
-            Some(later) => Err(format!(
+        // The feature and whether it comes before this one: `earlier`
+        // begins `all`, so the index of `all` tells both.
+        let begins_all = self.earlier.len() <= self.all.len()
+            && std::ptr::eq(self.earlier.as_ptr(), self.all.as_ptr());
+        let found = if begins_all {
+            self.index
+                .position(self.all, uid)
+                .map(|i| (i < self.earlier.len(), &self.all[i]))
+        } else {
+            self.earlier
+                .iter()
+                .find(|f| f.uid == uid)
+                .map(|f| (true, f))
+                .or_else(|| self.all.iter().find(|f| f.uid == uid).map(|f| (false, f)))
+        };
+        match found {
+            Some((true, entry)) => Ok(&**entry),
+            _ if uid == self.uid => Err("a feature cannot refer to itself".to_owned()),
+            Some((false, later)) => Err(format!(
                 "{} ({uid}) does not come before this feature in the timeline",
                 later.name
             )),
@@ -754,6 +767,8 @@ pub(crate) struct Env<'a, S> {
     pub sketches: &'a BTreeMap<FeatureUid, Versioned<Arc<SketchOutput>>>,
     pub datums: &'a BTreeMap<FeatureUid, Versioned<Datum>>,
     pub features: &'a [Arc<FeatureEntry>],
+    /// Where the features of `features` are (mitcad#841).
+    pub index: &'a crate::feature_index::FeatureIndex,
     /// Results of the features before this one.
     pub history: &'a [FeatureResult<S>],
     /// Every component's bodies, for linked geometry (mitcad#100).
@@ -785,6 +800,27 @@ impl<S> Clone for Env<'_, S> {
 }
 
 impl<S> Copy for Env<'_, S> {}
+
+impl<'a, S> Env<'a, S> {
+    /// The feature `uid` (mitcad#841: by the index, not a search).
+    pub(crate) fn feature(&self, uid: FeatureUid) -> Option<&'a Arc<FeatureEntry>> {
+        self.index.find(self.features, uid)
+    }
+
+    /// The result of the earlier feature `uid`: a recompute's results are
+    /// in timeline order, one per feature, so it is where the feature is
+    /// in the timeline; else (results of another kind) searched for.
+    pub(crate) fn result_of(&self, uid: FeatureUid) -> Option<&'a FeatureResult<S>> {
+        let history = self.history;
+        if let Some(i) = self.index.position(self.features, uid)
+            && let Some(result) = history.get(i)
+            && result.uid == uid
+        {
+            return Some(result);
+        }
+        history.iter().find(|r| r.uid == uid)
+    }
+}
 
 /// Inputs of an evaluating feature. Every read is recorded, so the
 /// recompute cache can tell whether a stored result still applies.
@@ -1155,9 +1191,7 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
 
     pub fn feature_name(&self, uid: FeatureUid) -> String {
         self.env
-            .features
-            .iter()
-            .find(|f| f.uid == uid)
+            .feature(uid)
             .map_or_else(|| uid.to_string(), |f| f.name.clone())
     }
 

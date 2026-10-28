@@ -32,6 +32,9 @@
 #include "framework/CommandRegistry.hpp"
 #include "framework/CommandSession.hpp"
 #include "framework/ParameterEdits.hpp"
+#ifdef MITCAD_MACOS_NATIVE_UI
+#include "platform/NativeForms.hpp"
+#endif
 #include "sketch/SketchController.hpp"
 #include "sketch/SketchModel.hpp"
 
@@ -102,6 +105,15 @@ void MainWindow::addParametersButton(CommandPanel& panel, const CommandDef& def)
     panel.addHeaderAction(m_registry->action(QStringLiteral("solid.parameters")));
   }
 }
+
+#ifdef MITCAD_MACOS_NATIVE_UI
+// The AppKit command form's title row has the same button (mitcad#815).
+void MainWindow::addParametersButton(NativeCommandForm& form, const CommandDef& def) {
+  if (hasValueInput(def.inputs)) {
+    form.addHeaderAction(m_registry->action(QStringLiteral("solid.parameters")));
+  }
+}
+#endif
 
 ParameterEditScope MainWindow::parameterScope() const {
   ParameterEditScope scope;

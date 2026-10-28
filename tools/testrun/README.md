@@ -139,7 +139,10 @@ file beside it); `--no-record` leaves it alone.
 
 `beside` (a UI entry's runs only), `ui_room`, `room_passes` and
 `ui_caps` are left out where they are not set
-([UI entries at once](#ui-entries-at-once)).
+([UI entries at once](#ui-entries-at-once)). A corpus test keeps its
+files' last runs too, `"files": { "<key>": { "wall": 41.3, "peak":
+805306368, "when": 1793000000 } }` ([below](#corpus-tests)), left out
+for the other tests.
 
 The prediction of a test is the 90th percentile of its last runs' wall
 time, busy cores and peak memory, the memory times `--margin` (1.25). A
@@ -305,6 +308,49 @@ build/dev/core/mitcad-testrun --record-ui ui-runs.tsv --ui-max "$MITCAD_UI_JOBS"
 `--record-ui` adds the runs to the profiles (exit status 0 passed, 124 and
 137 timed out, 77 skipped, others failed), learns the cap from them and
 prints what it learnt; neither needs `--build`.
+
+## Corpus tests
+
+A corpus test (`corpus` in its name or a `corpus` label) imports its
+files in child processes, several at once (`core/tests/parallel_runs.hpp`:
+`test_f3d_import`, `test_brep_import`, `test_exchange`, and
+`mitcad_run_parallel` for the scripts' corpora, `f3d.corpus_designs`
+among them, its imports with a debug build's own-start time, mitcad#847),
+mitcad#832:
+
+- **Each file's time and peak.** For every corpus test the runner names
+  a table in `MITCAD_CORPUS_RECORD` (`<out>/corpus/<test>.runs.tsv`), to
+  which the test appends a line per child: the file's key (its path, or
+  the label of a `mitcad_run_parallel` list), seconds, peak bytes and
+  `ok` or `failed`. The profiles keep each file's last run under the
+  test's `files`; a file not run for 60 days goes. `--no-record` leaves
+  them alone.
+- **The longest files first.** A test with files in its profile gets
+  their times in the table `MITCAD_CORPUS_FILES` names
+  (`<out>/corpus/<test>.files.tsv`: key, seconds, peak bytes). Its
+  children start by them, the longest first; a file without a time by
+  its size at the known files' median seconds per byte, or among the
+  first when it has no size.
+- **Children from the profile** (`--corpus-children`, which
+  `tools/check-all.sh` gives its corpus step unless `--corpus-jobs` is
+  given). Each corpus test with files in its profile gets its children at
+  once in `MITCAD_CORPUS_JOBS`: every such test starts with two (one with
+  a single file), then a child at a time goes to the test that would end
+  last (its work, the sum of its files' times, over its children, never
+  below its longest file), as long as one more shortens it, all the
+  children together within the machine's cores and their predicted
+  memory (256 MiB per test and each child its test's largest file's peak
+  times `--margin`) within the budget. So a long test gets more children
+  and a short one fewer, and they end at about the same time. A child's
+  memory limit, `MITCAD_CORPUS_MEMORY`, is `--limit-factor` times its
+  test's largest peak of a file (a limit on committed memory, which
+  exceeds the resident peak), never below the caller's
+  `MITCAD_CORPUS_MEMORY` (1536M when unset). The test's own prediction
+  and hard memory limit follow its children. The corpus tests without
+  files in their profile (their first run, or a test that imports in one
+  process) keep the caller's variables, and their predictions are kept
+  out of the room the others share. The run's first lines name each
+  planned test's children; `--dry-run` shows the variables.
 
 ## Tests related to a change
 

@@ -44,11 +44,14 @@
 
 #include "../build/BuildCatalog.hpp"
 #include "../files/Libraries.hpp"
+#include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/WindowStyle.hpp"
 #include "../platform/MacDialogs.hpp"
+#include "OptionChooser.hpp"
 #include "PartFavourites.hpp"
+#include "PartOptions.hpp"
 
 namespace mitcad {
 namespace {
@@ -160,6 +163,46 @@ QImage readImage(const PickerPart& part) {
   }
   cache.insert(key, image);
   return image;
+}
+
+// What the hover tells of a tile's part: its name, sizes and system,
+// supplier, part number, library, licence, its uses in the design and why
+// it does not fit. Rich text for the Qt hover; plain lines for the native
+// grid's tooltip and hover card (mitcad#813).
+QString partDetails(const PickerPart& shown, int uses, bool rich) {
+  const auto line = [rich](const QString& label, const QString& value) {
+    if (value.isEmpty()) {
+      return QString();
+    }
+    return rich ? QStringLiteral("<br><b>%1</b> %2").arg(label, value.toHtmlEscaped())
+                : QStringLiteral("\n%1 %2").arg(label, value);
+  };
+  QString text = rich ? QStringLiteral("<b>%1</b>").arg(shown.name.toHtmlEscaped()) : shown.name;
+  QStringList about;
+  for (const QString& one : {shown.sizes, shown.system}) {
+    if (!one.isEmpty() && !about.contains(one)) {
+      about << one;
+    }
+  }
+  if (!about.isEmpty()) {
+    const QString joined = about.join(QStringLiteral(", "));
+    text += rich ? QStringLiteral("<br>") + joined.toHtmlEscaped() : QStringLiteral("\n") + joined;
+  }
+  text += line(PartGrid::tr("Supplier:"), shown.supplier);
+  text += line(PartGrid::tr("Part number:"), shown.partNumber);
+  const QString library = shown.libraryName.isEmpty() || shown.libraryName == shown.library
+                              ? shown.library
+                              : QStringLiteral("%1 (%2)").arg(shown.libraryName, shown.library);
+  text += line(PartGrid::tr("Library:"), QStringList{library, shown.version}.join(QLatin1Char(' ')).trimmed());
+  text += line(PartGrid::tr("Licence:"), shown.license.isEmpty() ? PartGrid::tr("none") : shown.license);
+  if (uses > 0) {
+    text += line(PartGrid::tr("In this design:"), QString(QChar(0x00D7)) + QString::number(uses));
+  }
+  if (!shown.refused.isEmpty()) {
+    const QString refused = PartGrid::tr("Does not fit: %1").arg(shown.refused);
+    text += rich ? QStringLiteral("<br><i>%1</i>").arg(refused.toHtmlEscaped()) : QStringLiteral("\n") + refused;
+  }
+  return text;
 }
 
 // A five-pointed star in `box`.
@@ -418,6 +461,7 @@ PickerPart pickerPart(const QJsonObject& component) {
   part.license = str(component, "license");
   const QJsonValue preview = component.value(QStringLiteral("preview"));
   part.preview = preview.isBool() ? preview.toBool() : true;
+  part.table = component.value(QStringLiteral("configurations")).toObject();
   build::Part shape;
   shape.build = component.value(QStringLiteral("build")).toObject();
   part.system = shape.systemText();
@@ -472,6 +516,7 @@ PickerPart pickerPart(const build::Part& source) {
   part.config = source.config;
   part.rowPreview = source.ownPreview;
   part.defaultRow = source.defaultRow;
+  part.table = source.table;
   part.name = source.name;
   part.designation = source.designation;
   part.supplier = source.supplier;
@@ -591,6 +636,12 @@ QVariant PartGridModel::data(const QModelIndex& index, int role) const {
     return shown->name;
   case Qt::AccessibleTextRole:
     return QStringList{shown->name, shown->sizes}.join(QLatin1Char(' ')).trimmed();
+  case Qt::ToolTipRole:
+    // The hover's details for the native grid; PartGrid takes the Qt
+    // view's tooltips and shows its own hover.
+    return partDetails(*shown, m_counts.value(shown->key), false);
+  case kPreviewRole:
+    return hasImage(*shown) ? QVariant::fromValue(readImage(*shown)) : QVariant();
   case kKeyRole:
     return shown->key;
   case kSizesRole:
@@ -618,7 +669,13 @@ QVariant PartGridModel::data(const QModelIndex& index, int role) const {
     if (read != cache.cend()) {
       QPixmap tile;
       if (!read->isNull()) {
-        tile = QPixmap::fromImage(read->scaled(m_tileSize, m_tileSize, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        // At the screen's pixels, drawn at the tile's size (TileDelegate
+        // divides by the ratio; the native grid sets its points): sharp on
+        // a high-density screen.
+        const qreal ratio = std::max<qreal>(1.0, qApp->devicePixelRatio());
+        const int pixels = qRound(m_tileSize * ratio);
+        tile = QPixmap::fromImage(read->scaled(pixels, pixels, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        tile.setDevicePixelRatio(ratio);
       }
       m_scaled.insert(key, tile);
       return QVariant::fromValue(tile);
@@ -636,6 +693,20 @@ QVariant PartGridModel::data(const QModelIndex& index, int role) const {
   default:
     return {};
   }
+}
+
+bool PartGridModel::setData(const QModelIndex& index, const QVariant& value, int role) {
+  const PickerPart* shown = part(index.row());
+  if (role != kStarRole || shown == nullptr || shown->libraryEntry) {
+    return false;
+  }
+  // Only a request: PartGrid stars the tile (PartFavourites) and the stars
+  // are shown again from there (refreshStars).
+  if (value.toBool() != starredTile(*shown)) {
+    const QString key = shown->key;
+    emit starRequested(key);
+  }
+  return true;
 }
 
 QImage PartGridModel::image(const PickerPart& shownPart) const { return readImage(shownPart); }
@@ -795,6 +866,23 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
   right->addWidget(m_view, 1);
   layout->addLayout(right, 1);
   setTileSize(m_tile);
+  // The native macOS frontend presents this widget as a catalogue: the
+  // groups as a source list, these rows and an AppKit tile grid reading
+  // the tiles' roles (docs/native-macos-ui.md, mitcad#813). Plain
+  // properties: no effect on the Qt presentation.
+  setProperty("nativeTileCatalogue", true);
+  m_view->setProperty("nativeTileKeyRole", PartGridModel::kKeyRole);
+  m_view->setProperty("nativeTileImageRole", PartGridModel::kImageRole);
+  m_view->setProperty("nativeTilePreviewRole", PartGridModel::kPreviewRole);
+  m_view->setProperty("nativeTileSubtitleRole", PartGridModel::kSizesRole);
+  m_view->setProperty("nativeTileStarRole", PartGridModel::kStarRole);
+  m_view->setProperty("nativeTileBadgeRole", PartGridModel::kCountRole);
+  m_view->setProperty("nativeTileDisabledRole", PartGridModel::kRefusedRole);
+  m_groups->setProperty("nativeGroupKeyRole", int(Qt::UserRole));
+#ifdef Q_OS_MACOS
+  m_groups->setProperty("nativeStarRole", kGroupStarRole);
+  m_groups->setProperty("nativeStarMethod", QByteArray("toggleGroupStar"));
+#endif
 
   // The larger picture with the part's supplier, part number, library and
   // licence while the mouse rests on a tile.
@@ -825,6 +913,8 @@ PartGrid::PartGrid(QWidget* parent) : QWidget(parent), m_group(kAll) {
   connect(starAction, &QAction::triggered, this, &PartGrid::toggleStar);
   connect(groupStarAction, &QAction::triggered, this, &PartGrid::toggleGroupStar);
   connect(m_star, &QToolButton::clicked, this, &PartGrid::toggleStar);
+  // A tile's star from the native grid (PartGridModel::setData).
+  connect(m_model, &PartGridModel::starRequested, this, [this](const QString& key) { star(key); });
 
   connect(m_groups, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem* current) {
     if (m_filling || current == nullptr) {
@@ -1528,34 +1618,7 @@ void PartGrid::showHover(const QModelIndex& index, const QPoint& global) {
             : picture));
     m_hoverImage->show();
   }
-  const auto line = [](const QString& label, const QString& value) {
-    return value.isEmpty() ? QString() : QStringLiteral("<br><b>%1</b> %2").arg(label, value.toHtmlEscaped());
-  };
-  QString text = QStringLiteral("<b>%1</b>").arg(shown->name.toHtmlEscaped());
-  QStringList about;
-  for (const QString& one : {shown->sizes, shown->system}) {
-    if (!one.isEmpty() && !about.contains(one)) {
-      about << one;
-    }
-  }
-  if (!about.isEmpty()) {
-    text += QStringLiteral("<br>") + about.join(QStringLiteral(", ")).toHtmlEscaped();
-  }
-  text += line(tr("Supplier:"), shown->supplier);
-  text += line(tr("Part number:"), shown->partNumber);
-  const QString library = shown->libraryName.isEmpty() || shown->libraryName == shown->library
-                              ? shown->library
-                              : QStringLiteral("%1 (%2)").arg(shown->libraryName, shown->library);
-  text += line(tr("Library:"), QStringList{library, shown->version}.join(QLatin1Char(' ')).trimmed());
-  text += line(tr("Licence:"), shown->license.isEmpty() ? tr("none") : shown->license);
-  const int uses = countOf(*shown);
-  if (uses > 0) {
-    text += line(tr("In this design:"), QString(QChar(0x00D7)) + QString::number(uses));
-  }
-  if (!shown->refused.isEmpty()) {
-    text += QStringLiteral("<br><i>%1</i>").arg(tr("Does not fit: %1").arg(shown->refused).toHtmlEscaped());
-  }
-  m_hoverText->setText(text);
+  m_hoverText->setText(partDetails(*shown, countOf(*shown), true));
   m_hover->adjustSize();
   QPoint at = global + QPoint(16, 20);
   if (const QScreen* screen = QGuiApplication::screenAt(global)) {
@@ -1680,10 +1743,21 @@ PartPicker::PartPicker(QWidget* parent) : QDialog(parent) {
   setModal(false);
   // The view keeps the keyboard: the picker is there to be clicked.
   setAttribute(Qt::WA_ShowWithoutActivating);
+  // The same in the native frontend: an AppKit utility panel that does not
+  // take the keyboard from the document, its frame kept under this key
+  // (showDialog, mitcad#819).
+  setProperty("nativeUtilityWindow", true);
+  setProperty("nativeFrameKey", QStringLiteral("partPicker/nativeFrame"));
   resize(780, 560);
   auto* layout = new QVBoxLayout(this);
   m_grid = new PartGrid;
   layout->addWidget(m_grid, 1);
+  // An open table's options (mitcad#810), under the grid.
+  m_options = new OptionChooser;
+  m_options->setObjectName(QStringLiteral("partPickerOptions"));
+  m_options->setLogName(QStringLiteral("Part picker"));
+  m_options->hide();
+  layout->addWidget(m_options);
   auto* buttons = new QDialogButtonBox;
   m_pin = new QToolButton;
   m_pin->setObjectName(QStringLiteral("partPickerPin"));
@@ -1703,7 +1777,7 @@ PartPicker::PartPicker(QWidget* parent) : QDialog(parent) {
   m_saveTimer.setSingleShot(true);
   m_saveTimer.setInterval(400);
   connect(&m_saveTimer, &QTimer::timeout, this, [this] {
-    if (m_restored) {
+    if (m_restored && !testAttribute(Qt::WA_DontShowOnScreen)) {
       QSettings().setValue(kGeometryKey, saveGeometry());
     }
   });
@@ -1713,6 +1787,18 @@ PartPicker::PartPicker(QWidget* parent) : QDialog(parent) {
   });
   connect(m_grid, &PartGrid::clicked, this, &PartPicker::choose);
   connect(m_grid, &PartGrid::activated, this, &PartPicker::choose);
+  connect(m_grid, &PartGrid::currentChanged, this, [this](const QString& key) {
+    if (key != m_optionsFor) {
+      // The tile chosen keeps the options it was chosen with.
+      showOptions(key, key == m_chosenTile ? build::keyOptions(m_request.current) : QJsonObject());
+    }
+  });
+  // An option changed: the part chosen with the options follows them.
+  connect(m_options, &OptionChooser::optionsChanged, this, [this] {
+    if (!m_showingOptions && !m_chosenTile.isEmpty() && m_chosenTile == m_optionsFor) {
+      choose(m_chosenTile);
+    }
+  });
   m_placesTimer.setSingleShot(true);
   m_placesTimer.setInterval(150);
   connect(&m_placesTimer, &QTimer::timeout, this, [this] { logPlaces(); });
@@ -1766,7 +1852,7 @@ PartPicker::~PartPicker() {
   m_placesTimer.stop();
   m_movedTimer.stop();
   m_saveTimer.stop();
-  if (m_restored && isVisible()) {
+  if (m_restored && isVisible() && !testAttribute(Qt::WA_DontShowOnScreen)) {
     QSettings().setValue(kGeometryKey, saveGeometry());
   }
 }
@@ -1785,8 +1871,11 @@ void PartPicker::ask(const PickerRequest& request) {
     m_grid->setParts(request.parts);
   }
   m_grid->setSystem(request.system);
-  // The part chosen in sight, highlighted (mitcad#452).
-  if (m_grid->reveal(request.current)) {
+  // The part chosen in sight, highlighted (mitcad#452); with its options
+  // (mitcad#810).
+  m_chosenTile = tileOf(request.current);
+  showOptions(m_chosenTile, build::keyOptions(request.current));
+  if (m_grid->reveal(m_chosenTile)) {
     if (const PickerPart* current = m_grid->currentPart()) {
       qInfo().noquote() << QStringLiteral("Part picker shows the part chosen: %1").arg(tileLabel(*current));
     }
@@ -1799,9 +1888,11 @@ void PartPicker::ask(const PickerRequest& request) {
     restoreGeometry(QSettings().value(kGeometryKey).toByteArray());
     m_restored = true;
   }
-  if (!isVisible()) {
-    show();
-  }
+  // Shown through the shared dispatch (mitcad#819): Qt shows its window
+  // once; the native frontend hosts the picker in an AppKit utility panel
+  // and brings that panel forward again while it is open, without taking
+  // the keyboard. A native panel's presenter is never on the screen.
+  showDialog(this);
   if (!testAttribute(Qt::WA_DontShowOnScreen)) {
     raise();
   }
@@ -1825,7 +1916,51 @@ void PartPicker::refreshParts(const QList<PickerPart>& parts) {
 
 void PartPicker::setCurrent(const QString& key) {
   m_request.current = key;
-  m_grid->setCurrent(key);
+  const QString tile = tileOf(key);
+  m_grid->setCurrent(tile);
+  if (tile != m_optionsFor) {
+    showOptions(tile, build::keyOptions(key));
+  }
+}
+
+QString PartPicker::tileOf(const QString& key) const {
+  if (!key.contains(QLatin1Char('?'))) {
+    return key;
+  }
+  const QString base = build::baseKey(key);
+  const QString prefix = build::keyPrefix(base);
+  QString found;
+  for (const PickerPart& listed : m_grid->allParts()) {
+    if (listed.key == base) {
+      return listed.key;
+    }
+    if (found.isEmpty() && build::keyPrefix(listed.key) == prefix) {
+      found = listed.key;
+    }
+  }
+  return found;
+}
+
+void PartPicker::showOptions(const QString& key, const QJsonObject& parameters) {
+  const PickerPart* shown = nullptr;
+  for (const PickerPart& listed : m_grid->allParts()) {
+    if (listed.key == key) {
+      shown = &listed;
+      break;
+    }
+  }
+  m_optionsFor = key;
+  if (shown == nullptr || !isOpenTable(shown->table) || !shown->refused.isEmpty()) {
+    m_options->hide();
+    return;
+  }
+  m_showingOptions = true;
+  m_options->setOptionsQuery(
+      libraryOptionsQuery(libraryCommand, shown->url, shown->library, shown->rev, shown->component));
+  m_options->setTable(shown->table, shown->config, parameters);
+  m_showingOptions = false;
+  m_options->setVisible(m_options->isOpen());
+  qInfo().noquote() << QStringLiteral("Part picker options of %1: %2").arg(tileLabel(*shown), m_options->summary());
 }
 
 void PartPicker::commandEnded(const QString& ended) {
@@ -1889,6 +2024,21 @@ void PartPicker::choose(const QString& key) {
     if (listed.libraryEntry) {
       return;
     }
+    // A part of an open table: with the options under the grid (mitcad#810).
+    if (isOpenTable(listed.table) && m_optionsFor != key) {
+      showOptions(key);
+    }
+    m_chosenTile = key;
+    if (m_optionsFor == key && m_options->isOpen()) {
+      PickerPart withOptions = listed;
+      withOptions.config = m_options->row();
+      withOptions.key = build::optionsKey(key, withOptions.config, m_options->parameters());
+      m_request.current = withOptions.key;
+      qInfo().noquote() << QStringLiteral("Part picker chose %1 with options %2")
+                               .arg(partLabel(listed), m_options->summary());
+      emit chosen(withOptions, m_request.command);
+      return;
+    }
     m_request.current = key;
     qInfo().noquote() << QStringLiteral("Part picker chose %1%2")
                              .arg(partLabel(listed), listed.config.isEmpty()
@@ -1899,8 +2049,10 @@ void PartPicker::choose(const QString& key) {
   }
 }
 
+// A natively hosted picker's presenter is off the screen: its AppKit panel
+// keeps its own frame (nativeFrameKey), so the Qt geometry is left as it was.
 void PartPicker::saveGeometryLater() {
-  if (m_restored && isVisible()) {
+  if (m_restored && isVisible() && !testAttribute(Qt::WA_DontShowOnScreen)) {
     m_saveTimer.start();
   }
 }
@@ -1914,7 +2066,7 @@ void PartPicker::showEvent(QShowEvent* event) {
 }
 
 void PartPicker::hideEvent(QHideEvent* event) {
-  if (m_restored) {
+  if (m_restored && !testAttribute(Qt::WA_DontShowOnScreen)) {
     m_saveTimer.stop();
     QSettings().setValue(kGeometryKey, saveGeometry());
   }

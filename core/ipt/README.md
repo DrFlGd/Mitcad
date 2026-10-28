@@ -1679,7 +1679,8 @@ to 2023, sub-assemblies nested up to seven deep):
   reference and table entry, an edge by its two faces and by its own tag
   in a state, the attribute classes in both spellings, a flange tag's
   numbers) read into the dump IR, and replayed by the
-  import on the model's mock kernel (`tests/design_import.rs`); the
+  import on the model's mock kernel (`core/model-tests/imports`,
+  `ipt_design_tests.rs`, ctest `core.model.imports`); the
   assemblies written by `testassembly` (files, occurrences, keys, flags,
   labels, placements, range boxes, display transforms, the occurrence
   table, a part's own version id).

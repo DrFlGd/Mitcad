@@ -26,7 +26,7 @@ param(
 
 # Popups close at once in session 0: the Cloud page by a key of the test's
 # own.
-Ui-Init $App $Out $QtBin @{ 'tools.preferences.cloud' = 'F8' }
+Ui-Init $App $Out $QtBin @{ 'tools.preferences.cloud' = 'F8' } -StepPause 0
 
 $work = Join-Path $script:UiOut 'preferences'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue

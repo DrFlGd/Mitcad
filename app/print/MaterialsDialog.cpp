@@ -826,7 +826,7 @@ void MaterialsPanel::newMaterial() {
   if (chosen == nullptr) {
     return;
   }
-  // The model names it (New Material). Its density is its class's typical
+  // The model names it (Material 1). Its density is its class's typical
   // one (mitcad#655): steel's for a metal, PLA's for a plastic; another
   // material has none typical, so Density takes the keyboard to be set.
   const QString materialClass = chosen->data().toString();
@@ -874,7 +874,7 @@ void MaterialsPanel::duplicate() {
                                  ? QJsonValue(source.designId())
                                  : QJsonValue(QJsonObject{{QStringLiteral("library"), source.library},
                                                           {QStringLiteral("id"), source.id}});
-  // The model names it after the source ("PLA 2").
+  // The model names it after the source ("PLA (copy)").
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("create_material")},
                       {QStringLiteral("based_on"), basedOn}};
   if (!project.isEmpty() && basedOn.isObject()) {

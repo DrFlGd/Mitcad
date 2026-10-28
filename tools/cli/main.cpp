@@ -89,6 +89,7 @@ const char* const kUsage = R"(usage:
                         [--threads N] [--learn <dir>] [--references <dir>]... [--no-references]
                         [--geometric-tolerance <mm>] [--retry-bodies keep|replace]
                         [--accept-deviations all|none|<index>,...]
+                        [--own-start-time-scale <factor>]
       Imports an .f3d or .f3z design with its timeline: parameters,
       sketches and features replayed as Mitcad features, checked against
       the file's ASM history; an item that cannot be replayed becomes a
@@ -100,6 +101,9 @@ const char* const kUsage = R"(usage:
       after --time-limit seconds the remaining items take the file's bodies;
       with --hang-limit the import runs again when the geometry kernel does
       not return for that long, the item it hung on taking the file's bodies.
+      --own-start-time-scale multiplies the time an item is first tried
+      from the state before the operations it made (30 s, half of its
+      time), e.g. by a debug build's slowdown in the tests.
       --geometric-tolerance is how far (mm, default 0.01) the replay's
       geometry may be from the file's where it is not exact: the decoded
       edges, faces and vertices are looked for in the replay within it

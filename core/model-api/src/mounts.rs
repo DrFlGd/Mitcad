@@ -146,6 +146,20 @@ pub(crate) fn inserted_json<K: Kernel>(doc: &Document<K>, inserted: &Inserted) -
     if let Some(plan) = &inserted.plan {
         value["mount"] = Value::Object(plan_fields(doc, plan, &doc.host_world()));
     }
+    // Inserted with options (mitcad#801).
+    if doc.component_options(inserted.component).is_some() {
+        value["moves"] = json!(
+            inserted
+                .moves
+                .iter()
+                .map(mitcad_model::part_options::OptionMove::json)
+                .collect::<Vec<_>>()
+        );
+        value["refused"] = inserted
+            .broken
+            .as_ref()
+            .map_or(Value::Null, mitcad_model::part_options::BrokenRule::json);
+    }
     value
 }
 

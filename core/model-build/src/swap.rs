@@ -325,6 +325,7 @@ impl<K: Kernel> SwapCrateOps<K> for Document<K> {
             component: Some(def.library.component.clone()),
             config: part.config.clone(),
             source: None,
+            parameters: part.parameters.clone(),
         }
     }
 

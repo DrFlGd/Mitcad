@@ -239,7 +239,7 @@ fn commands_build_a_part_and_queries_describe_it() {
     assert_eq!(
         query(&doc, json!({"query": "parameters"}))[2],
         json!({"name": "d3", "expression": "20 mm", "unit": "mm", "value": 20.0, "text": "20 mm",
-               "comment": "Extrude1 distance", "kind": "model", "owner": "F2", "dependencies": [],
+               "comment": "Extrude1 distance", "kind": "model", "owner": "F2", "dependencies": [], "table_dependencies": [],
                "favorite": false})
     );
     assert_eq!(
@@ -360,7 +360,7 @@ fn parameters_take_expressions_and_units() {
     assert_eq!(
         params[3],
         json!({"name": "wall", "expression": "d1 / 20", "unit": "mm", "value": 4.0, "text": "4 mm",
-               "comment": "rim", "kind": "user", "owner": null, "dependencies": ["d1"],
+               "comment": "rim", "kind": "user", "owner": null, "dependencies": ["d1"], "table_dependencies": [],
                "favorite": false})
     );
     assert_eq!(params[2]["value"], 17.5);

@@ -511,3 +511,275 @@ fn prepared_clips_and_sections_answer_as_the_document() {
         .unwrap_or_default();
     assert!(refused.contains("prepared query"), "{refused}");
 }
+
+/// The `section_plane` query of a plane turned about an axis (mitcad#823).
+fn turned_section(doc: &Document<MockKernel>, mut query: Value) -> Result<Value, String> {
+    query["query"] = json!("section_plane");
+    doc.query(&query.to_string())
+        .map(|answer| serde_json::from_str(&answer).unwrap())
+        .map_err(|e| e.to_string())
+}
+
+/// A section's plane turned by an angle about an axis (mitcad#823): turned
+/// rigidly about the axis, then moved by the offset along the turned
+/// normal; Flip reverses only the normal.
+#[test]
+fn section_planes_turn_by_an_angle_about_an_axis() {
+    let mut doc = block();
+    let angle = 30f64.to_radians();
+    let (sin, cos) = angle.sin_cos();
+    let turned = turned_section(&doc, json!({"plane": "xy", "axis": "x", "angle": angle})).unwrap();
+    near_vector(&turned["normal"], [0.0, -sin, cos]);
+    near_vector(&turned["origin"], [0.0, 0.0, 0.0]);
+    near_vector(&turned["axis"]["origin"], [0.0, 0.0, 0.0]);
+    near_vector(&turned["axis"]["direction"], [1.0, 0.0, 0.0]);
+    assert_eq!(turned["axis_occurrence"], "");
+    let moved = turned_section(
+        &doc,
+        json!({"plane": "xy", "axis": "x", "angle": angle, "offset": 10}),
+    )
+    .unwrap();
+    near_vector(&moved["normal"], [0.0, -sin, cos]);
+    near_vector(&moved["origin"], [0.0, -10.0 * sin, 10.0 * cos]);
+    let flipped = turned_section(
+        &doc,
+        json!({"plane": "xy", "axis": "x", "angle": angle, "offset": 10, "flip": true}),
+    )
+    .unwrap();
+    assert_eq!(flipped["origin"], moved["origin"], "Flip keeps the plane");
+    near_vector(&flipped["normal"], [0.0, sin, -cos]);
+    // An axis with no angle leaves the plane as it is.
+    let still = turned_section(&doc, json!({"plane": "xy", "axis": "x", "offset": 4})).unwrap();
+    near_vector(&still["origin"], [0.0, 0.0, 4.0]);
+    near_vector(&still["normal"], [0.0, 0.0, 1.0]);
+
+    // The turn is about the axis' own line: a construction axis along Z
+    // through (10, 10) turns YZ (x = 0) a quarter round onto y = 0.
+    command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "construction_axis",
+               "definition": {"type": "fixed", "origin": [10, 10, 0], "direction": [0, 0, 1]}}}),
+    );
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let about_f3 =
+        turned_section(&doc, json!({"plane": "yz", "axis": "F3", "angle": quarter})).unwrap();
+    near_vector(&about_f3["origin"], [20.0, 0.0, 0.0]);
+    near_vector(&about_f3["normal"], [0.0, 1.0, 0.0]);
+
+    // Refused: an angle without an axis, an axis along the plane's normal,
+    // something that is no axis.
+    let error = turned_section(&doc, json!({"plane": "xy", "angle": angle})).unwrap_err();
+    assert!(error.contains("an angle needs an axis"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "add_analysis", "def": {"type": "section", "plane": "xy", "angle": angle}}),
+    );
+    assert!(error.contains("an angle needs an axis"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "add_analysis", "def": {"type": "section", "plane": "xy", "axis": "z",
+               "angle": angle}}),
+    );
+    assert!(error.contains("along the plane's normal"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "add_analysis", "def": {"type": "section", "plane": "xy", "axis": "xz",
+               "angle": angle}}),
+    );
+    assert!(error.contains("the axis"), "{error}");
+    assert!(analyses(&doc).is_empty(), "nothing refused was added");
+
+    // Kept, edited and refused edits; the analyses query gives the turned
+    // plane, or why the axis is not there at the marker.
+    command(
+        &mut doc,
+        json!({"cmd": "add_analysis", "def": {"type": "section", "plane": "yz", "axis": "F3",
+               "angle": quarter, "offset": 5}}),
+    );
+    let kept = &analyses(&doc)[0];
+    near_vector(&kept["section"]["origin"], [20.0, 5.0, 0.0]);
+    near_vector(&kept["section"]["normal"], [0.0, 1.0, 0.0]);
+    assert_eq!(kept["axis"], "F3");
+    let before = doc.to_json();
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "edit_analysis", "name": "Section1", "def": {"type": "section",
+               "plane": "yz", "angle": quarter}}),
+    );
+    assert!(error.contains("an angle needs an axis"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "edit_analysis", "name": "Section1", "def": {"type": "section",
+               "plane": "xy", "axis": "F3", "angle": quarter}}),
+    );
+    assert!(error.contains("along the plane's normal"), "{error}");
+    assert_eq!(doc.to_json(), before, "refused edits change nothing");
+    command(&mut doc, json!({"cmd": "set_marker", "position": 2}));
+    let rolled = &analyses(&doc)[0];
+    assert!(rolled.get("section").is_none(), "{rolled}");
+    assert!(
+        rolled["error"].as_str().unwrap().contains("the axis"),
+        "{rolled}"
+    );
+    command(&mut doc, json!({"cmd": "set_marker", "position": 3}));
+    assert!(analyses(&doc)[0].get("section").is_some());
+}
+
+/// An axis in a nested occurrence is moved by its path from the design
+/// root, as the plane is by its own (mitcad#823).
+#[test]
+fn a_section_axis_follows_its_nested_occurrence() {
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!([
+            {"cmd": "create_component", "name": "Assembly", "transform": {
+                "translation": [100, 20, 30], "rotation": {"axis": [1, 0, 0], "angle": std::f64::consts::FRAC_PI_2}}},
+            {"cmd": "create_component", "name": "Block", "transform": {"translation": [5, 7, 11]}},
+            {"cmd": "add_feature", "def": {"type": "construction_axis",
+                "definition": {"type": "fixed", "origin": [0, 0, 0], "direction": [0, 0, 1]}}},
+            {"cmd": "activate_component", "component": "C0"}
+        ]),
+    );
+    // The axis in Block, at the origin along Z, is in the design at
+    // (105, 9, 37) along -Y. XY (z = 0, 37 below it) turned a quarter round
+    // about it is x = 142, the normal along -X.
+    let quarter = std::f64::consts::FRAC_PI_2;
+    let query = json!({"plane": "xy", "axis": "F1", "axis_occurrence": "O1/O2", "angle": quarter});
+    let turned = turned_section(&doc, query).unwrap();
+    near_vector(&turned["axis"]["origin"], [105.0, 9.0, 37.0]);
+    near_vector(&turned["axis"]["direction"], [0.0, -1.0, 0.0]);
+    assert_eq!(turned["axis_occurrence"], "O1/O2");
+    near_vector(&turned["origin"], [142.0, 0.0, -68.0]);
+    near_vector(&turned["normal"], [-1.0, 0.0, 0.0]);
+    // Without a path, the component's only placement.
+    let inferred =
+        turned_section(&doc, json!({"plane": "xy", "axis": "F1", "angle": quarter})).unwrap();
+    assert_eq!(inferred, turned);
+    // A path that does not own the axis is refused.
+    for wrong in ["O1", "O99", "O2/O1"] {
+        let error = turned_section(
+            &doc,
+            json!({"plane": "xy", "axis": "F1", "axis_occurrence": wrong, "angle": quarter}),
+        )
+        .unwrap_err();
+        assert!(error.contains("the axis"), "{wrong}: {error}");
+    }
+    // A repeated component needs the path.
+    command(
+        &mut doc,
+        json!({"cmd": "copy_occurrence", "occurrence": "Assembly:1", "transform": {
+        "translation": [200, 0, 0], "rotation": {"axis": [0, 1, 0], "angle": std::f64::consts::PI}}}),
+    );
+    let error =
+        turned_section(&doc, json!({"plane": "xy", "axis": "F1", "angle": quarter})).unwrap_err();
+    assert!(error.contains("select an occurrence"), "{error}");
+    let query = json!({"plane": "xy", "axis": "F1", "axis_occurrence": "O1/O2", "angle": quarter});
+    assert_eq!(turned_section(&doc, query).unwrap(), turned);
+}
+
+/// A turned analysis is saved and read back with the same plane; one
+/// without an angle is written as before (mitcad#823).
+#[test]
+fn turned_sections_are_saved_and_read_back() {
+    let mut doc = block();
+    let angle = 45f64.to_radians();
+    command(
+        &mut doc,
+        json!({"cmd": "add_analysis", "def": {"type": "section", "plane": "yz", "axis": "z",
+               "axis_occurrence": "", "angle": angle, "offset": 2, "flip": true}}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "add_analysis", "def": {"type": "section", "plane": "xz", "axis": "x"}}),
+    );
+    let saved = doc.to_json();
+    let file: Value = serde_json::from_str(&saved).unwrap();
+    let first = &file["analyses"][0];
+    assert_eq!(first["axis"], "z");
+    assert_eq!(first["axis_occurrence"], "");
+    assert_eq!(first["angle"], json!(angle));
+    let second = &file["analyses"][1];
+    assert!(second.get("angle").is_none(), "no angle written: {second}");
+    assert_eq!(second["axis"], "x");
+    let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), saved);
+    command(&mut loaded, json!({"cmd": "recompute"}));
+    assert_eq!(analyses(&loaded), analyses(&doc));
+    let section = &analyses(&loaded)[0]["section"];
+    let (sin, cos) = angle.sin_cos();
+    near_vector(&section["normal"], [-cos, -sin, 0.0]);
+    near_vector(&section["origin"], [2.0 * cos, 2.0 * sin, 0.0]);
+    // Older MitCad refuses a turned analysis by its unknown fields; a file
+    // with an angle and no axis is refused here.
+    let no_axis = saved.replace("\"axis\": \"z\",", "");
+    assert!(Document::from_json(&no_axis, MockKernel::default()).is_err());
+}
+
+/// A plane past every body (mitcad#824): the `section` query counts the
+/// bodies the clip cuts, keeps whole and removes whole (each body's `clip`
+/// too), here and prepared for another thread, so that the panel can say
+/// why the section is empty. The mock kernel's sections cut the bounds.
+#[test]
+fn section_counts_the_bodies_a_plane_past_them_keeps_or_removes() {
+    let doc = block();
+    doc.kernel().sections.set(true);
+    let answer = |x: f64, normal: f64, world: bool| -> Value {
+        let query = json!({"query": "section", "world": world,
+            "plane": {"origin": [x, 0, 0], "normal": [normal, 0, 0]}})
+        .to_string();
+        let now: Value = serde_json::from_str(&doc.query(&query).unwrap()).unwrap();
+        let later = doc
+            .prepare_query(&query)
+            .and_then(|prepared| prepared.run(doc.kernel()))
+            .unwrap();
+        assert_eq!(later, now, "{query}");
+        now
+    };
+    let counts = |answer: &Value| {
+        [
+            answer["cut"].as_u64().unwrap(),
+            answer["kept"].as_u64().unwrap(),
+            answer["removed"].as_u64().unwrap(),
+        ]
+    };
+    for world in [true, false] {
+        // Across the block: cut, with the section's area and outline.
+        let across = answer(10.0, 1.0, world);
+        assert_eq!(counts(&across), [1, 0, 0], "{across}");
+        assert_eq!(across["bodies"][0]["clip"], "cut");
+        assert!(
+            (across["area"].as_f64().unwrap() - 400.0).abs() < 1e-6,
+            "{across}"
+        );
+        assert!(
+            (across["length"].as_f64().unwrap() - 80.0).abs() < 1e-6,
+            "{across}"
+        );
+        assert_eq!(across["bodies"][0]["edges"], 4);
+
+        // Past the block on the side the normal points away from: the
+        // block stays whole and the plane cuts nothing.
+        let behind = answer(30.0, 1.0, world);
+        assert_eq!(counts(&behind), [0, 1, 0], "{behind}");
+        assert_eq!(behind["bodies"][0]["clip"], "kept");
+        assert_eq!(behind["area"], 0.0);
+        assert_eq!(behind["length"], 0.0);
+
+        // Past it on the normal's side: the clip removes all of it.
+        let beyond = answer(-30.0, 1.0, world);
+        assert_eq!(counts(&beyond), [0, 0, 1], "{beyond}");
+        assert_eq!(beyond["bodies"][0]["clip"], "removed");
+        assert_eq!(beyond["area"], 0.0);
+
+        // Flip at the same place keeps it whole instead.
+        let flipped = answer(-30.0, -1.0, world);
+        assert_eq!(counts(&flipped), [0, 1, 0], "{flipped}");
+
+        // A plane on the block's face, the block behind it: kept whole,
+        // touching the plane at most, while the face is its section.
+        let touching = answer(20.0, 1.0, world);
+        assert_eq!(counts(&touching), [0, 1, 0], "{touching}");
+        assert!(touching["area"].as_f64().unwrap() > 0.0, "{touching}");
+    }
+}

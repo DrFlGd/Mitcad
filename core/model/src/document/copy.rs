@@ -537,6 +537,19 @@ impl DocState {
                 }
             }
         }
+        // The tables the copied expressions look values up in come along
+        // from another design (mitcad#667); in the same one they are shared.
+        let tables = if same_document {
+            HashMap::new()
+        } else {
+            let used: BTreeSet<&str> = needed
+                .iter()
+                .filter_map(|id| table.get(*id))
+                .flat_map(|p| p.table_references())
+                .map(|(t, _)| t)
+                .collect();
+            self.bring_tables(source, used)?
+        };
         let mut map: HashMap<ParamId, ParamId> = HashMap::new();
         let mut names: HashMap<String, String> = HashMap::new();
         for id in table.evaluation_order() {
@@ -558,7 +571,10 @@ impl DocState {
             } else {
                 free_parameter_name(&self.parameters, p.name())
             };
-            let expression = rename_references(p.expression(), p.expr(), &names);
+            let expression = super::tables::rename_tables_in(
+                &rename_references(p.expression(), p.expr(), &names),
+                &tables,
+            );
             // Dimensionless parameters can still use implicit lengths or
             // angles, and rounding uses default units too. Keep the source
             // context instead of reinterpreting the same expression here.
@@ -573,7 +589,10 @@ impl DocState {
                 .flatten()
             {
                 if let Ok(expr) = crate::expr::Expr::parse(text) {
-                    *text = rename_references(text, &expr, &names);
+                    *text = super::tables::rename_tables_in(
+                        &rename_references(text, &expr, &names),
+                        &tables,
+                    );
                 }
             }
             let mut spec = ParamSpec::user(&name, &expression, p.unit())
@@ -612,7 +631,11 @@ fn is_dimension_name(name: &str) -> bool {
 fn free_parameter_name(parameters: &crate::parameters::Parameters, name: &str) -> String {
     std::iter::once(name.to_owned())
         .chain((1..).map(|k| format!("{name}_{k}")))
-        .find(|n| parameters.find(n).is_none() && !crate::expr::is_reserved_name(n))
+        .find(|n| {
+            parameters.find(n).is_none()
+                && !crate::expr::is_reserved_name(n)
+                && !parameters.tables().is_some_and(|t| t.has_table(n))
+        })
         .expect("a free name exists")
 }
 

@@ -30,6 +30,8 @@ private:
 
 std::shared_ptr<geometry::Shape> transform_shape(const geometry::Shape& shape, const Affine& map,
                                                  rust::Str rename);
+// A Move's motion: a rigid one as a location on the same B-rep (mitcad#838).
+std::shared_ptr<geometry::Shape> move_shape(const geometry::Shape& shape, const Affine& map, rust::Str rename);
 std::shared_ptr<geometry::Shape> unite(const ShapeList& shapes);
 // The union within a tolerance (mm, mitcad#397).
 std::shared_ptr<geometry::Shape> unite_within(const ShapeList& shapes, double within);

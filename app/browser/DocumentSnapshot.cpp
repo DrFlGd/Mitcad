@@ -32,6 +32,8 @@ QVector<DocumentSnapshot::Occurrence> occurrencesOf(const QJsonArray& values) {
     occurrence.world = o.value(QStringLiteral("world")).toArray();
     occurrence.children = occurrencesOf(o.value(QStringLiteral("children")).toArray());
     occurrence.name = text(o, "name");
+    // The condition it is shown under (mitcad#800, mitcad#809).
+    occurrence.visibleWhen = text(o, "visible_when");
     occurrences.append(occurrence);
   }
   return occurrences;
@@ -131,10 +133,13 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
     feature.visible = f.value(QStringLiteral("visible")).toBool(true);
     feature.visibleSet = f.value(QStringLiteral("visible_set")).toBool();
     feature.sketches = f.value(QStringLiteral("sketches")).toVariant().toStringList();
+    // The condition it is suppressed under (mitcad#800, mitcad#809).
+    feature.suppressedWhen = text(f, "suppressed_when");
     // A joint origin's light bulb is construction geometry's (mitcad#55).
     if (feature.isSketch() || feature.isConstruction() || feature.type == QStringLiteral("joint_origin")) {
       snapshot.featureShown.insert(feature.uid, feature.visible);
     }
+    snapshot.featureIndex.insert(feature.uid, snapshot.features.size());
     snapshot.features.append(feature);
   }
 
@@ -145,6 +150,7 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
     component.uid = text(c, "uid");
     component.name = text(c, "name");
     component.linked = c.value(QStringLiteral("link")).isString();
+    component.library = c.value(QStringLiteral("library")).isObject();
     for (const QJsonValue& body : c.value(QStringLiteral("bodies")).toArray()) {
       component.bodies << body.toString();
     }
@@ -168,12 +174,29 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
       body.printBedFaces << face.toString();
     }
     body.printBedError = bed.value(QStringLiteral("error")).toString();
+    // Bindings (mitcad#800, mitcad#809).
+    body.appearanceExpr = text(b, "appearance_expr");
+    body.materialExpr = text(b, "material_expr");
+    body.visibleWhen = text(b, "visible_when");
+    body.faceAppearanceExprs = b.value(QStringLiteral("face_appearance_exprs")).toObject();
+    for (const QJsonValue& warning : b.value(QStringLiteral("warnings")).toArray()) {
+      body.warnings << warning.toString();
+    }
     snapshot.bodies.insert(body.uid, body);
   }
   return snapshot;
 }
 
 const DocumentSnapshot::Feature* DocumentSnapshot::feature(const QString& uid) const {
+  const auto found = featureIndex.constFind(uid);
+  if (found != featureIndex.cend() && *found < features.size() && features.at(*found).uid == uid) {
+    return &features.at(*found);
+  }
+  // Every feature indexed (as read() makes the snapshot): not there.
+  if (featureIndex.size() == features.size()) {
+    return nullptr;
+  }
+  // Features added otherwise (a test's snapshot), looked for one by one.
   for (const Feature& feature : features) {
     if (feature.uid == uid) {
       return &feature;

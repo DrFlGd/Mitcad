@@ -2492,6 +2492,10 @@ int drawingToolsTests();
 int saveAsMeshTests();
 int drawingSheetViewTests();
 int imageReferencesTests();
+int configurationsDataTests();
+int ruleBlocksTests();
+int partOptionsTests();
+int documentSnapshotTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -2588,6 +2592,10 @@ int main(int argc, char* argv[]) {
     failures += saveAsMeshTests();
     failures += drawingSheetViewTests();
     failures += imageReferencesTests();
+    failures += configurationsDataTests();
+    failures += ruleBlocksTests();
+    failures += partOptionsTests();
+    failures += documentSnapshotTests();
     mitcad::tests::navigationSettingsTests(check);
   }
   if (failures != 0) {

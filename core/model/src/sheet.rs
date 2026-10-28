@@ -626,7 +626,7 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
             PatternObjects::Faces { body, .. } => bodies.push(*body),
             PatternObjects::Features { features } => {
                 for uid in features {
-                    if let Some(entry) = ctx.env.features.iter().find(|f| f.uid == *uid).cloned() {
+                    if let Some(entry) = ctx.env.feature(*uid).cloned() {
                         footprint(&entry.def, ctx);
                     }
                 }

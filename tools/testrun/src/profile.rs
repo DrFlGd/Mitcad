@@ -14,6 +14,7 @@ use std::time::{Duration, SystemTime};
 use serde::{Deserialize, Serialize};
 
 use crate::concurrency::{self, UiCap};
+use crate::corpus::{self, FileRun};
 
 /// The runs kept per test.
 pub const KEPT_RUNS: usize = 5;
@@ -123,6 +124,10 @@ pub struct TestProfile {
     /// Passes with its room full since the room last changed.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub room_passes: u32,
+    /// A corpus test's files (`corpus`): each file's last time and peak in
+    /// a child process, by the key the test gives it (its path, a label).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub files: BTreeMap<String, FileRun>,
 }
 
 fn is_zero(n: &u32) -> bool {
@@ -520,6 +525,21 @@ pub fn save_runs(
     })
 }
 
+/// Adds the corpus tests' file runs to the file under its lock (`update`):
+/// each test's rows into its files (`corpus::merge`).
+pub fn save_files(
+    path: &Path,
+    rows: &[(String, Vec<(String, FileRun)>)],
+    now: u64,
+) -> Result<(), String> {
+    update(path, |profiles| {
+        for (name, files) in rows {
+            let profile = profiles.tests.entry(name.clone()).or_default();
+            corpus::merge(&mut profile.files, files, now);
+        }
+    })
+}
+
 /// Changes the file under its lock: reads the file again (another run may
 /// have written it since), applies `change`, writes a temporary file and
 /// renames it over the old one; what `change` returns.
@@ -802,5 +822,28 @@ mod tests {
         record(&mut real, again, 0.7);
         assert_eq!(real.failure_score, 20.0);
         assert_eq!(real.ui_room, None);
+    }
+
+    #[test]
+    fn a_corpus_tests_files_round_trip_and_older_files_read() {
+        // A file written before the files were kept reads with none.
+        let old = r#"{"format":1,"tests":{"f3d.corpus_designs":{"runs":[]}}}"#;
+        let mut profiles: Profiles = serde_json::from_str(old).unwrap();
+        assert!(profiles.tests["f3d.corpus_designs"].files.is_empty());
+        assert!(!serde_json::to_string(&profiles).unwrap().contains("files"));
+        let rows = vec![(
+            "db73863f".to_owned(),
+            FileRun {
+                wall: 120.5,
+                peak: 2 << 30,
+                when: 100,
+            },
+        )];
+        let test = profiles.tests.get_mut("f3d.corpus_designs").unwrap();
+        corpus::merge(&mut test.files, &rows, 100);
+        let text = serde_json::to_string(&profiles).unwrap();
+        assert!(text.contains("\"files\":{\"db73863f\""), "{text}");
+        let back: Profiles = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, profiles);
     }
 }

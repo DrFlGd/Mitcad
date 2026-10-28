@@ -44,6 +44,11 @@ the later ones in [0790 to 0822](fillet-replay-0790-0822.md). Back to the
   corner of the solid interrupts into one blend over the corner, cut by the
   corner's sides, which grow up to it (a bulge's foot on a housing's rounded
   corner, mitcad#343).
+- **1060** keeps 0700's stripes under another one's ball to the region that
+  blend fills: an edge beyond the blend's other face, where that face ends
+  at a convex corner and the blend runs on past it for the corner, is not
+  under it, and its own rounding stays (a slot's floor flush with a ledge in
+  front of the wall, mitcad#840).
 
 ## 0700: blends cut by a narrow face they roll over
 
@@ -343,6 +348,45 @@ walk may run either way along the spine). The edges between the sides run on
 to new vertices at the junctions, and the corner face's edges now under the
 blend are dropped.
 
+## 1060: an edge beyond the blend's other face is not under its ball
+
+The patch 1060 comes from a FreeCAD document's fillet (mitcad#840): a wall
+with a slot whose floor is flush with the top of a ledge in front of the
+wall, both concave edges at each corner where the slot's side wall meets
+the wall's front face rounded with 1 (the slot floor's edge along the side
+wall, and the ledge's edge along the wall's front, 2.25 long), the convex
+edge between the side wall and the front left sharp. The bodies stored in
+the file have both roundings running on past the corner by the radius, the
+two quarter cylinders cut by each other.
+
+### 1060-chfi3d-under-anothers-ball-not-past-its-other-face
+
+0700's stripes under another one's ball took every point of a stripe's
+edges within 4 radii of the other blend's contact on the common face, on
+the side of that contact toward the blend's other contact, for a point
+under the blend. The slot floor's rounding runs on over the ledge's top for
+its corner (its analytic piece's contact up to the end of the face), and
+the ledge's edge lies within 1 to 3.25 of that contact, on its side toward
+the side wall: its stripe was dropped, its rounding missing from the
+result, and the slot's rounding ended at the wall's front face by its
+one-stripe corner. The material added came out 1.349 mm3 short of the
+stored body's at the design's four such corners.
+
+- `edgesUnderBlend` (`ChFi3d_Builder_Trim.cxx`): a point counts only where it
+  lies on the ball's side of the blend's other face's tangent plane at the
+  other contact (the ball of the section through the point's projection on
+  the contact, `ballAt`; within a hundredth of the radius). The region a
+  blend fills lies between its contacts and the corner of its two faces; a
+  point past the other face's plane, as the ledge's edge past the side
+  wall's plane, is outside it. The edges of a narrow face under a ball rolling
+  over it (0700's case) lie between the contact and the faces' corner, on
+  that side.
+
+With 1060 both stripes stay, meet at the corner in the two-stripe corner
+(each blend cut by the other), and the fillet on the design's body before
+the item comes out valid with the stored body's volume (180282.1201 mm3)
+and its rounding faces' areas.
+
 ## Reports and tests
 
 Each of these tests fails without its patch.
@@ -385,3 +429,9 @@ Each of these tests fails without its patch.
   the top, the material added alike on both sides of the corner's bisector;
   and with the two edges given in the other order, the blend walked the
   other way).
+- 1060: mitcad#840 and the wall with a slot whose floor is flush with a
+  ledge's top in `geometry/tests/test_fillet_corner_past_wall.cpp` (the
+  slot floor's edge and the ledge's edge along the wall rounded at the
+  convex corner left sharp: valid, the material added and each rounding's
+  face against the two quarter cylinders running on past the corner into
+  each other, with OCCT alone and by name).

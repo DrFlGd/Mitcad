@@ -314,13 +314,31 @@ $script:UiSettings = $null
 $script:UiAutosave = $null
 $script:UiResults = $null
 $script:UiThumbnails = $null
+# The pause after each step (Ui-Step) once the app answered the sync key:
+# none by default (mitcad#839), as the Linux tests' ui_step: the sync key
+# (Ui-Sync) waits for the input handled and no watched timer running, and
+# each check waits for the line its step causes. Once the tests' first
+# safety margin (700 ms, from before the sync key); a test can still ask
+# for one with Ui-Init -StepPause.
+$script:UiStepPause = 0
+# Where and when the last button press was posted (Ui-Click): Qt makes a
+# press within the double-click interval and a few pixels of the last one
+# a double-click.
+$script:UiLastPress = $null
+# With MITCAD_UI_STEP_TIMES set, each step and app start prints where its
+# time went ("time <step>: idle N ms, action N ms, sync N ms, pause N ms"):
+# the app's share (idle, sync: its jobs, its answer to the sync key) apart
+# from the test's own (mitcad#834).
+$script:UiTimes = [bool]$env:MITCAD_UI_STEP_TIMES
 
-# Ui-Init app out [qtBin] [shortcuts]: where the app, its Qt and the test's
-# files are; shortcuts (@{'sketch.create' = 'F7'}) go into the test's own
-# settings, which the app reads from MITCAD_SETTINGS_DIR. A key of one
-# context names its group ('shortcuts.sketch/tools.search' = 'F3',
-# mitcad#720).
-function Ui-Init([string]$App, [string]$Out, [string]$QtBin = '', [hashtable]$Shortcuts = @{}) {
+# Ui-Init app out [qtBin] [shortcuts] [-StepPause ms]: where the app, its Qt
+# and the test's files are; shortcuts (@{'sketch.create' = 'F7'}) go into
+# the test's own settings, which the app reads from MITCAD_SETTINGS_DIR. A
+# key of one context names its group ('shortcuts.sketch/tools.search' =
+# 'F3', mitcad#720). StepPause: the pause after each step ($UiStepPause).
+function Ui-Init([string]$App, [string]$Out, [string]$QtBin = '', [hashtable]$Shortcuts = @{},
+                 [int]$StepPause = 0) {
+  $script:UiStepPause = $StepPause
   $script:UiApp = (Resolve-Path $App).Path
   New-Item -ItemType Directory -Force $Out | Out-Null
   $script:UiOut = (Resolve-Path $Out).Path
@@ -415,16 +433,22 @@ function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recover
   $script:UiProcess = Start-Process -FilePath $script:UiApp -ArgumentList $arguments -PassThru `
     -RedirectStandardError $script:UiLog -RedirectStandardOutput (Join-Path $script:UiOut "$Name.out")
   $script:UiMark = 0
+  $script:UiLastPress = $null
+  $clock = [Diagnostics.Stopwatch]::StartNew()
   for ($i = 0; $i -lt 100; $i++) {
     $windows = [UiInput]::Windows($script:UiProcess.Id, ' - MitCad\*?$')
     if ($windows.Count -gt 0) { break }
     Start-Sleep -Milliseconds 200
   }
   if ($windows.Count -eq 0) { Ui-Fail 'the Mitcad window did not appear' }
+  $window = $clock.ElapsedMilliseconds
   $script:UiWindow = $windows[0]
   $script:UiTarget = $script:UiWindow
   # The view logs its area once it is laid out and drawn.
   Ui-ExpectLog 'View area' 'the 3D view is up' | Out-Null
+  if ($script:UiTimes) {
+    Write-Host "time start ${Name}: window $window ms, the 3D view $($clock.ElapsedMilliseconds) ms"
+  }
   Start-Sleep -Milliseconds 1500
 }
 
@@ -441,10 +465,55 @@ function Ui-StopApp {
 }
 
 function Ui-LogLines {
-  if (-not $script:UiLog -or -not (Test-Path $script:UiLog)) { return @() }
-  $stream = [System.IO.File]::Open($script:UiLog, 'Open', 'Read', 'ReadWrite')
-  try { $reader = New-Object System.IO.StreamReader $stream; $text = $reader.ReadToEnd() } finally { $stream.Dispose() }
+  $text = Ui-LogText
+  if ($null -eq $text) { return @() }
   return $text -split "`r?`n"
+}
+
+# Ui-LogText: the whole log as one string ($null before there is one). The
+# helpers that poll the log search it with .NET calls: a PowerShell
+# pipeline over every line (Where-Object, Select-Object -Skip) takes tens
+# of milliseconds once a session's log has thousands of lines, on each
+# poll (mitcad#834).
+function Ui-LogText {
+  if (-not $script:UiLog -or -not (Test-Path $script:UiLog)) { return $null }
+  $stream = [System.IO.File]::Open($script:UiLog, 'Open', 'Read', 'ReadWrite')
+  try { $reader = New-Object System.IO.StreamReader $stream; return $reader.ReadToEnd() } finally { $stream.Dispose() }
+}
+
+# Ui-CountLog "regex": how many times the (multi-line) pattern matches the log.
+function Ui-CountLog([string]$Pattern) {
+  $text = Ui-LogText
+  if ($null -eq $text) { return 0 }
+  return [regex]::Matches($text, $Pattern).Count
+}
+
+# Ui-NewLines: the log's lines since the mark (Ui-Mark), as
+# "Ui-LogLines | Select-Object -Skip <mark>" gives them.
+function Ui-NewLines {
+  $lines = @(Ui-LogLines)
+  $from = [Math]::Max(0, $script:UiMark)
+  if ($from -ge $lines.Count) { return @() }
+  return $lines[$from..($lines.Count - 1)]
+}
+
+# Ui-LastLineWith "text" [-Start]: the last line of the log that contains
+# the text (with -Start: begins with it), $null for none.
+function Ui-LastLineWith([string]$Text, [switch]$Start) {
+  $log = Ui-LogText
+  if (-not $log) { return $null }
+  $at = $log.Length
+  while ($at -gt 0) {
+    $at = $log.LastIndexOf($Text, $at - 1, [StringComparison]::Ordinal)
+    if ($at -lt 0) { return $null }
+    $begin = $log.LastIndexOf("`n", [Math]::Max(0, $at - 1), [StringComparison]::Ordinal) + 1
+    if ($at -eq 0) { $begin = 0 }
+    if ($Start -and $begin -ne $at) { continue }
+    $end = $log.IndexOf("`n", $at, [StringComparison]::Ordinal)
+    if ($end -lt 0) { $end = $log.Length }
+    return $log.Substring($begin, $end - $begin).TrimEnd("`r")
+  }
+  return $null
 }
 
 function Ui-Fail([string]$Message) {
@@ -479,9 +548,11 @@ function Ui-WaitIdle {
 }
 
 function Ui-Computing {
-  $lines = Ui-LogLines
-  $started = @($lines | Where-Object { $_ -match 'Computing .* started$' }).Count
-  $ended = @($lines | Where-Object { $_ -match 'Computing .* (done in|cancelled after) [0-9]+ ms' }).Count
+  $text = Ui-LogText
+  if ($null -eq $text) { return $false }
+  # Per line, as 'Computing .* started$' and 'Computing .* (done in|...)'.
+  $started = [regex]::Matches($text, '(?m)Computing [^\r\n]* started\r?$').Count
+  $ended = [regex]::Matches($text, 'Computing [^\r\n]* (done in|cancelled after) [0-9]+ ms').Count
   return $started -gt $ended
 }
 
@@ -493,15 +564,18 @@ function Ui-Computing {
 function Ui-Sync {
   if (-not $script:UiProcess -or $script:UiProcess.HasExited) { return }
   if ($null -eq $script:UiSyncOn) {
-    $script:UiSyncOn = [bool]((Ui-LogLines) | Where-Object { $_.Contains('Test sync on') })
+    $script:UiSyncOn = "$(Ui-LogText)".Contains('Test sync on')
   }
   if (-not $script:UiSyncOn) { return }
-  $before = @(Ui-LogLines | Where-Object { $_ -match '^Sync [0-9]+$' }).Count
+  # Lines '^Sync [0-9]+$'.
+  $answer = '(?m)^Sync [0-9]+\r?$'
+  $before = Ui-CountLog $answer
   [UiInput]::SyncKey($script:UiWindow)
-  for ($i = 1; $i -le 400; $i++) {
-    if (@(Ui-LogLines | Where-Object { $_ -match '^Sync [0-9]+$' }).Count -gt $before) { return }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while ($clock.ElapsedMilliseconds -lt 20000) {
+    if ((Ui-CountLog $answer) -gt $before) { return }
     if ($script:UiProcess.HasExited) { return }
-    Start-Sleep -Milliseconds 50
+    Start-Sleep -Milliseconds 20
   }
   Write-Host 'note: no answer to the sync key in 20 s'
 }
@@ -510,20 +584,31 @@ function Ui-Sync {
 # nothing), waits until the app has handled it (Ui-Sync) and checks for
 # crashes.
 function Ui-Step([string]$Name, [scriptblock]$Action) {
+  # The action runs in a scope below this one and sees its variables: the
+  # timings' names are the step's own, no test's.
+  $uiStepClock = [Diagnostics.Stopwatch]::StartNew()
   Ui-WaitIdle
+  $uiStepIdle = $uiStepClock.ElapsedMilliseconds
   & $Action
+  $uiStepActed = $uiStepClock.ElapsedMilliseconds
   Ui-Sync
-  Start-Sleep -Milliseconds 700
+  $uiStepSynced = $uiStepClock.ElapsedMilliseconds
+  if ($script:UiStepPause -gt 0) { Start-Sleep -Milliseconds $script:UiStepPause }
   if (Ui-Crashed) { Ui-Fail "crashed during '$Name' (exit code $($script:UiProcess.ExitCode))" }
   Write-Host "ok   $Name"
+  if ($script:UiTimes) {
+    Write-Host ("time ${Name}: idle $uiStepIdle ms, action $($uiStepActed - $uiStepIdle) ms, " +
+                "sync $($uiStepSynced - $uiStepActed) ms, pause $($uiStepClock.ElapsedMilliseconds - $uiStepSynced) ms")
+  }
 }
 
 # Ui-ExpectLog "text" "description": waits for a line in the log.
 function Ui-ExpectLog([string]$Text, [string]$Description, [int]$Seconds = 6) {
-  for ($i = 0; $i -lt $Seconds * 5; $i++) {
-    if ((Ui-LogLines) | Where-Object { $_.Contains($Text) }) { Write-Host "ok   $Description"; return }
-    Start-Sleep -Milliseconds 200
-  }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    if ("$(Ui-LogText)".Contains($Text)) { Write-Host "ok   $Description"; return }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt $Seconds * 1000)
   Ui-Fail "${Description}: '$Text' not in the log"
 }
 
@@ -531,18 +616,25 @@ function Ui-ExpectLog([string]$Text, [string]$Description, [int]$Seconds = 6) {
 # logged since the mark count.
 function Ui-Mark { $script:UiMark = (Ui-LogLines).Count - 1 }
 function Ui-ExpectNew([string]$Text, [string]$Description, [int]$Seconds = 6) {
-  for ($i = 0; $i -lt $Seconds * 5; $i++) {
-    $lines = Ui-LogLines | Select-Object -Skip $script:UiMark
-    if ($lines | Where-Object { $_.Contains($Text) }) { Write-Host "ok   $Description"; return }
-    Start-Sleep -Milliseconds 200
-  }
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  do {
+    foreach ($line in @(Ui-NewLines)) {
+      if ($line.Contains($Text)) { Write-Host "ok   $Description"; return }
+    }
+    Start-Sleep -Milliseconds 50
+  } while ($clock.ElapsedMilliseconds -lt $Seconds * 1000)
   Ui-Fail "${Description}: '$Text' not in the log since the mark"
 }
 
-# Ui-LastMatch "regex": the first group of the last log line matching it.
+# Ui-LastMatch "regex": the first group of the last log line matching it
+# (as Select-String matches: case-insensitive).
 function Ui-LastMatch([string]$Pattern) {
-  $match = Ui-LogLines | Select-String -Pattern $Pattern | Select-Object -Last 1
-  if ($match) { return $match.Matches[0].Groups[1].Value }
+  $regex = New-Object System.Text.RegularExpressions.Regex $Pattern, 'IgnoreCase'
+  $lines = @(Ui-LogLines)
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) {
+    $match = $regex.Match($lines[$i])
+    if ($match.Success) { return $match.Groups[1].Value }
+  }
   return $null
 }
 
@@ -633,6 +725,7 @@ $script:UiButtons = @{ 1 = @(0x201, 0x202, 0x203, 0x01); 2 = @(0x207, 0x208, 0x2
 # coordinates the app logs).
 function Ui-Click([int]$X, [int]$Y, [int]$Button = 1) {
   $b = $script:UiButtons[$Button]
+  Ui-Apart $script:UiWindow $X $Y
   [UiInput]::Move($script:UiWindow, $X, $Y, 0)
   Start-Sleep -Milliseconds 80
   [UiInput]::Button($script:UiWindow, $b[0], $X, $Y, $b[3])
@@ -640,17 +733,35 @@ function Ui-Click([int]$X, [int]$Y, [int]$Button = 1) {
   [UiInput]::Button($script:UiWindow, $b[1], $X, $Y, 0)
 }
 
+# Ui-Apart window x y: before a press at (x, y) of the window. Qt makes a
+# press within the double-click interval (Windows' 500 ms) and a few pixels
+# of the last one a double-click, as Linux's ui_apart says: a press that
+# near waits until the interval is over. With the steps' pause (Ui-Step)
+# that never happened; a test without it clicks faster (mitcad#834).
+function Ui-Apart([IntPtr]$Window, [int]$X, [int]$Y) {
+  $last = $script:UiLastPress
+  if ($last -and $last.Window -eq $Window -and [Math]::Abs($last.X - $X) -le 10 -and [Math]::Abs($last.Y - $Y) -le 10) {
+    $wait = 550 - $last.Clock.ElapsedMilliseconds
+    if ($wait -gt 0) { Start-Sleep -Milliseconds $wait }
+  }
+  $script:UiLastPress = @{ Window = $Window; X = $X; Y = $Y; Clock = [Diagnostics.Stopwatch]::StartNew() }
+}
+
 function Ui-DoubleClick([int]$X, [int]$Y) {
   Ui-Click $X $Y
   Start-Sleep -Milliseconds 80
   [UiInput]::Button($script:UiWindow, 0x203, $X, $Y, 1)
+  # The next press there waits from this second one (Ui-Apart).
+  $script:UiLastPress.Clock.Restart()
   Start-Sleep -Milliseconds 60
   [UiInput]::Button($script:UiWindow, 0x202, $X, $Y, 0)
 }
 
-# Ui-Drag x1 y1 x2 y2 [button]: a drag in steps.
+# Ui-Drag x1 y1 x2 y2 [button]: a drag in steps, its press apart from a
+# click there just before (Ui-Apart).
 function Ui-Drag([int]$X1, [int]$Y1, [int]$X2, [int]$Y2, [int]$Button = 1) {
   $b = $script:UiButtons[$Button]
+  Ui-Apart $script:UiWindow $X1 $Y1
   [UiInput]::Move($script:UiWindow, $X1, $Y1, 0)
   Start-Sleep -Milliseconds 80
   [UiInput]::Button($script:UiWindow, $b[0], $X1, $Y1, $b[3])
@@ -680,7 +791,7 @@ function Ui-ViewClick([double]$Px, [double]$Py, [int]$Button = 1) {
 # line the test waited for (mitcad#255).
 function Ui-LoggedAt([string]$Text) {
   for ($i = 0; $i -lt 30; $i++) {
-    $line = Ui-LogLines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
+    $line = Ui-LastLineWith "$Text at "
     # "$line", not [string]$line: the .NET method gets null for the latter
     # while nothing is logged yet, and the exception ended the script (the
     # app, left running with ctest's output pipe, kept ctest waiting until
@@ -704,8 +815,7 @@ function Ui-PanelReveal([string]$Text) {
   $view = "Panel $($Matches[1]) view y "
   $synced = $false
   for ($i = 0; $i -lt 30; $i++) {
-    $lines = Ui-LogLines
-    $line = $lines | Where-Object { $_.StartsWith($view) } | Select-Object -Last 1
+    $line = Ui-LastLineWith $view -Start
     if ("$line" -notmatch ' view y (-?\d+) to (-?\d+), scrolled \d+ of \d+, bar at (\d+),(\d+)$') { return }
     if (-not $synced) {
       # The places and the view of one layout, logged whole.
@@ -716,19 +826,25 @@ function Ui-PanelReveal([string]$Text) {
     $top = [int]$Matches[1]
     $bottom = [int]$Matches[2]
     $bar = @([int]$Matches[3], [int]$Matches[4])
-    $place = $lines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
+    $place = Ui-LastLineWith "$Text at "
     if ("$place" -notmatch ' at (\d+),(\d+)' -or "$place".EndsWith('(hidden)')) { return }
     $y = [int]$Matches[2]
     $margin = 12
     if ($y -ge $top + $margin -and $y -le $bottom - $margin) { return }
     $step = if ($y -gt $bottom - $margin) { -1 } else { 1 }
-    $count = $lines.Count
+    # From the last line, as Ui-Mark: the log ends with a line break, and
+    # the empty piece after it is where the next line comes (skipping it
+    # missed the panel's new view and waited 3 s, mitcad#834).
+    $count = @(Ui-LogLines).Count - 1
     [UiInput]::Move($script:UiWindow, $bar[0], $bar[1], 0)
     Start-Sleep -Milliseconds 80
     [UiInput]::Wheel($script:UiWindow, $bar[0], $bar[1], $step)
-    for ($j = 0; $j -lt 30; $j++) {
-      if (Ui-LogLines | Select-Object -Skip $count | Where-Object { $_.StartsWith($view) }) { break }
-      Start-Sleep -Milliseconds 100
+    for ($j = 0; $j -lt 60; $j++) {
+      $new = @(Ui-LogLines)
+      $found = $false
+      for ($n = [Math]::Max(0, $count); $n -lt $new.Count; $n++) { if ($new[$n].StartsWith($view)) { $found = $true; break } }
+      if ($found) { break }
+      Start-Sleep -Milliseconds 50
     }
     Ui-Sync
   }
@@ -752,6 +868,7 @@ function Ui-ClickWith([string]$Modifiers, [int]$X, [int]$Y) {
   $held = 0
   if ($ctrl) { $held = $held -bor 0x08 }
   if ($shift) { $held = $held -bor 0x04 }
+  Ui-Apart $script:UiWindow $X $Y
   [UiInput]::Hold($script:UiWindow, $ctrl, $shift, $alt)
   try {
     [UiInput]::Move($script:UiWindow, $X, $Y, $held)

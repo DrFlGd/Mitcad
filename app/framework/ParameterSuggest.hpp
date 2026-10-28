@@ -151,4 +151,52 @@ QString newNameProblem(const std::vector<SuggestedParameter>& parameters, const 
 // "2.5 mm"); anything else stays as it is.
 QString numberWithUnit(const QString& expression, const QString& unit);
 
+// Tables of the design (mitcad#667, docs/table-lookups.md): a formula
+// names a column as `Table.Column`, inside XLOOKUP, MATCH, INDEX and the
+// aggregates. What the fields offer for them: the table names among the
+// parameters, the column names after `Table.`.
+struct SuggestedTable {
+  struct Column {
+    QString name;
+    QString unit; // "" unitless, "Text" for texts
+  };
+  QString name;
+  QString comment;
+  std::vector<Column> columns;
+};
+
+// The tables of a `formula_help` answer's `tables` ({name, columns:
+// [{name, unit}]}), in its order.
+std::vector<SuggestedTable> suggestedTables(const QJsonArray& tables);
+
+// The column name at the caret after `Table.` (no spaces around the dot,
+// as the model's lexer has it): the table's name, where the column's name
+// starts, its whole length, and its part before the caret. Active also
+// right after the dot, with nothing typed yet. Not after a number
+// ("2.5") or a chain ("a.b.c").
+struct ColumnFragment {
+  bool active = false;
+  QString table;
+  int start = 0;
+  int length = 0;
+  QString typed;
+};
+ColumnFragment columnFragmentAt(const QString& text, int caret);
+
+// The table named `name` (case-sensitive, as names are), or null.
+const SuggestedTable* tableNamed(const std::vector<SuggestedTable>& tables, const QString& name);
+
+// The columns of a table whose name starts with `filter`, then those whose
+// name contains it (case-insensitive), each group in the table's order.
+std::vector<SuggestedTable::Column> matchColumns(const SuggestedTable& table, const QString& filter);
+
+// The tables whose name starts with `filter`, then those whose name (or,
+// with `comments`, comment) contains it; all for an empty filter.
+std::vector<const SuggestedTable*> matchTables(const std::vector<SuggestedTable>& tables, const QString& filter,
+                                               bool comments);
+
+// "Size [Text]", "dk [mm]", "n []": a column as the table CSV's header
+// writes it.
+QString columnLabel(const SuggestedTable::Column& column);
+
 } // namespace mitcad

@@ -31,6 +31,8 @@
 #include <QString>
 #include <QStringList>
 
+#include "../library/OptionChooser.hpp"
+
 class QCheckBox;
 class QComboBox;
 class QFormLayout;
@@ -47,35 +49,10 @@ namespace mitcad {
 class PartGrid;
 struct UsedPart;
 
-// Cascaded choices of a configuration table's rows (Size, then Length):
-// each selector a combo box of the values the rows with the earlier
-// choices have.
-class SizeChooser : public QWidget {
-  Q_OBJECT
-
-public:
-  explicit SizeChooser(QWidget* parent = nullptr);
-  // The table as library_show gives it ({"selectors", "rows", "default"});
-  // `row`: the row to show first (else the default).
-  void setTable(const QJsonObject& configurations, const QString& row = QString());
-  // The chosen row's name; empty without a table.
-  QString row() const { return m_row; }
-  QList<QComboBox*> combos() const { return m_combos; }
-
-signals:
-  void rowChanged(const QString& row);
-
-private:
-  void fill(int from);
-  void choose();
-
-  QFormLayout* m_form = nullptr;
-  QList<QComboBox*> m_combos;
-  QStringList m_selectors;
-  QJsonArray m_rows;
-  QString m_row;
-  bool m_filling = false;
-};
+// The size of a library part: a closed table's cascaded choices of its rows
+// (Size, then Length), or an open table's chooser per option filtered by
+// the rules (mitcad#810; app/library/OptionChooser.hpp).
+using SizeChooser = OptionChooser;
 
 class LibrariesDialog : public QDialog {
   Q_OBJECT
@@ -103,6 +80,10 @@ struct LibraryChoice {
   QString component;
   QString name;
   QString config;
+  // An open table's options as constants ({"Color": "'Black'", "Length":
+  // "800 mm"}), insert_component's `parameters` (mitcad#810); empty for a
+  // closed table. `config` is then the combination's row, if any.
+  QJsonObject parameters;
   QString license;
   bool link = true;
   // The manifest's mount frames of the part (mitcad#525): with any, Insert
@@ -127,6 +108,8 @@ private:
   void search();
   void select();
   void showVersion();
+  // The size's or the options' fields in the tab order after the version.
+  void orderFields();
   void getLibrary();
   // Update: fetches every enabled source, reports the failures in one
   // warning and refreshes the results (mitcad#317).

@@ -30,7 +30,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'view.iso' = 'Shift+F3'; 'inspect.section' = 'Shift+F4' }
+Ui-Init $App $Out $QtBin @{ 'view.iso' = 'Shift+F3'; 'inspect.section' = 'Shift+F4' } -StepPause 0
 $work = Join-Path $script:UiOut 'files'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
@@ -71,7 +71,9 @@ function Pick-PlaceOf([string]$Start, [string]$Part) {
   for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $first = $i; break } }
   $line = $lines[$first..($lines.Count - 1)] |
     Where-Object { $_.Contains("Pick $Start") -and $_.Contains($Part) } | Select-Object -Last 1
-  if ($line -notmatch ' at (\d+),(\d+)$') { Ui-Fail "no pick place logged for '$Start' with '$Part'" }
+  # "$line": with no line, -notmatch on the empty result is not true
+  # (Ui-PickAt, mitcad#525).
+  if ("$line" -notmatch ' at (\d+),(\d+)$') { Ui-Fail "no pick place logged for '$Start' with '$Part'" }
   return @([int]$Matches[1], [int]$Matches[2])
 }
 

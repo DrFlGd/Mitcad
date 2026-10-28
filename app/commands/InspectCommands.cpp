@@ -49,6 +49,7 @@
 #include "../framework/Json.hpp"
 #include "../framework/ModelShapes.hpp"
 #include "../framework/Numbers.hpp"
+#include "../framework/Theme.hpp"
 #include "CommandSupport.hpp"
 #include "PrintAnalysis.hpp"
 #include "mitcad/geometry/import.hpp"
@@ -586,31 +587,106 @@ CommandDef interferenceCommand(const CommandContext& context) {
 // ---------------------------------------------------------------------------
 // Section Analysis
 
+// The model's `section_plane` answer for the panel's plane and axis: moved
+// by `offset`, flipped with `flip`, and turned by the panel's Angle about
+// its Axis when `turned` (mitcad#823); none when it cannot be found.
+std::optional<QJsonObject> sectionQuery(const CommandState& state, const CommandContext& context, double offset,
+                                        bool flip, bool turned) {
+  const Selection& plane = state.items(QStringLiteral("plane"));
+  if (plane.isEmpty() || !std::isfinite(offset)) {
+    return std::nullopt;
+  }
+  QJsonObject request{{QStringLiteral("query"), QStringLiteral("section_plane")},
+                      {QStringLiteral("plane"), plane.first().reference()},
+                      {QStringLiteral("occurrence"), plane.first().occurrence},
+                      {QStringLiteral("offset"), offset},
+                      {QStringLiteral("flip"), flip}};
+  const Selection& axis = state.items(QStringLiteral("axis"));
+  if (!axis.isEmpty()) {
+    request.insert(QStringLiteral("axis"), axis.first().reference());
+    request.insert(QStringLiteral("axis_occurrence"), axis.first().occurrence);
+  }
+  if (turned) {
+    const double angle = state.value(QStringLiteral("angle"));
+    if (!std::isfinite(angle)) {
+      return std::nullopt;
+    }
+    request.insert(QStringLiteral("angle"), angle);
+  }
+  try {
+    return context.queryObject(request);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+// What the panel says instead of the zero totals when the plane cuts none
+// of the bodies shown (mitcad#824), from the `section` query's counts of the
+// bodies the clip cuts, keeps whole and removes whole; empty when it cuts
+// one, or when the section has an area or an outline after all (a plane on
+// a face of a body behind it).
+QString sectionMissWarning(const QJsonObject& answer) {
+  const int cut = answer.value(QStringLiteral("cut")).toInt();
+  const int kept = answer.value(QStringLiteral("kept")).toInt();
+  const int removed = answer.value(QStringLiteral("removed")).toInt();
+  if (cut > 0 || kept + removed == 0 || answer.value(QStringLiteral("area")).toDouble() > 0.0 ||
+      answer.value(QStringLiteral("length")).toDouble() > 0.0) {
+    return QString();
+  }
+  if (kept == 0) {
+    return QObject::tr("The plane is beyond the bodies: it cuts them all away. Change Distance or turn on Flip.");
+  }
+  if (removed == 0) {
+    return QObject::tr("The plane is beyond the bodies: it cuts nothing.");
+  }
+  return QObject::tr("The plane passes between the bodies: it cuts none of them.");
+}
+
 // Preview and saved analyses resolve the same occurrence-aware plane in
 // the model. The displayed item is in design coordinates, while a datum
 // query or a body's underlying shape is in its component's coordinates.
 std::optional<std::pair<gp_Pnt, gp_Dir>> sectionPlane(const CommandState& state, const CommandContext& context,
                                                     bool basePlane = false) {
-  const Selection& plane = state.items(QStringLiteral("plane"));
-  if (plane.isEmpty()) {
-    return std::nullopt;
-  }
+  // The base plane (the arrow's) is the turned plane before Distance and
+  // Flip: Distance moves along the normal of the plane shown.
   const double offset = basePlane ? 0.0 : state.value(QStringLiteral("offset"));
-  if (!std::isfinite(offset)) {
+  const auto resolved =
+      sectionQuery(state, context, offset, !basePlane && state.checked(QStringLiteral("flip")), true);
+  if (!resolved) {
     return std::nullopt;
   }
-  try {
-    const QJsonObject resolved = context.queryObject({
-        {QStringLiteral("query"), QStringLiteral("section_plane")},
-        {QStringLiteral("plane"), plane.first().reference()},
-        {QStringLiteral("occurrence"), plane.first().occurrence},
-        {QStringLiteral("offset"), offset},
-        {QStringLiteral("flip"), !basePlane && state.checked(QStringLiteral("flip"))}});
-    return std::make_pair(pointOf(resolved.value(QStringLiteral("origin"))),
-                          gp_Dir(vectorOf(resolved.value(QStringLiteral("normal")))));
-  } catch (const std::exception&) {
+  return std::make_pair(pointOf(resolved->value(QStringLiteral("origin"))),
+                        gp_Dir(vectorOf(resolved->value(QStringLiteral("normal")))));
+}
+
+// The Angle's ring (mitcad#823): about the axis at its point nearest the
+// picked plane's centre, its 0 along the picked plane's normal across the
+// axis, so that the knob follows the turned normal.
+std::optional<Manipulator> sectionRing(const CommandState& state, const CommandContext& context) {
+  const Selection& plane = state.items(QStringLiteral("plane"));
+  if (plane.isEmpty() || state.items(QStringLiteral("axis")).isEmpty()) {
     return std::nullopt;
   }
+  const auto picked = sectionQuery(state, context, 0.0, false, false);
+  const auto center = centerOf(plane, context);
+  if (!picked || !center) {
+    return std::nullopt;
+  }
+  const QJsonObject axis = picked->value(QStringLiteral("axis")).toObject();
+  if (axis.isEmpty()) {
+    return std::nullopt;
+  }
+  const gp_Pnt through = pointOf(axis.value(QStringLiteral("origin")));
+  const gp_Vec along = gp_Vec(gp_Dir(vectorOf(axis.value(QStringLiteral("direction")))));
+  gp_Pnt origin = through;
+  origin.Translate(along * gp_Vec(through, *center).Dot(along));
+  Manipulator handle = ring(origin, gp_Dir(along));
+  gp_Vec normal = vectorOf(picked->value(QStringLiteral("normal")));
+  normal -= along * normal.Dot(along);
+  if (normal.Magnitude() > 1e-9) {
+    handle.reference = gp_Dir(normal);
+  }
+  return handle;
 }
 
 CommandDef sectionCommand() {
@@ -640,13 +716,22 @@ CommandDef sectionCommand() {
             origin.Translate(-gp_Vec(frame->second) * gp_Vec(frame->first, origin).Dot(gp_Vec(frame->second)));
             return arrow(origin, frame->second);
           }),
+      // A slanted cut (mitcad#823): the plane turned by Angle about Axis.
+      selectionInput(QStringLiteral("axis"), QObject::tr("Axis"), kAxisKinds, 0, 1)
+          .withAccepts(isAxial)
+          .withTooltip(QObject::tr("An axis to turn the plane about")),
+      valueInput(QStringLiteral("angle"), QObject::tr("Angle"), ValueKind::Angle, QStringLiteral("0 deg"))
+          .withManipulator(sectionRing),
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withTooltip(QObject::tr("Cut away the other side")),
   };
   def.inspect = [](const CommandState& state, const CommandContext& context) {
     Inspection result;
     const auto plane = sectionPlane(state, context);
     if (!plane) {
-      result.error = QObject::tr("The plane cannot be found.");
+      const double angle = state.value(QStringLiteral("angle"));
+      result.error = state.items(QStringLiteral("axis")).isEmpty() && std::isfinite(angle) && angle != 0.0
+                         ? QObject::tr("Select an axis for the angle.")
+                         : QObject::tr("The plane cannot be found.");
       return result;
     }
     const QJsonObject fixed{{QStringLiteral("origin"), QJsonArray{plane->first.X(), plane->first.Y(), plane->first.Z()}},
@@ -665,6 +750,15 @@ CommandDef sectionCommand() {
     result.measured = [](const QJsonObject& answer, Inspection& shown) {
       const double area = answer.value(QStringLiteral("area")).toDouble();
       const double length = answer.value(QStringLiteral("length")).toDouble();
+      // A plane past every body shown (mitcad#824): the view is empty or
+      // shows them whole, and the panel says why instead of zero totals.
+      const QString warning = sectionMissWarning(answer);
+      if (!warning.isEmpty()) {
+        shown.text = QStringLiteral("<span style=\"color: %1\">%2</span>")
+                         .arg(warningColor().name(), warning.toHtmlEscaped());
+        shown.log = warning;
+        return;
+      }
       shown.text = QObject::tr("Section area: %1 mm²<br>Outline length: %2 mm").arg(n(area), n(length));
       shown.log = QStringLiteral("area %1, length %2").arg(n(area), n(length));
     };
@@ -688,6 +782,22 @@ CommandDef sectionCommand() {
     if (!plane.first().occurrence.isEmpty()) {
       definition.insert(QStringLiteral("occurrence"), plane.first().occurrence);
     }
+    // Turned by Angle about Axis (mitcad#823).
+    const double angle = state.value(QStringLiteral("angle"));
+    if (!std::isfinite(angle)) {
+      return Built::failure(QObject::tr("Angle: check the value."), QStringLiteral("angle"));
+    }
+    const Selection& axis = state.items(QStringLiteral("axis"));
+    if (axis.isEmpty() && angle != 0.0) {
+      return Built::failure(QObject::tr("Select an axis for the angle."), QStringLiteral("axis"));
+    }
+    if (!axis.isEmpty()) {
+      definition.insert(QStringLiteral("axis"), refsOf(axis).first());
+      if (!axis.first().occurrence.isEmpty()) {
+        definition.insert(QStringLiteral("axis_occurrence"), axis.first().occurrence);
+      }
+      definition.insert(QStringLiteral("angle"), angle);
+    }
     return Built::of(definition);
   };
   def.load = [](const QJsonObject& analysis, CommandState& state, const CommandContext& context) {
@@ -706,6 +816,30 @@ CommandDef sectionCommand() {
     }
     state.setText(QStringLiteral("offset"), lengthText(analysis.value(QStringLiteral("offset")).toDouble(), context));
     state.setChecked(QStringLiteral("flip"), analysis.value(QStringLiteral("flip")).toBool());
+    // The axis and angle of a turned section (mitcad#823).
+    SelectionItem axis = itemOf(analysis.value(QStringLiteral("axis")), context);
+    if (axis.isValid()) {
+      if (analysis.value(QStringLiteral("axis_occurrence")).isString()) {
+        axis.occurrence = analysis.value(QStringLiteral("axis_occurrence")).toString();
+      } else {
+        // Written without a path: the model's (the root, or the axis'
+        // component's only placement).
+        QJsonObject request{{QStringLiteral("query"), QStringLiteral("section_plane")},
+                            {QStringLiteral("plane"), analysis.value(QStringLiteral("plane"))},
+                            {QStringLiteral("axis"), analysis.value(QStringLiteral("axis"))}};
+        if (analysis.value(QStringLiteral("occurrence")).isString()) {
+          request.insert(QStringLiteral("occurrence"), analysis.value(QStringLiteral("occurrence")));
+        }
+        try {
+          axis.occurrence = context.queryObject(request).value(QStringLiteral("axis_occurrence")).toString();
+        } catch (const std::exception&) {
+          // Not found at the marker: the axis as it was picked.
+        }
+      }
+      state.items(QStringLiteral("axis")) = {axis};
+    }
+    const double angle = qRadiansToDegrees(analysis.value(QStringLiteral("angle")).toDouble());
+    state.setText(QStringLiteral("angle"), QStringLiteral("%1 deg").arg(n(angle, 9)));
   };
   return def;
 }

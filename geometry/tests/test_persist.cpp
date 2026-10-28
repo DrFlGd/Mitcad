@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Shapes with their names as bytes (P7d): a shape read back has the same
-// faces, face and edge names, notes, volume and what it had measured, and
+// faces, face, edge and vertex names, notes, volume and what it had measured, and
 // later operations find their references on it; damaged bytes are refused.
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "check.hpp"
 #include "mitcad/geometry/persist.hpp"
@@ -36,10 +38,51 @@ void check_same(const Shape& a, const Shape& b) {
   }
   for (int i = 0; i < a.edge_count(); ++i) {
     CHECK(a.edge_name(i) == b.edge_name(i));
+    CHECK(a.edge_faces(i) == b.edge_faces(i));
   }
   for (int i = 0; i < a.vertex_count(); ++i) {
     CHECK(a.vertex_name(i) == b.vertex_name(i));
+    CHECK(a.vertex_faces(i) == b.vertex_faces(i));
   }
+}
+
+// The faces of a shape with their names, as a Shape is made from.
+std::vector<Shape::NamedFace> named_faces(const Shape& shape) {
+  std::vector<Shape::NamedFace> named;
+  for (int i = 0; i < shape.face_count(); ++i) {
+    named.push_back({shape.face(i), shape.face_names(i)});
+  }
+  return named;
+}
+
+// mitcad#841: a stored shape keeps its edges' and vertices' names, which
+// are those the shape works out from its faces' names; names given that
+// do not fit the shape are worked out instead.
+void test_derived_names_are_kept() {
+  const ShapePtr original = part();
+  const std::string bytes = serialize_shape(*original);
+  const ShapePtr copy = deserialize_shape(bytes);
+  // Worked out anew from the B-rep read back and the faces' names.
+  const Shape derived(copy->occt(), named_faces(*copy));
+  check_same(derived, *copy);
+  check_same(*original, *copy);
+  // Too few edges and vertices: worked out.
+  Shape::DerivedNames short_names;
+  short_names.edge_names.push_back("E{nothing|here}");
+  const Shape fitted(copy->occt(), named_faces(*copy), short_names);
+  check_same(*original, fitted);
+  // A face index past the faces: worked out.
+  Shape::DerivedNames wrong;
+  for (int i = 0; i < original->edge_count(); ++i) {
+    wrong.edge_faces.push_back(std::array<int, 2>{{original->face_count(), 0}});
+    wrong.edge_names.push_back("");
+  }
+  for (int i = 0; i < original->vertex_count(); ++i) {
+    wrong.vertex_faces.push_back(original->vertex_faces(i));
+    wrong.vertex_names.push_back("");
+  }
+  const Shape checked(copy->occt(), named_faces(*copy), wrong);
+  check_same(*original, checked);
 }
 
 void test_round_trip_keeps_names_and_measures() {
@@ -127,6 +170,7 @@ void test_memory() {
 
 void persist_tests() {
   guarded("round trip", test_round_trip_keeps_names_and_measures);
+  guarded("derived names", test_derived_names_are_kept);
   guarded("notes", test_notes_and_unnamed_faces);
   guarded("damaged", test_damaged_bytes_are_refused);
   guarded("build id", test_build_id);

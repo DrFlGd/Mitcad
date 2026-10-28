@@ -25,4 +25,14 @@ struct Affine {
 // degenerate map.
 ShapePtr transform_shape(const Shape& shape, const Affine& map, const std::string& rename = {});
 
+// The shape moved by `map` for a Move (mitcad#838). A rotation and a
+// translation move it as a location on the same B-rep: its faces, their
+// surfaces and the triangulations they have are the input's, so a moved
+// body is drawn from the meshes it has, none made again. The input is not
+// changed (the result shares its sub-shapes, as results share their
+// unchanged parts with inputs). A mirror or a scale, and a body with faces
+// without surfaces (a mesh body), are moved as transform_shape moves them.
+// Face names and errors as transform_shape's.
+ShapePtr move_shape(const Shape& shape, const Affine& map, const std::string& rename = {});
+
 } // namespace mitcad::geometry

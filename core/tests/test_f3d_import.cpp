@@ -697,6 +697,7 @@ int corpus(const fs::path& dir, const CorpusOptions& o) {
   std::vector<std::string> ids;
   std::vector<mitcad::runs::Command> commands;
   std::vector<double> weights;
+  std::vector<std::string> keys;
   for (std::size_t i = 0; i < files.size(); i += static_cast<std::size_t>(every)) {
     const std::string number = std::to_string(i + 1);
     const std::string id = (number.size() < 2 ? "f0" : "f") + number;
@@ -707,6 +708,7 @@ int corpus(const fs::path& dir, const CorpusOptions& o) {
     // Each file in a child process of its own (mitcad#70).
     ids.push_back(id);
     weights.push_back(mitcad::runs::file_weight(files[i]));
+    keys.push_back(files[i]);
     commands.push_back({o.self, "--corpus-file", files[i], "--id", id, "--max-items", std::to_string(max_items),
                         "--time-limit", std::to_string(time_limit), "--hang-limit", std::to_string(hang_limit),
                         "--reports", reports.string(), "--threads", std::to_string(g_import_threads)});
@@ -724,7 +726,7 @@ int corpus(const fs::path& dir, const CorpusOptions& o) {
       ++c.failed;
     }
     std::fflush(stdout);
-  }, weights);
+  }, weights, keys);
   std::printf("\nfiles %d, designs %d (failed %d, left out %d), %.0f s\n", c.files, c.designs, c.failed, c.skipped,
               c.seconds);
   std::printf("%-28s %10s %8s %8s %8s\n", "type", "parametric", "partial", "fallback", "skipped");
@@ -914,12 +916,14 @@ int models(const fs::path& dir, const mitcad::runs::Settings& parallel, const st
   std::printf("%-24s %14s %14s %9s  %-11s %s\n", "model", "stored mm3", "Mitcad mm3", "diff %", "import",
               "streams");
   std::vector<mitcad::runs::Command> commands;
+  std::vector<std::string> keys;
   for (const ModelCheck& model : kLoftModels) {
     if (parallel.jobs <= 1) {
       failed += check_model(dir, model) ? 0 : 1;
     } else {
       // Each model in a child process of its own (mitcad#70).
       commands.push_back({self, "--model", dir.string(), model.id});
+      keys.push_back(model.id);
     }
   }
   std::fflush(stdout);
@@ -931,7 +935,7 @@ int models(const fs::path& dir, const mitcad::runs::Settings& parallel, const st
     std::fputs(mitcad::runs::describe_failure(kLoftModels[i].id, outcome, finished).c_str(), stdout);
     failed += finished ? static_cast<int>(totals["failed"]) : 1;
     std::fflush(stdout);
-  });
+  }, {}, keys);
   return failed == 0 ? 0 : 1;
 }
 

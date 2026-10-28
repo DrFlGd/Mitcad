@@ -150,7 +150,8 @@ bool on_one_surface(const TopoDS_Face& a, const TopoDS_Face& b, std::string& why
     }
     return true;
   }
-  for (const auto& [from, to] : {std::make_pair(&a, &b), std::make_pair(&b, &a)}) {
+  const std::pair<const TopoDS_Face*, const TopoDS_Face*> orders[] = {{&a, &b}, {&b, &a}};
+  for (const auto& [from, to] : orders) {
     GeomAPI_ProjectPointOnSurf projection(parameter_middle(*from), BRep_Tool::Surface(*to));
     if (projection.NbPoints() == 0 || projection.LowerDistance() > tolerance) {
       why = "a surface of its kind " +

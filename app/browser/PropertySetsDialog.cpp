@@ -6,8 +6,10 @@
 #include <functional>
 #include <utility>
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QCursor>
 #include <QCompleter>
 #include <QDialogButtonBox>
 #include <QFont>
@@ -33,6 +35,7 @@
 #include <QScrollBar>
 #include <QStyledItemDelegate>
 #include <QSet>
+#include <QStyle>
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
@@ -91,30 +94,56 @@ const QStringList& standardTypes() {
   return types;
 }
 
-// The small buttons after a print row's value (mitcad#655): Edit and ↺,
-// by their names in the row's kGlyphsRole, where the delegate paints them
-// and takes their clicks.
-QVector<QPair<QString, QRect>> glyphPlaces(const QRect& cell, const QFontMetrics& metrics, const QString& shown,
-                                          bool icon, const QStringList& glyphs) {
-  QVector<QPair<QString, QRect>> places;
-  int x = cell.left() + 4 + (icon ? 20 : 0) + metrics.horizontalAdvance(shown) + 10;
-  for (const QString& glyph : glyphs) {
-    places.append({glyph, QRect(x, cell.center().y() - 8, 16, 16)});
-    x += 22;
-  }
-  return places;
-}
+// The small buttons after a print row's value (mitcad#655): Edit and ↺, by
+// their names in the row's kGlyphsRole. Their room is kept first
+// (mitcad#827): the value is elided to the cell less the glyphs, and they
+// follow the text as shown, so they always lie inside the Value column.
+constexpr int kGlyphSize = 16; // a glyph's square
+constexpr int kGlyphStep = 22; // from one glyph to the next
+constexpr int kGlyphGap = 10;  // between the text and the first glyph
+
+using GlyphPlaces = QVector<QPair<QString, QRect>>;
 
 // A print value's editor is the settings form's field, a profile's a
 // drop-down of the choosable items (the factory's); else the standard text
 // editor. The field commits itself; the cell's text is the model's after
-// the refresh.
+// the refresh. Painting, the clicks and the logged places share one layout
+// of the glyphs (layoutGlyphs).
 class PrintValueDelegate : public QStyledItemDelegate {
 public:
   using Factory = std::function<QWidget*(QWidget*, const QModelIndex&)>;
+  // A left click on the value cell: the glyph's name, or empty for the
+  // value itself.
   using Clicked = std::function<void(const QModelIndex&, const QString&)>;
   PrintValueDelegate(QObject* parent, Factory factory, Clicked clicked)
       : QStyledItemDelegate(parent), m_factory(std::move(factory)), m_clicked(std::move(clicked)) {}
+
+  // Initialises `cell` (the view's option of the cell) for the index, its
+  // text the value as painted, and gives the glyphs' places in it.
+  GlyphPlaces layoutGlyphs(QStyleOptionViewItem& cell, const QModelIndex& index) const {
+    initStyleOption(&cell, index);
+    GlyphPlaces places;
+    const QStringList glyphs = index.sibling(index.row(), 0).data(kGlyphsRole).toStringList();
+    if (glyphs.isEmpty()) {
+      return places;
+    }
+    const QWidget* widget = cell.widget;
+    const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+    // Where the style draws the text, and its margin inside that.
+    const QRect textRect = style->subElementRect(QStyle::SE_ItemViewItemText, &cell, widget);
+    const int margin = style->pixelMetric(QStyle::PM_FocusFrameHMargin, nullptr, widget) + 1;
+    const int count = static_cast<int>(glyphs.size());
+    const int room = kGlyphGap + kGlyphStep * (count - 1) + kGlyphSize + margin;
+    const int width = std::max(0, textRect.width() - 2 * margin - room);
+    cell.text = cell.fontMetrics.elidedText(cell.text, Qt::ElideRight, width);
+    int x = textRect.left() + margin + cell.fontMetrics.horizontalAdvance(cell.text) + kGlyphGap;
+    const int y = cell.rect.center().y() - kGlyphSize / 2;
+    for (const QString& glyph : glyphs) {
+      places.append({glyph, QRect(x, y, kGlyphSize, kGlyphSize)});
+      x += kGlyphStep;
+    }
+    return places;
+  }
 
   QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
     if (QWidget* editor = m_factory(parent, index)) {
@@ -133,48 +162,45 @@ public:
     }
   }
   void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
-    QStyledItemDelegate::paint(painter, option, index);
-    const QStringList glyphs = index.sibling(index.row(), 0).data(kGlyphsRole).toStringList();
-    if (glyphs.isEmpty()) {
+    QStyleOptionViewItem cell = option;
+    const GlyphPlaces places = layoutGlyphs(cell, index);
+    if (places.isEmpty()) {
+      QStyledItemDelegate::paint(painter, option, index);
       return;
     }
-    QFont font = option.font;
-    if (const QVariant own = index.data(Qt::FontRole); own.isValid()) {
-      font = own.value<QFont>();
-    }
-    const bool icon = !index.data(Qt::DecorationRole).isNull();
-    for (const auto& [glyph, rect] : glyphPlaces(option.rect, QFontMetrics(font), index.data().toString(), icon, glyphs)) {
+    // The value as elided for the glyphs, as the base class paints it.
+    const QWidget* widget = cell.widget;
+    const QStyle* style = widget != nullptr ? widget->style() : QApplication::style();
+    style->drawControl(QStyle::CE_ItemViewItem, &cell, painter, widget);
+    painter->save();
+    painter->setClipRect(option.rect, Qt::IntersectClip); // never into the next column
+    for (const auto& [glyph, rect] : places) {
       if (glyph == QStringLiteral("clear")) {
-        painter->save();
         painter->setPen(option.palette.color(QPalette::Text));
         painter->drawText(rect, Qt::AlignCenter, QStringLiteral("↺"));
-        painter->restore();
       } else {
         themeIcon(QStringLiteral("edit")).paint(painter, rect);
       }
     }
+    painter->restore();
   }
   bool editorEvent(QEvent* event, QAbstractItemModel* model, const QStyleOptionViewItem& option,
                    const QModelIndex& index) override {
-    // The left button's only: the view's itemClicked, which takes back the
-    // click flag a glyph sets, is the left button's (mitcad#761).
+    // The left button's only (mitcad#761): a right click on ↺ runs nothing.
+    // A glyph's click is the glyph's alone; else the value's (mitcad#827).
     if (event->type() == QEvent::MouseButtonRelease &&
         static_cast<QMouseEvent*>(event)->button() == Qt::LeftButton) {
-      const QStringList glyphs = index.sibling(index.row(), 0).data(kGlyphsRole).toStringList();
-      if (!glyphs.isEmpty()) {
-        QFont font = option.font;
-        if (const QVariant own = index.data(Qt::FontRole); own.isValid()) {
-          font = own.value<QFont>();
+      const QPoint at = static_cast<QMouseEvent*>(event)->position().toPoint();
+      QStyleOptionViewItem cell = option;
+      QString hit;
+      for (const auto& [glyph, rect] : layoutGlyphs(cell, index)) {
+        if (rect.contains(at)) {
+          hit = glyph;
         }
-        const bool icon = !index.data(Qt::DecorationRole).isNull();
-        const QPoint at = static_cast<QMouseEvent*>(event)->position().toPoint();
-        for (const auto& [glyph, rect] :
-             glyphPlaces(option.rect, QFontMetrics(font), index.data().toString(), icon, glyphs)) {
-          if (rect.contains(at)) {
-            m_clicked(index, glyph);
-            return true;
-          }
-        }
+      }
+      m_clicked(index, hit);
+      if (!hit.isEmpty()) {
+        return true;
       }
     }
     return QStyledItemDelegate::editorEvent(event, model, option, index);
@@ -185,10 +211,59 @@ private:
   Clicked m_clicked;
 };
 
+// A profile's drop-down in the Value cell (mitcad#827): `closed` runs once
+// its list has closed, with a choice or without one (Escape, a click
+// elsewhere, the same item again), so the editor ends then.
+class ProfileCombo : public QComboBox {
+public:
+  using QComboBox::QComboBox;
+  std::function<void()> closed;
+
+  void showPopup() override {
+    QComboBox::showPopup();
+    // However the list closes, its window is hidden.
+    if (QWidget* popup = view()->window(); popup != nullptr && popup != window()) {
+      popup->installEventFilter(this);
+    }
+  }
+  void hidePopup() override {
+    QComboBox::hidePopup();
+    finish();
+  }
+
+protected:
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (event->type() == QEvent::Hide && watched == view()->window()) {
+      finish();
+    }
+    return QComboBox::eventFilter(watched, event);
+  }
+
+private:
+  // After the list's own handling: an item chosen is taken first.
+  void finish() {
+    QTimer::singleShot(0, this, [this] {
+      if (closed) {
+        closed();
+      }
+    });
+  }
+};
+
 // F2 edits the current row's value, as double-click does.
 class PropertyTable : public QTreeWidget {
 public:
   explicit PropertyTable(std::function<void(QTreeWidgetItem*, int)> edit) : m_edit(std::move(edit)) {}
+
+  QModelIndex indexOf(const QTreeWidgetItem* item, int column) const { return indexFromItem(item, column); }
+  QTreeWidgetItem* itemOf(const QModelIndex& index) const { return itemFromIndex(index); }
+  // The view's option of a cell, as it gives it to the delegate.
+  QStyleOptionViewItem cellOption(const QModelIndex& index) const {
+    QStyleOptionViewItem option;
+    initViewItemOption(&option);
+    option.rect = visualRect(index);
+    return option;
+  }
 
 protected:
   void keyPressEvent(QKeyEvent* event) override {
@@ -202,6 +277,18 @@ protected:
 private:
   std::function<void(QTreeWidgetItem*, int)> m_edit;
 };
+
+// The glyphs' places in a row's cell (the column's delegate is a
+// PrintValueDelegate), in the viewport's coordinates, as painted.
+GlyphPlaces glyphsOf(QTreeWidget* table, const QTreeWidgetItem* item, int column) {
+  auto* view = static_cast<PropertyTable*>(table);
+  const QModelIndex index = view->indexOf(item, column);
+  if (!index.isValid()) {
+    return {};
+  }
+  QStyleOptionViewItem cell = view->cellOption(index);
+  return static_cast<PrintValueDelegate*>(table->itemDelegateForColumn(column))->layoutGlyphs(cell, index);
+}
 
 // Add Property: the level, set, key, type and value; stays open with the
 // model's reason when the model refuses them.
@@ -480,7 +567,19 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
   connect(m_remove, &QPushButton::clicked, this, &PropertySetsDialog::removeProperty);
   connect(m_types, &QPushButton::clicked, this, &PropertySetsDialog::editTypes);
   connect(m_computed, &QCheckBox::toggled, this, &PropertySetsDialog::refresh);
-  connect(m_table, &QTreeWidget::itemDoubleClicked, this, &PropertySetsDialog::edit);
+  connect(m_table, &QTreeWidget::itemDoubleClicked, this, [this](QTreeWidgetItem* item, int column) {
+    // A double click on Edit or ↺ is theirs alone: it never also opens the
+    // value's editor (mitcad#827).
+    if (item != nullptr && column == kValue) {
+      const QPoint at = m_table->viewport()->mapFromGlobal(QCursor::pos());
+      for (const auto& place : glyphsOf(m_table, item, kValue)) {
+        if (place.second.contains(at)) {
+          return;
+        }
+      }
+    }
+    edit(item, column);
+  });
   connect(m_table, &QTreeWidget::itemChanged, this, &PropertySetsDialog::cellEdited);
   connect(m_table, &QTreeWidget::itemSelectionChanged, this, &PropertySetsDialog::updateButtons);
   // A print value opens the settings form's field, a profile a drop-down of
@@ -498,8 +597,10 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
               const QString project = m_host.projectFolder();
               const QVector<LibraryItem> items = queryLibraryItems(m_host.model(), kind, project);
               const QString chosen = first.data(kPropertyRole).toMap().value(QStringLiteral("key")).toString();
-              auto* combo = new QComboBox(parent);
+              auto* combo = new ProfileCombo(parent);
               combo->setProperty("printField", true);
+              // Opaque over the row's text and glyphs (mitcad#827).
+              combo->setAutoFillBackground(true);
               if (chosen.isEmpty()) {
                 combo->addItem(tr("Slicer default"), QString());
               }
@@ -508,6 +609,13 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
                 combo->addItem(item.name, item.key());
               }
               combo->setCurrentIndex(std::max(0, combo->findData(chosen)));
+              QStringList names;
+              for (int at = 0; at < combo->count(); ++at) {
+                names << combo->itemText(at);
+              }
+              qDebug().noquote() << QStringLiteral("Property sets profile list: %1 (current %2)")
+                                        .arg(names.join(QStringLiteral(" | ")))
+                                        .arg(combo->currentIndex());
               connect(combo, &QComboBox::activated, this, [this, combo, items, set, project, chosen](int at) {
                 const QString key = combo->itemData(at).toString();
                 const LibraryItem* item = findItem(items, key);
@@ -518,6 +626,18 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
                 nameItem(fields, *item, project, QStringLiteral("value"));
                 setPrint(set, QStringLiteral("profile"), fields, item->name);
               });
+              // The list closed, with a choice (set above, later) or
+              // without one: the editor ends, none is left over the row
+              // (mitcad#827).
+              combo->closed = [this, combo] {
+                if (combo->property("closing").toBool() || !combo->isVisible()) {
+                  return;
+                }
+                combo->setProperty("closing", true);
+                qDebug().noquote() << QStringLiteral("Property sets profile list closed");
+                emit static_cast<PrintValueDelegate*>(m_table->itemDelegateForColumn(kValue))
+                    ->closeEditor(combo, QAbstractItemDelegate::NoHint);
+              };
               QTimer::singleShot(0, combo, [combo] { combo->showPopup(); });
               return combo;
             }
@@ -545,41 +665,57 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
             QTimer::singleShot(0, field, [field] { field->startEditing(); });
             return field;
           },
+          // A left click on a print row's value cell: a glyph's action, or
+          // the value's own (mitcad#827). One action per click, decided by
+          // where the click is, after the view has handled it.
           [this](const QModelIndex& index, const QString& glyph) {
             const QModelIndex first = index.sibling(index.row(), kKey);
-            m_glyphClicked = true;
+            if (first.data(kLevelRole).toString() != QStringLiteral("print")) {
+              return;
+            }
             const QString set = first.data(kSetRole).toString();
             const QString name = first.data(kNameRole).toString();
-            qDebug().noquote() << QStringLiteral("Property sets print %1/%2 %3").arg(set, name, glyph);
-            if (glyph == QStringLiteral("clear")) {
-              setPrint(set, name, QJsonObject(), QString());
-            } else if (name == QStringLiteral("own_settings")) {
-              // Own settings: this level's own process values in the
-              // settings form (mitcad#655); Process's pencil opens the
-              // process.
-              openLevelOwnSettings(first.data(kOwnerRole).toString());
-            } else if (!first.data(kProfileRole).toString().isEmpty()) {
-              if (openProfile) {
-                openProfile(first.data(kProfileRole).toString(),
-                            first.data(kPropertyRole).toMap().value(QStringLiteral("key")).toString());
-              }
-            } else {
-              openPrintMaterial();
+            const QString owner = first.data(kOwnerRole).toString();
+            const QString kind = first.data(kProfileRole).toString();
+            const QString chosen = first.data(kPropertyRole).toMap().value(QStringLiteral("key")).toString();
+            if (glyph.isEmpty()) {
+              // The value: Material opens Materials, Own settings the
+              // level's own values, any other its editor.
+              const QPersistentModelIndex row(first);
+              QTimer::singleShot(0, this, [this, row, name, owner] {
+                if (name == QStringLiteral("material")) {
+                  openPrintMaterial();
+                } else if (name == QStringLiteral("own_settings")) {
+                  openLevelOwnSettings(owner);
+                } else if (row.isValid()) {
+                  editPrint(static_cast<PropertyTable*>(m_table)->itemOf(row));
+                }
+              });
+              return;
             }
+            qDebug().noquote() << QStringLiteral("Property sets print %1/%2 %3").arg(set, name, glyph);
+            QTimer::singleShot(0, this, [this, set, name, owner, kind, chosen, glyph] {
+              if (glyph == QStringLiteral("clear")) {
+                setPrint(set, name, QJsonObject(), QString());
+              } else if (name == QStringLiteral("own_settings")) {
+                // Own settings: this level's own process values in the
+                // settings form (mitcad#655); Process's pencil opens the
+                // process.
+                openLevelOwnSettings(owner);
+              } else if (!kind.isEmpty()) {
+                // Printer and Process: the profile chosen.
+                if (openProfile) {
+                  openProfile(kind, chosen);
+                }
+              } else {
+                openPrintMaterial();
+              }
+            });
           }));
-  connect(m_table, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* item, int column) {
-    if (std::exchange(m_glyphClicked, false) || item == nullptr ||
-        item->data(kKey, kLevelRole).toString() != QStringLiteral("print") || column != kValue) {
-      return;
-    }
-    if (item->data(kKey, kNameRole).toString() == QStringLiteral("material")) {
-      openPrintMaterial();
-    } else if (item->data(kKey, kNameRole).toString() == QStringLiteral("own_settings")) {
-      openLevelOwnSettings(item->data(kKey, kOwnerRole).toString());
-    } else {
-      editPrint(item);
-    }
-  });
+  // The cells' places again when the Value column changes its width (the
+  // window resized, the names' column grown, mitcad#827).
+  connect(m_table->header(), &QHeaderView::sectionResized, this,
+          [this] { QTimer::singleShot(0, this, &PropertySetsDialog::logLayout); });
   // The cells' places again when the table scrolls (the print settings
   // below the levels, mitcad#640).
   connect(m_table->verticalScrollBar(), &QScrollBar::valueChanged, this,
@@ -845,6 +981,7 @@ void PropertySetsDialog::addPrintSettings(const QJsonArray& levels, const QSet<Q
       // The material, plain; a click on it or Edit opens Materials.
       const QJsonObject material = block.value(QStringLiteral("material")).toObject();
       group->setText(kValue, text(material, "name"));
+      group->setToolTip(kValue, group->text(kValue)); // whole where elided (mitcad#827)
       // Its name once, in the value (mitcad#655): the Source column does
       // not repeat it. Its appearance names an unset filament colour.
       try {
@@ -871,6 +1008,7 @@ void PropertySetsDialog::addPrintSettings(const QJsonArray& levels, const QSet<Q
       const QVector<LibraryItem> items = queryLibraryItems(m_host.model(), kind, project);
       const LibraryItem* chosen = findDesignCopy(items, text(profile, "id"));
       group->setText(kValue, chosen != nullptr ? chosen->name : tr("Slicer default"));
+      group->setToolTip(kValue, group->text(kValue)); // whole where elided (mitcad#827)
       group->setData(kKey, kNameRole, QStringLiteral("profile"));
       group->setData(kKey, kProfileRole, kind);
       group->setData(kKey, kPropertyRole,
@@ -1287,18 +1425,26 @@ void PropertySetsDialog::logLayout() {
     }
     const QRect cell(m_table->header()->sectionViewportPosition(kValue), rect.top(),
                      m_table->header()->sectionSize(kValue), rect.height());
-    lines << QStringLiteral("Property sets %1 value at %2").arg(rowName(item), at(m_table->viewport(), cell.center()));
     // Edit and ↺ after a print row's value (mitcad#655), where the delegate
-    // paints them.
-    const QStringList glyphs = item->data(kKey, kGlyphsRole).toStringList();
-    if (!glyphs.isEmpty()) {
-      const QFont font = item->font(kValue);
-      for (const auto& [glyph, place] :
-           glyphPlaces(cell, QFontMetrics(font), item->text(kValue), !item->icon(kValue).isNull(), glyphs)) {
-        lines << QStringLiteral("Property sets %1 %2 at %3")
-                     .arg(rowName(item), glyph, at(m_table->viewport(), place.center()));
-      }
+    // paints them and takes their clicks (mitcad#827); the value's place is
+    // then on its text, before them.
+    const GlyphPlaces glyphs = glyphsOf(m_table, item, kValue);
+    const QPoint value = glyphs.isEmpty()
+                             ? cell.center()
+                             : QPoint((cell.left() + glyphs.first().second.left()) / 2, cell.center().y());
+    lines << QStringLiteral("Property sets %1 value at %2").arg(rowName(item), at(m_table->viewport(), value));
+    for (const auto& [glyph, place] : glyphs) {
+      lines << QStringLiteral("Property sets %1 %2 at %3")
+                   .arg(rowName(item), glyph, at(m_table->viewport(), place.center()));
     }
+  }
+  // The Value column's part in sight (mitcad#827): the glyphs lie inside it.
+  {
+    const int left = m_table->header()->sectionViewportPosition(kValue);
+    const int right = std::min(m_table->viewport()->width(), left + m_table->header()->sectionSize(kValue));
+    const QPoint from = m_table->viewport()->mapToGlobal(QPoint(std::max(0, left), 0)) - origin;
+    const QPoint to = m_table->viewport()->mapToGlobal(QPoint(right, 0)) - origin;
+    lines << QStringLiteral("Property sets value column from %1 to %2").arg(from.x()).arg(to.x());
   }
   // The print block's boxes and buttons (mitcad#655).
   for (const auto& [name, widget] : std::as_const(m_printWidgets)) {

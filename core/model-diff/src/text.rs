@@ -465,6 +465,7 @@ pub(super) fn summary(diff: &DesignDiff) -> String {
         (&diff.print_profiles, "print profile", "print profiles"),
         (&diff.annotations, "annotation", "annotations"),
         (&diff.drawings, "drawing", "drawings"),
+        (&diff.tables, "table", "tables"),
     ] {
         let kinds: Vec<Kind> = items.iter().map(|i| i.kind).collect();
         counts(&mut parts, &kinds, one, many, "changed");
@@ -531,6 +532,7 @@ impl DesignDiff {
             ("Print profiles", &self.print_profiles),
             ("Annotations", &self.annotations),
             ("Drawings", &self.drawings),
+            ("Tables", &self.tables),
         ] {
             section(title, items.iter().map(|c| c.text.as_str()).collect());
         }

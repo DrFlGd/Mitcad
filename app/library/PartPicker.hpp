@@ -20,7 +20,13 @@
 //   Connector): a click on a tile chooses the part in the running command;
 //   the window closes with the command unless it is pinned, and a pinned
 //   one follows the next command that chooses parts. Its place, size and
-//   tile size are kept in the settings (group "partPicker").
+//   tile size are kept in the settings (group "partPicker"). A part of an
+//   open configuration table (mitcad#810) has its options under the grid,
+//   a chooser per option filtered by the rules (OptionChooser.hpp): a
+//   click on its tile chooses it with them, and a change of an option
+//   chooses it again with the new ones (an options key, BuildCatalog.hpp).
+//   The native macOS frontend hosts it in an AppKit utility panel that
+//   leaves the keyboard with the document (showDialog, mitcad#819).
 //
 // The favourites and the order are PartFavourites' (PartFavourites.hpp),
 // the design's parts usedLibraryParts' (UsedParts.hpp).
@@ -58,6 +64,8 @@ class QToolButton;
 
 namespace mitcad {
 
+class OptionChooser;
+
 namespace build {
 struct Part;
 }
@@ -88,6 +96,9 @@ struct PickerPart {
   bool preview = true;  // the library has a picture of it
   bool rowPreview = false; // `config` has a picture of its own (library_preview with it, mitcad#484)
   bool defaultRow = false; // `config` is its component's default row (an old star marks it, mitcad#491)
+  // Its configuration table as the library gives it: an open one is chosen
+  // by its options under the grid (mitcad#810).
+  QJsonObject table;
   QString refused;      // not choosable: why (greyed, the reason in the tooltip)
   // An index's library that is not fetched (Insert from Library, Community
   // Library): a tile of its own in the group "Libraries to get".
@@ -120,6 +131,9 @@ public:
   static constexpr int kStarRole = Qt::UserRole + 3;
   static constexpr int kRefusedRole = Qt::UserRole + 4;
   static constexpr int kSizesRole = Qt::UserRole + 5;
+  // The part's whole picture, read now (the native grid's hover card,
+  // mitcad#813); Qt's hover reads it through image().
+  static constexpr int kPreviewRole = Qt::UserRole + 6;
 
   explicit PartGridModel(QObject* parent = nullptr);
 
@@ -132,10 +146,17 @@ public:
   int rowOf(const QString& key) const;
   int rowCount(const QModelIndex& parent = QModelIndex()) const override;
   QVariant data(const QModelIndex& index, int role) const override;
+  // kStarRole set by a presenter other than the tile delegate (the native
+  // grid, mitcad#813): starRequested when it differs; nothing else is set.
+  bool setData(const QModelIndex& index, const QVariant& value, int role) override;
   // The part's picture, read now when it is not read yet (the hover's).
   QImage image(const PickerPart& shownPart) const;
   // The tiles' size: the pictures are scaled to it.
   void setTileSize(int size);
+
+signals:
+  // A tile's star asked on or off through setData: PartGrid toggles it.
+  void starRequested(const QString& key);
 
 private:
   void loadSome();
@@ -206,8 +227,9 @@ public:
   // starred-first order applies the next time the list is made again.
   void toggleStar();
   // Stars the current group (a library's group) and its subgroups, or
-  // turns their stars off; the groups stay where they are as well.
-  void toggleGroupStar();
+  // turns their stars off; the groups stay where they are as well. The
+  // native group list calls it by name (nativeStarMethod, mitcad#813).
+  Q_INVOKABLE void toggleGroupStar();
   // Logs where the search, Star, the groups and the tiles in sight are,
   // for UI tests: "Part picker place search at <at(widget, point)>",
   // "Part picker group row <group> at ...", "Part picker place group fold
@@ -365,6 +387,12 @@ protected:
 
 private:
   void choose(const QString& key);
+  // The options under the grid for the tile `key` (mitcad#810): shown for
+  // a part of an open table, else hidden; `parameters` to start with.
+  void showOptions(const QString& key, const QJsonObject& parameters = QJsonObject());
+  // The tile of a key: an options key's tile of its row, else of its
+  // component (BuildCatalog.hpp, optionsKey); a tile's key as it is.
+  QString tileOf(const QString& key) const;
   void readDesign();
   void saveGeometryLater();
   // Logs where the pin and the grid's places are once laid out, for UI
@@ -378,6 +406,12 @@ private:
 
   PartGrid* m_grid = nullptr;
   QToolButton* m_pin = nullptr;
+  // An open table's options (mitcad#810), for the tile m_optionsFor; the
+  // tile chosen with them last, which follows a change of an option.
+  OptionChooser* m_options = nullptr;
+  QString m_optionsFor;
+  QString m_chosenTile;
+  bool m_showingOptions = false; // the options of another tile come in: nothing chosen
   PickerRequest m_request;
   std::function<QList<UsedPart>()> m_readDesign;
   bool m_designStale = true;

@@ -18,6 +18,7 @@
 #include <QTreeWidget>
 #include <QStyle>
 
+#include "Dialogs.hpp"
 #include "../files/Libraries.hpp"
 #include "../files/ProjectSettings.hpp"
 #include "../files/LibraryDialogs.hpp"
@@ -91,7 +92,10 @@ void TestDriver::showDialogStyleFixture(const QString& kind) {
     return;
   }
   connect(dialog, &QDialog::finished, dialog, &QObject::deleteLater);
-  dialog->show();
+  // Through the shared dispatch, as the windows' production entries: the
+  // native frontend hosts them in AppKit instead of showing Qt's window
+  // (a Qt window there was a harness artefact, mitcad#819).
+  showDialog(dialog);
 }
 
 void TestDriver::testDialogControls(const QString& kind) {

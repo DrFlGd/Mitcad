@@ -21,6 +21,9 @@
 //!   face. Positions are in centimetres, in the coordinates of the body's
 //!   component (the same as the ASM blobs). Faces of hidden bodies have no
 //!   mesh.
+//! - Some documents keep the face meshes in `stream_mesh_NNN` instead: the
+//!   face record then carries an inline `OgsSimpleMesh` with a vertex
+//!   format and the byte ranges of the face's vertices and u32 indices.
 //!
 //! The scene graph itself (groups, components, occurrence transforms) is
 //! not decoded; the records are found by their type names and checked
@@ -135,6 +138,7 @@ impl From<ZipError> for OgsError {
 
 const SCENE_DIR: &str = "OGS.BlobFolder/OGS/DefaultScene/";
 const MESH_PREFIX: &str = "Fusion_mesh_";
+const STREAM_PREFIX: &str = "stream_mesh_";
 
 /// Reads the display scene of a document (`.f3d`, or a document of an
 /// `.f3z`). `Ok(None)` when the document has no scene (files saved before
@@ -157,32 +161,53 @@ pub fn display_scene(doc: &F3dFile) -> Result<Option<DisplayScene>, OgsError> {
     };
     let world = doc.read(&format!("{dir}world"))?;
     // Mesh buffers by number; a gap ends the list.
-    let mut buffers = Vec::new();
     let names: Vec<String> = doc.entries().into_iter().map(|e| e.name).collect();
-    loop {
-        let name = format!("{dir}{MESH_PREFIX}{:03}", buffers.len());
-        if !names.contains(&name) {
-            break;
+    let numbered = |prefix: &str| -> Result<Vec<Vec<u8>>, OgsError> {
+        let mut out = Vec::new();
+        loop {
+            let name = format!("{dir}{prefix}{:03}", out.len());
+            if !names.contains(&name) {
+                return Ok(out);
+            }
+            out.push(doc.read(&name)?);
         }
-        buffers.push(doc.read(&name)?);
-    }
-    Ok(Some(DisplayScene::parse(&world, &buffers)))
+    };
+    let buffers = numbered(MESH_PREFIX)?;
+    let streams = numbered(STREAM_PREFIX)?;
+    Ok(Some(DisplayScene::parse_with_streams(
+        &world, &buffers, &streams,
+    )))
 }
 
 impl DisplayScene {
     /// Parses the scene `world` with its mesh buffers (`Fusion_mesh_000`,
     /// `_001`, ... in order).
     pub fn parse(world: &[u8], buffers: &[Vec<u8>]) -> DisplayScene {
+        DisplayScene::parse_with_streams(world, buffers, &[])
+    }
+
+    /// Parses the scene `world` with its mesh buffers (`Fusion_mesh_NNN`)
+    /// and its stream buffers (`stream_mesh_NNN`), each in order.
+    pub fn parse_with_streams(
+        world: &[u8],
+        buffers: &[Vec<u8>],
+        streams: &[Vec<u8>],
+    ) -> DisplayScene {
+        let buffers = Buffers {
+            packed: buffers,
+            stream: streams,
+        };
         let mut issues = Vec::new();
 
         // Face records.
+        let formats = vertex_formats(world);
         let mut faces = Vec::new();
         let face_tag = type_tag("Face");
         for at in find_all(world, &face_tag) {
             let Some((key, number)) = member_prefix(world, at) else {
                 continue;
             };
-            match parse_face(world, at + face_tag.len()) {
+            match parse_face(world, at + face_tag.len(), &formats) {
                 Ok(rec) => faces.push((at, key, number, rec)),
                 Err(e) => issues.push(format!("face record at {at:#x}: {e}")),
             }
@@ -288,15 +313,42 @@ impl DisplayBody {
     }
 }
 
-/// The location of a face's mesh in a buffer.
+/// The location of a face's mesh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct MeshRef {
+enum MeshRef {
+    /// Layout 7: interleaved vertices followed by the indices, in a
+    /// `Fusion_mesh_NNN` buffer.
+    Packed {
+        buffer: u32,
+        offset: u32,
+        position_floats: u32,
+        normal_floats: u32,
+        uv_floats: u32,
+        indices: u32,
+    },
+    /// Layout 0: vertices and indices described by an inline
+    /// `OgsSimpleMesh`, in `stream_mesh_NNN` buffers.
+    Stream {
+        vertices: Span,
+        format: VertexFormat,
+        indices: Span,
+    },
+}
+
+/// A byte range of a numbered buffer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Span {
     buffer: u32,
     offset: u32,
-    position_floats: u32,
-    normal_floats: u32,
-    uv_floats: u32,
-    indices: u32,
+    bytes: u32,
+}
+
+/// A vertex layout of the stream buffers: floats per vertex and the float
+/// offset of the position within a vertex.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct VertexFormat {
+    stride: u32,
+    position: u32,
 }
 
 /// A `Face` record after its type name.
@@ -309,43 +361,188 @@ struct FaceRecord {
 
 /// Flag byte of a face record: the face has a mesh.
 const FACE_HAS_MESH: u8 = 0x08;
-/// The only vertex layout seen for faces: interleaved position, normal and
-/// uv floats, followed by triangle indices (four counts).
+/// Vertex layout of faces in `Fusion_mesh_NNN`: interleaved position,
+/// normal and uv floats, followed by triangle indices (four counts).
 const FACE_LAYOUT: u32 = 7;
+/// Vertex layout of faces in `stream_mesh_NNN`: an inline `OgsSimpleMesh`
+/// object with a vertex format and vertex and index buffer ranges.
+const FACE_LAYOUT_STREAM: u32 = 0;
+/// Primitive type of an `OgsSimpleMesh` holding a triangle list.
+const TRIANGLE_LIST: u32 = 4;
+
+/// Vertex formats by id: where the format is first written (its definition)
+/// and the format, or why it cannot be used.
+type VertexFormats = HashMap<String, (usize, Result<VertexFormat, String>)>;
+
+/// The bytes that start a `VertexFormat` object: flag 1 and its type name.
+fn vertex_format_tag() -> Vec<u8> {
+    let mut tag = vec![1];
+    tag.extend(type_tag("VertexFormat"));
+    tag
+}
+
+/// Finds the vertex formats of `world`. A `VertexFormat` object is written
+/// as flag 1, its type name and its id string; the first object with an id
+/// defines it (u32 attribute count, then per attribute 6 x u32: type,
+/// semantic, float offset within the vertex, three zeros), later ones only
+/// repeat the id. Types: 2 three floats, 1 two floats; semantics: 0
+/// position, 1 normal, 2 texture coordinates, 3 and 4 further vectors.
+fn vertex_formats(d: &[u8]) -> VertexFormats {
+    let tag = vertex_format_tag();
+    let mut out = VertexFormats::new();
+    for at in find_all(d, &tag) {
+        let Some(id) = read_utf16_string(d, at + tag.len()) else {
+            continue;
+        };
+        if out.contains_key(&id) {
+            continue;
+        }
+        let attrs_at = at + tag.len() + 4 + 2 * id.len();
+        out.insert(id, (at, read_vertex_format(d, attrs_at).map(|(f, _)| f)));
+    }
+    out
+}
+
+/// Reads a vertex format definition (attribute count and attributes) at
+/// `at`; returns the format and the end of the definition.
+fn read_vertex_format(d: &[u8], at: usize) -> Result<(VertexFormat, usize), String> {
+    let n = read_u32(d, at).ok_or("truncated")?;
+    if n == 0 || n > 16 {
+        return Err(format!("vertex format with {n} attributes"));
+    }
+    let mut stride = 0;
+    let mut position = None;
+    for i in 0..n as usize {
+        let field = |k: usize| read_u32(d, at + 4 + 24 * i + 4 * k).ok_or("truncated");
+        let (kind, semantic, offset) = (field(0)?, field(1)?, field(2)?);
+        let floats = match kind {
+            1 => 2,
+            2 => 3,
+            other => return Err(format!("unknown vertex attribute type {other}")),
+        };
+        if offset > 64 {
+            return Err(format!("vertex attribute at float {offset}"));
+        }
+        if semantic == 0 && kind == 2 {
+            position = Some(offset);
+        }
+        stride = stride.max(offset + floats);
+    }
+    let position = position.ok_or("vertex format without positions")?;
+    Ok((VertexFormat { stride, position }, at + 4 + 24 * n as usize))
+}
+
+/// Reads `(buffer, offset, bytes)` at `at`.
+fn read_span(d: &[u8], at: usize) -> Option<Span> {
+    Some(Span {
+        buffer: read_u32(d, at)?,
+        offset: read_u32(d, at + 4)?,
+        bytes: read_u32(d, at + 8)?,
+    })
+}
+
+/// Expects the object header `flag 1, type name` at `at`; returns its end.
+fn expect_object(d: &[u8], at: usize, name: &str) -> Result<usize, String> {
+    let tag = type_tag(name);
+    if read_u8(d, at) != Some(1) || d.get(at + 1..at + 1 + tag.len()) != Some(&tag[..]) {
+        return Err(format!("no {name} at {at:#x}"));
+    }
+    Ok(at + 1 + tag.len())
+}
+
+/// Parses the inline mesh of a layout-0 face, starting at `at`: an
+/// `OgsSimpleMesh` (6 x f32 box, u32 primitive type 4, 2 bytes 1 0), its
+/// `VertexFormat` (id, the definition the first time, u32 stream count 1,
+/// then buffer, byte offset and byte count of the vertices) and its
+/// `AIndexBuffer` (id, u8 0, buffer, byte offset and byte count of the u32
+/// indices), then 5 zero bytes. Returns the mesh and the end.
+fn parse_stream_mesh(
+    d: &[u8],
+    at: usize,
+    formats: &VertexFormats,
+) -> Result<(MeshRef, usize), String> {
+    let mut o = expect_object(d, at, "OgsSimpleMesh")? + 24;
+    let primitive = read_u32(d, o).ok_or("truncated")?;
+    if primitive != TRIANGLE_LIST {
+        return Err(format!("unknown primitive type {primitive}"));
+    }
+    o += 6;
+    let format_at = o;
+    o = expect_object(d, o, "VertexFormat")?;
+    let id = read_utf16_string(d, o).ok_or("no vertex format id")?;
+    o += 4 + 2 * id.len();
+    let (first, format) = formats
+        .get(&id)
+        .ok_or_else(|| format!("unknown vertex format {id}"))?;
+    let format = format
+        .clone()
+        .map_err(|e| format!("vertex format {id}: {e}"))?;
+    if *first == format_at {
+        o = read_vertex_format(d, o)?.1;
+    }
+    let streams = read_u32(d, o).ok_or("truncated")?;
+    if streams != 1 {
+        return Err(format!("{streams} vertex streams"));
+    }
+    let vertices = read_span(d, o + 4).ok_or("truncated")?;
+    o = expect_object(d, o + 16, "AIndexBuffer")?;
+    let id = read_utf16_string(d, o).ok_or("no index buffer id")?;
+    o += 4 + 2 * id.len();
+    let kind = read_u8(d, o).ok_or("truncated")?;
+    if kind != 0 {
+        return Err(format!("unknown index buffer type {kind}"));
+    }
+    let indices = read_span(d, o + 1).ok_or("truncated")?;
+    o += 13;
+    if d.get(o..o + 5) != Some(&[0u8; 5][..]) {
+        return Err(format!("unknown data after the index buffer at {o:#x}"));
+    }
+    let mesh = MeshRef::Stream {
+        vertices,
+        format,
+        indices,
+    };
+    Ok((mesh, o + 5))
+}
 
 /// Parses a `Face` record starting `e` bytes into `d` (after the type name).
 ///
 /// Layout (offsets from `e`): 46 bytes common to all faces (not decoded),
-/// u8 flags, u16 0; with a mesh: u32 layout (7), u32 buffer number, u32 byte
-/// offset, u32 x 4 counts, u32 n, n x u32 edge indices; then 6 x f64 box.
-fn parse_face(d: &[u8], e: usize) -> Result<FaceRecord, String> {
+/// u8 flags, u16 0; with a mesh, u32 layout and either (layout 7) u32
+/// buffer number, u32 byte offset, u32 x 4 counts, u32 n, n x u32 edge
+/// indices, or (layout 0) an inline mesh object, see [`parse_stream_mesh`];
+/// then 6 x f64 box.
+fn parse_face(d: &[u8], e: usize, formats: &VertexFormats) -> Result<FaceRecord, String> {
     let flags = read_u8(d, e + 46).ok_or("truncated")?;
     let (mesh, edges, bbox_at) = match flags {
         0 => (None, Vec::new(), e + 49),
-        FACE_HAS_MESH => {
-            let layout = read_u32(d, e + 49).ok_or("truncated")?;
-            if layout != FACE_LAYOUT {
-                return Err(format!("unknown vertex layout {layout}"));
+        FACE_HAS_MESH => match read_u32(d, e + 49).ok_or("truncated")? {
+            FACE_LAYOUT => {
+                let field = |i: usize| read_u32(d, e + 53 + 4 * i).ok_or("truncated");
+                let mesh = MeshRef::Packed {
+                    buffer: field(0)?,
+                    offset: field(1)?,
+                    position_floats: field(2)?,
+                    normal_floats: field(3)?,
+                    uv_floats: field(4)?,
+                    indices: field(5)?,
+                };
+                let n = field(6)? as usize;
+                let list = e + 81;
+                if n > d.len().saturating_sub(list) / 4 {
+                    return Err(format!("edge count {n} beyond the data"));
+                }
+                let edges = (0..n)
+                    .map(|i| read_u32(d, list + 4 * i).ok_or("truncated"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                (Some(mesh), edges, list + 4 * n)
             }
-            let field = |i: usize| read_u32(d, e + 53 + 4 * i).ok_or("truncated");
-            let mesh = MeshRef {
-                buffer: field(0)?,
-                offset: field(1)?,
-                position_floats: field(2)?,
-                normal_floats: field(3)?,
-                uv_floats: field(4)?,
-                indices: field(5)?,
-            };
-            let n = field(6)? as usize;
-            let list = e + 81;
-            if n > d.len().saturating_sub(list) / 4 {
-                return Err(format!("edge count {n} beyond the data"));
+            FACE_LAYOUT_STREAM => {
+                let (mesh, end) = parse_stream_mesh(d, e + 53, formats)?;
+                (Some(mesh), Vec::new(), end)
             }
-            let edges = (0..n)
-                .map(|i| read_u32(d, list + 4 * i).ok_or("truncated"))
-                .collect::<Result<Vec<_>, _>>()?;
-            (Some(mesh), edges, list + 4 * n)
-        }
+            layout => return Err(format!("unknown vertex layout {layout}")),
+        },
         other => return Err(format!("unknown face flags {other:#x}")),
     };
     let mut bbox = [0.0; 6];
@@ -361,64 +558,122 @@ fn parse_face(d: &[u8], e: usize) -> Result<FaceRecord, String> {
 /// Vertex positions and triangles (indices into the positions).
 type Mesh = (Vec<[f32; 3]>, Vec<[u32; 3]>);
 
-/// Reads one face's vertices and triangles from its buffer.
-fn read_face_mesh(buf: &[u8], m: &MeshRef) -> Result<Mesh, String> {
-    // Sizes in u64 first: the counts are untrusted.
-    let np = u64::from(m.position_floats);
-    let ni = u64::from(m.indices);
-    let all_floats = np + u64::from(m.normal_floats) + u64::from(m.uv_floats);
-    if !np.is_multiple_of(3) {
-        return Err(format!("{np} position floats"));
-    }
-    if !ni.is_multiple_of(3) {
-        return Err(format!("{ni} indices"));
-    }
-    if np == 0 {
-        return if ni == 0 && all_floats == 0 {
-            Ok((Vec::new(), Vec::new()))
-        } else {
-            Err("indices without vertices".into())
-        };
-    }
-    if !all_floats.is_multiple_of(np / 3) {
-        return Err(format!("{all_floats} floats for {} vertices", np / 3));
-    }
-    let start = u64::from(m.offset);
-    let end = start + 4 * (all_floats + ni);
+/// The mesh buffers of a scene: `Fusion_mesh_NNN` and `stream_mesh_NNN`.
+#[derive(Clone, Copy)]
+struct Buffers<'a> {
+    packed: &'a [Vec<u8>],
+    stream: &'a [Vec<u8>],
+}
+
+/// The bytes `start..start + len` of a buffer, if they lie in it.
+fn buffer_bytes(buf: &[u8], start: u64, len: u64) -> Result<&[u8], String> {
+    let end = start + len;
     if end > buf.len() as u64 {
         return Err(format!(
             "bytes {start}..{end} beyond the buffer ({})",
             buf.len()
         ));
     }
-    // Everything below fits in the buffer, hence in usize.
-    let (nv, ni, floats) = ((np / 3) as usize, ni as usize, all_floats as usize);
-    let stride = floats / nv;
-    let data = &buf[start as usize..end as usize];
-    let float = |i: usize| {
-        f32::from_le_bytes([
-            data[4 * i],
-            data[4 * i + 1],
-            data[4 * i + 2],
-            data[4 * i + 3],
-        ])
-    };
+    // Within the buffer, hence in usize.
+    Ok(&buf[start as usize..end as usize])
+}
+
+/// Reads one face's vertices and triangles from its buffers.
+fn read_face_mesh(buffers: Buffers<'_>, m: &MeshRef) -> Result<Mesh, String> {
+    match *m {
+        MeshRef::Packed {
+            buffer,
+            offset,
+            position_floats,
+            normal_floats,
+            uv_floats,
+            indices,
+        } => {
+            let buf = buffers
+                .packed
+                .get(buffer as usize)
+                .ok_or_else(|| format!("no mesh buffer {buffer}"))?;
+            // Sizes in u64 first: the counts are untrusted.
+            let np = u64::from(position_floats);
+            let ni = u64::from(indices);
+            let all_floats = np + u64::from(normal_floats) + u64::from(uv_floats);
+            if !np.is_multiple_of(3) {
+                return Err(format!("{np} position floats"));
+            }
+            if np == 0 {
+                return if ni == 0 && all_floats == 0 {
+                    Ok((Vec::new(), Vec::new()))
+                } else {
+                    Err("indices without vertices".into())
+                };
+            }
+            if !all_floats.is_multiple_of(np / 3) {
+                return Err(format!("{all_floats} floats for {} vertices", np / 3));
+            }
+            let data = buffer_bytes(buf, u64::from(offset), 4 * (all_floats + ni))?;
+            let (vertices, indices) = data.split_at(4 * all_floats as usize);
+            let format = VertexFormat {
+                stride: (all_floats / (np / 3)) as u32,
+                position: 0,
+            };
+            read_triangles(vertices, format, indices)
+        }
+        MeshRef::Stream {
+            vertices,
+            format,
+            indices,
+        } => {
+            let span = |s: Span| {
+                let buf = buffers
+                    .stream
+                    .get(s.buffer as usize)
+                    .ok_or_else(|| format!("no stream buffer {}", s.buffer))?;
+                buffer_bytes(buf, u64::from(s.offset), u64::from(s.bytes))
+            };
+            let (v, i) = (span(vertices)?, span(indices)?);
+            if !v.len().is_multiple_of(4 * format.stride as usize) {
+                return Err(format!(
+                    "{} vertex bytes for {} floats per vertex",
+                    v.len(),
+                    format.stride
+                ));
+            }
+            if !i.len().is_multiple_of(4) {
+                return Err(format!("{} index bytes", i.len()));
+            }
+            read_triangles(v, format, i)
+        }
+    }
+}
+
+/// Reads whole vertices of `format` from `vertices` and the u32 triangle
+/// list from `indices` (both little-endian, already bounds-checked).
+fn read_triangles(vertices: &[u8], format: VertexFormat, indices: &[u8]) -> Result<Mesh, String> {
+    let stride = format.stride as usize;
+    let nv = vertices.len() / (4 * stride);
+    let ni = indices.len() / 4;
+    if !ni.is_multiple_of(3) {
+        return Err(format!("{ni} indices"));
+    }
+    if nv == 0 && ni > 0 {
+        return Err("indices without vertices".into());
+    }
+    let word = |d: &[u8], i: usize| [d[4 * i], d[4 * i + 1], d[4 * i + 2], d[4 * i + 3]];
+    let float = |i: usize| f32::from_le_bytes(word(vertices, i));
+    let p = format.position as usize;
     let positions: Vec<[f32; 3]> = (0..nv)
         .map(|v| {
             [
-                float(v * stride),
-                float(v * stride + 1),
-                float(v * stride + 2),
+                float(v * stride + p),
+                float(v * stride + p + 1),
+                float(v * stride + p + 2),
             ]
         })
         .collect();
     if positions.iter().flatten().any(|c| !c.is_finite()) {
         return Err("non-finite position".into());
     }
-    let index = |i: usize| {
-        let o = 4 * (floats + i);
-        u32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]])
-    };
+    let index = |i: usize| u32::from_le_bytes(word(indices, i));
     let triangles: Vec<[u32; 3]> = (0..ni / 3)
         .map(|t| [index(3 * t), index(3 * t + 1), index(3 * t + 2)])
         .collect();
@@ -433,17 +688,13 @@ fn add_face(
     body: &mut DisplayBody,
     number: f64,
     rec: &FaceRecord,
-    buffers: &[Vec<u8>],
+    buffers: Buffers<'_>,
 ) -> Result<(), String> {
     let v0 = body.positions_cm.len();
     let t0 = body.triangles.len();
     let mut result = Ok(());
     if let Some(m) = &rec.mesh {
-        let mesh = buffers
-            .get(m.buffer as usize)
-            .ok_or_else(|| format!("no mesh buffer {}", m.buffer))
-            .and_then(|buf| read_face_mesh(buf, m));
-        match mesh {
+        match read_face_mesh(buffers, m) {
             Ok((positions, _)) if v0 + positions.len() > u32::MAX as usize => {
                 result = Err("more than 2^32 vertices in a body".into());
             }
@@ -754,6 +1005,70 @@ mod tests {
             self.d.push(0);
         }
 
+        /// A layout-0 face: its mesh is an inline `OgsSimpleMesh` whose
+        /// data lie in `stream_mesh_000`. The first face with a vertex
+        /// format id writes the format's definition.
+        fn stream_face(
+            &mut self,
+            key: [u8; 12],
+            number: f64,
+            define_format: bool,
+            (vertices, indices): (Span, Span),
+            bbox: [f64; 6],
+        ) {
+            self.prefix(key, number);
+            self.string("Face");
+            self.d.extend([0u8; 25]);
+            self.d.extend(1.0f32.to_le_bytes());
+            self.d.extend([0u8; 17]);
+            self.d.extend([FACE_HAS_MESH, 0, 0]);
+            self.d.extend(FACE_LAYOUT_STREAM.to_le_bytes());
+            self.d.push(1);
+            self.string("OgsSimpleMesh");
+            for v in [-1.0f32, -1.0, -1.0, 2.0, 2.0, 2.0] {
+                self.d.extend(v.to_le_bytes());
+            }
+            self.d.extend(TRIANGLE_LIST.to_le_bytes());
+            self.d.extend([1, 0]);
+            self.d.push(1);
+            self.string("VertexFormat");
+            self.string("00000367CCB9E090");
+            if define_format {
+                // Position, normal, two further vectors and uv: 14 floats.
+                let attrs = [
+                    (2u32, 0u32, 0u32),
+                    (2, 1, 3),
+                    (2, 3, 8),
+                    (2, 4, 11),
+                    (1, 2, 6),
+                ];
+                self.d.extend((attrs.len() as u32).to_le_bytes());
+                for (kind, semantic, offset) in attrs {
+                    for v in [kind, semantic, offset, 0, 0, 0] {
+                        self.d.extend(v.to_le_bytes());
+                    }
+                }
+            }
+            self.d.extend(1u32.to_le_bytes());
+            self.span(vertices);
+            self.d.push(1);
+            self.string("AIndexBuffer");
+            self.string(&format!("{:016X}", 0x367_0000_0000u64 + number as u64));
+            self.d.push(0);
+            self.span(indices);
+            self.d.extend([0u8; 5]);
+            for v in bbox {
+                self.d.extend(v.to_le_bytes());
+            }
+            self.d.push(0);
+        }
+
+        fn span(&mut self, s: Span) {
+            for v in [s.buffer, s.offset, s.bytes] {
+                self.d.extend(v.to_le_bytes());
+            }
+        }
+
         fn body(&mut self, key: [u8; 12], node: &str) {
             self.string("TextureMappingAttribute");
             self.d.extend([0, 0, 0, 0, 0, 1]);
@@ -790,6 +1105,30 @@ mod tests {
         }
         let n = points.len() as u32;
         (offset, [3 * n, 3 * n, 2 * n, 3 * tris.len() as u32])
+    }
+
+    /// Appends one face mesh to a stream buffer (14 floats per vertex, then
+    /// the u32 indices); returns the vertex and index ranges.
+    fn stream_mesh(buf: &mut Vec<u8>, points: &[[f32; 3]], tris: &[[u32; 3]]) -> (Span, Span) {
+        let start = buf.len() as u32;
+        for p in points {
+            let rest = [0.0, 0.0, 1.0, 0.5, 0.5, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+            for c in p.iter().chain(&rest) {
+                buf.extend(c.to_le_bytes());
+            }
+        }
+        let mid = buf.len() as u32;
+        for t in tris {
+            for i in t {
+                buf.extend(i.to_le_bytes());
+            }
+        }
+        let span = |offset: u32, end: u32| Span {
+            buffer: 0,
+            offset,
+            bytes: end - offset,
+        };
+        (span(start, mid), span(mid, buf.len() as u32))
     }
 
     fn bbox_of(points: &[[f32; 3]]) -> [f64; 6] {
@@ -868,6 +1207,93 @@ mod tests {
         assert!((s.volume_mm3 - 1000.0).abs() < 1e-9, "{}", s.volume_mm3);
         assert!((s.area_mm2 - 600.0).abs() < 1e-9);
         assert_eq!(s.bbox_mm, [0.0, 0.0, 0.0, 10.0, 10.0, 10.0]);
+    }
+
+    /// The cube with layout-0 faces (meshes in `stream_mesh_000`).
+    fn stream_cube_scene() -> (Vec<u8>, Vec<u8>) {
+        let mut w = World::new();
+        let mut buf = Vec::new();
+        // Data of something else before the faces.
+        buf.extend([0u8; 40]);
+        w.faces_list(KEY, 6);
+        for (i, (pts, tris)) in cube_faces().iter().enumerate() {
+            let m = stream_mesh(&mut buf, pts, tris);
+            w.stream_face(KEY, i as f64 + 1.0, i == 0, m, bbox_of(pts));
+        }
+        w.body(KEY, "000002116E9F4EB8");
+        (w.d, buf)
+    }
+
+    #[test]
+    fn reads_layout_0_faces_from_the_stream_buffer() {
+        let (world, buf) = stream_cube_scene();
+        let scene = DisplayScene::parse_with_streams(&world, &[], std::slice::from_ref(&buf));
+        assert_eq!(scene.issues, Vec::<String>::new());
+        assert_eq!(scene.bodies.len(), 1);
+        let b = &scene.bodies[0];
+        assert_eq!(b.faces.len(), 6);
+        assert_eq!(b.declared_faces, Some(6));
+        assert_eq!(b.faces_without_mesh(), 0);
+        assert_eq!(b.faces[2].number, 3.0);
+        assert!(b.faces[2].edges.is_empty());
+        assert_eq!(b.faces[2].vertices, 8..12);
+        assert_eq!(b.faces[2].triangles, 4..6);
+        assert_eq!(b.positions_cm[8], [0.0, 0.0, 0.0]);
+        assert_eq!(b.positions_cm[10], [1.0, 0.0, 1.0]);
+        assert_eq!(b.off_bbox_vertices, 0);
+        let s = b.stats();
+        assert_eq!(s.triangles, 12);
+        assert!(s.closed);
+        assert!((s.volume_mm3 - 1000.0).abs() < 1e-9, "{}", s.volume_mm3);
+        assert_eq!(s.bbox_mm, [0.0, 0.0, 0.0, 10.0, 10.0, 10.0]);
+
+        // Without the stream buffer, or with a format reference whose
+        // definition is missing, the faces are issues.
+        let scene = DisplayScene::parse(&world, &[]);
+        assert_eq!(scene.bodies[0].faces_without_mesh(), 6);
+        assert!(
+            scene
+                .issues
+                .iter()
+                .all(|i| i.contains("no stream buffer 0"))
+        );
+        let mut w = World::new();
+        let (pts, tris) = &cube_faces()[0];
+        let m = stream_mesh(&mut Vec::new(), pts, tris);
+        w.stream_face(KEY, 1.0, false, m, bbox_of(pts));
+        w.body(KEY, "0000000000000001");
+        let scene = DisplayScene::parse_with_streams(&w.d, &[], std::slice::from_ref(&buf));
+        assert_eq!(scene.bodies[0].faces.len(), 0);
+        assert!(
+            scene.issues[0].contains("vertex format"),
+            "{:?}",
+            scene.issues
+        );
+
+        // Truncated or corrupted input never panics.
+        for n in (0..world.len()).step_by(7) {
+            let _ = DisplayScene::parse_with_streams(&world[..n], &[], std::slice::from_ref(&buf));
+        }
+        for n in (0..buf.len()).step_by(5) {
+            let s = DisplayScene::parse_with_streams(&world, &[], &[buf[..n].to_vec()]);
+            assert_eq!(s.bodies.len(), 1);
+        }
+        for i in 0..world.len() {
+            let mut w = world.clone();
+            w[i] ^= 0xff;
+            let _ = DisplayScene::parse_with_streams(&w, &[], std::slice::from_ref(&buf));
+        }
+
+        // Through the document entries.
+        let dir = "FusionAssetName[Active]/OGS.BlobFolder/OGS/DefaultScene/";
+        let zip = crate::zip::stored_zip(&[
+            (&format!("{dir}world"), &world),
+            (&format!("{dir}stream_mesh_000"), &buf),
+        ]);
+        let doc = F3dFile::from_bytes(zip).unwrap();
+        let scene = display_scene(&doc).unwrap().unwrap();
+        assert_eq!(scene.issues, Vec::<String>::new());
+        assert!(scene.bodies[0].stats().closed);
     }
 
     #[test]

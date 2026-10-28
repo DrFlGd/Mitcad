@@ -5,6 +5,8 @@
 
 #include <QEvent>
 #include <QObject>
+#include <QRegularExpression>
+#include <QVariant>
 #include <QWidget>
 
 namespace mitcad {
@@ -69,6 +71,14 @@ void setThemedStyleSheet(QWidget* widget, const QString& format, bool warning) {
     watcher = new ThemeWatcher(widget);
   }
   watcher->setFormat(format, warning);
+  // The state, not the colour, for presenters without style sheets.
+  static const QRegularExpression textColour(QStringLiteral("(^|[\\s;{])color\\s*:\\s*%1"));
+  const QVariant tone = textColour.match(format).hasMatch()
+                            ? QVariant(warning ? QStringLiteral("warning") : QStringLiteral("error"))
+                            : QVariant();
+  if (widget->property(kSemanticTextToneProperty) != tone) {
+    widget->setProperty(kSemanticTextToneProperty, tone);
+  }
 }
 
 } // namespace

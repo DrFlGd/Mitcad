@@ -81,7 +81,7 @@ struct Configured {
 
 impl<K: Kernel> Document<K> {
     /// Reads a library component through the resolver.
-    fn library_source(&self, request: &LibraryRequest) -> Result<LibrarySource, String> {
+    pub(super) fn library_source(&self, request: &LibraryRequest) -> Result<LibrarySource, String> {
         let resolver = self.link_resolver().ok_or_else(|| {
             "no component libraries are set up here (libraries are read by the application \
              and mitcad-cli)"
@@ -127,7 +127,7 @@ impl<K: Kernel> Document<K> {
         };
         let source = self.library_source(&request).map_err(invalid)?;
         let configured = Self::configured(&source, part.config.as_deref())?;
-        let designation = designation(&source, configured.row.as_ref());
+        let designation = designation(&source, &configured.state, configured.row.as_ref());
         let name = if designation.is_empty() {
             source.name.clone()
         } else {
@@ -174,6 +174,9 @@ impl<K: Kernel> Document<K> {
         part: &LibraryPart,
         options: &super::InsertOptions,
     ) -> Result<Inserted, ModelError> {
+        if let Some(parameters) = &options.parameters {
+            return self.insert_library_with_options(part, options, parameters);
+        }
         super::components::check_transform(&options.transform)?;
         let parent = self.state.assembly.active;
         self.state.editable(parent)?;
@@ -193,7 +196,7 @@ impl<K: Kernel> Document<K> {
             ..request
         };
         let configured = Self::configured(&source, part.config.as_deref())?;
-        let designation = designation(&source, configured.row.as_ref());
+        let designation = designation(&source, &configured.state, configured.row.as_ref());
         let reference = library_ref(&source, configured.row.as_ref(), &designation);
         let wanted = options.name.clone().unwrap_or_else(|| {
             if designation.is_empty() {
@@ -281,6 +284,8 @@ impl<K: Kernel> Document<K> {
                 joint,
                 frames,
                 plan,
+                moves: Vec::new(),
+                broken: None,
             };
             Ok((label, inserted))
         })
@@ -296,6 +301,13 @@ impl<K: Kernel> Document<K> {
     ) -> Result<Vec<String>, ModelError> {
         if changes.is_empty() {
             return Err(invalid("no library parts to change"));
+        }
+        // Parts with options follow their sources (mitcad#801).
+        if changes
+            .iter()
+            .any(|c| self.state.options_part(c.component).is_some())
+        {
+            return self.update_options_parts(changes);
         }
         let mut planned = Vec::new();
         for change in changes {
@@ -327,7 +339,7 @@ impl<K: Kernel> Document<K> {
             let config = change.config.clone().or_else(|| old.config.clone());
             let configured = Self::configured(&source, config.as_deref())
                 .map_err(|e| invalid(format!("{}: {e}", component.name)))?;
-            let designation = designation(&source, configured.row.as_ref());
+            let designation = designation(&source, &configured.state, configured.row.as_ref());
             let reference = library_ref(&source, configured.row.as_ref(), &designation);
             let (bodies, mounts) = self.library_bodies(&configured, &designation, &source.path)?;
             let digest = part_digest(&source, configured.row.as_ref());
@@ -422,6 +434,8 @@ impl<K: Kernel> Document<K> {
             .assembly
             .components
             .iter()
+            // Parts with options are read from their sources (mitcad#801).
+            .filter(|c| self.state.options_part(c.uid).is_none())
             .filter_map(|c| Some((c.uid, c.name.clone(), c.link.clone()?, c.library.clone()?)))
             .collect();
         let mut updates = Vec::new();
@@ -476,47 +490,6 @@ impl<K: Kernel> Document<K> {
         Ok(updates)
     }
 
-    /// The design's configuration table (empty when it has none).
-    pub fn configurations(&self) -> &Configurations {
-        &self.state.configurations
-    }
-
-    /// Sets the design's configuration table (empty: none), checked
-    /// against its parameters; an undo step that recomputes nothing.
-    pub fn set_configurations(&mut self, table: Configurations) -> Result<(), ModelError> {
-        if let Some(problem) = table.problems(&self.state.parameters).first() {
-            return Err(invalid(problem.clone()));
-        }
-        if table == self.state.configurations {
-            return Ok(());
-        }
-        self.apply_with(|state| {
-            state.configurations = table;
-            Ok(("Edit Configurations".to_owned(), (), false))
-        })
-    }
-
-    /// Sets the parameters to a row of the table; returns the parameters
-    /// whose values changed.
-    pub fn apply_configuration(&mut self, name: &str) -> Result<Vec<String>, ModelError> {
-        let row = self
-            .state
-            .configurations
-            .row(name)
-            .cloned()
-            .ok_or_else(|| {
-                invalid(format!(
-                    "the design has no configuration {name} (its rows: {})",
-                    row_names(&self.state.configurations)
-                ))
-            })?;
-        self.apply_with(|state| {
-            let changed = apply_values(&mut state.parameters, &row).map_err(invalid)?;
-            let recompute = !changed.is_empty();
-            Ok((format!("Apply {name}"), changed, recompute))
-        })
-    }
-
     /// The parts of the design (its components other than the root) with
     /// how many times each is placed, a library part under its
     /// designation; in the order the components were made.
@@ -552,8 +525,11 @@ impl<K: Kernel> Document<K> {
         a.components
             .iter()
             .map(|c| {
-                // A BUILD part (mitcad#375): its source's record.
-                let build = self.build_list_entry(c.uid);
+                // A BUILD part (mitcad#375): its source's record; a part
+                // with options (mitcad#801): its combination's.
+                let build = self
+                    .build_list_entry(c.uid)
+                    .or_else(|| self.options_list_entry(c.uid));
                 let library = build
                     .as_ref()
                     .map(|b| b.library.clone())
@@ -590,7 +566,7 @@ impl<K: Kernel> Document<K> {
 }
 
 /// The names of a table's rows, for messages.
-fn row_names(table: &Configurations) -> String {
+pub(super) fn row_names(table: &Configurations) -> String {
     if table.rows.is_empty() {
         return "none".to_owned();
     }

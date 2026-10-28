@@ -8,10 +8,10 @@
 # change. My library is the test's own folder (MITCAD_PRINT_LIBRARY_DIR),
 # which mitcad-cli gives a printer, Bench X.
 #   1. My Library (a shortcut of the test's): Duplicate of the built-in
-#      PLA Plastic makes PLA Plastic 2 in My library (its file), renamed
+#      PLA Plastic makes PLA Plastic (copy) in My library (its file), renamed
 #      Bench PLA, its density 1.3, each written to the file; Delete asks
 #      and removes the file.
-#   2. The Printers tab: Duplicate of Bench X makes Bench X 2 in My
+#   2. The Printers tab: Duplicate of Bench X makes Bench X (copy) in My
 #      library, renamed Bench Y; Delete removes it, Bench X stays.
 #   3. The design did not change: no modified mark in the title, its file
 #      as it was.
@@ -25,7 +25,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'tools.my_library' = 'F8' }
+Ui-Init $App $Out $QtBin @{ 'tools.my_library' = 'F8' } -StepPause 0
 if (-not $Cli) {
   $Cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
     ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
@@ -132,11 +132,11 @@ $id = $Matches[1]
 if ($Matches[2] -ne 'user') { Ui-Fail "the copy went to '$($Matches[2])', not My library" }
 Write-Host 'ok   in My library, not in the design'
 $material = Join-Path $library "materials\$id.json"
-Ui-ExpectItem $material 'material.name' 'PLA Plastic 2' 'its file, named after PLA'
+Ui-ExpectItem $material 'material.name' 'PLA Plastic (copy)' 'its file, named after PLA'
 Ui-Sync
 Ui-Mark
 Ui-Step 'type the name'                  { Ui-Type 'Bench PLA'; Ui-Key 'Return' }
-Ui-ExpectNew 'Material PLA Plastic 2 (user) name = Bench PLA' 'Enter renamed it'
+Ui-ExpectNew 'Material PLA Plastic (copy) (user) name = Bench PLA' 'Enter renamed it'
 Ui-ExpectItem $material 'material.name' 'Bench PLA' 'the file has the new name'
 Ui-ExpectNew 'My Library materials density at ' 'Density has its place'
 Ui-Step 'Density'                        { Click-InLibrary 'My Library materials density'; Start-Sleep -Milliseconds 200; Ui-Key 'ctrl+a'; Ui-Type '1.3'; Ui-Key 'Return' }
@@ -169,12 +169,12 @@ if ($line -notmatch ' as (\S+) in (\S+)$') { Ui-Fail "no id in: $line" }
 $printerId = $Matches[1]
 if ($Matches[2] -ne 'user') { Ui-Fail "the copy went to '$($Matches[2])', not My library" }
 $printer = Join-Path $library "print\printers\$printerId.json"
-Ui-ExpectItem $printer 'profile.name' 'Bench X 2' 'its file, named after Bench X'
+Ui-ExpectItem $printer 'profile.name' 'Bench X (copy)' 'its file, named after Bench X'
 Ui-ExpectItem $printer 'profile.values.max_print_height' '250' "with Bench X's values"
 Ui-Sync
 Ui-Mark
 Ui-Step 'type the name'                  { Ui-Type 'Bench Y'; Ui-Key 'Return' }
-Ui-ExpectNew 'Profile Bench X 2 (user) name = Bench Y' 'Enter renamed it'
+Ui-ExpectNew 'Profile Bench X (copy) (user) name = Bench Y' 'Enter renamed it'
 Ui-ExpectItem $printer 'profile.name' 'Bench Y' 'the file has the new name'
 Ui-Mark
 Ui-Step 'Delete'                         { Click-InLibrary 'My Library printers delete' }

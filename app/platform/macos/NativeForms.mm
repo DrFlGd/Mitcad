@@ -3,16 +3,21 @@
 
 #include "../NativeForms.hpp"
 #include "../NativeDialogs.hpp"
+#include "NativeControls.hpp"
 
 #include <algorithm>
 #include <iterator>
+#include <memory>
 #include <vector>
 
+#include <QAction>
 #include <QBuffer>
 #include <QHash>
 #include <QJsonObject>
+#include <QPointer>
 #include <QTextDocument>
 #include <QTimer>
+#include <QWidget>
 #include <QtLogging>
 
 #include "../../framework/CommandSession.hpp"
@@ -34,6 +39,10 @@ class AppKitCommandForm;
 namespace mitcad {
 namespace {
 
+// The caption column's widest caption; a longer one wraps rather than
+// squeezing the controls beside it (mitcad#815).
+constexpr CGFloat kCaptionWidth = 110;
+
 NSString* nativeString(const QString& value) {
   const QByteArray utf8 = value.toUtf8();
   return [[NSString alloc] initWithBytes:utf8.constData()
@@ -45,17 +54,54 @@ QString qtString(NSString* value) {
   return value == nil ? QString() : QString::fromUtf8(value.UTF8String);
 }
 
-NSImage* choiceImage(const QString& name, const QString& description) {
-  const QIcon icon = themeIcon(name);
+// Shared CAD artwork at `points` logical points, drawn at twice that for
+// Retina screens.
+NSImage* iconImage(const QIcon& icon, int points, const QString& description) {
   if (icon.isNull()) { return nil; }
   QByteArray data;
   QBuffer buffer(&data);
   buffer.open(QIODevice::WriteOnly);
-  icon.pixmap(40, 40).save(&buffer, "PNG");
+  icon.pixmap(points * 2, points * 2).save(&buffer, "PNG");
   NSImage* image = [[NSImage alloc] initWithData:[NSData dataWithBytes:data.constData()
                                                               length:static_cast<NSUInteger>(data.size())]];
-  image.size = NSMakeSize(20, 20);
+  image.size = NSMakeSize(points, points);
   image.accessibilityDescription = nativeString(description);
+  return image;
+}
+
+NSImage* choiceImage(const QString& name, const QString& description) {
+  return iconImage(themeIcon(name), 20, description);
+}
+
+// A system symbol at the form's small control size.
+NSImage* symbolImage(NSString* name, const QString& description) {
+  NSImage* image = [NSImage imageWithSystemSymbolName:name accessibilityDescription:nativeString(description)];
+  NSImageSymbolConfiguration* configuration =
+      [NSImageSymbolConfiguration configurationWithPointSize:12 weight:NSFontWeightRegular];
+  return image != nil ? [image imageWithSymbolConfiguration:configuration] : nil;
+}
+
+// A selection input's colour on its button, as the shared panel's swatch.
+NSImage* swatchImage(const QColor& color) {
+  NSColor* fill = [NSColor colorWithSRGBRed:color.redF() green:color.greenF() blue:color.blueF() alpha:color.alphaF()];
+  return [NSImage imageWithSize:NSMakeSize(12, 12) flipped:NO drawingHandler:^BOOL(NSRect rect) {
+    [fill setFill];
+    [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(rect, 0.5, 0.5) xRadius:3 yRadius:3] fill];
+    return YES;
+  }];
+}
+
+// A choice tile's picture (InputDef::choiceTile) within 48 points.
+NSImage* tileImage(const QImage& picture) {
+  if (picture.isNull()) { return nil; }
+  QByteArray data;
+  QBuffer buffer(&data);
+  buffer.open(QIODevice::WriteOnly);
+  picture.save(&buffer, "PNG");
+  NSImage* image = [[NSImage alloc] initWithData:[NSData dataWithBytes:data.constData()
+                                                              length:static_cast<NSUInteger>(data.size())]];
+  const QSize fitted = picture.size().scaled(48, 48, Qt::KeepAspectRatio);
+  image.size = NSMakeSize(fitted.width(), fitted.height());
   return image;
 }
 
@@ -78,6 +124,15 @@ NSStackView* line() {
   return stack;
 }
 
+// What takes a line's free width: the controls before it keep their size.
+NSView* spring() {
+  NSView* view = [[NSView alloc] initWithFrame:NSZeroRect];
+  view.translatesAutoresizingMaskIntoConstraints = NO;
+  [view setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [view setContentCompressionResistancePriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+  return view;
+}
+
 void addFullWidth(NSStackView* parent, NSView* child) {
   child.translatesAutoresizingMaskIntoConstraints = NO;
   [parent addArrangedSubview:child];
@@ -98,6 +153,68 @@ NSTextField* label(const QString& text, bool secondary = false) {
   return field;
 }
 
+// The caption beside an input, in the caption column (mitcad#815).
+NSTextField* captionLabel(const QString& text, const QString& tooltip) {
+  NSTextField* field = label(text);
+  field.selectable = NO;
+  field.toolTip = nativeString(tooltip);
+  field.preferredMaxLayoutWidth = kCaptionWidth;
+  field.translatesAutoresizingMaskIntoConstraints = NO;
+  [field.widthAnchor constraintLessThanOrEqualToConstant:kCaptionWidth].active = YES;
+  [field setContentHuggingPriority:NSLayoutPriorityDefaultHigh forOrientation:NSLayoutConstraintOrientationHorizontal];
+  [field setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh
+                                 forOrientation:NSLayoutConstraintOrientationHorizontal];
+  return field;
+}
+
+void setHidden(NSView* view, bool hidden) {
+  if (view != nil && static_cast<bool>(view.hidden) != hidden) { view.hidden = hidden; }
+}
+
+void setHidden(NSGridRow* row, bool hidden) {
+  if (row != nil && static_cast<bool>(row.hidden) != hidden) { row.hidden = hidden; }
+}
+
+// The inputs: captions in the first column beside their controls in the
+// second, which takes the rest of the width, as the shared panel's
+// QFormLayout (mitcad#815). A hidden row takes no space, and no row's
+// constraints depend on another row's views.
+NSGridView* formGrid() {
+  NSGridView* grid = [NSGridView gridViewWithNumberOfColumns:2 rows:0];
+  grid.translatesAutoresizingMaskIntoConstraints = NO;
+  grid.rowSpacing = 0;
+  grid.columnSpacing = 8;
+  grid.yPlacement = NSGridCellPlacementCenter;
+  [grid columnAtIndex:0].xPlacement = NSGridCellPlacementLeading;
+  [grid columnAtIndex:1].xPlacement = NSGridCellPlacementFill;
+  return grid;
+}
+
+// A caption (none: an empty cell) and its controls.
+NSGridRow* gridRow(NSGridView* grid, NSView* caption, NSView* field, CGFloat top, CGFloat bottom) {
+  field.translatesAutoresizingMaskIntoConstraints = NO;
+  NSView* first = NSGridCell.emptyContentView;
+  if (caption != nil) {
+    caption.translatesAutoresizingMaskIntoConstraints = NO;
+    first = caption;
+  }
+  NSGridRow* row = [grid addRowWithViews:@[first, field]];
+  row.topPadding = top;
+  row.bottomPadding = bottom;
+  return row;
+}
+
+// A row across both columns, as the shared form's spanning rows.
+NSGridRow* spanningRow(NSGridView* grid, NSView* view, CGFloat top, CGFloat bottom) {
+  view.translatesAutoresizingMaskIntoConstraints = NO;
+  NSGridRow* row = [grid addRowWithViews:@[view, NSGridCell.emptyContentView]];
+  [row mergeCellsInRange:NSMakeRange(0, 2)];
+  [row cellAtIndex:0].xPlacement = NSGridCellPlacementFill;
+  row.topPadding = top;
+  row.bottomPadding = bottom;
+  return row;
+}
+
 QString displaySelection(const InputDef& input, int count) {
   if (count == 0) {
     return input.min > 0 ? QObject::tr("Select") : QObject::tr("None (all)");
@@ -112,12 +229,16 @@ QColor selectionColor(int index) {
   return kSelectionColors[static_cast<std::size_t>(index) % std::size(kSelectionColors)];
 }
 
+bool sameNote(const InputNote& a, const InputNote& b) {
+  return a.text == b.text && a.actions == b.actions && a.icons == b.icons && a.oneLine == b.oneLine;
+}
+
 } // namespace
 
 class AppKitCommandForm final : public NativeCommandForm {
 public:
-  explicit AppKitCommandForm(CommandSession& session)
-      : m_def(session.def()), m_state(session.state()) {
+  AppKitCommandForm(CommandSession& session, QWidget* parameterOwner)
+      : m_def(session.def()), m_state(session.state()), m_expressionHost(nativeExpressionHost(parameterOwner)) {
     m_logTimer.setSingleShot(true);
     m_logTimer.setInterval(0);
     QObject::connect(&m_logTimer, &QTimer::timeout, &session, [this] { logLayout(); });
@@ -125,14 +246,29 @@ public:
     m_target = [MitcadCommandFormTarget new];
     m_target->form = this;
     m_root = column();
-    m_root.edgeInsets = NSEdgeInsetsMake(16, 16, 16, 16);
-    m_root.spacing = 12;
+    m_root.edgeInsets = NSEdgeInsetsMake(12, 14, 8, 14);
+    m_root.spacing = 10;
     m_root.accessibilityIdentifier = @"commandPanel";
+    // The title row, as the shared panel's: the command's CAD artwork, its
+    // name, then its commands (addHeaderAction).
+    m_header = line();
+    m_header.spacing = 8;
+    m_header.distribution = NSStackViewDistributionFill;
+    if (NSImage* artwork = iconImage(themeIcon(m_def.icon), 24, m_def.name)) {
+      NSImageView* icon = [NSImageView imageViewWithImage:artwork];
+      icon.translatesAutoresizingMaskIntoConstraints = NO;
+      icon.accessibilityIdentifier = @"commandIcon";
+      [icon.widthAnchor constraintEqualToConstant:24].active = YES;
+      [icon.heightAnchor constraintEqualToConstant:24].active = YES;
+      [m_header addArrangedSubview:icon];
+    }
     NSTextField* title = label(m_def.name + (session.isEditing() ? QObject::tr(" (edit)") : QString()));
     title.font = [NSFont systemFontOfSize:[NSFont systemFontSize] weight:NSFontWeightSemibold];
-    addFullWidth(m_root, title);
+    title.accessibilityIdentifier = @"commandTitle";
+    [title setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+    [m_header addArrangedSubview:title];
+    addFullWidth(m_root, m_header);
     m_fields = column();
-    m_fields.spacing = 12;
     addFullWidth(m_root, m_fields);
     m_result = label(QString());
     m_result.accessibilityIdentifier = @"commandResult";
@@ -142,17 +278,20 @@ public:
     m_message.accessibilityIdentifier = @"commandMessage";
     m_message.hidden = YES;
     addFullWidth(m_root, m_message);
-    NSStackView* buttons = line();
-    NSView* spring = [NSView new];
-    [spring setContentHuggingPriority:NSLayoutPriorityDefaultLow
-                      forOrientation:NSLayoutConstraintOrientationHorizontal];
-    [buttons addArrangedSubview:spring];
+    // OK and Cancel apart from the inputs (nativeFooterView): the window
+    // keeps them in view under the inputs, which scroll above them.
+    m_footer = line();
+    m_footer.distribution = NSStackViewDistributionFill;
+    m_footer.edgeInsets = NSEdgeInsetsMake(6, 14, 12, 14);
+    m_footer.accessibilityIdentifier = @"commandButtons";
+    [m_footer addArrangedSubview:spring()];
     // A command that repeats (BUILD's Place, mitcad#375) keeps what it
     // applied: its Cancel only closes it.
     NSButton* cancel = button(m_def.repeats ? QObject::tr("Close") : QObject::tr("Cancel"), QStringLiteral("cancel"));
     cancel.accessibilityIdentifier = @"commandCancel";
     cancel.keyEquivalent = @"\033";
-    [buttons addArrangedSubview:cancel];
+    cancel.toolTip = nativeString(m_def.repeats ? QObject::tr("Close; what was placed stays (Esc)")
+                                                : QObject::tr("Close without changes (Esc)"));
     m_ok = button(m_def.apply               ? (m_def.okLabel.isEmpty() ? QObject::tr("OK") : m_def.okLabel)
                   : m_def.inspect           ? QObject::tr("Close")
                   : m_def.okLabel.isEmpty() ? QObject::tr("OK")
@@ -160,8 +299,12 @@ public:
                   QStringLiteral("accept"));
     m_ok.accessibilityIdentifier = @"commandOk";
     m_ok.keyEquivalent = @"\r";
-    [buttons addArrangedSubview:m_ok];
-    addFullWidth(m_root, buttons);
+    for (NSButton* control in @[cancel, m_ok]) {
+      [control setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                          forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [control.widthAnchor constraintGreaterThanOrEqualToConstant:64].active = YES;
+      [m_footer addArrangedSubview:control];
+    }
     int colorIndex = 0;
     for (const InputDef& input : m_def.inputs) {
       if (input.type == InputDef::Type::Selection) {
@@ -185,6 +328,25 @@ public:
   }
 
   void* nativeView() const override { return (__bridge void*)m_root; }
+  void* nativeFooterView() const override { return (__bridge void*)m_footer; }
+
+  void addHeaderAction(QAction* action) override {
+    if (action == nullptr) {
+      return;
+    }
+    // "command_solid.parameters": "parameters", as the shared header's.
+    const QString id = action->objectName().section(QLatin1Char('.'), -1);
+    const QString name = QString(action->text()).remove(QLatin1Char('&'));
+    const QString kind = QStringLiteral("header|%1").arg(m_headerActions.size());
+    NSImage* image = iconImage(action->icon(), 18, name);
+    NSButton* control = image != nil ? iconButton(image, name, kind) : button(name, kind);
+    control.accessibilityIdentifier = nativeString(QStringLiteral("commandHeader_") + id);
+    control.accessibilityLabel = nativeString(name);
+    control.toolTip = nativeString(action->toolTip().isEmpty() ? name : action->toolTip());
+    control.enabled = action->isEnabled();
+    [m_header addArrangedSubview:control];
+    m_headerActions.push_back({QPointer<QAction>(action), control});
+  }
 
   void refresh(const CommandState& state) override {
     m_state = state;
@@ -205,7 +367,13 @@ public:
         const InputDef& owner = m_def.inputs[m_def.inputIndex(row.list)];
         visible = visible && (!owner.visible || owner.visible(state));
       }
-      row.box.hidden = !visible;
+      // A label that follows other inputs (a pattern's Spacing or Extent).
+      if (row.caption != nil && input.labelFor) {
+        const QString text = input.labelFor(scope);
+        if (qtString(row.caption.stringValue) != text) {
+          row.caption.stringValue = nativeString(text);
+        }
+      }
       switch (input.type) {
       case InputDef::Type::Value:
       case InputDef::Type::Text:
@@ -248,27 +416,18 @@ public:
         break;
       case InputDef::Type::Note: {
         const InputNote note = input.noteFor ? input.noteFor(scope) : InputNote();
-        row.box.hidden = !visible || note.isEmpty();
-        row.noteText.stringValue = nativeString(note.text);
-        row.noteText.hidden = note.text.isEmpty();
-        if (note.actions != row.noteActions) {
-          for (NSView* child in [row.noteLine.arrangedSubviews copy]) {
-            if (child != row.noteText) {
-              [row.noteLine removeArrangedSubview:child];
-              [child removeFromSuperview];
-            }
-          }
-          for (int i = 0; i < note.actions.size(); ++i) {
-            [row.noteLine addArrangedSubview:button(note.actions.at(i), QStringLiteral("note|%1|%2").arg(row.key).arg(i))];
-          }
-          row.noteActions = note.actions;
-        }
+        visible = visible && !note.isEmpty();
+        refreshNote(row, note);
         break;
       }
       case InputDef::Type::List:
         break;
       }
+      setRowShown(row, visible);
       updateNote(row);
+    }
+    for (const HeaderAction& header : m_headerActions) {
+      header.button.enabled = !header.action.isNull() && header.action->isEnabled();
     }
     refreshControlAvailability();
     requestLayout();
@@ -319,6 +478,13 @@ public:
     if (Row* row = findRow(key)) {
       updateNote(*row);
       requestLayout();
+    }
+  }
+
+  // An empty value the model works out (InputDef::autoText, mitcad#656).
+  void setPlaceholder(const QString& key, const QString& text) override {
+    if (Row* row = findRow(key); row != nullptr && row->edit != nil) {
+      row->edit.placeholderString = nativeString(text);
     }
   }
 
@@ -420,6 +586,7 @@ public:
                           : row.select != nil ? static_cast<NSView*>(row.select)
                           : row.popup != nil ? static_cast<NSView*>(row.popup)
                           : row.check != nil ? static_cast<NSView*>(row.check)
+                          : row.tile != nil ? static_cast<NSView*>(row.tile)
                                              : static_cast<NSView*>(row.box);
       const NSPoint at = [control convertPoint:NSMakePoint(NSMidX(control.bounds), NSMidY(control.bounds))
                                         toView:nil];
@@ -450,6 +617,17 @@ public:
     }
     const QString key = parts.value(1);
     const QString& kind = parts[0];
+    if (kind == QStringLiteral("header")) {
+      // A command of the title row (Change Parameters, mitcad#564).
+      const int index = key.toInt();
+      if (index >= 0 && index < static_cast<int>(m_headerActions.size())) {
+        const QPointer<QAction> header = m_headerActions[static_cast<std::size_t>(index)].action;
+        if (!header.isNull() && header->isEnabled()) {
+          header->trigger();
+        }
+      }
+      return;
+    }
     if (!key.isEmpty() && !inputEnabled(key)) { return; }
     const bool structural = kind == QStringLiteral("add") || kind == QStringLiteral("removeRow") ||
         kind == QStringLiteral("move") || kind == QStringLiteral("removeItem") ||
@@ -486,6 +664,10 @@ public:
       const bool checked = static_cast<NSButton*>(sender).state == NSControlStateValueOn;
       auto call = actions().checkChanged;
       if (call) { call(key, checked); }
+    } else if (kind == QStringLiteral("button")) {
+      // The button beside a choice (InputDef::onButton: 3D Print's Edit).
+      auto call = actions().buttonClicked;
+      if (call) { call(key); }
     } else if (kind == QStringLiteral("add")) {
       auto call = actions().rowAdded;
       if (call) { call(key); }
@@ -501,6 +683,10 @@ public:
     } else if (kind == QStringLiteral("note")) {
       auto call = actions().noteAction;
       if (call) { call(key, parts.value(2).toInt()); }
+    } else if (kind == QStringLiteral("tile")) {
+      // The choice tile's button (InputDef::onButton): BUILD's part picker.
+      auto call = actions().buttonClicked;
+      if (call) { call(key); }
     }
   }
 
@@ -542,6 +728,17 @@ public:
     return false;
   }
 
+  // AppKit's completion in a value field (F5 or Option-Esc): the
+  // parameters the field can take; nil for a field without expressions.
+  NSArray<NSString*>* completions(NSTextField* field, NSTextView* text, NSRange range) {
+    for (const Row& row : m_rows) {
+      if (row.edit == field && row.expression) {
+        return row.expression->completions(qtString(text.string), static_cast<int>(NSMaxRange(range)));
+      }
+    }
+    return nil;
+  }
+
 private:
   void requestLayout() {
     [m_root layoutSubtreeIfNeeded];
@@ -556,10 +753,18 @@ private:
     QString key;
     QString list;
     int index = -1;
-    NSStackView* __strong box = nil;
+    // The input's controls in the second column (row_<key>), or across
+    // both; the grid rows of its heading, controls and note.
+    NSView* __strong box = nil;
+    NSTextField* __strong caption = nil;
+    NSTextField* __strong heading = nil;
+    NSGridRow* __strong headingRow = nil;
+    NSGridRow* __strong mainRow = nil;
+    NSGridRow* __strong noteRow = nil;
     NSTextField* __strong note = nil;
     NSTextField* __strong edit = nil;
     NSPopUpButton* __strong popup = nil;
+    NSButton* __strong button = nil; // beside a choice (InputDef::onButton)
     NSMutableArray<NSButton*>* __strong choiceButtons = nil;
     NSButton* __strong check = nil;
     NSButton* __strong select = nil;
@@ -567,11 +772,24 @@ private:
     NSStackView* __strong order = nil;
     QStringList orderDescriptions;
     std::shared_ptr<CutTargetsPanel> targets;
-    // A note row (InputDef::Type::Note, mitcad#655): its text and buttons.
-    NSTextField* __strong noteText = nil;
-    NSStackView* __strong noteLine = nil;
-    QStringList noteActions;
+    // A note row (InputDef::Type::Note, mitcad#655): what it shows, made
+    // again when its text or buttons change.
+    NSStackView* __strong noteContent = nil;
+    InputNote shownNote;
+    bool noteBuilt = false;
     std::shared_ptr<NativeWidgetView> targetsView;
+    // A value field's fx tools (mitcad#815).
+    std::shared_ptr<NativeExpressionField> expression;
+    // A choice shown as a tile (InputDef::choiceTile with onButton,
+    // mitcad#819): the chosen option's picture, name and detail.
+    NSButton* __strong tile = nil;
+    QString tileText;
+    qint64 tilePicture = 0;
+  };
+
+  struct HeaderAction {
+    QPointer<QAction> action;
+    NSButton* __strong button = nil;
   };
 
   NSButton* button(const QString& text, const QString& action) {
@@ -584,17 +802,56 @@ private:
     return control;
   }
 
+  // A compact borderless control with an image only (the shared panel's
+  // small tool buttons: clear, remove, edit), its text the tooltip.
+  NSButton* iconButton(NSImage* image, const QString& tooltip, const QString& action) {
+    NSButton* control = button(QString(), action);
+    control.bordered = NO;
+    control.image = image;
+    control.imagePosition = NSImageOnly;
+    control.imageScaling = NSImageScaleProportionallyDown;
+    control.toolTip = nativeString(tooltip);
+    control.accessibilityLabel = nativeString(tooltip);
+    control.translatesAutoresizingMaskIntoConstraints = NO;
+    [control.widthAnchor constraintEqualToConstant:22].active = YES;
+    [control.heightAnchor constraintEqualToConstant:22].active = YES;
+    return control;
+  }
+
+  // A link in a note (linkActionIcon(), mitcad#655): underlined in the link
+  // colour, elided rather than wider than the card.
+  NSButton* linkButton(const QString& text, const QString& action) {
+    NSButton* control = button(text, action);
+    control.bordered = NO;
+    control.attributedTitle = [[NSAttributedString alloc]
+        initWithString:nativeString(text)
+            attributes:@{NSForegroundColorAttributeName : NSColor.linkColor,
+                         NSUnderlineStyleAttributeName : @(NSUnderlineStyleSingle),
+                         NSFontAttributeName : [NSFont systemFontOfSize:[NSFont systemFontSize]]}];
+    control.lineBreakMode = NSLineBreakByTruncatingTail;
+    control.toolTip = nativeString(text);
+    control.accessibilityLabel = nativeString(text);
+    [control setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                      forOrientation:NSLayoutConstraintOrientationHorizontal];
+    return control;
+  }
+
   void refreshControlAvailability() {
     for (const Row& row : m_rows) {
       // A list owner's view contains all its row fields and actions.
       // Visiting children separately could undo their owner's lock.
       if (row.list.isEmpty() && !row.targets) {
-        setControlAvailability(row.box, inputEnabled(row.key));
+        // Rows a state disables (mitcad#655: 3D Print's Printer with STL).
+        const bool enabled = !row.input->enabled || row.input->enabled(m_state);
+        setControlAvailability(row.box, inputEnabled(row.key) && enabled);
       }
     }
   }
 
   void setControlAvailability(NSView* view, bool groupEnabled) {
+    if (view == nil) {
+      return;
+    }
     if ([view isKindOfClass:[NSControl class]]) {
       NSControl* control = static_cast<NSControl*>(view);
       const QStringList parts = qtString(control.identifier).split(QLatin1Char('|'));
@@ -614,6 +871,11 @@ private:
           const int to = parts.value(3).toInt();
           enabled = enabled && to >= 0 && to < count;
         }
+      } else if (kind == QStringLiteral("button") || kind == QStringLiteral("tile")) {
+        // Edit on Slicer default has nothing to edit (mitcad#655).
+        const Row* owner = findRow(key);
+        enabled = enabled && owner != nullptr &&
+                  (!owner->input->buttonEnabled || owner->input->buttonEnabled(m_state));
       }
       control.enabled = enabled;
     }
@@ -635,79 +897,115 @@ private:
     if (!focused.isEmpty()) {
       [m_root.window makeFirstResponder:nil];
     }
-    for (NSView* child in [m_fields.arrangedSubviews copy]) {
-      [m_fields removeArrangedSubview:child];
-      [child removeFromSuperview];
-    }
     m_rows.clear();
     m_counts.clear();
+    if (m_grid != nil) {
+      [m_fields removeArrangedSubview:m_grid];
+      [m_grid removeFromSuperview];
+    }
+    m_grid = formGrid();
+    m_grid.accessibilityIdentifier = @"commandInputs";
     for (const InputDef& input : m_def.inputs) {
-      if (input.type != InputDef::Type::List) {
-        createField(input, input.id, QString(), -1, m_fields);
-        continue;
-      }
-      Row owner;
-      owner.input = &input;
-      owner.key = input.id;
-      owner.box = column();
-      owner.box.spacing = 10;
-      NSTextField* heading = label(input.label);
-      heading.font = [NSFont systemFontOfSize:[NSFont systemFontSize] weight:NSFontWeightMedium];
-      addFullWidth(owner.box, heading);
-      addFullWidth(m_fields, owner.box);
-      m_rows.push_back(owner);
-      const int count = m_state.rows(input.id);
-      m_counts.insert(input.id, count);
-      for (int index = 0; index < count; ++index) {
-        NSStackView* group = column();
-        group.edgeInsets = NSEdgeInsetsMake(0, 8, 4, 0);
-        NSStackView* header = line();
-        NSTextField* name = label(input.rowLabel.arg(index + 1), true);
-        [header addArrangedSubview:name];
-        NSButton* remove = button(QObject::tr("Remove"), QStringLiteral("removeRow|%1|%2").arg(input.id).arg(index));
-        remove.enabled = count > input.minRows;
-        remove.toolTip = nativeString(QObject::tr("Remove %1").arg(input.rowLabel.arg(index + 1)));
-        [header addArrangedSubview:remove];
-        addFullWidth(group, header);
-        for (const InputDef& child : input.children) {
-          createField(child, CommandState::rowKey(input.id, index, child.id), input.id, index, group);
-        }
-        addFullWidth(owner.box, group);
-      }
-      if (!input.addLabel.isEmpty()) {
-        NSButton* add = button(input.addLabel, QStringLiteral("add|") + input.id);
-        add.accessibilityIdentifier = nativeString(QStringLiteral("add_") + input.id);
-        [owner.box addArrangedSubview:add];
+      if (input.type == InputDef::Type::List) {
+        createList(input);
+      } else {
+        createField(input, input.id, QString(), -1, m_grid);
       }
     }
+    addFullWidth(m_fields, m_grid);
     if (!focused.isEmpty()) {
       focusValue(focused);
     }
   }
 
-  void createField(const InputDef& input, const QString& key, const QString& list, int index,
-                   NSStackView* parent) {
+  // A list's rows (fillet sets, hole positions) take the whole width under
+  // its name; each row's inputs are a form of their own.
+  void createList(const InputDef& input) {
+    Row owner;
+    owner.input = &input;
+    owner.key = input.id;
+    owner.heading = label(input.label);
+    owner.heading.font = [NSFont systemFontOfSize:[NSFont systemFontSize] weight:NSFontWeightSemibold];
+    owner.heading.toolTip = nativeString(input.tooltip);
+    owner.headingRow = spanningRow(m_grid, owner.heading, 8, 2);
+    NSStackView* groups = column();
+    groups.spacing = 6;
+    groups.accessibilityIdentifier = nativeString(QStringLiteral("row_") + input.id);
+    owner.box = groups;
+    owner.mainRow = spanningRow(m_grid, groups, 0, 3);
+    m_rows.push_back(owner);
+    const int count = m_state.rows(input.id);
+    m_counts.insert(input.id, count);
+    for (int index = 0; index < count; ++index) {
+      NSStackView* group = column();
+      group.spacing = 2;
+      group.edgeInsets = NSEdgeInsetsMake(0, 8, 4, 0);
+      NSStackView* header = line();
+      header.distribution = NSStackViewDistributionFill;
+      NSTextField* name = label(input.rowLabel.arg(index + 1), true);
+      [name setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [header addArrangedSubview:name];
+      NSButton* remove = iconButton(symbolImage(@"xmark", QObject::tr("Remove")),
+                                    QObject::tr("Remove %1").arg(input.rowLabel.arg(index + 1)),
+                                    QStringLiteral("removeRow|%1|%2").arg(input.id).arg(index));
+      remove.enabled = count > input.minRows;
+      [header addArrangedSubview:remove];
+      addFullWidth(group, header);
+      NSGridView* grid = formGrid();
+      for (const InputDef& child : input.children) {
+        createField(child, CommandState::rowKey(input.id, index, child.id), input.id, index, grid);
+      }
+      addFullWidth(group, grid);
+      addFullWidth(groups, group);
+    }
+    if (!input.addLabel.isEmpty()) {
+      NSButton* add = button(input.addLabel, QStringLiteral("add|") + input.id);
+      add.accessibilityIdentifier = nativeString(QStringLiteral("add_") + input.id);
+      add.image = symbolImage(@"plus", input.addLabel);
+      add.imagePosition = NSImageLeading;
+      [groups addArrangedSubview:add];
+    }
+  }
+
+  // What the value field `key` is for its expression tools, as the shared
+  // panel attaches them (CommandPanel::createRow).
+  ParameterFieldOptions expressionOptions(const QString& key) const {
+    ParameterFieldOptions options;
+    const Row* row = findRow(key);
+    if (row == nullptr) {
+      return options;
+    }
+    const InputDef& input = *row->input;
+    options.kind = input.valueKind == ValueKind::Angle      ? ParameterKind::Angle
+                   : input.valueKind == ValueKind::Unitless ? ParameterKind::Unitless
+                                                            : ParameterKind::Length;
+    const CommandState scope = row->list.isEmpty() ? m_state : m_state.row(row->list, row->index);
+    options.own = scope.parameterName(input.id);
+    options.label = QStringLiteral("%1 %2").arg(m_def.name, input.label);
+    options.naming = true;
+    return options;
+  }
+
+  void createField(const InputDef& input, const QString& key, const QString& list, int index, NSGridView* grid) {
     Row row;
     row.input = &input;
     row.key = key;
     row.list = list;
     row.index = index;
-    row.box = column();
-    row.box.spacing = 4;
-    row.box.accessibilityIdentifier = nativeString(QStringLiteral("row_") + key);
     if (!input.heading.isEmpty()) {
-      // The heading of a group of inputs, hidden with the row.
-      NSTextField* heading = label(input.heading);
-      heading.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
-      addFullWidth(row.box, heading);
+      // The heading of a group of inputs, a row of its own above, hidden
+      // with the input.
+      row.heading = label(input.heading);
+      row.heading.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
+      row.headingRow = spanningRow(grid, row.heading, 8, 2);
     }
-    if (!input.disclosure && !(input.type == InputDef::Type::Note && input.label.isEmpty())) {
-      addFullWidth(row.box, label(input.label));
-    }
-    NSView* control = nil;
+    // Across both columns, as the shared form's spanning rows: a cut scope
+    // under its name, a note without a label of its own.
+    bool spanning = false;
+    NSView* field = nil;
     switch (input.type) {
     case InputDef::Type::Value:
-    case InputDef::Type::Text:
+    case InputDef::Type::Text: {
       row.edit = [[NSTextField alloc] initWithFrame:NSZeroRect];
       row.edit.editable = YES;
       row.edit.selectable = YES;
@@ -716,15 +1014,64 @@ private:
       row.edit.font = [NSFont systemFontOfSize:[NSFont systemFontSize]];
       row.edit.identifier = nativeString(key);
       row.edit.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
+      row.edit.accessibilityLabel = nativeString(input.label);
       row.edit.delegate = m_target;
       row.edit.toolTip = nativeString(input.tooltip.isEmpty() && input.type == InputDef::Type::Value
                                          ? QObject::tr("A value or an expression, such as 20, 2 in or d1 * 2")
                                          : input.tooltip);
-      control = row.edit;
+      if (input.type == InputDef::Type::Value && input.autoText) {
+        // Empty: the model works it out (mitcad#656).
+        row.edit.placeholderString = nativeString(QObject::tr("Auto"));
+      }
+      [row.edit setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [row.edit setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+      NSStackView* controls = line();
+      controls.spacing = 2;
+      controls.distribution = NSStackViewDistributionFill;
+      [controls addArrangedSubview:row.edit];
+      if (input.type == InputDef::Type::Value && !m_expressionHost.isNull()) {
+        // The shared expression tools beside the field (mitcad#815).
+        row.expression = std::make_shared<NativeExpressionField>(m_expressionHost.data(), row.edit,
+                                                                 [this, key] { return expressionOptions(key); });
+        NSButton* fx = row.expression->button();
+        fx.identifier = nativeString(QStringLiteral("fx|") + key);
+        fx.accessibilityIdentifier = nativeString(QStringLiteral("fx_") + key);
+        [controls addArrangedSubview:fx];
+      }
+      field = controls;
       break;
-    case InputDef::Type::Choice:
+    }
+    case InputDef::Type::Choice: {
+      NSStackView* controls = line();
+      controls.spacing = 4;
+      controls.distribution = NSStackViewDistributionFill;
+      if (input.choiceTile && input.onButton) {
+        // A tile, as the shared panel shows it: a click on it (or Space)
+        // does what its button does, here BUILD's part picker (mitcad#819).
+        row.tile = button(QString(), QStringLiteral("tile|") + key);
+        row.tile.bezelStyle = NSBezelStyleSmallSquare;
+        row.tile.alignment = NSTextAlignmentLeft;
+        row.tile.imagePosition = NSImageLeading;
+        row.tile.imageScaling = NSImageScaleProportionallyDown;
+        row.tile.imageHugsTitle = YES;
+        row.tile.cell.wraps = YES;
+        row.tile.cell.lineBreakMode = NSLineBreakByWordWrapping;
+        row.tile.toolTip = nativeString(input.buttonTooltip.isEmpty() ? input.tooltip : input.buttonTooltip);
+        row.tile.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
+        row.tile.accessibilityLabel = nativeString(input.label);
+        [row.tile.heightAnchor constraintGreaterThanOrEqualToConstant:56].active = YES;
+        // Its name wraps within the field column rather than widening the card.
+        [row.tile setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                           forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [row.tile setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+        // In a line of its own: the row's identifier is the line's, the
+        // tile keeps the input's (input_<key>).
+        [controls addArrangedSubview:row.tile];
+        field = controls;
+        break;
+      }
       if (!input.choiceIcons.isEmpty() && !input.choicesFor) {
-        NSStackView* choices = line();
         row.choiceButtons = [NSMutableArray array];
         for (const auto& option : input.choices) {
           NSButton* choice = button(QString(), QStringLiteral("iconChoice|%1|%2").arg(key, option.first));
@@ -739,24 +1086,50 @@ private:
                                       : QStringLiteral("%1: %2").arg(option.second, input.tooltip));
           [choice.widthAnchor constraintGreaterThanOrEqualToConstant:32].active = YES;
           [choice.heightAnchor constraintGreaterThanOrEqualToConstant:28].active = YES;
-          [choices addArrangedSubview:choice];
+          [choice setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                             forOrientation:NSLayoutConstraintOrientationHorizontal];
+          [controls addArrangedSubview:choice];
           [row.choiceButtons addObject:choice];
         }
-        control = choices;
+        [controls addArrangedSubview:spring()];
+        field = controls;
         break;
       }
       row.popup = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
       row.popup.identifier = nativeString(QStringLiteral("choice|") + key);
       row.popup.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
+      row.popup.accessibilityLabel = nativeString(input.label);
+      row.popup.toolTip = nativeString(input.tooltip);
       row.popup.target = m_target;
       row.popup.action = @selector(performAction:);
-      control = row.popup;
+      // A long option is elided, never wider than the card (mitcad#655).
+      [row.popup setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                          forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [row.popup setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [controls addArrangedSubview:row.popup];
+      if (input.onButton) {
+        // The button beside the drop-down (3D Print's Edit, mitcad#655): its
+        // small icon, its text the accessible name.
+        NSImage* image = input.buttonIcon.isEmpty() ? nil : iconImage(themeIcon(input.buttonIcon), 16, input.buttonText);
+        const QString kind = QStringLiteral("button|") + key;
+        row.button = image != nil ? iconButton(image, input.buttonText, kind) : button(input.buttonText, kind);
+        row.button.accessibilityIdentifier = nativeString(QStringLiteral("button_") + key);
+        row.button.accessibilityLabel = nativeString(input.buttonText);
+        if (!input.buttonTooltip.isEmpty()) {
+          row.button.toolTip = nativeString(input.buttonTooltip);
+        }
+        [row.button setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                               forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [controls addArrangedSubview:row.button];
+      }
+      field = controls;
       break;
+    }
     case InputDef::Type::Check:
-    case InputDef::Type::Flip:
-      row.check = button(input.type == InputDef::Type::Flip ? QObject::tr("Reverse direction") : input.label,
-                         QStringLiteral("check|") + key);
-      row.check.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
+    case InputDef::Type::Flip: {
+      NSStackView* controls = line();
+      controls.distribution = NSStackViewDistributionFill;
+      row.check = button(QString(), QStringLiteral("check|") + key);
       if (input.disclosure) {
         // Never initialise this cell as a switch: AppKit keeps the switch's
         // checkbox artwork when only its type and bezel style change later.
@@ -765,43 +1138,71 @@ private:
         row.check.image = nil;
         row.check.alternateImage = nil;
         row.check.title = @"";
-        row.check.accessibilityLabel = nativeString(input.label);
         row.check.toolTip = nativeString(input.tooltip);
-        NSStackView* disclosure = line();
-        [disclosure addArrangedSubview:row.check];
-        [disclosure addArrangedSubview:label(input.label)];
-        control = disclosure;
-        break;
+        [controls addArrangedSubview:row.check];
+        [controls addArrangedSubview:label(input.label)];
+      } else if (input.type == InputDef::Type::Flip) {
+        // A compact toggle with the shared flip artwork, as the shared
+        // panel's, not a text button (mitcad#815).
+        [row.check setButtonType:NSButtonTypePushOnPushOff];
+        row.check.bezelStyle = NSBezelStyleSmallSquare;
+        NSImage* image = iconImage(themeIcon(QStringLiteral("flip")), 20, input.label);
+        row.check.image = image != nil ? image : symbolImage(@"arrow.up.arrow.down", input.label);
+        row.check.imagePosition = NSImageOnly;
+        row.check.toolTip = nativeString(input.tooltip.isEmpty() ? QObject::tr("Flip the direction") : input.tooltip);
+        [row.check.widthAnchor constraintGreaterThanOrEqualToConstant:32].active = YES;
+        [row.check.heightAnchor constraintGreaterThanOrEqualToConstant:28].active = YES;
+        [controls addArrangedSubview:row.check];
+      } else {
+        // The caption names it; the box alone takes the click, as the
+        // shared panel's check box.
+        [row.check setButtonType:NSButtonTypeSwitch];
+        row.check.title = @"";
+        row.check.toolTip = nativeString(input.tooltip);
+        [controls addArrangedSubview:row.check];
       }
-      [row.check setButtonType:input.type == InputDef::Type::Flip ? NSButtonTypeToggle : NSButtonTypeSwitch];
-      if (input.type == InputDef::Type::Flip) {
-        row.check.image = [NSImage imageWithSystemSymbolName:@"arrow.up.arrow.down" accessibilityDescription:nil];
-        row.check.imagePosition = NSImageLeft;
-      }
-      control = row.check;
+      row.check.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
+      row.check.accessibilityLabel = nativeString(input.label);
+      [row.check setContentHuggingPriority:NSLayoutPriorityDefaultHigh
+                            forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [controls addArrangedSubview:spring()];
+      field = controls;
       break;
+    }
     case InputDef::Type::Selection: {
       NSStackView* selection = line();
+      selection.spacing = 2;
+      selection.distribution = NSStackViewDistributionFill;
       row.select = button(QString(), QStringLiteral("select|") + key);
       [row.select setButtonType:NSButtonTypePushOnPushOff];
+      row.select.image = swatchImage(colorOf(key));
+      row.select.imagePosition = NSImageLeading;
       row.select.toolTip = nativeString(input.tooltip.isEmpty() ? QObject::tr("Click to pick %1").arg(input.label)
                                                                : input.tooltip);
       row.select.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
       row.select.accessibilityLabel = nativeString(input.label);
+      [row.select setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                           forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [row.select setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
       [selection addArrangedSubview:row.select];
-      row.clear = button(QObject::tr("Clear"), QStringLiteral("clear|") + key);
+      // A compact clear control, as the shared panel's ✕ (mitcad#815).
+      row.clear = iconButton(symbolImage(@"xmark", QObject::tr("Clear")), QObject::tr("Clear the selection"),
+                             QStringLiteral("clear|") + key);
       row.clear.accessibilityLabel = nativeString(QObject::tr("Clear %1").arg(input.label));
       [selection addArrangedSubview:row.clear];
-      control = selection;
+      field = selection;
       if (input.ordered) {
-        addFullWidth(row.box, selection);
+        NSStackView* ordered = column();
+        ordered.spacing = 4;
+        addFullWidth(ordered, selection);
         row.order = column();
         row.order.spacing = 4;
-        control = row.order;
+        addFullWidth(ordered, row.order);
+        field = ordered;
       }
       break;
     }
-    case InputDef::Type::CutTargets:
+    case InputDef::Type::CutTargets: {
       row.targets = std::make_shared<CutTargetsPanel>();
       row.targets->setObjectName(QStringLiteral("input_") + key);
       row.targets->setScope(m_state.object(key));
@@ -816,38 +1217,59 @@ private:
         if (call) { call(items); }
       });
       row.targetsView = createNativeWidgetView(row.targets.get());
-      control = (__bridge NSView*)row.targetsView->nativeView();
+      // Under its name in bold, as the shared panel's cut scope.
+      if (row.heading == nil) {
+        row.heading = label(input.label);
+        row.heading.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
+        row.heading.toolTip = nativeString(input.tooltip);
+        row.headingRow = spanningRow(grid, row.heading, 6, 2);
+      }
+      NSStackView* box = column();
+      addFullWidth(box, (__bridge NSView*)row.targetsView->nativeView());
+      field = box;
+      spanning = true;
       break;
+    }
     case InputDef::Type::List:
       // Declarative lists contain fields; nesting is not supported by the
       // shared CommandState row representation either.
       return;
     case InputDef::Type::Note:
-      // A line of text and its buttons, set by refresh (mitcad#655).
-      row.noteLine = line();
-      row.noteText = label(QString(), true);
-      [row.noteLine addArrangedSubview:row.noteText];
-      control = row.noteLine;
+      // A line of text and its buttons, made by refresh (mitcad#655).
+      row.noteContent = column();
+      row.noteContent.spacing = 2;
+      field = row.noteContent;
+      spanning = input.label.isEmpty() && !input.fieldColumn;
       break;
     }
-    if (control != nil) {
-      if ([control isKindOfClass:[NSControl class]]) {
-        control.accessibilityIdentifier = nativeString(QStringLiteral("input_") + key);
+    if (field == nil) {
+      return;
+    }
+    row.box = field;
+    row.box.accessibilityIdentifier = nativeString(QStringLiteral("row_") + key);
+    if (spanning) {
+      row.mainRow = spanningRow(grid, field, 3, 3);
+    } else {
+      // A disclosure carries its label itself; a note in the field column
+      // (InputDef::fieldColumn) has none.
+      if (!input.disclosure && !input.label.isEmpty()) {
+        row.caption = captionLabel(input.label, input.tooltip);
+        row.caption.accessibilityIdentifier = nativeString(QStringLiteral("caption_") + key);
       }
-      control.accessibilityLabel = nativeString(input.label);
-      if (input.type != InputDef::Type::Value && input.type != InputDef::Type::Text) {
-        control.toolTip = nativeString(input.tooltip);
-      }
-      addFullWidth(row.box, control);
+      row.mainRow = gridRow(grid, row.caption, field, 3, 3);
     }
     row.note = label(QString(), true);
     row.note.hidden = YES;
-    addFullWidth(row.box, row.note);
-    addFullWidth(parent, row.box);
+    row.noteRow = gridRow(grid, nil, row.note, 0, 3);
+    row.noteRow.hidden = YES;
     m_rows.push_back(std::move(row));
   }
 
   void refreshChoices(Row& row, const CommandState& scope) {
+    if (row.tile != nil) {
+      refreshTile(row, scope);
+      return;
+    }
     if (row.choiceButtons != nil) {
       const QString value = scope.choice(row.input->id);
       for (NSButton* button in row.choiceButtons) {
@@ -866,13 +1288,21 @@ private:
     bool same = row.popup.numberOfItems == options.size();
     for (int index = 0; same && index < options.size(); ++index) {
       NSMenuItem* item = [row.popup itemAtIndex:static_cast<NSInteger>(index)];
-      same = qtString(item.title) == options[index].second &&
+      same = (item.isSeparatorItem || qtString(item.title) == options[index].second) &&
              qtString(static_cast<NSString*>(item.representedObject)) == options[index].first;
     }
     if (!same) {
       [row.popup removeAllItems];
       QStringList labels;
       for (const auto& option : options) {
+        if (isChoiceSeparator(option.first)) {
+          // A line between the options (mitcad#828), not choosable.
+          NSMenuItem* line = [NSMenuItem separatorItem];
+          line.representedObject = nativeString(option.first);
+          [row.popup.menu addItem:line];
+          labels.append(QStringLiteral("---"));
+          continue;
+        }
         NSMenuItem* item = [[NSMenuItem alloc] initWithTitle:nativeString(option.second)
                                                    action:nil keyEquivalent:@""];
         item.representedObject = nativeString(option.first);
@@ -892,6 +1322,32 @@ private:
     if (!options.isEmpty()) {
       [row.popup selectItemAtIndex:selected];
     }
+  }
+
+  // The chosen option's picture, name and detail on its tile (TileButton).
+  void refreshTile(Row& row, const CommandState& scope) {
+    const ChoiceTile tile = row.input->choiceTile(scope);
+    const QString text = tile.detail.isEmpty() ? tile.title : tile.title + QLatin1Char('\n') + tile.detail;
+    if (text == row.tileText && tile.image.cacheKey() == row.tilePicture) {
+      return;
+    }
+    row.tileText = text;
+    row.tilePicture = tile.image.cacheKey();
+    row.tile.image = tileImage(tile.image);
+    row.tile.imagePosition = row.tile.image == nil ? NSNoImage : NSImageLeading;
+    NSMutableAttributedString* title = [[NSMutableAttributedString alloc]
+        initWithString:nativeString(tile.title)
+            attributes:@{NSFontAttributeName : [NSFont systemFontOfSize:[NSFont systemFontSize]],
+                         NSForegroundColorAttributeName : NSColor.labelColor}];
+    if (!tile.detail.isEmpty()) {
+      [title appendAttributedString:[[NSAttributedString alloc]
+                                        initWithString:nativeString(QLatin1Char('\n') + tile.detail)
+                                            attributes:@{NSFontAttributeName : [NSFont systemFontOfSize:[NSFont smallSystemFontSize]],
+                                                         NSForegroundColorAttributeName : NSColor.secondaryLabelColor}]];
+    }
+    row.tile.attributedTitle = title;
+    row.tile.accessibilityValue = nativeString(tile.title);
+    qDebug().noquote() << QStringLiteral("Panel %1 tile %2: %3").arg(m_def.name, row.key, tile.title);
   }
 
   void refreshOrder(Row& row, const Selection& items) {
@@ -926,6 +1382,77 @@ private:
     }
   }
 
+  // A note row's text and buttons (NoteRow, mitcad#655): the text and the
+  // icon buttons on a line, the text buttons under it, each link on a line
+  // of its own. Made again only when the note changes.
+  void refreshNote(Row& row, const InputNote& note) {
+    if (row.noteContent == nil || (row.noteBuilt && sameNote(note, row.shownNote))) {
+      return;
+    }
+    row.shownNote = note;
+    row.noteBuilt = true;
+    for (NSView* child in [row.noteContent.arrangedSubviews copy]) {
+      [row.noteContent removeArrangedSubview:child];
+      [child removeFromSuperview];
+    }
+    NSStackView* textLine = line();
+    textLine.spacing = 4;
+    textLine.distribution = NSStackViewDistributionFill;
+    if (!note.text.isEmpty()) {
+      NSTextField* text = label(note.text);
+      text.accessibilityIdentifier = nativeString(QStringLiteral("note_") + row.key);
+      if (note.oneLine) {
+        // On one line, elided in the middle, the whole text its tooltip.
+        text.maximumNumberOfLines = 1;
+        text.lineBreakMode = NSLineBreakByTruncatingMiddle;
+        text.toolTip = nativeString(note.text);
+      }
+      [text setContentHuggingPriority:1 forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [textLine addArrangedSubview:text];
+    } else {
+      [textLine addArrangedSubview:spring()];
+    }
+    bool icons = false;
+    NSStackView* buttons = line();
+    NSMutableArray<NSButton*>* links = [NSMutableArray array];
+    for (int i = 0; i < note.actions.size(); ++i) {
+      const QString icon = note.icons.value(i);
+      const QString text = note.actions.at(i);
+      const QString kind = QStringLiteral("note|%1|%2").arg(row.key).arg(i);
+      if (icon == linkActionIcon()) {
+        [links addObject:linkButton(text, kind)];
+      } else if (!icon.isEmpty()) {
+        NSImage* image = iconImage(themeIcon(icon), 16, text);
+        [textLine addArrangedSubview:image != nil ? iconButton(image, text, kind) : button(text, kind)];
+        icons = true;
+      } else {
+        // Elided rather than wider than the card (Import from slicer…).
+        NSButton* control = button(text, kind);
+        [control setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow
+                                          forOrientation:NSLayoutConstraintOrientationHorizontal];
+        [buttons addArrangedSubview:control];
+      }
+    }
+    if (!note.text.isEmpty() || icons) {
+      addFullWidth(row.noteContent, textLine);
+    }
+    if (buttons.arrangedSubviews.count > 0) {
+      [row.noteContent addArrangedSubview:buttons];
+    }
+    for (NSButton* link in links) {
+      addFullWidth(row.noteContent, link);
+    }
+  }
+
+  // Shows or hides an input's grid rows and views together.
+  void setRowShown(Row& row, bool shown) {
+    setHidden(row.box, !shown);
+    setHidden(row.caption, !shown);
+    setHidden(row.heading, !shown);
+    setHidden(row.headingRow, !shown);
+    setHidden(row.mainRow, !shown);
+  }
+
   void updateNote(Row& row) {
     if (row.note == nil) {
       return;
@@ -935,7 +1462,9 @@ private:
     const QString text = error ? texts.first : texts.second;
     row.note.stringValue = nativeString(text);
     row.note.textColor = error ? NSColor.systemRedColor : NSColor.secondaryLabelColor;
-    row.note.hidden = text.isEmpty();
+    const bool noteShown = !text.isEmpty() && row.box != nil && !row.box.hidden;
+    setHidden(row.note, !noteShown);
+    setHidden(row.noteRow, !noteShown);
     row.box.accessibilityHelp = nativeString(text);
     if (row.edit != nil) {
       row.edit.accessibilityHelp = nativeString(text);
@@ -962,13 +1491,18 @@ private:
 
   const CommandDef m_def;
   CommandState m_state;
+  QPointer<QWidget> m_expressionHost; // the fx tools' window (nativeExpressionHost)
   MitcadCommandFormTarget* __strong m_target;
   NSStackView* __strong m_root;
+  NSStackView* __strong m_header;
   NSStackView* __strong m_fields;
+  NSGridView* __strong m_grid = nil;
   NSTextField* __strong m_result;
   NSTextField* __strong m_message;
+  NSStackView* __strong m_footer;
   NSButton* __strong m_ok;
   std::vector<Row> m_rows;
+  std::vector<HeaderAction> m_headerActions;
   QHash<QString, int> m_counts;
   QHash<QString, QString> m_pendingStructure;
   QHash<QString, QColor> m_colors;
@@ -979,8 +1513,8 @@ private:
   QTimer m_logTimer;
 };
 
-std::unique_ptr<NativeCommandForm> createNativeCommandForm(CommandSession& session) {
-  return std::make_unique<AppKitCommandForm>(session);
+std::unique_ptr<NativeCommandForm> createNativeCommandForm(CommandSession& session, QWidget* parameterOwner) {
+  return std::make_unique<AppKitCommandForm>(session, parameterOwner);
 }
 
 } // namespace mitcad
@@ -1004,5 +1538,23 @@ std::unique_ptr<NativeCommandForm> createNativeCommandForm(CommandSession& sessi
 - (BOOL)control:(NSControl*)control textView:(NSTextView*)textView doCommandBySelector:(SEL)command {
   (void)textView;
   return form != nullptr && form->textCommand(static_cast<NSTextField*>(control), command);
+}
+// AppKit's completion (F5 or Option-Esc) offers a value field's parameters.
+- (NSArray<NSString*>*)control:(NSControl*)control
+                      textView:(NSTextView*)textView
+                   completions:(NSArray<NSString*>*)words
+           forPartialWordRange:(NSRange)charRange
+           indexOfSelectedItem:(NSInteger*)index {
+  NSArray<NSString*>* names =
+      form != nullptr && [control isKindOfClass:NSTextField.class]
+          ? form->completions(static_cast<NSTextField*>(control), textView, charRange)
+          : nil;
+  if (names == nil) {
+    return words;
+  }
+  if (index != nullptr) {
+    *index = names.count > 0 ? 0 : -1;
+  }
+  return names;
 }
 @end

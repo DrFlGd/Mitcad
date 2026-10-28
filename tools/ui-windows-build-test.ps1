@@ -68,7 +68,7 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 Ui-Init $App $Out $QtBin @{ 'build.profile' = 'F3'; 'build.panel' = 'F5'; 'build.linear' = 'F7';
-                            'build.connector' = 'F8'; 'build.cut_list' = 'F9'; 'build.ends' = 'F11' }
+                            'build.connector' = 'F8'; 'build.cut_list' = 'F9'; 'build.ends' = 'F11' } -StepPause 0
 
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
@@ -461,6 +461,8 @@ function Picker-Click([string]$Text) {
   $picker = Ui-Windows '^Part Picker'
   if ($picker.Count -eq 0) { Ui-Fail 'no part picker window' }
   $b = $script:UiButtons[1]
+  # Two clicks on one place (a group's fold, then unfold) not a double-click.
+  Ui-Apart $picker[0] $place[0] $place[1]
   [UiInput]::Move($picker[0], $place[0], $place[1], 0)
   Start-Sleep -Milliseconds 80
   [UiInput]::Button($picker[0], $b[0], $place[0], $place[1], $b[3])
@@ -976,6 +978,7 @@ Ui-ExpectNew 'Part picker tile test-profiles/p30-test at ' "the tiles' places"
 # name as their parent) with its Profiles; a click on it lists its
 # subgroups' parts; folded, its subgroup's row has no place, and unfolded
 # it has one again.
+Ui-ExpectNew 'Part picker groups: ' 'the groups logged'
 $groupsTree = Ui-LastMatch '^Part picker groups: (.*)$'
 if ("$groupsTree" -notlike '*All parts, Slot profile, Slot profile/Profiles') {
   Ui-Fail "the groups are '$groupsTree', not Slot profile with its Profiles"

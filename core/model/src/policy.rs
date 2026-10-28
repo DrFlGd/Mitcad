@@ -279,6 +279,12 @@ enum LinkKind {
     Reference,
 }
 
+/// Whether a feature links to other components' geometry (the recompute's
+/// workers leave it to the recompute, mitcad#842).
+pub(crate) fn links_other_components(def: &FeatureDef) -> bool {
+    !links(def).is_empty()
+}
+
 /// The links of a feature to other components' geometry.
 fn links(def: &FeatureDef) -> Vec<(LinkKind, &OccurrenceLink)> {
     let references: Vec<&OccurrenceLink> = match def {

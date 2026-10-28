@@ -1,0 +1,137 @@
+# SPDX-License-Identifier: MIT
+# Compact AppKit selection and command cards (mitcad#815), on a synthetic
+# box, in the appearance MITCAD_FORMS_APPEARANCE: actual AppKit bounds,
+# pointer targets and the shared expression tools, at the normal 1280 x 820
+# and a narrow 900 x 640 point window.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+wait-idle 30
+native-resize 1280 820
+native-appearance ${MITCAD_FORMS_APPEARANCE}
+command view.fit
+sleep 400
+
+# The face's selection card: Extrude, Create Sketch and Hole, whole labels
+# and real pointer targets, nothing to scroll.
+mark
+click-visible-face
+expect-selection 1 0
+expect-log '^Selection card create: Extrude \| Create Sketch \| Hole$'
+expect-native-selection-card 3
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/selection-${MITCAD_FORMS_APPEARANCE}.png'
+native-resize 900 640
+expect-native-selection-card 3
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/selection-narrow-${MITCAD_FORMS_APPEARANCE}.png'
+native-resize 1280 820
+
+# A Create action starts its command with the selection.
+mark
+native-click selectionCreate2
+expect-log '^Selection card create chose Hole$'
+expect-log '^Command Hole started$'
+native-click commandCancel
+expect-log '^Command Hole cancelled$'
+
+# Extrude: captions beside their controls, compact clear and flip, the
+# shared artwork and Change Parameters in its title row, Local bodies,
+# fx and OK/Cancel in view without scrolling.
+mark
+click-visible-face
+expect-selection 1 0
+expect-native-selection-card 3
+native-click selectionCreate0
+expect-log '^Selection card create chose Extrude$'
+expect-log '^Command Extrude started$'
+expect-log '^Extrude Profiles: 1 face '
+wait-idle 30
+expect-native-command-layout input_objects input_flip fx_distance fx_taper commandHeader_parameters
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/extrude-${MITCAD_FORMS_APPEARANCE}.png'
+native-resize 900 640
+expect-native-command-layout input_objects fx_distance
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/extrude-narrow-${MITCAD_FORMS_APPEARANCE}.png'
+native-resize 1280 820
+
+# fx: Create User Parameter through the shared editor puts the new
+# parameter into the field.
+mark
+native-click input_distance
+native-popup fx_distance 'Create User Parameter…'
+expect-log 'Create User Parameter opened for Extrude Distance'
+focus-dialog '^Create User Parameter$'
+native-type createParameterName 'ui_depth'
+native-type createParameterExpression '12'
+wait-idle 30
+button '^Create$'
+expect-log 'Created user parameter ui_depth = 12 mm' 10
+expect-log 'Parameter created inserted ui_depth into Extrude Distance: ui_depth' 10
+expect-native-dialog-gone '^Create User Parameter$'
+focus-main
+expect-native-text input_distance '^ui_depth$'
+wait-idle 30
+expect-native-enabled commandOk true
+
+# fx: a parameter chosen from the menu replaces the selected value.
+mark
+native-type input_distance '7 mm'
+wait-idle 30
+native-click input_distance
+native-popup fx_distance 'ui_depth'
+expect-log 'Parameter browser inserted ui_depth into Extrude Distance: ui_depth'
+expect-native-text input_distance '^ui_depth$'
+wait-idle 30
+expect-native-enabled commandOk true
+
+# fx: Name This Value writes `name = value` with the name selected.
+mark
+native-click input_distance
+native-popup fx_distance 'Name This Value (name = value)'
+expect-log 'Parameter naming for Extrude Distance: [A-Za-z_][A-Za-z0-9_]* = ui_depth'
+expect-native-text input_distance '^[A-Za-z_][A-Za-z0-9_]* = ui_depth$'
+
+# fx: the shared Formula Editor applies its formula to the field.
+mark
+native-type input_distance 'ui_depth'
+wait-idle 30
+native-click input_distance
+native-popup fx_distance 'Edit Formula…'
+focus-dialog '^Formula Editor$'
+wait-idle 30
+button '^OK$'
+expect-log 'Formula editor applied: ui_depth' 10
+expect-native-dialog-gone '^Formula Editor$'
+focus-main
+expect-native-text input_distance '^ui_depth$'
+native-click commandCancel
+expect-log '^Command Extrude cancelled$'
+
+# 3D Print: Send and Cancel stay whole and reachable under its inputs.
+mark
+command make.print3d
+expect-log '^Command 3D Print started$'
+wait-idle 30
+expect-native-text commandOk '^Send$'
+expect-native-command-layout
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/print-${MITCAD_FORMS_APPEARANCE}.png'
+native-resize 900 640
+expect-native-command-layout
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/print-narrow-${MITCAD_FORMS_APPEARANCE}.png'
+native-resize 1280 820
+native-click commandCancel
+expect-log '^Command 3D Print cancelled$'
+
+# Create Sketch from the card starts a sketch on the face.
+mark
+click-visible-face
+expect-selection 1 0
+expect-native-selection-card 3
+native-click selectionCreate1
+expect-log '^Selection card create chose Create Sketch$'
+expect-log 'Sketch started on ' 10
+native-click native.ribbon.sketch.finish
+expect-log 'Sketch finished' 30
+expect-never 'Recompute failed|The document was read while a job computes it'

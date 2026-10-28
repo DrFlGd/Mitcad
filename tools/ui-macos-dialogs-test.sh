@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework/CommandSearch app/framework/TestDriver app/browser/ParametersDialog app/platform/MacCommandSearch.hpp app/platform/MacParameters.hpp
-# Focused coverage for the primary Qt command search and parameter table.
+# check-all sources: app/browser/AppearanceDialog.cpp app/framework/FitToScreen.cpp app/framework/TestDriverWindowFit.cpp
+# Focused coverage for the primary Qt command search, parameter table and
+# Appearances within the screen.
 # Theme requests are confined to each test process; no system setting changes.
 # Usage: tools/ui-macos-dialogs-test.sh <app> [out directory]
 # Set MITCAD_UI_REQUIRE_RETINA=1 when collecting Retina acceptance evidence.
@@ -19,7 +21,7 @@ UI_TIMEOUT=${UI_DIALOGS_TIMEOUT:-180}
 export MITCAD_DIALOG_SHOTS=$UI_OUT
 
 for scheme in light dark; do
-  for surface in search parameters-add parameters-editor parameters-error-selected parameters parameters-compact; do
+  for surface in search parameters-add parameters-editor parameters-error-selected parameters parameters-compact appearances appearances-compact; do
     rm -f "$UI_OUT/$surface-$scheme.png"
   done
   MITCAD_TEST_COLOR_SCHEME=$scheme \
@@ -27,7 +29,7 @@ for scheme in light dark; do
     ui_run_app "$scheme" --ui=qt --demo --no-recovery --no-mcp
   ui_expect_no_log 'TestDriver: FAIL' "$scheme: all dialog assertions passed"
   ui_expect_log 'TestDriver: done' "$scheme: script completed"
-  for surface in search parameters-add parameters-editor parameters-error-selected parameters parameters-compact; do
+  for surface in search parameters-add parameters-editor parameters-error-selected parameters parameters-compact appearances appearances-compact; do
     if [ ! -s "$UI_OUT/$surface-$scheme.png" ]; then
       ui_fail "$scheme: missing focused $surface capture"
     fi

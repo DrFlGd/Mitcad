@@ -27,7 +27,7 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 # The Point tool has no shortcut of its own: the test gives it one.
-Ui-Init $App $Out $QtBin @{ 'sketch.point' = 'F8' }
+Ui-Init $App $Out $QtBin @{ 'sketch.point' = 'F8' } -StepPause 0
 
 # Ui-NotSince "text" description: no line since the mark has the text.
 function Ui-NotSince([string]$Text, [string]$Description) {

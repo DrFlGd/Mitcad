@@ -4,7 +4,7 @@
 //! profiles, what a body, occurrence or component prints with, and the
 //! design printer's build volume. See `commands.md`, "Print profiles".
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -15,11 +15,12 @@ use super::prelude::*;
 use mitcad_model::ids::ComponentUid;
 use mitcad_model::internal::document::writable_library;
 use mitcad_model::kernel::Kernel;
+use mitcad_model::print_files::installed::{self, PresetEnv, SlicerFolder};
 use mitcad_model::print_keys::Dialect;
 use mitcad_model::print_library::{ItemKind, LibraryKind};
 use mitcad_model::print_profile::{ProfileChange, ProfileKind};
 use mitcad_model::properties::PropertyOwner;
-use mitcad_model::{Document, PrintTarget};
+use mitcad_model::{Document, PresetChoice, PrintTarget, SameName};
 
 named_enum! {
     #[derive(Debug, Deserialize)]
@@ -92,6 +93,81 @@ named_enum! {
             #[serde(default)]
             choose: Option<bool>,
         },
+        // An installed slicer's user presets (mitcad#830).
+        "import_slicer_presets" => ImportSlicerPresets {
+            /// The Bambu family's member: `bambu_studio`, `orcaslicer`,
+            /// `qidi_studio`.
+            dialect: String,
+            /// The slicer's data folder (`slicer_presets`' `folder`): its
+            /// system presets fill in what the presets inherit.
+            folder: String,
+            /// The presets ticked.
+            presets: Vec<PresetArg>,
+            /// `design` (the default), `user` or `project`.
+            #[serde(default)]
+            into: Option<String>,
+            #[serde(default)]
+            project: Option<String>,
+        },
+    }
+}
+
+/// A preset of `import_slicer_presets` (mitcad#830).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PresetArg {
+    /// The preset's file (`slicer_presets`' `path`).
+    path: String,
+    /// When the target has an item of its kind and name: `copy` (the
+    /// default: a new item, `<name> 2`) or `override` (that item takes its
+    /// values).
+    #[serde(default)]
+    same_name: Option<String>,
+}
+
+/// A slicer data folder given to `slicer_presets` in place of the
+/// installed ones (mitcad#830).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SlicerFolderArg {
+    /// `bambu_studio`, `orcaslicer` or `qidi_studio`.
+    dialect: String,
+    path: String,
+}
+
+/// The `slicer_presets` query (mitcad#830).
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SlicerPresetsQuery {
+    /// `design` (the default), `user` or `project`: the target whose items
+    /// of a preset's kind and name are named (`same`).
+    #[serde(default)]
+    into: Option<String>,
+    /// The project's folder, when the design is in one.
+    #[serde(default)]
+    project: Option<String>,
+    /// The slicers' data folders to read instead of those of the slicers
+    /// installed (tests, another computer's folders).
+    #[serde(default)]
+    folders: Option<Vec<SlicerFolderArg>>,
+}
+
+/// A Bambu-family slicer by its dialect id.
+fn bambu_dialect(id: &str) -> Result<Dialect, ApiError> {
+    Dialect::from_id(id)
+        .filter(|d| d.bambu_family())
+        .ok_or_else(|| {
+            ApiError(format!(
+                "'{id}' is no slicer whose presets Mitcad reads: bambu_studio, orcaslicer or qidi_studio"
+            ))
+        })
+}
+
+/// An import's target: None for the design.
+fn import_target(into: Option<&str>) -> Result<Option<LibraryKind>, ApiError> {
+    match into {
+        None | Some("design") => Ok(None),
+        Some(text) => library_kind(text).map(Some),
     }
 }
 
@@ -292,6 +368,41 @@ impl<K: Kernel> PrintProfilesCrateOps<K> for Document<K> {
                     choose.unwrap_or(true),
                 )?
             }
+            PrintProfileCommand::ImportSlicerPresets {
+                dialect,
+                folder,
+                presets,
+                into,
+                project,
+            } => {
+                let dialect = bambu_dialect(&dialect)?;
+                let into = import_target(into.as_deref())?;
+                let choices = presets
+                    .into_iter()
+                    .map(|preset| {
+                        let same = match preset.same_name.as_deref() {
+                            None | Some("copy") => SameName::Copy,
+                            Some("override") => SameName::Override,
+                            Some(other) => {
+                                return Err(ApiError(format!(
+                                    "'{other}' is no choice for a preset of a name the target has: copy or override"
+                                )));
+                            }
+                        };
+                        Ok(PresetChoice {
+                            path: PathBuf::from(preset.path),
+                            same,
+                        })
+                    })
+                    .collect::<Result<Vec<_>, ApiError>>()?;
+                self.import_slicer_presets(
+                    dialect,
+                    Path::new(&folder),
+                    &choices,
+                    into,
+                    project.as_deref().map(Path::new),
+                )?
+            }
         })
     }
 
@@ -330,6 +441,8 @@ pub(super) trait PrintProfilesOps<K: Kernel> {
     fn library_items_query(&self, query: &LibraryItemsQuery) -> Result<Value, ApiError>;
 
     fn print_settings_query(&self, query: &PrintSettingsQuery) -> Result<Value, ApiError>;
+
+    fn slicer_presets_query(&self, query: &SlicerPresetsQuery) -> Result<Value, ApiError>;
 }
 
 impl<K: Kernel> PrintProfilesOps<K> for Document<K> {
@@ -347,5 +460,24 @@ impl<K: Kernel> PrintProfilesOps<K> for Document<K> {
     fn print_settings_query(&self, query: &PrintSettingsQuery) -> Result<Value, ApiError> {
         let target = self.print_target(query)?;
         Ok(self.print_settings_json(&target))
+    }
+
+    fn slicer_presets_query(&self, query: &SlicerPresetsQuery) -> Result<Value, ApiError> {
+        let into = import_target(query.into.as_deref())?;
+        // The installed slicers' folders, unless the query names some.
+        let folders = match &query.folders {
+            Some(given) => given
+                .iter()
+                .map(|folder| {
+                    Ok(SlicerFolder {
+                        dialect: bambu_dialect(&folder.dialect)?,
+                        folder: PathBuf::from(&folder.path),
+                        flatpak: false,
+                    })
+                })
+                .collect::<Result<Vec<_>, ApiError>>()?,
+            None => installed::slicer_folders(&PresetEnv::current()),
+        };
+        Ok(self.slicer_presets_json(&folders, into, query.project.as_deref().map(Path::new)))
     }
 }

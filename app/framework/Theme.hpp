@@ -41,6 +41,10 @@ QColor cardShadowColor(const QPalette& palette = QGuiApplication::palette());
 // with the application's palette: it is set again when the palette changes.
 // A format without %1 is set as it is; an empty one clears the style sheet.
 // Call it again to change the format.
+// While the format colours the text ("color: %1"), the widget's dynamic
+// property kSemanticTextToneProperty is "error" or "warning", for presenters
+// that do not paint Qt style sheets (the AppKit dialogs).
+inline constexpr char kSemanticTextToneProperty[] = "semanticTextTone";
 void setErrorStyleSheet(QWidget* widget, const QString& format = QStringLiteral("color: %1;"));
 void setWarningStyleSheet(QWidget* widget, const QString& format = QStringLiteral("color: %1;"));
 

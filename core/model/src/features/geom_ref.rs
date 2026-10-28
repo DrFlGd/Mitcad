@@ -1726,7 +1726,7 @@ impl<K: Kernel> EvalContext<'_, K> {
     /// A mount frame of a derived part before this one (mitcad#375), in
     /// the coordinates of that part's component.
     pub fn mount(&mut self, feature: FeatureUid, name: &str) -> Result<Transform, String> {
-        let result = self.env.history.iter().find(|r| r.uid == feature);
+        let result = self.env.result_of(feature);
         let output = result.and_then(|r| r.output.clone());
         self.reads
             .push(Read::Output(feature, output.as_ref().map(|o| o.version)));

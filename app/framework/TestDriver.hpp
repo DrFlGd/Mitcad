@@ -233,6 +233,25 @@
 //   expect-native-enabled <id> true|false assert native control state (6 s)
 //   expect-native-visible <id> true|false assert native document view state
 //   expect-native-present <id> true|false assert document view membership, including hidden views
+//   expect-native-style <id> <state,...> what a native table cell or label
+//                           shows: error (red text, and a red fill in a
+//                           cell), warning, normal, bold, regular, editable,
+//                           readonly, editing, not-editing, single-line,
+//                           truncated, in-view; <table id>/<row>/<column>
+//                           addresses a cell without an identifier (6 s)
+//   expect-native-columns <id> [fit|scroll|any] the native columns keep
+//                           the shared header's sizes, hidden sections and
+//                           stretching; fit: no sideways scrolling (6 s)
+//   native-dialog-size <w> <h> set the focused native dialog's content size
+//   native-drag <row-id> <row-id> drag a native outline row onto another
+//                           through the outline's own drag source and drop
+//                           target, logging moved|refused|not draggable
+//   expect-native-focus <id> [<regex>] the keyboard is in that native control
+//                           (6 s); with a regex, in a text editor there whose
+//                           text matches (a row being named)
+//   expect-native-selection <outline-id> <row-id|-|*> the native outline's
+//                           selected row, in sight, is its presenter's (6 s);
+//                           - none, * whichever the presenter selected
 //   expect-native-layout    full-window canvas, floating card geometry and
 //                           real AppKit hit testing above/around the canvas
 //   expect-native-history [uid...] compare horizontal native history icons,
@@ -284,6 +303,24 @@
 //   click-parameter <name> <column> click the real visible Qt table cell (0..5)
 //   expect-parameter-cell <name> <column> <regex> visible|hidden|refused|absent
 //                           check its actual text, filter visibility and error
+//   expect-dialog-fits [<w> <h>] the focused Qt dialog's frame within its
+//                           screen's available area (at most w x h), its
+//                           dialog buttons visible outside any scroll area
+//                           and its scroll areas reaching their ends
+//   native-card-width <card> <w> drag a native side card's width handle
+//                           (native.projectsCard, native.sidebar or
+//                           native.inspectorCard) with AppKit mouse events
+//                           towards w points
+//   expect-native-card-width <card> <min> [max] its actual width, its
+//                           content following it and the free canvas
+//   expect-native-name-fits <regex> true|false a visible native text is
+//                           shown whole (true) or elided (false)
+//   native-screen-limit <w> <h> native secondary windows fit a w x h visible
+//                           screen frame (0 0: the real one), as after a
+//                           display change
+//   expect-native-window-fits <title regex> that native window within its
+//                           visible frame, its buttons visible and its whole
+//                           body reachable by scrolling
 //
 // The log (lines are numbered; `mark` remembers where the log is):
 //   mark
@@ -439,6 +476,9 @@ private:
   void openFormulaField(const QString& name);
   void sendWheel(const QPoint& windowPos, int notches, Qt::KeyboardModifiers modifiers);
   bool saveScreenshot(const QString& path, bool viewOnly);
+  // Card widths and windows within the screen (mitcad#818,
+  // TestDriverWindowFit.cpp): runs the step if it is one of those.
+  bool runWindowFitStep(const QString& name, const QStringList& a, int line);
 
   bool m_active = false;
   QTimer* m_timer = nullptr;

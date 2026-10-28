@@ -57,9 +57,36 @@ impl Expr {
         refs
     }
 
-    /// Whether the expression references no parameters.
+    /// Whether the expression references no parameters and no tables.
     pub fn is_constant(&self) -> bool {
-        self.reference_spans().is_empty()
+        self.reference_spans().is_empty() && self.column_reference_spans().is_empty()
+    }
+
+    /// The table columns the expression uses (mitcad#667), as `(table,
+    /// column)` pairs, each once, in order of first appearance: `Screws.dk`
+    /// is `("Screws", "dk")`. Parameter names are [`Expr::references`].
+    pub fn table_references(&self) -> Vec<(&str, &str)> {
+        let mut pairs: Vec<(&str, &str)> = Vec::new();
+        for (table, column, _) in self.column_reference_spans() {
+            if !pairs.contains(&(table, column)) {
+                pairs.push((table, column));
+            }
+        }
+        pairs
+    }
+
+    /// Every column reference with its position in the source text, in
+    /// source order (mitcad#667). The span covers `Table.Column`; as no
+    /// spaces stand around the dot, the table's name is its first
+    /// `table.len()` bytes and the column's name its last `column.len()`.
+    pub fn column_reference_spans(&self) -> Vec<(&str, &str, Span)> {
+        let mut refs = Vec::new();
+        self.root.walk(&mut |node| {
+            if let NodeKind::Column { table, column } = &node.kind {
+                refs.push((table.as_str(), column.as_str(), node.span));
+            }
+        });
+        refs
     }
 
     /// Evaluates the expression. A dimensionless result stays
@@ -130,7 +157,8 @@ impl Node {
             | NodeKind::Reference(_)
             | NodeKind::Local(_)
             | NodeKind::UnitText(_)
-            | NodeKind::Text(_) => {}
+            | NodeKind::Text(_)
+            | NodeKind::Column { .. } => {}
             NodeKind::Neg(x) => x.walk(f),
             NodeKind::WithUnit { value, .. } => value.walk(f),
             NodeKind::Binary { lhs, rhs, .. } => {
@@ -153,6 +181,7 @@ impl Node {
             | NodeKind::Local(_)
             | NodeKind::UnitText(_)
             | NodeKind::Text(_)
+            | NodeKind::Column { .. }
             | NodeKind::Call { .. } => PREC_PRIMARY,
         }
     }
@@ -206,6 +235,13 @@ pub enum NodeKind {
     /// A text literal, `'6qt'` or `"Box "` (mitcad#664): its characters,
     /// a doubled quote taken as one.
     Text(String),
+    /// A column of a table, `Screws.dk` (mitcad#667): a list of cells,
+    /// accepted only as an argument of the lookup functions and the
+    /// aggregates ([`Function::column_place`]).
+    Column {
+        table: String,
+        column: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -409,9 +445,31 @@ pub enum Function {
     Right,
     /// `len(t)`: the number of characters.
     Len,
+    // Table lookups (mitcad#667). Their names are functions only before
+    // `(`, as the text functions' are.
+    /// `xlookup(key; keys; results; [if_not_found]; [mode])`: the cell of
+    /// `results` in the row where `keys` matches `key`.
+    XLookup,
+    /// `match(key; keys; [mode])`: the row (from 1) where `keys` matches
+    /// `key`.
+    Match,
+    /// `index(column; row)`: the cell of `column` in row `row`.
+    Index,
 }
 
-pub(super) const FUNCTIONS: [(Function, &str, Arity); 57] = [
+/// Where a function takes a column reference such as `Screws.dk`
+/// (mitcad#667).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColumnPlace {
+    /// The argument must be a column: `keys` and `results` of `xlookup`.
+    Required,
+    /// A column or a value: the aggregates' arguments.
+    Allowed,
+    /// A value only.
+    No,
+}
+
+pub(super) const FUNCTIONS: [(Function, &str, Arity); 60] = [
     (Function::Sin, "sin", Arity::Exact(1)),
     (Function::Cos, "cos", Arity::Exact(1)),
     (Function::Tan, "tan", Arity::Exact(1)),
@@ -469,6 +527,11 @@ pub(super) const FUNCTIONS: [(Function, &str, Arity); 57] = [
     (Function::Left, "left", Arity::Range(1, 2)),
     (Function::Right, "right", Arity::Range(1, 2)),
     (Function::Len, "len", Arity::Exact(1)),
+    // A sixth argument of xlookup (the search order) parses, to be refused
+    // with its own message.
+    (Function::XLookup, "xlookup", Arity::Range(3, 6)),
+    (Function::Match, "match", Arity::Range(2, 3)),
+    (Function::Index, "index", Arity::Exact(2)),
 ];
 
 impl Function {
@@ -484,12 +547,34 @@ impl Function {
     /// parameter. The text functions (mitcad#664) are not: `Left`, `Text`
     /// or `len` are common parameter names, so these names are functions
     /// only when `(` follows (`len(Label)`), and references elsewhere
-    /// (`len * 2`).
+    /// (`len * 2`). The lookup functions (mitcad#667) are not either, so
+    /// that parameters named `Index` or `Match` keep their names.
     pub fn is_reserved(self) -> bool {
         !matches!(
             self,
-            Self::Concat | Self::Text | Self::Left | Self::Right | Self::Len
+            Self::Concat
+                | Self::Text
+                | Self::Left
+                | Self::Right
+                | Self::Len
+                | Self::XLookup
+                | Self::Match
+                | Self::Index
         )
+    }
+
+    /// Whether argument `index` (from 0) takes a column reference
+    /// (mitcad#667): `keys` and `results` of `xlookup`, `keys` of `match`
+    /// and `column` of `index` must be columns; `min`, `max`, `sum`,
+    /// `average` and `median` take columns beside values.
+    pub fn column_place(self, index: usize) -> ColumnPlace {
+        match (self, index) {
+            (Self::XLookup, 1 | 2) | (Self::Match, 1) | (Self::Index, 0) => ColumnPlace::Required,
+            (Self::Min | Self::Max | Self::Sum | Self::Average | Self::Median, _) => {
+                ColumnPlace::Allowed
+            }
+            _ => ColumnPlace::No,
+        }
     }
 
     /// Whether the arguments come in pairs: `ifs(c1; v1; c2; v2)`, and

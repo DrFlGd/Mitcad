@@ -8,10 +8,12 @@
 #include <QUrl>
 #include <QtGlobal>
 
+class QAbstractItemView;
 class QAction;
 class QDialog;
 class QFileDialog;
 class QMenu;
+class QModelIndex;
 class QWidget;
 
 namespace mitcad {
@@ -21,6 +23,10 @@ namespace mitcad {
 inline constexpr int NativeEditableRole = Qt::UserRole + 4096;
 // Stable identifiers for native model checkboxes and focused UI tests.
 inline constexpr int NativeControlIdentifierRole = Qt::UserRole + 4097;
+// A cell whose edited value the model refused (true): the Qt delegate and
+// the native cell presenter both show it in the error colours; its reason
+// is the cell's tooltip.
+inline constexpr int NativeRefusedRole = Qt::UserRole + 4098;
 
 // Secondary AppKit views bind the existing Qt presenter widgets' data,
 // signals and models. They do not embed or draw those widgets.
@@ -55,6 +61,24 @@ inline bool nativeDialogsActive() { return false; }
 inline bool nativeDialogModalActive() { return false; }
 inline void* nativeFileDialogPanel() { return nullptr; }
 inline std::unique_ptr<NativeWidgetView> createNativeWidgetView(QWidget*) { return {}; }
+#endif
+
+// Row drags inside a hierarchical presenter's native outline (mitcad#816).
+// The presenter keeps its own rules: `draggable` says whether a row can be
+// dragged, `allowed` whether it can be dropped on the row under the
+// pointer, `drop` takes a release (`over` invalid outside the rows, a
+// refused drop for its own feedback), and `dragging` brackets the drag.
+// Nothing leaves the outline. Indexes are the presenter model's.
+struct NativeRowMoves {
+  std::function<bool(const QModelIndex& row)> draggable;
+  std::function<bool(const QModelIndex& dragged, const QModelIndex& over)> allowed;
+  std::function<void(const QModelIndex& dragged, const QModelIndex& over)> drop;
+  std::function<void(const QModelIndex& dragged, bool dragging)> dragging;
+};
+#if defined(Q_OS_MACOS) && defined(MITCAD_MACOS_NATIVE_UI)
+void setNativeRowMoves(QAbstractItemView* view, NativeRowMoves moves);
+#else
+inline void setNativeRowMoves(QAbstractItemView*, NativeRowMoves) {}
 #endif
 
 } // namespace mitcad

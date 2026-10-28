@@ -54,7 +54,7 @@ none, and then such a paste is not moved by a command (`MITCAD_IMPORT_TRACE`
 says "no commands to run the move with") and takes the usual route, the
 file's history state or its stored bodies, like an item without a
 translation. Other crates' tests that run the import pass the api's
-`command` the same way (`core/ipt/tests/design_import.rs`). Only this
+`command` the same way (`core/model-tests/imports/src/ipt_design_tests.rs`). Only this
 crate's own unit tests, which keep the api as a dev-dependency, run its
 commands when they give none (`import_design_with` under `cfg(test)`).
 
@@ -168,6 +168,20 @@ mitcad-cli import-f3d part.f3d --time-limit 300 --report report.json
   (`MITCAD_F3D_MODELS`, default `~/f3d-models`) of lofts and sweeps,
   compares with the stored volumes, and imports each model from its own
   streams too.
+- `mitcad-cli import-f3d --own-start-time-scale F` (the command's
+  `own_start_time_scale`, `Options::own_start_scale`, mitcad#847) tries
+  an item from its own start, the route tried first, F times as long as
+  usual (half of `item_seconds`: 30 s). An item that gives its state that
+  way hangs on that time (a path pattern of 372 copies, 18 s by itself in
+  a debug build, took 31 s beside the corpus step), so a debug build,
+  about three times slower, gives its slowdown: the ctest
+  `f3d.corpus_designs` passes its `SLOWER` (3 in a debug build, 1
+  otherwise; `tools/cli/f3d-designs.cmake`), which also scales the
+  designs' own time limits, and its designs run at once beside the other
+  corpus tests. The item's other routes keep their times: an item that
+  falls back by design spends each of them in full, and scaled as well
+  they made the test's longest design about 270 s slower (a sweep that
+  passes over itself took 362 s instead of 95 s).
 - The ctest `f3d.corpus_timeline` (`core/CMakeLists.txt`) runs `--every 4
   --max-items 30 --time-limit 60` to stay quick in debug builds. Run the
   full corpus with the release build, e.g. `--time-limit 300 --hang-limit
@@ -202,5 +216,9 @@ diff <(sed -E 's/[0-9.]+ m?s$//' before.txt) <(sed -E 's/[0-9.]+ m?s$//' after.t
 The children's memory adds up: keep `--jobs` × `--memory` within what
 the machine (or `systemd-run --user --scope -p MemoryMax=...`) allows. The
 line on standard error at the end gives the largest peak memory of a
-child and the longest child, e.g. to choose `--memory`.
+child and the longest child, e.g. to choose `--memory`. Under the test
+runner (`tools/testrun`, mitcad#832) the corpus tests also read their
+files' last times from `MITCAD_CORPUS_FILES` (the longest start first)
+and append each child's time and peak to `MITCAD_CORPUS_RECORD`; neither
+is set in a run by hand, which orders the files by size as before.
 

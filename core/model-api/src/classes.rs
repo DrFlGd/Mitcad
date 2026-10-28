@@ -127,6 +127,10 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     // Configurations (`libraries.rs`).
     ("set_configurations", Model),
     ("apply_configuration", Model),
+    // Options of inserted components (`components.rs`, mitcad#801).
+    ("set_component_parameters", Model),
+    ("configure", Model),
+    ("generate_configuration_rows", Model),
     // Move Features into a Component (`move_features.rs`).
     ("move_to_component", Model),
     ("move_history_into_component", Model),
@@ -290,6 +294,19 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("set_image_reference_visible", Model),
     ("rename_image_reference", Model),
     ("delete_image_reference", Model),
+    // An installed slicer's user presets (mitcad#830): its folders.
+    ("import_slicer_presets", FileIo),
+    // Insert Point on a spline (mitcad#836).
+    ("sketch.insert_spline_point", Model),
+    // Tables of data that expressions look values up in (mitcad#667,
+    // `tables.rs`).
+    ("set_table", Model),
+    ("rename_table", Model),
+    ("rename_table_column", Model),
+    ("delete_table", Model),
+    // A table as CSV (mitcad#804): the CSV is the command's text, the
+    // application reads the file.
+    ("import_table_csv", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -445,6 +462,16 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("image_reference_image", Model),
     ("image_reference_outline", Model),
     ("image_info", FileIo),
+    // An installed slicer's user presets (mitcad#830): its folders.
+    ("slicer_presets", FileIo),
+    // Configurations (mitcad#797, `configurations.rs`).
+    ("configure", Model),
+    ("check_rules", Model),
+    // Tables of data that expressions look values up in (mitcad#667).
+    ("tables", Model),
+    // A table as CSV (mitcad#804).
+    ("table_csv", Model),
+    ("table_csv_preview", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

@@ -8,6 +8,11 @@ license.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+# No tests of its own: no test binary, which a change in the model would
+# rebuild and link for nothing (mitcad#831).
+[lib]
+test = false
+
 [dependencies]
 mitcad-model.workspace = true
 serde.workspace = true

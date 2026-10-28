@@ -2,21 +2,26 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/print app/browser/BrowserController.cpp app/MainWindow.cpp app/files/MainWindowPrint.cpp
 # check-all sources: core/model/src/print_library.rs core/model/src/document/library_items.rs tools/cli
+# check-all sources: core/model/src/print_profile.rs core/model/src/print_files/installed.rs core/model/src/document/slicer_presets.rs
 # My Library (mitcad#704) through the real UI: the user's materials,
 # printers and processes managed without a design, on a design of one box
 # that must not change. My library is the test's own folder
 # (MITCAD_PRINT_LIBRARY_DIR), which mitcad-cli gives a printer, Bench X.
 #   1. Tools › My Library… (the command search): the Materials tab lists
 #      the built-in materials under Built-in; Duplicate of PLA Plastic
-#      makes PLA Plastic 2 in My library (its file), its name typed
+#      makes PLA Plastic (copy) in My library (its file), its name typed
 #      (Bench PLA) and its density changed (1.3), each written to the
 #      file; Delete asks ("Delete Bench PLA from My library?") and removes
 #      the file.
-#   2. The Printers tab: Bench X; Duplicate makes Bench X 2 in My library,
+#   2. The Printers tab: Bench X; Duplicate makes Bench X (copy) in My library,
 #      renamed Bench Y; Delete removes it.
 #   3. The design did not change: no modified mark in the title, its file
 #      as it was; Edit Printers and Processes' My Library… opens the
 #      window again.
+#   4. A fake Bambu Studio data folder (mitcad#830): Import from Slicer ▾
+#      offers its presets; the new process is ticked, the printer named as
+#      Bench X is marked and unticked; Import brings the process into My
+#      library and leaves Bench X as it was.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-my-library-test.sh
@@ -92,13 +97,13 @@ place=$(logged_after "Material duplicated: PLA Plastic as " 's/.* as .* in \(.*\
 [ "$place" = user ] || ui_fail "the copy went to '$place', not My library"
 echo "ok   in My library, not in the design"
 MATERIAL=$LIB/materials/$id.json
-expect_item "$MATERIAL" '.material.name' '"PLA Plastic 2"' "its file, named after PLA"
-ui_expect_new "My Library materials row: plastics/$id PLA Plastic 2 (user)" "the list shows it"
+expect_item "$MATERIAL" '.material.name' '"PLA Plastic (copy)"' "its file, named after PLA"
+ui_expect_new "My Library materials row: plastics/$id PLA Plastic (copy) (user)" "the list shows it"
 ui_sync
 ui_mark
 xdotool type --delay 40 "Bench PLA"
 ui_key Return
-ui_expect_new "Material PLA Plastic 2 (user) name = Bench PLA" "Enter renamed it"
+ui_expect_new "Material PLA Plastic (copy) (user) name = Bench PLA" "Enter renamed it"
 expect_item "$MATERIAL" '.material.name' '"Bench PLA"' "the file has the new name"
 ui_expect_new "My Library materials density at" "Density has its place"
 ui_step "Density"                          ui_click_logged "My Library materials density"
@@ -134,13 +139,13 @@ pid=$(logged_after "Profile duplicated: Bench X as " 's/.* as \(.*\) in \(.*\)$/
 place=$(logged_after "Profile duplicated: Bench X as " 's/.* as .* in \(.*\)$/\1/')
 [ "$place" = user ] || ui_fail "the copy went to '$place', not My library"
 PRINTER=$LIB/print/printers/$pid.json
-expect_item "$PRINTER" '.profile.name' '"Bench X 2"' "its file, named after Bench X"
+expect_item "$PRINTER" '.profile.name' '"Bench X (copy)"' "its file, named after Bench X"
 expect_item "$PRINTER" '.profile.values.max_print_height == 250' 'true' "with Bench X's values"
 ui_sync
 ui_mark
 xdotool type --delay 40 "Bench Y"
 ui_key Return
-ui_expect_new "Profile Bench X 2 (user) name = Bench Y" "Enter renamed it"
+ui_expect_new "Profile Bench X (copy) (user) name = Bench Y" "Enter renamed it"
 expect_item "$PRINTER" '.profile.name' '"Bench Y"' "the file has the new name"
 ui_mark
 ui_step "Delete"                           ui_click_logged "My Library printers delete"
@@ -173,6 +178,34 @@ ui_mark
 ui_step "My Library…"                      ui_click_logged "Profiles my_library"
 ui_expect_new "Profiles: My Library…" "the link"
 ui_expect_new "My Library opened" "My Library opened again"
+
+echo "--- 4. Presets of an installed slicer (mitcad#830): a fake Bambu Studio folder"
+# The slicer's data folder in the test's own config folder: a process of
+# the user's, and a printer named as My library's Bench X.
+PRESETS=$XDG_CONFIG_HOME/BambuStudio/user/default
+mkdir -p "$PRESETS/process" "$PRESETS/machine"
+printf '{"name": "Fine", "from": "User", "layer_height": "0.12"}\n' > "$PRESETS/process/Fine.json"
+printf '{"name": "Bench X", "from": "User", "printable_height": "180"}\n' > "$PRESETS/machine/Bench X.json"
+BENCH_SUM=$(sha256sum "$LIB/print/printers/bench-x.json" | cut -c1-64)
+ui_focus_dialog '^My Library$'
+ui_mark
+ui_step "Import from Slicer"               ui_click_logged "My Library import"
+ui_expect_new "My Library import menu: From a file… | Presets of Bambu Studio…" "a file or the slicer's presets"
+ui_key Down Down Return
+ui_expect_new "Slicer presets opened: Bambu Studio, 2 presets" "the slicer's presets listed"
+ui_expect_new "Slicer presets row: process Fine, ticked" "a new one ticked"
+ui_expect_new "Slicer presets row: printer Bench X, unticked, same name: My library has a printer of this name, copy" \
+  "the name My library has: marked, unticked, Copy"
+ui_focus_dialog '^Import Presets$'
+ui_step "Import (Alt+I)"                   ui_key alt+i
+ui_expect_new "My Library import: 1 preset imported into My library" "the ticked one imported"
+expect_item "$LIB/print/processes/fine.json" '.profile.values.layer_height' '0.12' "Fine is in My library"
+# Its number as a number: the file keeps it as the model wrote it (250.0).
+expect_item "$LIB/print/printers/bench-x.json" '.profile.values.max_print_height == 250' 'true' \
+  "Bench X keeps its printable height"
+[ "$(sha256sum "$LIB/print/printers/bench-x.json" | cut -c1-64)" = "$BENCH_SUM" ] ||
+  ui_fail "the unticked Bench X's file changed"
+echo "ok   Bench X's file as it was"
 ui_focus_dialog '^My Library$'
 ui_step "close (Esc)"                      ui_key Escape
 ui_expect_new "My Library closed" "closed"

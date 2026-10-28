@@ -16,6 +16,7 @@
 // that cannot be classified), the ordinary boolean runs instead.
 
 #include <string>
+#include <vector>
 
 #include <TopoDS_Shape.hxx>
 
@@ -36,6 +37,23 @@ struct LocalResult {
 // `body` (one solid) with `tool` (solids) cut out of it or fused to it.
 LocalResult local_boolean(const Shape& body, const TopoDS_Shape& tool, LocalOperation operation,
                           const std::string& tool_name);
+
+// A tool with the name its faces get.
+struct NamedTool {
+  TopoDS_Shape shape;
+  std::string name;
+};
+
+// `body` with each of `tools` cut out of it or fused to it, as
+// local_boolean with each in turn would make it, in one local boolean
+// where that can be done (mitcad#843: the threads of several faces far
+// apart on a large body): each tool one solid, their boxes apart from each
+// other's (no two touch or overlap, so the classification by the faces
+// around each piece holds), and the local boolean possible with them all.
+// Otherwise local_boolean with each in turn, in their order. `merged`,
+// when given, tells whether they went in one.
+ShapePtr local_boolean_all(const Shape& body, const std::vector<NamedTool>& tools, LocalOperation operation,
+                           bool* merged = nullptr);
 
 // Whether the faces are valid (OCCT's checker on these faces only) and the
 // shell around them closed and consistently oriented: every edge of the

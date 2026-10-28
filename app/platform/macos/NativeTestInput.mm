@@ -23,6 +23,7 @@
 #include <QStandardItemModel>
 #include <QTableView>
 #include <QTreeView>
+#include <QHeaderView>
 #include <QTimer>
 #include <QRegularExpression>
 #include <QImage>
@@ -405,11 +406,15 @@ NSView* findControlView(NSView* root, const std::function<bool(NSView*)>& matche
     // View-based AppKit tables only instantiate visible cells. Prepare an
     // offscreen row using the public API, then scroll it into view so input
     // and readiness checks can address the same real row below the fold.
+    // A column right of a narrow table's visible width is scrolled into view
+    // too; otherwise the prepared cell is a temporary view that the table
+    // replaces when it lays out the scrolled columns (mitcad#814).
     for (NSInteger row = 0; row < table.numberOfRows; ++row) {
       for (NSInteger column = 0; column < table.numberOfColumns; ++column) {
         NSView* cell = [table viewAtColumn:column row:row makeIfNecessary:YES];
         if (NSView* found = findView(cell, matches)) {
           [table scrollRowToVisible:row];
+          [table scrollColumnToVisible:column];
           [table layoutSubtreeIfNeeded];
           if (NSView* live = [table viewAtColumn:column row:row makeIfNecessary:NO]) {
             if (NSView* actual = findView(live, matches)) found = actual;
@@ -659,8 +664,12 @@ bool textOf(const QString& identifier, QString& value) {
     return true;
   }
   NSView* view = findControl(identifier);
+  // A model cell's identifier is on its cell view; read its shown text.
+  if ([view isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)view).textField) view = ((NSTableCellView*)view).textField;
   NSString* text = nil;
   if ([view isKindOfClass:NSTextField.class]) text = ((NSTextField*)view).stringValue;
+  // An outline row's cell: its name as shown (mitcad#816).
+  else if ([view isKindOfClass:NSTableCellView.class]) text = ((NSTableCellView*)view).textField.stringValue;
   else if ([view isKindOfClass:NSPopUpButton.class]) {
     NSPopUpButton* popup = (NSPopUpButton*)view;
     text = popup.pullsDown ? popup.title : popup.titleOfSelectedItem;
@@ -980,7 +989,12 @@ bool floatingLayout(QString& error) {
       if (outline.selectedRow >= 0) {
         const NSRect selected = [outline rectOfRow:outline.selectedRow];
         if (!NSContainsRect(NSInsetRect(outline.visibleRect, -1, -1), selected)) {
-          error = QStringLiteral("native Projects clips the selected design row");
+          NSView* cell = [outline viewAtColumn:0 row:outline.selectedRow makeIfNecessary:YES];
+          error = QStringLiteral("native Projects clips the selected row %1 '%2' (%3,%4 %5x%6; viewport %7,%8 %9x%10)")
+                      .arg(outline.selectedRow).arg(qt(cell.accessibilityIdentifier))
+                      .arg(selected.origin.x).arg(selected.origin.y).arg(selected.size.width).arg(selected.size.height)
+                      .arg(outline.visibleRect.origin.x).arg(outline.visibleRect.origin.y)
+                      .arg(outline.visibleRect.size.width).arg(outline.visibleRect.size.height);
           return false;
         }
       }
@@ -1276,15 +1290,62 @@ bool clickImmediately(const QString& identifier, QString& error) {
   return true;
 }
 
+namespace {
+// A model cell's text field, in the view its table shows once the cell is
+// scrolled in (mitcad#814): a column right of a narrow table's visible width
+// first has only a prepared view, which the table replaces when it lays out
+// the scrolled columns. AppKit's own editColumn:row: is the fallback. The
+// log line says what happened.
+bool clickTableCell(NSTableView* table, NSInteger row, NSTableCellView* prepared, const QString& identifier) {
+  NSInteger column = [table columnForView:prepared];
+  for (NSInteger candidate = 0; column < 0 && candidate < table.numberOfColumns; ++candidate) {
+    if (qt([table viewAtColumn:candidate row:row makeIfNecessary:YES].accessibilityIdentifier) == identifier) column = candidate;
+  }
+  [table.window makeKeyAndOrderFront:nil];
+  [table scrollRowToVisible:row];
+  if (column >= 0) [table scrollColumnToVisible:column];
+  table.needsLayout = YES;
+  [table layoutSubtreeIfNeeded];
+  [table displayIfNeeded];
+  NSView* live = column >= 0 ? [table viewAtColumn:column row:row makeIfNecessary:NO] : nil;
+  NSTextField* field = [live isKindOfClass:NSTableCellView.class] ? ((NSTableCellView*)live).textField : prepared.textField;
+  BOOL responder = NO;
+  if (field.window != nil) {
+    [field scrollRectToVisible:field.bounds];
+    responder = [field.window makeFirstResponder:field];
+    // selectText: on the field editor's own field would end that edit and
+    // begin another, committing the cell: select within the edit instead.
+    if (responder && field.currentEditor != nil) [field.currentEditor selectAll:nil];
+    else if (responder) [field selectText:nil];
+  }
+  BOOL viaTable = NO;
+  if (field.currentEditor == nil && field.editable && column >= 0) {
+    [table editColumn:column row:row withEvent:nil select:YES];
+    viaTable = YES;
+    NSView* edited = [table viewAtColumn:column row:row makeIfNecessary:NO];
+    if ([edited isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)edited).textField) field = ((NSTableCellView*)edited).textField;
+  }
+  qInfo().noquote() << QStringLiteral("Native test: click cell %1 row %2 column %3: live view %4, in window %5, "
+                                      "editable %6, first responder %7, editColumn %8, editing %9")
+                           .arg(identifier).arg(qlonglong(row)).arg(qlonglong(column)).arg(live != nil)
+                           .arg(field.window != nil).arg(bool(field.editable)).arg(bool(responder)).arg(bool(viaTable))
+                           .arg(field.currentEditor != nil);
+  return true;
+}
+} // namespace
+
 bool click(const QString& identifier, QString& error) {
   for (NSToolbarItem* item in documentWindow().toolbar.items) {
     if (qt(item.itemIdentifier) != identifier || !item.action) continue;
     if (!item.enabled) { error = QStringLiteral("native toolbar item '%1' is disabled").arg(identifier); return false; }
     return [NSApp sendAction:item.action to:item.target from:item];
   }
-  NSView* view = findControl(identifier);
+  NSTableView* table = nil;
+  NSInteger row = -1;
+  NSView* view = findControl(identifier, &table, &row);
   if (!view) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
   if ([view isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)view).textField) {
+    if (table != nil && row >= 0) return clickTableCell(table, row, (NSTableCellView*)view, identifier);
     view = ((NSTableCellView*)view).textField;
   }
   [view scrollRectToVisible:view.bounds];
@@ -1540,11 +1601,14 @@ bool disclosureLayout(QString& error) {
   const CGFloat floor = !history || history.hidden ? content.bounds.size.height - 12
                                                    : history.frame.origin.y - 8;
   const CGFloat available = std::max(CGFloat(1), floor - card.frame.origin.y);
-  const CGFloat expected = std::min(available, std::max(CGFloat(160), root.fittingSize.height + 4));
+  // The form at the card's width, with its OK and Cancel under it (mitcad#815).
+  NSView* footer = identifiedView(card, QStringLiteral("commandButtons"));
+  const CGFloat form = std::ceil(NSHeight(root.superview.frame) + (footer ? footer.fittingSize.height : 0));
+  const CGFloat expected = std::min(available, std::max(CGFloat(160), form + 4));
   if (std::abs(card.frame.size.height - expected) > 1 ||
       static_cast<bool>(last.hiddenOrHasHiddenAncestor) == expanded) {
     error = QStringLiteral("mounted disclosure height %1, expected %2 (form %3, available %4, expanded %5, last hidden %6)")
-                .arg(card.frame.size.height).arg(expected).arg(root.fittingSize.height).arg(available)
+                .arg(card.frame.size.height).arg(expected).arg(form).arg(available)
                 .arg(expanded).arg(static_cast<bool>(last.hiddenOrHasHiddenAncestor));
     return false;
   }
@@ -2540,6 +2604,1759 @@ bool screenshot(const QString& path, QOpenGLWidget* viewport) {
   }
   painter.end();
   return shot.save(path);
+}
+
+// Native table semantics (mitcad#814): what a cell or a label actually
+// shows, the shared header's column sizes and the focused dialog's size.
+namespace {
+
+// "<table id>/<row>/<column>" addresses a cell by its native row and model
+// column, for tables without identifiers of their cells.
+NSView* tableCell(const QString& identifier) {
+  const QStringList parts = identifier.split(QLatin1Char('/'));
+  if (parts.size() != 3) return findControl(identifier);
+  bool rowValid = false;
+  bool columnValid = false;
+  const NSInteger row = parts.at(1).toInt(&rowValid);
+  const NSInteger column = parts.at(2).toInt(&columnValid);
+  NSView* view = findControl(parts.at(0));
+  NSScrollView* scroll = [view isKindOfClass:NSScrollView.class] ? (NSScrollView*)view : view.enclosingScrollView;
+  NSTableView* table = [scroll.documentView isKindOfClass:NSTableView.class] ? (NSTableView*)scroll.documentView : nil;
+  if (!rowValid || !columnValid || !table || row < 0 || column < 0 || row >= table.numberOfRows ||
+      column >= table.numberOfColumns) return nil;
+  [table scrollRowToVisible:row];
+  [table scrollColumnToVisible:column];
+  [table layoutSubtreeIfNeeded];
+  NSView* live = [table viewAtColumn:column row:row makeIfNecessary:NO];
+  return live ? live : [table viewAtColumn:column row:row makeIfNecessary:YES];
+}
+
+// Dynamic system colours resolve in the view's own appearance.
+bool sameColor(NSColor* actual, NSColor* expected, NSAppearance* appearance) {
+  __block bool same = false;
+  [appearance performAsCurrentDrawingAppearance:^{
+    NSColor* a = [actual colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    NSColor* b = [expected colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    same = a != nil && b != nil && std::abs(a.redComponent - b.redComponent) < 0.02 &&
+           std::abs(a.greenComponent - b.greenComponent) < 0.02 && std::abs(a.blueComponent - b.blueComponent) < 0.02;
+  }];
+  return same;
+}
+
+// The cell's own drawing at its leading edge, left of any text or icon:
+// its alpha, and whether it is a red tint.
+CGFloat cellFill(NSView* cell, bool* red) {
+  *red = false;
+  const NSRect bounds = cell.bounds;
+  if (bounds.size.width < 4 || bounds.size.height < 4) return 0;
+  NSBitmapImageRep* bitmap = [cell bitmapImageRepForCachingDisplayInRect:bounds];
+  if (!bitmap) return 0;
+  [cell cacheDisplayInRect:bounds toBitmapImageRep:bitmap];
+  NSColor* pixel = [[bitmap colorAtX:1 y:bitmap.pixelsHigh / 2] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  if (!pixel) return 0;
+  // Either alpha representation keeps red well above green and blue.
+  *red = pixel.redComponent > 1.5 * pixel.greenComponent && pixel.redComponent > 1.5 * pixel.blueComponent;
+  return pixel.alphaComponent;
+}
+
+bool boldFont(NSFont* font) {
+  NSDictionary* traits = [font.fontDescriptor objectForKey:NSFontTraitsAttribute];
+  const double weight = [traits[NSFontWeightTrait] doubleValue];
+  return weight >= 0.2 || (font.fontDescriptor.symbolicTraits & NSFontDescriptorTraitBold) != 0;
+}
+
+QHeaderView* sharedHeader(const QString& identifier) {
+  for (QWidget* widget : QApplication::allWidgets()) {
+    if (widget->objectName() != identifier) continue;
+    if (auto* tree = qobject_cast<QTreeView*>(widget)) return tree->header();
+    if (auto* grid = qobject_cast<QTableView*>(widget)) return grid->horizontalHeader();
+  }
+  return nullptr;
+}
+
+} // namespace
+
+bool nativeStyle(const QString& identifier, const QStringList& states, QString& detail) {
+  NSView* view = tableCell(identifier);
+  NSTableCellView* cell = [view isKindOfClass:NSTableCellView.class] ? (NSTableCellView*)view : nil;
+  NSTextField* field = cell ? cell.textField : [view isKindOfClass:NSTextField.class] ? (NSTextField*)view : nil;
+  if (!field) { detail = QStringLiteral("no native text cell or label"); return false; }
+  NSAppearance* appearance = field.effectiveAppearance;
+  const bool redText = sameColor(field.textColor, NSColor.systemRedColor, appearance);
+  const bool orangeText = sameColor(field.textColor, NSColor.systemOrangeColor, appearance);
+  bool redFill = false;
+  const CGFloat fill = cell ? cellFill(cell, &redFill) : 0;
+  NSTableView* table = nil;
+  for (NSView* parent = field.superview; parent && !table; parent = parent.superview) {
+    if ([parent isKindOfClass:NSTableView.class]) table = (NSTableView*)parent;
+  }
+  const NSRect frame = cell ? [field convertRect:field.bounds toView:cell] : field.bounds;
+  const NSLineBreakMode mode = field.lineBreakMode;
+  const bool truncating = mode == NSLineBreakByTruncatingTail || mode == NSLineBreakByTruncatingMiddle ||
+                          mode == NSLineBreakByTruncatingHead;
+  const bool singleLine = field.maximumNumberOfLines == 1 && !field.cell.wraps && truncating &&
+                          field.intrinsicContentSize.height <= NSHeight(field.bounds) + 1 &&
+                          (!cell || (NSMinY(frame) >= -0.5 && NSMaxY(frame) <= NSHeight(cell.bounds) + 0.5));
+  const bool truncated = field.cell.cellSize.width > NSWidth(field.bounds) + 1;
+  bool inView = false;
+  if (table) {
+    const NSRect inTable = [field convertRect:field.bounds toView:table];
+    const NSRect visible = table.visibleRect;
+    inView = NSMinX(inTable) >= NSMinX(visible) - 1 && NSMaxX(inTable) <= NSMaxX(visible) + 1 &&
+             NSMinY(inTable) >= NSMinY(visible) - 1 && NSMaxY(inTable) <= NSMaxY(visible) + 1;
+  }
+  // Where the keyboard focus is, for an edit that did not start or ended.
+  NSResponder* focus = field.window.firstResponder;
+  QString focused = focus != nil ? qt(NSStringFromClass(focus.class)) : QStringLiteral("none");
+  if ([focus isKindOfClass:NSTextView.class] && ((NSTextView*)focus).isFieldEditor) {
+    id edited = ((NSTextView*)focus).delegate;
+    NSView* holder = [edited isKindOfClass:NSView.class] ? ((NSView*)edited).superview : nil;
+    focused += QStringLiteral(" editing '%1'").arg(qt(holder.accessibilityIdentifier));
+  }
+  detail = QStringLiteral("text '%1', red %2, orange %3, fill alpha %4 red %5, bold %6, editable %7, editing %8, "
+                          "single line %9, truncated %10, in view %11, in window %12, focus %13")
+               .arg(qt(field.stringValue)).arg(redText).arg(orangeText).arg(double(fill), 0, 'f', 2).arg(redFill)
+               .arg(boldFont(field.font)).arg(bool(field.editable)).arg(field.currentEditor != nil).arg(singleLine)
+               .arg(truncated).arg(inView).arg(field.window != nil).arg(focused);
+  for (const QString& state : states) {
+    const bool matches =
+        state == QLatin1String("error") ? redText && (!cell || (fill > 0.04 && redFill)) :
+        state == QLatin1String("warning") ? orangeText :
+        state == QLatin1String("normal") ? !redText && !orangeText && fill <= 0.04 :
+        state == QLatin1String("bold") ? boldFont(field.font) :
+        state == QLatin1String("regular") ? !boldFont(field.font) :
+        state == QLatin1String("editable") ? bool(field.editable) :
+        state == QLatin1String("readonly") ? !field.editable :
+        state == QLatin1String("editing") ? field.currentEditor != nil :
+        state == QLatin1String("not-editing") ? field.currentEditor == nil :
+        state == QLatin1String("single-line") ? singleLine :
+        state == QLatin1String("truncated") ? truncated :
+        state == QLatin1String("in-view") ? inView : false;
+    if (!matches) {
+      detail = QStringLiteral("not %1: %2").arg(state, detail);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool nativeColumns(const QString& identifier, const QString& mode, QString& detail) {
+  NSView* view = findControl(identifier);
+  NSScrollView* scroll = [view isKindOfClass:NSScrollView.class] ? (NSScrollView*)view : view.enclosingScrollView;
+  NSTableView* table = [scroll.documentView isKindOfClass:NSTableView.class] ? (NSTableView*)scroll.documentView : nil;
+  QHeaderView* header = sharedHeader(identifier);
+  if (!table || !header) { detail = QStringLiteral("no native table with a shared header"); return false; }
+  [scroll layoutSubtreeIfNeeded];
+  const CGFloat visible = scroll.contentView.bounds.size.width;
+  CGFloat total = 0;
+  int stretching = 0;
+  bool atMinimum = true;
+  for (NSTableColumn* column in table.tableColumns) {
+    const int section = qt(column.identifier).toInt();
+    if (section < 0 || section >= header->count()) continue;
+    if (bool(column.hidden) != header->isSectionHidden(section)) {
+      detail = QStringLiteral("column %1 hidden %2, the shared section %3").arg(section).arg(bool(column.hidden))
+                   .arg(header->isSectionHidden(section));
+      return false;
+    }
+    if (column.hidden) continue;
+    total += column.width + table.intercellSpacing.width;
+    if ((column.resizingMask & NSTableColumnAutoresizingMask) != 0) {
+      ++stretching;
+      atMinimum = atMinimum && column.width <= column.minWidth + 1;
+    } else if (std::abs(column.width - header->sectionSize(section)) > 1) {
+      detail = QStringLiteral("column %1 is %2 wide, its shared section %3").arg(section).arg(double(column.width))
+                   .arg(header->sectionSize(section));
+      return false;
+    }
+  }
+  const bool fits = total <= visible + 1;
+  detail = QStringLiteral("columns %1 wide in %2, %3 stretching").arg(double(total)).arg(double(visible)).arg(stretching);
+  if (fits && stretching > 0 && total < visible - stretching - 1) {
+    detail += QStringLiteral(", the stretching columns leave space");
+    return false;
+  }
+  if (!fits && stretching > 0 && !atMinimum) {
+    detail += QStringLiteral(", wider before the stretching columns reach their minimum");
+    return false;
+  }
+  if (!fits && (!scroll.hasHorizontalScroller || NSWidth(table.bounds) + 1 < total)) {
+    detail += QStringLiteral(", the overflow cannot be scrolled");
+    return false;
+  }
+  if (mode == QLatin1String("fit")) return fits;
+  if (mode == QLatin1String("scroll")) return !fits;
+  return true;
+}
+
+bool resizeNativeDialog(int width, int height, QString& error) {
+  NSWindow* window = targetWindow();
+  if (!window || window == documentWindow() || [window isKindOfClass:NSSavePanel.class]) {
+    error = QStringLiteral("native-dialog-size requires a focused native dialog");
+    return false;
+  }
+  [window setContentSize:NSMakeSize(width, height)];
+  [window.contentView layoutSubtreeIfNeeded];
+  const NSSize size = window.contentView.frame.size;
+  qInfo().noquote() << QStringLiteral("Native dialog %1 content %2 x %3")
+                           .arg(qt(window.title)).arg(double(size.width)).arg(double(size.height));
+  return true;
+}
+
+} // namespace mitcad::mac::test
+
+// --- Card widths and windows within the screen (mitcad#818).
+#include "NativeCardWidths.hpp"
+#include "NativeWindowFit.hpp"
+
+namespace mitcad::mac::test {
+namespace {
+
+// A visible side card of the document window and its width handle.
+bool cardAndHandle(const QString& identifier, NSView* __strong& card, NSView* __strong& handle, QString& error) {
+  NSWindow* window = documentWindow();
+  card = window != nil ? identifiedView(window.contentView, identifier) : nil;
+  handle = card != nil ? identifiedView(card, identifier + QStringLiteral(".width")) : nil;
+  if (!viewVisible(card) || handle == nil || handle.hidden) {
+    error = QStringLiteral("no visible native card '%1' with a width handle").arg(identifier);
+    return false;
+  }
+  return true;
+}
+
+NSEvent* pointerEvent(NSEventType type, NSPoint location, NSWindow* window) {
+  return [NSEvent mouseEventWithType:type location:location modifierFlags:0
+                           timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber
+                             context:nil eventNumber:0 clickCount:1
+                            pressure:(type == NSEventTypeLeftMouseUp ? 0 : 1)];
+}
+
+// The view that shows a card's content, which follows the card's width.
+NSView* cardContent(NSView* card, const QString& identifier) {
+  const QString content = identifier == QStringLiteral("native.projectsCard") ? QStringLiteral("projectsTree")
+                          : identifier == QStringLiteral("native.sidebar")    ? QStringLiteral("native.modelTree")
+                                                                               : QStringLiteral("native.inspector");
+  NSView* view = identifiedView(card, content);
+  return [view isKindOfClass:NSOutlineView.class] ? view.enclosingScrollView : view;
+}
+
+} // namespace
+
+bool dragCardWidth(const QString& identifier, int width, QString& error) {
+  NSView* card = nil;
+  NSView* handle = nil;
+  if (!cardAndHandle(identifier, card, handle, error)) return false;
+  NSWindow* window = card.window;
+  NSView* content = window.contentView;
+  [content layoutSubtreeIfNeeded];
+  // The pointer reaches the handle above the card and the canvas, and
+  // the handle shows the resize cursor.
+  const NSPoint start = [handle convertPoint:NSMakePoint(NSMidX(handle.bounds), NSMidY(handle.bounds)) toView:nil];
+  NSView* hit = [content hitTest:[content.superview convertPoint:start fromView:nil]];
+  if (hit != handle) {
+    error = QStringLiteral("the width handle of '%1' does not receive the pointer").arg(identifier);
+    return false;
+  }
+  [handle updateTrackingAreas];
+  bool cursor = false;
+  for (NSTrackingArea* area in handle.trackingAreas) {
+    cursor = cursor || (area.owner == handle && (area.options & NSTrackingCursorUpdate) != 0);
+  }
+  if (!cursor || ![handle respondsToSelector:@selector(cursorUpdate:)]) {
+    error = QStringLiteral("the width handle of '%1' has no resize cursor").arg(identifier);
+    return false;
+  }
+  const bool leading = NSMidX(handle.frame) < NSMidX(card.bounds);
+  const CGFloat delta = CGFloat(width) - card.frame.size.width;
+  const NSPoint end = NSMakePoint(start.x + (leading ? -delta : delta), start.y);
+  [window makeKeyAndOrderFront:nil];
+  [handle mouseDown:pointerEvent(NSEventTypeLeftMouseDown, start, window)];
+  [handle mouseDragged:pointerEvent(NSEventTypeLeftMouseDragged, NSMakePoint((start.x + end.x) / 2, start.y), window)];
+  [handle mouseDragged:pointerEvent(NSEventTypeLeftMouseDragged, end, window)];
+  [handle mouseUp:pointerEvent(NSEventTypeLeftMouseUp, end, window)];
+  return true;
+}
+
+bool cardWidth(const QString& identifier, int minimum, int maximum, QString& detail) {
+  NSView* card = nil;
+  NSView* handle = nil;
+  if (!cardAndHandle(identifier, card, handle, detail)) return false;
+  NSView* content = card.window.contentView;
+  [content layoutSubtreeIfNeeded];
+  const CGFloat width = card.frame.size.width;
+  detail = QStringLiteral("native card '%1' is %2 points wide").arg(identifier).arg(width);
+  if (width < minimum - 1 || width > maximum + 1) return false;
+  // The handle stays on the card's inner edge.
+  const NSRect grip = handle.frame;
+  if (std::min(std::abs(NSMinX(grip)), std::abs(NSMaxX(grip) - width)) > 1 || grip.size.height <= 0) {
+    detail += QStringLiteral(", its width handle is off its edge");
+    return false;
+  }
+  // The card's content follows its width.
+  NSView* inner = cardContent(card, identifier);
+  const CGFloat innerWidth = inner != nil ? [inner convertRect:inner.bounds toView:card].size.width : 0;
+  if (viewVisible(inner) && innerWidth < width - 20) {
+    detail += QStringLiteral(", its content is %1 points wide").arg(innerWidth);
+    return false;
+  }
+  // Cards on both sides leave the free canvas between them.
+  CGFloat left = 0;
+  for (NSString* side in @[@"native.projectsCard", @"native.sidebar"]) {
+    NSView* view = identifiedView(content, qt(side));
+    if (viewVisible(view)) left = std::max(left, NSMaxX([view convertRect:view.bounds toView:content]));
+  }
+  NSView* inspector = identifiedView(content, QStringLiteral("native.inspectorCard"));
+  if (left > 0 && viewVisible(inspector)) {
+    const CGFloat between = NSMinX([inspector convertRect:inspector.bounds toView:content]) - left;
+    if (between < NativeCardWidths::freeCanvas - 1) {
+      detail += QStringLiteral(", only %1 points of canvas between the side cards").arg(between);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool nameFits(const QRegularExpression& expression, bool expected, QString& detail) {
+  NSWindow* window = documentWindow();
+  NSView* found = window == nil ? nil : findView(window.contentView, [&](NSView* view) {
+    return [view isKindOfClass:NSTextField.class] && expression.match(qt(((NSTextField*)view).stringValue)).hasMatch() &&
+           viewVisible(view);
+  });
+  if (found == nil) {
+    detail = QStringLiteral("no visible native text matches");
+    return false;
+  }
+  NSTextField* field = (NSTextField*)found;
+  const CGFloat needed = [field.cell cellSizeForBounds:NSMakeRect(0, 0, CGFLOAT_MAX, NSHeight(field.bounds))].width;
+  const bool fits = needed <= NSWidth(field.bounds) + 0.5;
+  detail = QStringLiteral("'%1' needs %2 of its %3 points").arg(qt(field.stringValue)).arg(needed).arg(NSWidth(field.bounds));
+  return fits == expected;
+}
+
+bool setScreenLimit(int width, int height, QString& error) {
+  if (width < 0 || height < 0 || (width > 0) != (height > 0)) {
+    error = QStringLiteral("native-screen-limit expects both sizes positive, or 0 0 for none");
+    return false;
+  }
+  setNativeTestScreenLimit(NSMakeSize(width, height));
+  // As a display change: the application's windows follow it.
+  [NSNotificationCenter.defaultCenter postNotificationName:NSApplicationDidChangeScreenParametersNotification
+                                                    object:NSApp];
+  return true;
+}
+
+bool windowFits(const QRegularExpression& expression, QString& detail) {
+  NSWindow* window = nil;
+  for (NSWindow* candidate in nativeWindows()) {
+    if (windowMatches(candidate, expression)) {
+      window = candidate;
+      break;
+    }
+  }
+  if (window == nil) {
+    detail = QStringLiteral("no native window matches");
+    return false;
+  }
+  const NSRect area = nativeWindowAvailableFrame(window);
+  const NSRect frame = window.frame;
+  detail = QStringLiteral("window %1,%2 %3x%4 in visible %5,%6 %7x%8")
+               .arg(frame.origin.x).arg(frame.origin.y).arg(frame.size.width).arg(frame.size.height)
+               .arg(area.origin.x).arg(area.origin.y).arg(area.size.width).arg(area.size.height);
+  if (!NSContainsRect(NSInsetRect(area, -1, -1), frame)) return false;
+  NSView* content = window.contentView;
+  [content layoutSubtreeIfNeeded];
+  NSView* body = identifiedView(content, QStringLiteral("native.secondary.body"));
+  if (![body isKindOfClass:NSScrollView.class] || !viewVisible(body)) {
+    detail += QStringLiteral(", no scrolling body");
+    return false;
+  }
+  // The dialog's buttons stay visible below the body and take the pointer.
+  NSView* footer = identifiedView(content, QStringLiteral("native.secondary.footer"));
+  int buttons = 0;
+  NSMutableArray<NSView*>* pending = [NSMutableArray array];
+  if (footer != nil && !footer.hidden) [pending addObject:footer];
+  while (pending.count > 0) {
+    NSView* view = pending.lastObject;
+    [pending removeLastObject];
+    if (view.hidden) continue;
+    if (![view isKindOfClass:NSButton.class]) {
+      [pending addObjectsFromArray:view.subviews];
+      continue;
+    }
+    const NSRect rect = [view convertRect:view.bounds toView:content];
+    NSView* hit = [content hitTest:[view convertPoint:NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds))
+                                               toView:content.superview]];
+    if (!NSContainsRect(NSInsetRect(content.bounds, -1, -1), rect) || (hit != view && ![hit isDescendantOf:view])) {
+      detail += QStringLiteral(", button '%1' is clipped or covered").arg(qt(((NSButton*)view).title));
+      return false;
+    }
+    ++buttons;
+  }
+  if (buttons == 0) {
+    detail += QStringLiteral(", no visible dialog buttons below the body");
+    return false;
+  }
+  // All of the body can be scrolled into view.
+  NSScrollView* scroll = (NSScrollView*)body;
+  NSView* document = scroll.documentView;
+  const NSRect last = NSMakeRect(0, NSMaxY(document.bounds) - 1, 1, 1);
+  [document scrollRectToVisible:last];
+  const bool reached = NSIntersectsRect(scroll.contentView.documentVisibleRect, last);
+  [document scrollPoint:NSZeroPoint];
+  detail += QStringLiteral(", body %1 of %2 points").arg(scroll.contentView.bounds.size.height).arg(document.frame.size.height);
+  if (!reached) {
+    detail += QStringLiteral(", its end cannot be scrolled into view");
+    return false;
+  }
+  qInfo().noquote() << QStringLiteral("Native window fits: %1").arg(detail);
+  return true;
+}
+
+} // namespace mitcad::mac::test
+
+// ---------------------------------------------------------------------------
+// Native Projects rows (mitcad#816)
+
+// The destination-side state of a drag inside one outline. AppKit's own
+// NSDraggingInfo exists only within a pointer-driven drag session; the
+// outline's data source reads just these properties of it.
+@interface MITCADTestRowDrag : NSObject
+@property(nonatomic, weak) id draggingSource;
+@property(nonatomic) NSPoint draggingLocation;
+@property(nonatomic, strong) NSPasteboard* draggingPasteboard;
+@property(nonatomic, weak) NSWindow* draggingDestinationWindow;
+@property(nonatomic) NSDragOperation draggingSourceOperationMask;
+@end
+@implementation MITCADTestRowDrag
+@end
+
+namespace mitcad::mac::test {
+
+namespace {
+// An outline row of the document by its cell's identifier. Unlike
+// findControl it never scrolls: a drag between rows leaves the outline's
+// scroll position, and so its selection's visibility, as the user had it.
+NSOutlineView* outlineRow(const QString& identifier, NSInteger& row) {
+  row = -1;
+  NSWindow* window = documentWindow();
+  NSView* root = window.contentView.superview != nil ? window.contentView.superview : window.contentView;
+  NSString* wanted = identifier.toNSString();
+  NSOutlineView* found = nil;
+  findView(root, [&](NSView* view) {
+    if (![view isKindOfClass:NSOutlineView.class]) return false;
+    NSOutlineView* outline = (NSOutlineView*)view;
+    for (NSInteger index = 0; index < outline.numberOfRows; ++index) {
+      NSView* cell = [outline viewAtColumn:0 row:index makeIfNecessary:YES];
+      if ([cell.accessibilityIdentifier isEqualToString:wanted]) {
+        found = outline;
+        row = index;
+        return true;
+      }
+    }
+    return false;
+  });
+  return found;
+}
+} // namespace
+
+bool rowsPresent(const QStringList& identifiers) {
+  if (!active()) return false;
+  for (const QString& identifier : identifiers) {
+    NSInteger row = -1;
+    if (outlineRow(identifier, row) == nil) return false;
+  }
+  return true;
+}
+
+bool dragRow(const QString& from, const QString& to, QString& error) {
+  NSInteger fromRow = -1;
+  NSInteger toRow = -1;
+  NSOutlineView* outline = outlineRow(from, fromRow);
+  NSOutlineView* toOutline = outlineRow(to, toRow);
+  if (outline == nil || outline != toOutline || fromRow < 0 || toRow < 0) {
+    error = QStringLiteral("native rows '%1' and '%2' are not rows of one outline").arg(from, to);
+    return false;
+  }
+  id<NSOutlineViewDataSource> source = outline.dataSource;
+  if (outline.registeredDraggedTypes.count == 0 ||
+      ![source respondsToSelector:@selector(outlineView:pasteboardWriterForItem:)] ||
+      ![source respondsToSelector:@selector(outlineView:validateDrop:proposedItem:proposedChildIndex:)] ||
+      ![source respondsToSelector:@selector(outlineView:acceptDrop:item:childIndex:)]) {
+    error = QStringLiteral("the native outline of '%1' does not move rows by dragging").arg(from);
+    return false;
+  }
+  [outline.window makeKeyAndOrderFront:nil];
+  id dragged = [outline itemAtRow:fromRow];
+  id target = [outline itemAtRow:toRow];
+  const NSRect fromRect = [outline rectOfRow:fromRow];
+  const NSRect toRect = [outline rectOfRow:toRow];
+  const NSPoint press = NSMakePoint(NSMidX(fromRect), NSMidY(fromRect));
+  // The pointer over the target row's middle, in window coordinates.
+  const NSPoint over = [outline convertPoint:NSMakePoint(NSMidX(toRect), NSMidY(toRect)) toView:nil];
+  QString outcome = QStringLiteral("not draggable");
+  id<NSPasteboardWriting> writer = nil;
+  const bool offered = [outline canDragRowsWithIndexes:[NSIndexSet indexSetWithIndex:NSUInteger(fromRow)] atPoint:press];
+  if (offered) writer = [source outlineView:outline pasteboardWriterForItem:dragged];
+  if (writer == nil) {
+    qInfo().noquote() << QStringLiteral("Native test: row drag %1: %2 (row %3 of %4)")
+        .arg(from, offered ? QStringLiteral("no pasteboard row") : QStringLiteral("the presenter does not offer the row"))
+        .arg(fromRow).arg(outline.numberOfRows);
+  }
+  if (writer != nil) {
+    NSPasteboard* pasteboard = [NSPasteboard pasteboardWithUniqueName];
+    [pasteboard clearContents];
+    [pasteboard writeObjects:@[writer]];
+    // Only a pointer-driven drag has an AppKit session.
+    NSDraggingSession* session = nil;
+    if ([source respondsToSelector:@selector(outlineView:draggingSession:willBeginAtPoint:forItems:)]) {
+      const NSPoint start = [outline.window convertPointToScreen:[outline convertPoint:press toView:nil]];
+      [source outlineView:outline draggingSession:session willBeginAtPoint:start forItems:@[dragged]];
+    }
+    MITCADTestRowDrag* info = [MITCADTestRowDrag new];
+    info.draggingSource = outline;
+    info.draggingLocation = over;
+    info.draggingPasteboard = pasteboard;
+    info.draggingDestinationWindow = outline.window;
+    info.draggingSourceOperationMask = NSDragOperationMove;
+    const NSDragOperation operation = [source outlineView:outline validateDrop:(id<NSDraggingInfo>)info
+                                             proposedItem:target proposedChildIndex:NSOutlineViewDropOnItemIndex];
+    bool accepted = false;
+    if (operation != NSDragOperationNone) {
+      accepted = [source outlineView:outline acceptDrop:(id<NSDraggingInfo>)info item:target
+                          childIndex:NSOutlineViewDropOnItemIndex];
+    }
+    if ([source respondsToSelector:@selector(outlineView:draggingSession:endedAtPoint:operation:)]) {
+      [source outlineView:outline draggingSession:session endedAtPoint:[outline.window convertPointToScreen:over]
+                operation:accepted ? NSDragOperationMove : NSDragOperationNone];
+    }
+    [pasteboard releaseGlobally];
+    outcome = accepted ? QStringLiteral("moved") : QStringLiteral("refused");
+  }
+  qInfo().noquote() << QStringLiteral("Native test: row drag %1 onto %2: %3").arg(from, to, outcome);
+  return true;
+}
+
+bool focusedIn(const QString& identifier, const QRegularExpression* editor, QString& detail) {
+  NSWindow* window = targetWindow();
+  if (!active() || window == nil) return false;
+  NSView* root = window.contentView.superview != nil ? window.contentView.superview : window.contentView;
+  NSView* view = identifiedView(root, identifier);
+  NSResponder* responder = window.firstResponder;
+  NSTextView* fieldEditor = [responder isKindOfClass:NSTextView.class] && ((NSTextView*)responder).fieldEditor
+                                ? (NSTextView*)responder : nil;
+  NSView* focus = [responder isKindOfClass:NSView.class] ? (NSView*)responder : nil;
+  // A field editor stands for the text field it edits.
+  id edited = fieldEditor.delegate;
+  if (fieldEditor != nil && [edited isKindOfClass:NSView.class]) focus = (NSView*)edited;
+  detail = QStringLiteral("first responder %1 '%2'%3")
+               .arg(qt(NSStringFromClass(responder.class)), qt(focus.accessibilityIdentifier),
+                    fieldEditor != nil ? QStringLiteral(" editing \"%1\"").arg(qt(fieldEditor.string)) : QString());
+  const bool inside = view != nil && focus != nil && (focus == view || [focus isDescendantOf:view]) && viewVisible(focus);
+  if (editor == nullptr) return inside && fieldEditor == nil;
+  return inside && fieldEditor != nil && editor->match(qt(fieldEditor.string)).hasMatch();
+}
+
+bool selectedRow(const QString& outlineIdentifier, const QString& row, QString& detail) {
+  NSWindow* window = documentWindow();
+  if (!active() || window == nil) return false;
+  NSView* root = window.contentView.superview != nil ? window.contentView.superview : window.contentView;
+  NSView* found = identifiedView(root, outlineIdentifier);
+  if ([found isKindOfClass:NSScrollView.class]) found = ((NSScrollView*)found).documentView;
+  if (![found isKindOfClass:NSOutlineView.class]) {
+    detail = QStringLiteral("no native outline");
+    return false;
+  }
+  NSOutlineView* outline = (NSOutlineView*)found;
+  // The hidden presenter's selected rows, by their stable identifiers.
+  QStringList shared;
+  for (QWidget* widget : QApplication::allWidgets()) {
+    auto* view = qobject_cast<QAbstractItemView*>(widget);
+    if (view == nullptr || view->objectName() != outlineIdentifier || view->selectionModel() == nullptr) continue;
+    for (const QModelIndex& index : view->selectionModel()->selectedIndexes()) {
+      if (index.column() == 0) shared << index.data(NativeControlIdentifierRole).toString();
+    }
+  }
+  QStringList native;
+  for (NSUInteger index = outline.selectedRowIndexes.firstIndex; index != NSNotFound;
+       index = [outline.selectedRowIndexes indexGreaterThanIndex:index]) {
+    const NSInteger selected = NSInteger(index);
+    NSView* cell = [outline viewAtColumn:0 row:selected makeIfNecessary:YES];
+    QString name = qt(cell.accessibilityIdentifier);
+    // In sight within the bounded viewport.
+    if (!NSContainsRect(NSInsetRect(outline.visibleRect, -1, -1), [outline rectOfRow:selected])) {
+      name += QStringLiteral(" (out of sight)");
+    }
+    native << name;
+  }
+  const QString nativeText = native.isEmpty() ? QStringLiteral("-") : native.join(QStringLiteral(", "));
+  const QString sharedText = shared.isEmpty() ? QStringLiteral("-") : shared.join(QStringLiteral(", "));
+  detail = QStringLiteral("native %1, presenter %2").arg(nativeText, sharedText);
+  // "*": whichever row the presenter selected, also natively and in sight.
+  if (row == QStringLiteral("*")) return nativeText == sharedText;
+  return nativeText == row && sharedText == row;
+}
+
+// mitcad#815: the selection card's Create actions and the command forms'
+// compact rows and actions, checked as actual AppKit bounds and hit tests.
+namespace {
+
+// The window's hit test at the view's centre reaches it: a real pointer
+// target, not covered by another overlay or scrolled away.
+bool reachable(NSView* view) {
+  NSView* content = view.window.contentView;
+  if (content == nil) return false;
+  const NSPoint centre = [view convertPoint:NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds))
+                                     toView:content.superview];
+  NSView* hit = [content hitTest:centre];
+  return hit == view || [hit isDescendantOf:view];
+}
+
+QString describeRect(NSRect rect) {
+  return QStringLiteral("%1,%2 %3x%4").arg(rect.origin.x).arg(rect.origin.y).arg(rect.size.width).arg(rect.size.height);
+}
+
+QString describeIn(NSView* view, NSView* space) {
+  return view == nil ? QStringLiteral("missing") : describeRect([view convertRect:view.bounds toView:space]);
+}
+
+// The view lies whole inside `area` of `space`.
+bool wholeIn(NSView* view, NSView* space, NSRect area) {
+  const NSRect rect = [view convertRect:view.bounds toView:space];
+  return rect.size.width > 1 && rect.size.height > 1 && NSContainsRect(NSInsetRect(area, -0.5, -0.5), rect);
+}
+
+void collectViews(NSView* root, const std::function<bool(NSView*)>& matches, NSMutableArray<NSView*>* found) {
+  if (root == nil) return;
+  if (matches(root)) [found addObject:root];
+  for (NSView* child in root.subviews) collectViews(child, matches, found);
+}
+
+} // namespace
+
+bool selectionCard(int expected, QString& error) {
+  NSView* content = documentWindow().contentView;
+  [content layoutSubtreeIfNeeded];
+  NSView* card = identifiedView(content, QStringLiteral("native.inspectorCard"));
+  NSView* panel = identifiedView(card, QStringLiteral("selectionCreatePanel"));
+  if (!viewVisible(card) || !viewVisible(panel)) {
+    error = QStringLiteral("the selection card does not show its Create row");
+    return false;
+  }
+  NSScrollView* scroll = panel.enclosingScrollView;
+  NSView* document = scroll.documentView;
+  if (scroll == nil || document == nil) {
+    error = QStringLiteral("the selection card has no inspector viewport");
+    return false;
+  }
+  // The card fits its actual content: nothing to scroll to reach the row.
+  const NSRect viewport = scroll.contentView.bounds;
+  if (NSHeight(document.frame) > NSHeight(viewport) + 1 || NSMinY(viewport) > 1) {
+    error = QStringLiteral("the selection card needs scrolling: content %1, viewport %2 points")
+                .arg(NSHeight(document.frame)).arg(NSHeight(viewport));
+    return false;
+  }
+  const NSRect visible = [scroll.contentView convertRect:viewport toView:card];
+  QStringList names;
+  for (int index = 0; index < 4; ++index) {
+    NSView* view = identifiedView(card, QStringLiteral("selectionCreate%1").arg(index));
+    if (view == nil || view.hiddenOrHasHiddenAncestor) continue;
+    if (![view isKindOfClass:NSButton.class]) {
+      error = QStringLiteral("Create action %1 is not an AppKit button").arg(index);
+      return false;
+    }
+    NSButton* tile = (NSButton*)view;
+    const QString name = qt(tile.accessibilityLabel);
+    if (!wholeIn(tile, card, card.bounds) || !wholeIn(tile, card, visible)) {
+      error = QStringLiteral("Create action %1 (%2) is clipped: %3 in a card of %4 x %5")
+                  .arg(index)
+                  .arg(name, describeIn(tile, card))
+                  .arg(card.bounds.size.width)
+                  .arg(card.bounds.size.height);
+      return false;
+    }
+    // Its label is whole, as the shared buttons' two lines: not elided.
+    NSView* text = findView(tile, [](NSView* child) { return [child isKindOfClass:NSTextField.class]; });
+    if (![text isKindOfClass:NSTextField.class] || qt(((NSTextField*)text).stringValue).trimmed().isEmpty()) {
+      error = QStringLiteral("Create action %1 (%2) has no visible label").arg(index).arg(name);
+      return false;
+    }
+    NSTextField* caption = (NSTextField*)text;
+    const NSSize needed = [caption.cell cellSizeForBounds:NSMakeRect(0, 0, CGFLOAT_MAX, CGFLOAT_MAX)];
+    if (caption.bounds.size.width + 0.5 < needed.width || caption.bounds.size.height + 0.5 < needed.height) {
+      error = QStringLiteral("Create action %1 (%2) elides its label: %3 x %4 of %5 x %6 points")
+                  .arg(index)
+                  .arg(name)
+                  .arg(caption.bounds.size.width)
+                  .arg(caption.bounds.size.height)
+                  .arg(needed.width)
+                  .arg(needed.height);
+      return false;
+    }
+    if (!reachable(tile)) {
+      error = QStringLiteral("Create action %1 (%2) is not a pointer target above the canvas").arg(index).arg(name);
+      return false;
+    }
+    names << name;
+  }
+  if (names.size() != expected) {
+    error = QStringLiteral("the selection card shows %1 Create actions, expected %2: %3")
+                .arg(names.size())
+                .arg(expected)
+                .arg(names.join(QStringLiteral(" | ")));
+    return false;
+  }
+  qInfo().noquote() << QStringLiteral("Native selection card: %1 whole, reachable Create actions (%2) in %3 x %4 points")
+                           .arg(names.size())
+                           .arg(names.join(QStringLiteral(" | ")))
+                           .arg(card.bounds.size.width)
+                           .arg(card.bounds.size.height);
+  return true;
+}
+
+bool commandLayout(const QStringList& required, QString& error) {
+  NSView* content = documentWindow().contentView;
+  [content layoutSubtreeIfNeeded];
+  NSView* card = identifiedView(content, QStringLiteral("native.inspectorCard"));
+  NSView* root = identifiedView(card, QStringLiteral("commandPanel"));
+  NSView* footer = identifiedView(card, QStringLiteral("commandButtons"));
+  NSScrollView* scroll = root.enclosingScrollView;
+  if (!viewVisible(card) || root == nil || scroll == nil || !viewVisible(footer)) {
+    error = QStringLiteral("no shown command form with its OK and Cancel under its inputs");
+    return false;
+  }
+  if (!viewVisible(identifiedView(root, QStringLiteral("commandIcon")))) {
+    error = QStringLiteral("the command form's title row lacks the command's CAD artwork");
+    return false;
+  }
+  const NSRect inputs = [scroll convertRect:scroll.bounds toView:card];
+  const NSRect visible = [scroll.contentView convertRect:scroll.contentView.bounds toView:card];
+  // OK and Cancel: whole, under the scrolling inputs, real pointer targets.
+  for (const QString& identifier : {QStringLiteral("commandCancel"), QStringLiteral("commandOk")}) {
+    NSView* button = identifiedView(footer, identifier);
+    if (!viewVisible(button) || !wholeIn(button, card, card.bounds) ||
+        NSIntersectsRect([button convertRect:button.bounds toView:card], inputs) || !reachable(button)) {
+      error = QStringLiteral("'%1' is clipped, under the inputs or not a pointer target: %2 in a card of %3 x %4, inputs %5")
+                  .arg(identifier, describeIn(button, card))
+                  .arg(card.bounds.size.width)
+                  .arg(card.bounds.size.height)
+                  .arg(describeRect(inputs));
+      return false;
+    }
+  }
+  // Captions beside their controls in aligned columns, as the shared form's
+  // rows, not above them; a list row's form has columns of its own.
+  NSMutableArray<NSView*>* captions = [NSMutableArray array];
+  collectViews(root, [](NSView* view) { return [view.accessibilityIdentifier hasPrefix:@"caption_"]; }, captions);
+  CGFloat captionLeft = -1;
+  CGFloat fieldLeft = -1;
+  int rows = 0;
+  for (NSView* caption in captions) {
+    if (caption.hiddenOrHasHiddenAncestor) continue;
+    const QString key = qt(caption.accessibilityIdentifier).mid(8);
+    NSView* field = identifiedView(root, QStringLiteral("row_") + key);
+    if (field == nil || field.hiddenOrHasHiddenAncestor) {
+      error = QStringLiteral("the caption of '%1' has no shown controls").arg(key);
+      return false;
+    }
+    const NSRect left = [caption convertRect:caption.bounds toView:root];
+    const NSRect right = [field convertRect:field.bounds toView:root];
+    if (NSMaxX(left) > NSMinX(right) + 0.5 || NSMidY(left) < NSMinY(right) - 1 || NSMidY(left) > NSMaxY(right) + 1) {
+      error = QStringLiteral("the caption of '%1' is not beside its controls: caption %2, controls %3")
+                  .arg(key, describeRect(left), describeRect(right));
+      return false;
+    }
+    if (key.contains(QLatin1Char('.'))) continue;
+    if (captionLeft < 0) {
+      captionLeft = NSMinX(left);
+      fieldLeft = NSMinX(right);
+    } else if (std::abs(NSMinX(left) - captionLeft) > 1 || std::abs(NSMinX(right) - fieldLeft) > 1) {
+      error = QStringLiteral("'%1' is not in the form's aligned columns: caption %2, controls %3")
+                  .arg(key, describeRect(left), describeRect(right));
+      return false;
+    }
+    ++rows;
+  }
+  if (rows == 0) {
+    error = QStringLiteral("the command form has no captioned rows");
+    return false;
+  }
+  // Compact clear and flip controls, as the shared panel's: icons, not text.
+  NSMutableArray<NSView*>* compact = [NSMutableArray array];
+  collectViews(root, [](NSView* view) {
+    return [view isKindOfClass:NSButton.class] &&
+           ([view.identifier hasPrefix:@"clear|"] || [view.identifier hasPrefix:@"check|"]);
+  }, compact);
+  for (NSView* view in compact) {
+    NSButton* button = (NSButton*)view;
+    const bool clear = [button.identifier hasPrefix:@"clear|"];
+    if (button.hiddenOrHasHiddenAncestor) continue;
+    if (button.title.length > 0 || (clear && (button.image == nil || NSWidth(button.bounds) > 28))) {
+      error = QStringLiteral("'%1' is a text button (%2), not a compact control")
+                  .arg(qt(button.identifier), qt(button.title));
+      return false;
+    }
+  }
+  // What must be in view as the form opens: whole without scrolling and a
+  // real pointer target (Local bodies, a value's fx tools).
+  for (const QString& identifier : required) {
+    NSView* view = identifiedView(root, identifier);
+    if (!viewVisible(view) || !wholeIn(view, card, visible) || !reachable(view)) {
+      error = QStringLiteral("'%1' needs scrolling, is clipped or is not a pointer target: %2, visible inputs %3")
+                  .arg(identifier, describeIn(view, card), describeRect(visible));
+      return false;
+    }
+  }
+  qInfo().noquote() << QStringLiteral("Native command layout: %1 captioned rows in aligned columns, OK and Cancel "
+                                      "whole under the inputs, %2 required controls in view, card %3 x %4 points")
+                           .arg(rows)
+                           .arg(required.size())
+                           .arg(card.bounds.size.width)
+                           .arg(card.bounds.size.height);
+  return true;
+}
+
+} // namespace mitcad::mac::test
+
+// ---------------------------------------------------------------------------
+// Native tile grids, group lists and utility panels (mitcad#813, mitcad#819).
+// Actions use the views' own AppKit input paths; checks read what is shown.
+
+#include <QWindow>
+
+#include "platform/macos/NativeCollection.hpp"
+
+namespace mitcad::mac::test {
+namespace {
+
+MitcadNativeTileCollection* tileGrid(const QString& identifier) {
+  NSView* view = findControl(identifier);
+  if ([view isKindOfClass:NSScrollView.class]) view = ((NSScrollView*)view).documentView;
+  return [view isKindOfClass:MitcadNativeTileCollection.class] ? (MitcadNativeTileCollection*)view : nil;
+}
+
+// A tile's view, laid out and scrolled into sight (AppKit makes only the
+// tiles in sight).
+MitcadNativeTileView* tileView(MitcadNativeTileCollection* grid, NSInteger tile) {
+  NSIndexPath* path = [NSIndexPath indexPathForItem:tile inSection:0];
+  NSCollectionViewLayoutAttributes* attributes = [grid layoutAttributesForItemAtIndexPath:path];
+  if (attributes != nil) [grid scrollRectToVisible:attributes.frame];
+  [grid layoutSubtreeIfNeeded];
+  NSCollectionViewItem* item = [grid itemAtIndexPath:path];
+  return [item.view isKindOfClass:MitcadNativeTileView.class] ? (MitcadNativeTileView*)item.view : nil;
+}
+
+// The tile whose key contains `name` or whose caption is `name`.
+NSInteger findTile(MitcadNativeTileCollection* grid, const QString& name) {
+  const NSInteger count = [grid numberOfItemsInSection:0];
+  for (NSInteger tile = 0; tile < count; ++tile) {
+    MitcadNativeTileView* view = tileView(grid, tile);
+    if (view != nil && (qt(view->key).contains(name) || qt(view->caption.stringValue) == name)) return tile;
+  }
+  return -1;
+}
+
+MitcadNativeGroupOutline* groupList(const QString& identifier) {
+  NSView* view = findControl(identifier);
+  if ([view isKindOfClass:NSScrollView.class]) view = ((NSScrollView*)view).documentView;
+  return [view isKindOfClass:MitcadNativeGroupOutline.class] ? (MitcadNativeGroupOutline*)view : nil;
+}
+
+NSInteger findGroup(NSOutlineView* outline, const QString& name) {
+  for (NSInteger row = 0; row < outline.numberOfRows; ++row) {
+    NSView* cell = [outline viewAtColumn:0 row:row makeIfNecessary:YES];
+    if ([cell isKindOfClass:NSTableCellView.class] && qt(((NSTableCellView*)cell).textField.stringValue) == name) return row;
+  }
+  return -1;
+}
+
+CGFloat lumaOf(NSColor* colour) {
+  NSColor* rgb = [colour colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+  if (rgb == nil) return 0;
+  return 0.2126 * rgb.redComponent + 0.7152 * rgb.greenComponent + 0.0722 * rgb.blueComponent;
+}
+
+// A picture with visible content, not a flat placeholder.
+bool pictured(NSImage* image) {
+  CGImageRef picture = image != nil ? [image CGImageForProposedRect:nullptr context:nil hints:nil] : nullptr;
+  if (picture == nullptr) return false;
+  NSBitmapImageRep* bitmap = [[NSBitmapImageRep alloc] initWithCGImage:picture];
+  CGFloat darkest = 1;
+  CGFloat lightest = 0;
+  const NSInteger step = std::max<NSInteger>(1, bitmap.pixelsWide / 32);
+  for (NSInteger y = 0; y < bitmap.pixelsHigh; y += step) {
+    for (NSInteger x = 0; x < bitmap.pixelsWide; x += step) {
+      NSColor* colour = [bitmap colorAtX:x y:y];
+      if (colour == nil || colour.alphaComponent < 0.5) continue;
+      const CGFloat luma = lumaOf(colour);
+      darkest = std::min(darkest, luma);
+      lightest = std::max(lightest, luma);
+    }
+  }
+  return lightest - darkest > 0.1;
+}
+
+NSWindow* utilityPanel(const QRegularExpression& title) {
+  for (NSWindow* window in nativeWindows()) {
+    if ([window isKindOfClass:MitcadNativeUtilityPanel.class] && window.visible && title.match(qt(window.title)).hasMatch()) {
+      return window;
+    }
+  }
+  return nil;
+}
+
+// Controls outside lists and grids lie within the window, without
+// scrolling its body (NativeWindowFit.hpp), and keep a usable size; long
+// wrapped texts (a part's details) a readable width.
+bool usableControls(NSWindow* window, QString& detail) {
+  NSView* content = window.contentView;
+  const NSRect bounds = NSInsetRect(content.bounds, -1, -1);
+  bool usable = true;
+  findView(content, [&](NSView* view) {
+    NSScrollView* scroll = view.enclosingScrollView;
+    const bool listed = scroll != nil && ![scroll.accessibilityIdentifier isEqualToString:@"native.secondary.body"];
+    if (!usable || [view isHiddenOrHasHiddenAncestor] || listed || ![view isKindOfClass:NSControl.class]) {
+      return false;
+    }
+    const NSRect frame = [view convertRect:view.bounds toView:content];
+    const bool text = [view isKindOfClass:NSTextField.class];
+    const bool editable = text && ((NSTextField*)view).editable;
+    const bool wrapped = text && !editable && ((NSTextField*)view).cell.wraps && ((NSTextField*)view).stringValue.length > 40;
+    const CGFloat least = editable ? 120 : wrapped ? 220 : [view isKindOfClass:NSSlider.class] ? 80 : 12;
+    if (!NSContainsRect(bounds, frame) || NSWidth(frame) < least || NSHeight(frame) < 8) {
+      detail = QStringLiteral("control '%1' (%2) at %3 is clipped or narrower than %4")
+                   .arg(qt(view.accessibilityIdentifier), qt(NSStringFromClass(view.class)), qt(NSStringFromRect(frame)))
+                   .arg(least);
+      usable = false;
+    }
+    return false;
+  });
+  return usable;
+}
+
+} // namespace
+
+bool tileAction(const QStringList& args, QString& error) {
+  const QString action = args.value(0);
+  if (action == QStringLiteral("resize")) {
+    NSWindow* window = targetWindow();
+    const int width = args.value(1).toInt();
+    const int height = args.value(2).toInt();
+    if (window == nil || window == documentWindow() || width < 300 || height < 200) {
+      error = QStringLiteral("native-tiles resize needs a focused native dialog and its size");
+      return false;
+    }
+    [window setContentSize:NSMakeSize(width, height)];
+    [window.contentView layoutSubtreeIfNeeded];
+    return true;
+  }
+  if (action == QStringLiteral("press") || action == QStringLiteral("slider")) {
+    NSView* view = findControl(args.value(1));
+    if (action == QStringLiteral("slider")) {
+      if (![view isKindOfClass:NSSlider.class] || !((NSSlider*)view).enabled) {
+        error = QStringLiteral("no enabled native slider '%1'").arg(args.value(1));
+        return false;
+      }
+      NSSlider* slider = (NSSlider*)view;
+      slider.doubleValue = args.value(2).toDouble();
+      [slider sendAction:slider.action to:slider.target];
+      return true;
+    }
+    if (![view isKindOfClass:NSButton.class] || !((NSButton*)view).enabled) {
+      error = QStringLiteral("no enabled native button '%1'").arg(args.value(1));
+      return false;
+    }
+    // AppKit's own click on the button, without making its window key.
+    [(NSButton*)view performClick:nil];
+    return true;
+  }
+  if (action == QStringLiteral("group") || action == QStringLiteral("group-star") || action == QStringLiteral("fold")) {
+    MitcadNativeGroupOutline* outline = groupList(args.value(1));
+    const NSInteger row = outline != nil ? findGroup(outline, args.value(2)) : -1;
+    if (row < 0) {
+      error = QStringLiteral("no group '%1' in the native group list '%2'").arg(args.value(2), args.value(1));
+      return false;
+    }
+    if (action == QStringLiteral("group")) {
+      [outline.window makeFirstResponder:outline];
+      [outline selectRowIndexes:[NSIndexSet indexSetWithIndex:NSUInteger(row)] byExtendingSelection:NO];
+      [outline scrollRowToVisible:row];
+      return true;
+    }
+    if (action == QStringLiteral("fold")) {
+      id item = [outline itemAtRow:row];
+      if (args.value(3) == QStringLiteral("closed")) [outline collapseItem:item];
+      else [outline expandItem:item];
+      return true;
+    }
+    NSView* cell = [outline viewAtColumn:0 row:row makeIfNecessary:YES];
+    NSView* star = findView(cell, [](NSView* view) { return bool([view isKindOfClass:NSButton.class]); });
+    if (star == nil) {
+      error = QStringLiteral("native group '%1' has no star").arg(args.value(2));
+      return false;
+    }
+    [(NSButton*)star performClick:nil];
+    return true;
+  }
+  MitcadNativeTileCollection* grid = tileGrid(args.value(1));
+  const NSInteger tile = grid != nil ? findTile(grid, args.value(2)) : -1;
+  MitcadNativeTileView* view = tile >= 0 ? tileView(grid, tile) : nil;
+  if (view == nil) {
+    error = QStringLiteral("no tile '%1' in the native grid '%2'").arg(args.value(2), args.value(1));
+    return false;
+  }
+  if (action == QStringLiteral("click") || action == QStringLiteral("dblclick")) {
+    // A press on the tile, as the pointer gives it: the tile forwards it to
+    // its grid, which chooses (a second press activates).
+    const NSInteger presses = action == QStringLiteral("dblclick") ? 2 : 1;
+    const NSPoint point = [view convertPoint:NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds)) toView:nil];
+    for (NSInteger clicks = 1; clicks <= presses; ++clicks) {
+      NSEvent* event = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:point modifierFlags:0
+          timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:view.window.windowNumber
+          context:nil eventNumber:0 clickCount:clicks pressure:1];
+      [view mouseDown:event];
+    }
+    return true;
+  }
+  if (action == QStringLiteral("star")) {
+    if (view->star.hidden) {
+      error = QStringLiteral("native tile '%1' has no star").arg(args.value(2));
+      return false;
+    }
+    [view->star performClick:nil];
+    return true;
+  }
+  if (action == QStringLiteral("hover")) {
+    const bool enter = args.value(3) != QStringLiteral("leave");
+    const NSPoint point = [view convertPoint:NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds)) toView:nil];
+    NSEvent* event = [NSEvent enterExitEventWithType:enter ? NSEventTypeMouseEntered : NSEventTypeMouseExited
+                                            location:point modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                        windowNumber:view.window.windowNumber context:nil eventNumber:0 trackingNumber:0
+                                            userData:nullptr];
+    if (enter) [view mouseEntered:event];
+    else [view mouseExited:event];
+    return true;
+  }
+  error = QStringLiteral("unknown native-tiles action '%1'").arg(action);
+  return false;
+}
+
+bool tileCheck(const QStringList& args, QString& detail) {
+  const QString check = args.value(0);
+  if (check == QStringLiteral("hover")) {
+    bool shown = false;
+    for (NSWindow* window in NSApp.windows) {
+      shown = shown || ([window.identifier isEqualToString:@"native.tileHover"] && window.visible);
+    }
+    detail = QStringLiteral("hover card shown=%1").arg(shown);
+    return shown == (args.value(1) == QStringLiteral("true"));
+  }
+  if (check == QStringLiteral("focus")) {
+    // The utility panel in front, the keyboard with the document (its
+    // command form or canvas), as the Qt picker shows without activating.
+    const QRegularExpression title(args.value(1));
+    NSWindow* panel = utilityPanel(title);
+    NSWindow* document = documentWindow();
+    NSWindow* key = NSApp.keyWindow;
+    detail = QStringLiteral("panel=%1 floating=%2 panelKey=%3 key=%4 document=%5 active=%6")
+                 .arg(panel != nil).arg(panel != nil && panel.level >= NSFloatingWindowLevel)
+                 .arg(panel != nil && panel.keyWindow).arg(qt(key.title), qt(document.title)).arg(bool(NSApp.active));
+    return panel != nil && panel.level >= NSFloatingWindowLevel && !panel.keyWindow && key == document;
+  }
+  if (check == QStringLiteral("document")) {
+    // The keyboard returned to the document once a panel closed.
+    NSWindow* key = NSApp.keyWindow;
+    detail = QStringLiteral("key=%1 active=%2").arg(qt(key.title)).arg(bool(NSApp.active));
+    return key != nil && key == documentWindow();
+  }
+  if (check == QStringLiteral("qt-hidden")) {
+    // The presenter is never on the screen: no Qt window takes input.
+    for (QWidget* widget : QApplication::topLevelWidgets()) {
+      if (widget->objectName() != args.value(1)) continue;
+      const bool offscreen = widget->testAttribute(Qt::WA_DontShowOnScreen);
+      const bool exposed = widget->windowHandle() != nullptr && widget->windowHandle()->isExposed();
+      if (!offscreen || exposed) {
+        detail = QStringLiteral("Qt presenter '%1' offscreen=%2 exposed=%3").arg(args.value(1)).arg(offscreen).arg(exposed);
+        return false;
+      }
+    }
+    const QRegularExpression title(args.value(2));
+    for (NSWindow* window in NSApp.windows) {
+      const QString kind = qt(NSStringFromClass(window.class));
+      if (window.visible && (kind.startsWith(QStringLiteral("QNS")) || kind.startsWith(QStringLiteral("QCocoa"))) &&
+          title.match(qt(window.title)).hasMatch()) {
+        detail = QStringLiteral("a visible Qt window '%1' (%2)").arg(qt(window.title), kind);
+        return false;
+      }
+    }
+    detail.clear();
+    return true;
+  }
+  if (check == QStringLiteral("groups")) {
+    // A source list wide enough for its names, with at least this many rows.
+    MitcadNativeGroupOutline* outline = groupList(args.value(1));
+    NSScrollView* scroll = outline.enclosingScrollView;
+    if (outline == nil || scroll == nil) {
+      detail = QStringLiteral("no native group list '%1'").arg(args.value(1));
+      return false;
+    }
+    const NSRect frame = [scroll convertRect:scroll.bounds toView:nil];
+    detail = QStringLiteral("group list %1x%2 with %3 rows").arg(NSWidth(frame)).arg(NSHeight(frame)).arg(outline.numberOfRows);
+    if (NSWidth(frame) < 150 || NSHeight(frame) < 100 || outline.numberOfRows < args.value(2).toInt()) return false;
+    for (NSInteger row = 0; row < outline.numberOfRows; ++row) {
+      NSView* cell = [outline viewAtColumn:0 row:row makeIfNecessary:YES];
+      NSTextField* text = [cell isKindOfClass:NSTableCellView.class] ? ((NSTableCellView*)cell).textField : nil;
+      if (text == nil || text.stringValue.length == 0 ||
+          NSWidth(text.frame) < std::min<CGFloat>(80, text.intrinsicContentSize.width)) {
+        detail += QStringLiteral("; row %1 is not readable").arg(row);
+        return false;
+      }
+    }
+    return true;
+  }
+  MitcadNativeTileCollection* grid = tileGrid(args.value(1));
+  if (grid == nil) {
+    detail = QStringLiteral("no native tile grid '%1'").arg(args.value(1));
+    return false;
+  }
+  const NSInteger count = [grid numberOfItemsInSection:0];
+  if (check == QStringLiteral("count")) {
+    detail = QStringLiteral("%1 tiles").arg(count);
+    return count == args.value(2).toInt();
+  }
+  if (check == QStringLiteral("pictures")) {
+    int pictures = 0;
+    for (NSInteger tile = 0; tile < count; ++tile) {
+      MitcadNativeTileView* view = tileView(grid, tile);
+      if (view != nil && view->hasPicture && pictured(view->picture.image) && NSWidth(view->picture.frame) >= 16) ++pictures;
+    }
+    detail = QStringLiteral("%1 of %2 tiles have pictures").arg(pictures).arg(count);
+    return pictures >= args.value(2).toInt();
+  }
+  if (check == QStringLiteral("captions")) {
+    for (NSInteger tile = 0; tile < count; ++tile) {
+      MitcadNativeTileView* view = tileView(grid, tile);
+      if (view == nil) {
+        detail = QStringLiteral("tile %1 is not shown").arg(tile);
+        return false;
+      }
+      NSTextField* caption = view->caption;
+      const BOOL chosen = view->chosen;
+      __block CGFloat contrast = 0;
+      [view.effectiveAppearance performAsCurrentDrawingAppearance:^{
+        NSColor* behind = chosen ? NSColor.selectedContentBackgroundColor : NSColor.windowBackgroundColor;
+        contrast = std::fabs(lumaOf(caption.textColor) - lumaOf(behind));
+      }];
+      const NSRect frame = caption.frame;
+      detail = QStringLiteral("tile %1 caption '%2' %3 font %4 contrast %5")
+                   .arg(tile).arg(qt(caption.stringValue), qt(NSStringFromRect(frame))).arg(caption.font.pointSize).arg(contrast);
+      if (caption.hidden || caption.stringValue.length == 0 || caption.font.pointSize < 11 || NSHeight(frame) < 12 ||
+          NSWidth(frame) < std::min<CGFloat>(60, caption.intrinsicContentSize.width) ||
+          !NSContainsRect(NSInsetRect(view.bounds, -1, -1), frame) || contrast < 0.35) {
+        return false;
+      }
+    }
+    return true;
+  }
+  if (check == QStringLiteral("current")) {
+    const NSInteger tile = findTile(grid, args.value(2));
+    NSIndexPath* selected = grid.selectionIndexPaths.anyObject;
+    detail = QStringLiteral("tile %1, selected %2").arg(tile).arg(selected != nil ? selected.item : NSInteger(-1));
+    return tile >= 0 && selected != nil && selected.item == tile;
+  }
+  if (check == QStringLiteral("star")) {
+    const NSInteger tile = findTile(grid, args.value(2));
+    MitcadNativeTileView* view = tile >= 0 ? tileView(grid, tile) : nil;
+    detail = QStringLiteral("tile %1 starred=%2").arg(tile).arg(view != nil && view->starred);
+    return view != nil && !view->star.hidden && bool(view->starred) == (args.value(3) == QStringLiteral("on"));
+  }
+  if (check == QStringLiteral("tile-size")) {
+    MitcadNativeTileView* view = count > 0 ? tileView(grid, 0) : nil;
+    const CGFloat side = args.value(2).toDouble();
+    detail = QStringLiteral("picture %1, tile %2").arg(view != nil ? qt(NSStringFromRect(view->picture.frame)) : QString(),
+                                                      view != nil ? qt(NSStringFromRect(view.frame)) : QString());
+    return view != nil && std::fabs(view->side - side) < 0.5 && std::fabs(NSWidth(view->picture.frame) - side) < 0.5 &&
+           NSWidth(view.frame) >= side;
+  }
+  if (check == QStringLiteral("layout")) {
+    // Usable bounds: at least one whole tile in sight, readable groups and
+    // every control of the window inside it.
+    NSScrollView* scroll = grid.enclosingScrollView;
+    NSWindow* window = grid.window;
+    const NSSize item = ((NSCollectionViewFlowLayout*)grid.collectionViewLayout).itemSize;
+    const NSRect frame = scroll != nil ? [scroll convertRect:scroll.bounds toView:window.contentView] : NSZeroRect;
+    detail = QStringLiteral("grid %1, tile %2x%3, window %4")
+                 .arg(qt(NSStringFromRect(frame))).arg(item.width).arg(item.height)
+                 .arg(qt(NSStringFromRect(window.contentView.bounds)));
+    if (window == nil || NSWidth(frame) < item.width + 16 || NSHeight(frame) < item.height ||
+        !NSContainsRect(NSInsetRect(window.contentView.bounds, -1, -1), frame)) {
+      return false;
+    }
+    NSView* list = findView(window.contentView, [](NSView* view) { return bool([view isKindOfClass:MitcadNativeGroupOutline.class]); });
+    if (list != nil && NSWidth(list.enclosingScrollView.frame) < 150) {
+      detail += QStringLiteral("; the group list is %1 wide").arg(NSWidth(list.enclosingScrollView.frame));
+      return false;
+    }
+    QString controls;
+    if (!usableControls(window, controls)) {
+      detail += QStringLiteral("; ") + controls;
+      return false;
+    }
+    return true;
+  }
+  detail = QStringLiteral("unknown native tile check '%1'").arg(check);
+  return false;
+}
+
+} // namespace mitcad::mac::test
+
+// --- Shared layout bounds, real pointer input and dialog button order
+// (mitcad#812, mitcad#817).
+
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QGridLayout>
+#include <QHBoxLayout>
+#include <QSlider>
+
+#include "platform/macos/NativeLayout.hpp"
+
+namespace mitcad::mac::test {
+namespace {
+
+NSRect frameIn(NSView* view, NSView* reference) { return [view convertRect:view.bounds toView:reference]; }
+
+QString describeLayoutRect(const NSRect& rect) {
+  return QStringLiteral("x=%1 y=%2 width=%3 height=%4")
+      .arg(rect.origin.x, 0, 'f', 1).arg(rect.origin.y, 0, 'f', 1)
+      .arg(rect.size.width, 0, 'f', 1).arg(rect.size.height, 0, 'f', 1);
+}
+
+bool sameRow(const NSRect& a, const NSRect& b) { return NSMaxY(a) > NSMinY(b) && NSMinY(a) < NSMaxY(b); }
+
+NSView* buttonTitled(NSView* root, const QRegularExpression& expression, bool enabledOnly) {
+  return findView(root, [&](NSView* view) {
+    if (![view isKindOfClass:NSButton.class] || !viewVisible(view)) return false;
+    if (enabledOnly && !((NSButton*)view).enabled) return false;
+    QString title = qt(((NSButton*)view).title);
+    title.remove(QLatin1Char('&'));
+    return expression.match(title).hasMatch();
+  });
+}
+
+// Real AppKit mouse input: the window hit-tests the press and the control
+// tracks the queued drags and release, as for input from the pointer.
+bool pointerEvents(NSView* view, NSPoint from, NSPoint to, QString& error) {
+  NSWindow* window = view.window;
+  if (window == nil) { error = QStringLiteral("the native pointer target has no window"); return false; }
+  // Clear of a scrolled body's edges, where overlay scrollers appear.
+  [view scrollRectToVisible:NSInsetRect(view.bounds, -24, -40)];
+  [NSApp activate];
+  [window makeKeyAndOrderFront:nil];
+  [window layoutIfNeeded];
+  NSView* content = window.contentView;
+  [content layoutSubtreeIfNeeded];
+  // A release left queued by earlier input would end this control's
+  // tracking at its press.
+  const NSEventMask mouse = NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp | NSEventMaskLeftMouseDragged;
+  while ([NSApp nextEventMatchingMask:mouse untilDate:[NSDate distantPast] inMode:NSDefaultRunLoopMode dequeue:YES] != nil) {}
+  const NSPoint start = [view convertPoint:from toView:nil];
+  const NSPoint end = [view convertPoint:to toView:nil];
+  NSView* hit = [content hitTest:[content.superview convertPoint:start fromView:nil]];
+  if (hit != view && ![hit isDescendantOf:view]) {
+    error = QStringLiteral("the native pointer target is covered by %1").arg(qt(NSStringFromClass(hit.class)));
+    return false;
+  }
+  const NSTimeInterval time = NSProcessInfo.processInfo.systemUptime;
+  const int steps = NSEqualPoints(start, end) ? 0 : 6;
+  for (int step = 1; step <= steps; ++step) {
+    const CGFloat part = CGFloat(step) / CGFloat(steps);
+    const NSPoint point = NSMakePoint(start.x + (end.x - start.x) * part, start.y + (end.y - start.y) * part);
+    [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged location:point modifierFlags:0
+        timestamp:time + 0.01 * step windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1]
+             atStart:NO];
+  }
+  [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:end modifierFlags:0
+      timestamp:time + 0.01 * (steps + 1) windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0]
+           atStart:NO];
+  NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:start modifierFlags:0
+      timestamp:time windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
+  if (window.keyWindow) {
+    [window sendEvent:down];
+  } else {
+    // An inactive test session would spend the first click on activation.
+    qInfo().noquote() << QStringLiteral("Native pointer: the window is not key; the press goes to its hit view");
+    [hit mouseDown:down];
+  }
+  // A control that does not track in a loop of its own receives the drags
+  // and the release now, through the application, before the next step.
+  while (NSEvent* pending = [NSApp nextEventMatchingMask:mouse untilDate:[NSDate distantPast]
+                                                  inMode:NSDefaultRunLoopMode dequeue:YES]) {
+    [NSApp sendEvent:pending];
+  }
+  return true;
+}
+
+bool buttonOrderIn(NSView* content, const QStringList& patterns, QString& error) {
+  if (content == nil || patterns.isEmpty()) { error = QStringLiteral("no native window for the button order"); return false; }
+  [content layoutSubtreeIfNeeded];
+  std::vector<NSRect> frames;
+  QStringList placed;
+  NSView* last = nil;
+  for (const QString& pattern : patterns) {
+    NSView* button = buttonTitled(content, QRegularExpression(pattern), false);
+    if (button == nil) { error = QStringLiteral("no visible native button matching '%1'").arg(pattern); return false; }
+    const NSRect frame = frameIn(button, content);
+    placed << QStringLiteral("%1 [%2]").arg(qt(((NSButton*)button).title), describeLayoutRect(frame));
+    if (!NSContainsRect(NSInsetRect(content.bounds, -0.5, -0.5), frame) ||
+        (!frames.empty() && (NSMinX(frame) < NSMaxX(frames.back()) - 0.5 || !sameRow(frame, frames.back())))) {
+      error = QStringLiteral("native buttons are not left to right as %1: %2")
+                  .arg(patterns.join(QStringLiteral(", ")), placed.join(QStringLiteral("; ")));
+      return false;
+    }
+    frames.push_back(frame);
+    last = button;
+  }
+  // The last expected action is the rightmost of its row.
+  NSView* beyond = findView(content, [&](NSView* view) {
+    if (view == last || ![view isKindOfClass:NSButton.class] || !viewVisible(view)) return false;
+    const NSRect rect = frameIn(view, content);
+    return NSMinX(rect) >= NSMaxX(frames.back()) - 0.5 && sameRow(rect, frames.back());
+  });
+  if (beyond != nil) {
+    error = QStringLiteral("native button '%1' is right of '%2'")
+                .arg(qt(((NSButton*)beyond).title), qt(((NSButton*)last).title));
+    return false;
+  }
+  qInfo().noquote() << QStringLiteral("Native button order: %1").arg(placed.join(QStringLiteral("; ")));
+  return true;
+}
+
+} // namespace
+
+bool controlBounds(const QString& identifier, double minimumWidth, const QString& labelPattern, QString& error) {
+  NSView* view = findControl(identifier);
+  if (view == nil || view.window == nil) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
+  NSView* content = view.window.contentView;
+  [content layoutSubtreeIfNeeded];
+  [view scrollRectToVisible:view.bounds];
+  const NSRect frame = frameIn(view, content);
+  const QString where = QStringLiteral("native '%1' at %2 in %3x%4")
+                            .arg(identifier, describeLayoutRect(frame))
+                            .arg(content.bounds.size.width, 0, 'f', 0)
+                            .arg(content.bounds.size.height, 0, 'f', 0);
+  if (!viewVisible(view)) { error = QStringLiteral("%1 is not visible").arg(where); return false; }
+  const NSRect shown = view.visibleRect;
+  if (shown.size.width + 0.5 < view.bounds.size.width || shown.size.height + 0.5 < view.bounds.size.height ||
+      !NSContainsRect(NSInsetRect(content.bounds, -0.5, -0.5), frame)) {
+    error = QStringLiteral("%1 is clipped to %2").arg(where, describeLayoutRect(shown));
+    return false;
+  }
+  if (view.bounds.size.width + 0.5 < minimumWidth) {
+    error = QStringLiteral("%1 is narrower than %2").arg(where).arg(minimumWidth);
+    return false;
+  }
+  const NSPoint centre = [view convertPoint:NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds)) toView:content.superview];
+  NSView* hit = [content hitTest:centre];
+  if (hit != view && ![hit isDescendantOf:view]) {
+    error = QStringLiteral("%1 is covered by %2").arg(where, qt(NSStringFromClass(hit.class)));
+    return false;
+  }
+  if (!labelPattern.isEmpty()) {
+    const QRegularExpression expression(labelPattern);
+    NSView* label = findView(content, [&](NSView* candidate) {
+      if (![candidate isKindOfClass:NSTextField.class] || ((NSTextField*)candidate).editable || !viewVisible(candidate)) {
+        return false;
+      }
+      const NSRect rect = frameIn(candidate, content);
+      return expression.match(qt(((NSTextField*)candidate).stringValue)).hasMatch() &&
+             NSMaxX(rect) <= NSMinX(frame) + 1 && sameRow(rect, frame);
+    });
+    if (label == nil) {
+      error = QStringLiteral("%1 has no label matching '%2' before it on its row").arg(where, labelPattern);
+      return false;
+    }
+  }
+  qInfo().noquote() << QStringLiteral("Native bounds: %1").arg(where);
+  return true;
+}
+
+bool buttonOrder(const QStringList& patterns, QString& error) {
+  NSWindow* window = targetWindow();
+  return buttonOrderIn(window.contentView, patterns, error);
+}
+
+bool focused(const QString& identifier) {
+  NSView* view = findControl(identifier);
+  NSResponder* responder = view.window.firstResponder;
+  if (view == nil || responder == nil) return false;
+  if (responder == view) return true;
+  if ([view isKindOfClass:NSTextField.class]) {
+    NSText* editor = ((NSTextField*)view).currentEditor;
+    return editor != nil && responder == editor;
+  }
+  return [responder isKindOfClass:NSView.class] && [(NSView*)responder isDescendantOf:view];
+}
+
+bool pointerClick(const QString& identifier, QString& error) {
+  NSView* view = findControl(identifier);
+  if (view == nil) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
+  if ([view isKindOfClass:NSControl.class] && !((NSControl*)view).enabled) {
+    error = QStringLiteral("native control '%1' is disabled").arg(identifier);
+    return false;
+  }
+  const NSPoint centre = NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds));
+  return pointerEvents(view, centre, centre, error);
+}
+
+bool pointerButton(const QRegularExpression& expression, QString& error) {
+  NSView* content = targetWindow().contentView;
+  NSView* button = buttonTitled(content.superview != nil ? content.superview : content, expression, true);
+  if (button == nil) {
+    error = QStringLiteral("no enabled native button matching '%1'").arg(expression.pattern());
+    return false;
+  }
+  const NSPoint centre = NSMakePoint(NSMidX(button.bounds), NSMidY(button.bounds));
+  return pointerEvents(button, centre, centre, error);
+}
+
+bool pointerDrag(const QString& identifier, double from, double to, QString& error) {
+  NSView* view = findControl(identifier);
+  if (view == nil) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
+  const NSRect bounds = view.bounds;
+  const CGFloat y = NSMidY(bounds);
+  if (!pointerEvents(view, NSMakePoint(NSMinX(bounds) + bounds.size.width * from, y),
+                     NSMakePoint(NSMinX(bounds) + bounds.size.width * to, y), error)) {
+    return false;
+  }
+  const NSRect frame = [view convertRect:view.bounds toView:nil];
+  // A drag past either end of a slider's track leaves it at that end.
+  if ([view isKindOfClass:NSSlider.class] && (to <= 0 || to >= 1)) {
+    NSSlider* slider = (NSSlider*)view;
+    const double expected = to <= 0 ? slider.minValue : slider.maxValue;
+    if (std::abs(slider.doubleValue - expected) > 1e-6) {
+      error = QStringLiteral("native slider '%1' stopped at %2, not %3 (window frame %4, key %5)")
+                  .arg(identifier).arg(slider.doubleValue).arg(expected)
+                  .arg(describeLayoutRect(frame)).arg(view.window.keyWindow ? 1 : 0);
+      return false;
+    }
+  }
+  return true;
+}
+
+bool resizeDialog(int width, int height, QString& error) {
+  NSWindow* window = targetWindow();
+  if (window == nil || window == documentWindow()) {
+    error = QStringLiteral("native-dialog-resize needs a focused native dialog");
+    return false;
+  }
+  // Content constraints above the window's own size priority may enlarge
+  // it again: that actual size is the narrowest the dialog supports.
+  [window setContentSize:NSMakeSize(width, height)];
+  [window layoutIfNeeded];
+  const NSSize size = window.contentView.frame.size;
+  qInfo().noquote() << QStringLiteral("Native dialog size: requested %1x%2, actual %3x%4")
+                           .arg(width).arg(height).arg(qRound(size.width)).arg(qRound(size.height));
+  return true;
+}
+
+namespace {
+
+// Synthetic presenters with the three audited shapes: a search field after
+// a check box, two equal fields in one form row, and slider rows in two
+// forms side by side; plus a spanning row over stretched grid columns.
+bool layoutWidthContract(QString& error) {
+  QWidget presenter;
+  presenter.setAttribute(Qt::WA_DontShowOnScreen);
+  auto* column = new QVBoxLayout(&presenter);
+  auto* top = new QHBoxLayout;
+  top->addStretch(1);
+  auto* only = new QCheckBox(QStringLiteral("Only limited"));
+  only->setObjectName(QStringLiteral("contract.only"));
+  auto* search = new QLineEdit;
+  search->setObjectName(QStringLiteral("contract.search"));
+  search->setMinimumWidth(180);
+  search->setMaximumWidth(260);
+  top->addWidget(only);
+  top->addWidget(search);
+  column->addLayout(top);
+  auto* form = new QFormLayout;
+  auto* display = new QLineEdit;
+  display->setObjectName(QStringLiteral("contract.display"));
+  auto* name = new QLineEdit;
+  name->setObjectName(QStringLiteral("contract.name"));
+  auto* email = new QLineEdit;
+  email->setObjectName(QStringLiteral("contract.email"));
+  auto* author = new QHBoxLayout;
+  author->addWidget(name, 1);
+  author->addWidget(email, 1);
+  form->addRow(QStringLiteral("Display name:"), display);
+  form->addRow(QStringLiteral("Author:"), author);
+  column->addLayout(form);
+  auto* speeds = new QHBoxLayout;
+  for (const QString& side : {QStringLiteral("left"), QStringLiteral("right")}) {
+    auto* speedForm = new QFormLayout;
+    for (int index = 0; index < 2; ++index) {
+      auto* row = new QHBoxLayout;
+      auto* slider = new QSlider(Qt::Horizontal);
+      slider->setObjectName(QStringLiteral("contract.%1%2").arg(side).arg(index));
+      slider->setMinimumWidth(70);
+      slider->setRange(10, 400);
+      auto* value = new QLabel(QStringLiteral("1.00×"));
+      value->setMinimumWidth(48);
+      row->addWidget(slider, 1);
+      row->addWidget(value);
+      row->addWidget(new QPushButton(QStringLiteral("Reset")));
+      speedForm->addRow(index == 0 ? QStringLiteral("Orbit:") : QStringLiteral("Scroll speed:"), row);
+    }
+    speeds->addLayout(speedForm);
+  }
+  column->addLayout(speeds);
+  auto* grid = new QGridLayout;
+  auto* span = new QLineEdit;
+  span->setObjectName(QStringLiteral("contract.span"));
+  auto* narrow = new QLineEdit;
+  narrow->setObjectName(QStringLiteral("contract.narrow"));
+  auto* wide = new QLineEdit;
+  wide->setObjectName(QStringLiteral("contract.wide"));
+  grid->addWidget(span, 0, 0, 1, 2);
+  grid->addWidget(narrow, 1, 0);
+  grid->addWidget(wide, 1, 1);
+  grid->setColumnStretch(0, 1);
+  grid->setColumnStretch(1, 2);
+  column->addLayout(grid);
+
+  auto view = createNativeWidgetView(&presenter);
+  view->refresh();
+  NSView* root = (__bridge NSView*)view->nativeView();
+  NSWindow* fixture = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 900, 640)
+                                                  styleMask:NSWindowStyleMaskBorderless
+                                                    backing:NSBackingStoreBuffered defer:NO];
+  fixture.releasedWhenClosed = NO;
+  fixture.contentView = root;
+  const auto settle = [&view, root] {
+    view->refresh();
+    for (int i = 0; i < 4; ++i) { QCoreApplication::processEvents(QEventLoop::AllEvents); }
+    [root.window layoutIfNeeded];
+    [root layoutSubtreeIfNeeded];
+  };
+  const auto rect = [root](const QString& identifier) {
+    NSView* control = identifiedView(root, identifier);
+    return control == nil || [control isHiddenOrHasHiddenAncestor] ? NSZeroRect : frameIn(control, root);
+  };
+  const auto caption = [root](const QString& text) {
+    NSView* found = findView(root, [&](NSView* candidate) {
+      return [candidate isKindOfClass:NSTextField.class] && !((NSTextField*)candidate).editable &&
+             qt(((NSTextField*)candidate).stringValue) == text;
+    });
+    return found == nil ? NSZeroRect : frameIn(found, root);
+  };
+  QString failure;
+  const auto check = [&failure](bool passed, const QString& message) {
+    if (!passed && failure.isEmpty()) { failure = message; }
+  };
+  const auto ambiguous = [](NSView* parent, const auto& self) -> NSView* {
+    if (parent.hidden) return nil;
+    if ([parent isKindOfClass:MitcadNativeLayoutView.class] && [parent hasAmbiguousLayout]) return parent;
+    for (NSView* child in parent.subviews) {
+      if (NSView* found = self(child, self)) return found;
+    }
+    return nil;
+  };
+  NSRect wideName = NSZeroRect;
+  NSRect wideEmail = NSZeroRect;
+  for (const CGFloat width : {CGFloat(900), CGFloat(640)}) {
+    [fixture setContentSize:NSMakeSize(width, 640)];
+    settle();
+    const CGFloat actual = root.bounds.size.width;
+    const NSRect onlyRect = rect(QStringLiteral("contract.only"));
+    const NSRect searchRect = rect(QStringLiteral("contract.search"));
+    const NSRect displayRect = rect(QStringLiteral("contract.display"));
+    const NSRect nameRect = rect(QStringLiteral("contract.name"));
+    const NSRect emailRect = rect(QStringLiteral("contract.email"));
+    const NSRect spanRect = rect(QStringLiteral("contract.span"));
+    const NSRect narrowRect = rect(QStringLiteral("contract.narrow"));
+    const NSRect wideRect = rect(QStringLiteral("contract.wide"));
+    const NSRect displayCaption = caption(QStringLiteral("Display name:"));
+    const NSRect authorCaption = caption(QStringLiteral("Author:"));
+    const QString at = QStringLiteral(" at width %1").arg(actual, 0, 'f', 0);
+    check(searchRect.size.width >= 179.5 && searchRect.size.width <= 260.5 && sameRow(onlyRect, searchRect) &&
+              NSMaxX(onlyRect) <= NSMinX(searchRect) + 0.5 && NSMinX(onlyRect) > actual / 3,
+          QStringLiteral("search after the check box lost its shared width or place (%1)%2")
+              .arg(describeLayoutRect(searchRect), at));
+    check(nameRect.size.width >= 80 && std::abs(nameRect.size.width - emailRect.size.width) <= 1 &&
+              sameRow(nameRect, emailRect) && NSMaxX(nameRect) <= NSMinX(emailRect) + 0.5,
+          QStringLiteral("stretched form fields are not equal halves (%1, %2)%3")
+              .arg(describeLayoutRect(nameRect), describeLayoutRect(emailRect), at));
+    check(std::abs(NSMinX(displayRect) - NSMinX(nameRect)) <= 1 &&
+              (std::abs(NSMaxX(displayCaption) - NSMaxX(authorCaption)) <= 1 ||
+               std::abs(NSMinX(displayCaption) - NSMinX(authorCaption)) <= 1) &&
+              NSMaxX(authorCaption) <= NSMinX(nameRect) && displayCaption.size.width > 0,
+          QStringLiteral("form labels and fields lost their column alignment%1").arg(at));
+    for (int index = 0; index < 2; ++index) {
+      const NSRect left = rect(QStringLiteral("contract.left%1").arg(index));
+      const NSRect right = rect(QStringLiteral("contract.right%1").arg(index));
+      check(left.size.width >= 69.5 && right.size.width >= 69.5 && std::abs(left.size.width - right.size.width) <= 2 &&
+                NSMaxX(left) < NSMinX(right),
+            QStringLiteral("side-by-side slider rows are not usable and symmetric (%1, %2)%3")
+                .arg(describeLayoutRect(left), describeLayoutRect(right), at));
+    }
+    check(spanRect.size.width + 1 >= narrowRect.size.width + wideRect.size.width &&
+              std::abs(wideRect.size.width - 2 * narrowRect.size.width) <= 2,
+          QStringLiteral("grid span or column stretch was lost (%1, %2, %3)%4")
+              .arg(describeLayoutRect(spanRect), describeLayoutRect(narrowRect), describeLayoutRect(wideRect), at));
+    if (NSView* found = ambiguous(root, ambiguous)) {
+      check(false, QStringLiteral("a converted layout is ambiguous (%1)%2").arg(describeLayoutRect(frameIn(found, root)), at));
+    }
+    if (width > 800) {
+      wideName = nameRect;
+      wideEmail = emailRect;
+    }
+    qInfo().noquote() << QStringLiteral("Native layout contract%1: search %2, name %3, email %4")
+                             .arg(at, describeLayoutRect(searchRect), describeLayoutRect(nameRect), describeLayoutRect(emailRect));
+  }
+  // A hidden field leaves no space; its neighbour keeps its own width in a
+  // form whose fields stay at their size hints, as in the Qt layout.
+  [fixture setContentSize:NSMakeSize(900, 640)];
+  email->hide();
+  settle();
+  const NSRect alone = rect(QStringLiteral("contract.name"));
+  check(rect(QStringLiteral("contract.email")).size.width == 0 && alone.size.width >= 80 &&
+            std::abs(alone.size.width - wideName.size.width) <= 1,
+        QStringLiteral("a hidden field changed its neighbour's width (%1)").arg(describeLayoutRect(alone)));
+  email->show();
+  settle();
+  const NSRect again = rect(QStringLiteral("contract.email"));
+  check(std::abs(again.size.width - wideEmail.size.width) <= 1,
+        QStringLiteral("a shown field did not regain its share (%1)").arg(describeLayoutRect(again)));
+  fixture.contentView = nil;
+  [fixture close];
+  if (!failure.isEmpty()) {
+    error = failure;
+    return false;
+  }
+  return true;
+}
+
+// A real native dialog whose insertion order differs from the role order.
+bool buttonOrderContract(QString& error) {
+  int accepted = 0;
+  int rejected = 0;
+  int helped = 0;
+  QDialog dialog;
+  dialog.setWindowTitle(QStringLiteral("Native button order regression"));
+  auto* layout = new QVBoxLayout(&dialog);
+  auto* field = new QLineEdit;
+  field->setObjectName(QStringLiteral("order.field"));
+  layout->addWidget(field);
+  auto* box = new QDialogButtonBox;
+  QPushButton* primary = box->addButton(QStringLiteral("Primary"), QDialogButtonBox::AcceptRole);
+  box->addButton(QStringLiteral("Dismiss"), QDialogButtonBox::RejectRole);
+  QPushButton* helper = box->addButton(QStringLiteral("Helper"), QDialogButtonBox::ActionRole);
+  QPushButton* restore = box->addButton(QStringLiteral("Restore"), QDialogButtonBox::ResetRole);
+  box->addButton(QStringLiteral("Guide"), QDialogButtonBox::HelpRole);
+  box->addButton(QStringLiteral("Discard"), QDialogButtonBox::DestructiveRole);
+  box->addButton(QStringLiteral("Use"), QDialogButtonBox::ApplyRole);
+  layout->addWidget(box);
+  primary->setAutoDefault(true);
+  primary->setDefault(true);
+  QObject::connect(box, &QDialogButtonBox::accepted, &dialog, [&accepted] { ++accepted; });
+  QObject::connect(box, &QDialogButtonBox::rejected, &dialog, [&rejected] { ++rejected; });
+  QObject::connect(helper, &QPushButton::clicked, &dialog, [&helped] { ++helped; });
+  const auto settle = [] {
+    for (int i = 0; i < 4; ++i) { QCoreApplication::processEvents(QEventLoop::AllEvents); }
+  };
+  showNativeWidget(&dialog);
+  settle();
+  NSView* anchor = findControl(QStringLiteral("order.field"));
+  NSWindow* window = anchor.window;
+  const auto fail = [&](const QString& message) {
+    error = message;
+    dialog.reject();
+    settle();
+    return false;
+  };
+  if (window == nil) { return fail(QStringLiteral("the button order fixture has no native window")); }
+  [NSApp activate];
+  [window makeKeyAndOrderFront:nil];
+  [window layoutIfNeeded];
+  const auto button = [window](const QString& title) {
+    return (NSButton*)buttonTitled(window.contentView, QRegularExpression(QStringLiteral("^%1$").arg(title)), false);
+  };
+  const auto key = [window](unsigned short code, NSString* characters) {
+    NSEvent* event = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:0
+        timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil
+        characters:characters charactersIgnoringModifiers:characters isARepeat:NO keyCode:code];
+    return bool([window performKeyEquivalent:event]);
+  };
+  QString detail;
+  if (!buttonOrderIn(window.contentView, {QStringLiteral("^Guide$"), QStringLiteral("^Restore$"), QStringLiteral("^Use$"),
+                                          QStringLiteral("^Helper$"), QStringLiteral("^Discard$"),
+                                          QStringLiteral("^Dismiss$"), QStringLiteral("^Primary$")}, detail)) {
+    return fail(detail);
+  }
+  const NSRect helperRect = frameIn(button(QStringLiteral("Helper")), window.contentView);
+  const NSRect discardRect = frameIn(button(QStringLiteral("Discard")), window.contentView);
+  const NSRect dismissRect = frameIn(button(QStringLiteral("Dismiss")), window.contentView);
+  if (NSMinX(discardRect) - NSMaxX(helperRect) < 36 || NSMinX(dismissRect) - NSMaxX(discardRect) < 36) {
+    return fail(QStringLiteral("the destructive action lost its macOS gaps"));
+  }
+  if (![button(QStringLiteral("Dismiss")).keyEquivalent isEqualToString:@"\033"] ||
+      ![button(QStringLiteral("Primary")).keyEquivalent isEqualToString:@"\r"] ||
+      button(QStringLiteral("Helper")).keyEquivalent.length != 0) {
+    return fail(QStringLiteral("Return and Escape are not on the default and rejecting actions"));
+  }
+  NSButton* helperButton = button(QStringLiteral("Helper"));
+  const NSPoint centre = NSMakePoint(NSMidX(helperButton.bounds), NSMidY(helperButton.bounds));
+  if (!pointerEvents(helperButton, centre, centre, detail)) { return fail(detail); }
+  settle();
+  if (helped != 1 || accepted != 0 || rejected != 0 || !dialog.isVisible()) {
+    return fail(QStringLiteral("a helper action accepted or dismissed the dialog"));
+  }
+  key(36, @"\r");
+  settle();
+  if (accepted != 1 || rejected != 0) { return fail(QStringLiteral("Return did not trigger only the default action")); }
+  primary->setEnabled(false);
+  settle();
+  key(36, @"\r");
+  settle();
+  if (accepted != 1 || !dialog.isVisible()) { return fail(QStringLiteral("Return accepted through a disabled default")); }
+  primary->setEnabled(true);
+  settle();
+  key(53, @"\033");
+  settle();
+  if (rejected != 1 || accepted != 1) { return fail(QStringLiteral("Escape did not reject through the rejecting action")); }
+  // Buttons added, hidden or given another role after creation.
+  box->removeButton(helper);
+  box->addButton(helper, QDialogButtonBox::RejectRole);
+  box->addButton(QStringLiteral("Later"), QDialogButtonBox::ActionRole);
+  restore->hide();
+  settle();
+  [window layoutIfNeeded];
+  if (!buttonOrderIn(window.contentView, {QStringLiteral("^Guide$"), QStringLiteral("^Use$"), QStringLiteral("^Later$"),
+                                          QStringLiteral("^Discard$"), QStringLiteral("^Helper$"),
+                                          QStringLiteral("^Dismiss$"), QStringLiteral("^Primary$")}, detail)) {
+    return fail(QStringLiteral("changed buttons kept a stale order: %1").arg(detail));
+  }
+  const NSRect guideRect = frameIn(button(QStringLiteral("Guide")), window.contentView);
+  const NSRect useRect = frameIn(button(QStringLiteral("Use")), window.contentView);
+  if (button(QStringLiteral("Restore")) != nil || NSMinX(useRect) - NSMaxX(guideRect) > 13) {
+    return fail(QStringLiteral("a hidden helper action left a gap"));
+  }
+  if (![button(QStringLiteral("Helper")).keyEquivalent isEqualToString:@"\033"]) {
+    return fail(QStringLiteral("a button given the rejecting role did not take Escape"));
+  }
+  dialog.reject();
+  settle();
+  qInfo().noquote() << QStringLiteral("Native button order contract: role order, gaps, keys, helpers and changes verified");
+  return true;
+}
+
+} // namespace
+
+bool layoutContract(QString& error) {
+  if (!layoutWidthContract(error)) return false;
+  qInfo().noquote() << QStringLiteral("Native layout contract: widths, stretch, spans, alignment and hiding verified");
+  return buttonOrderContract(error);
 }
 
 } // namespace mitcad::mac::test

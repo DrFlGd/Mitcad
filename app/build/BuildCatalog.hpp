@@ -46,6 +46,15 @@ struct Part {
   QJsonObject build;  // the manifest's `build`
   bool ownPreview = false; // the row has a picture of its own (`row_previews`, mitcad#484)
   bool defaultRow = false; // `config` is its component's default row (mitcad#491)
+  // The component's configuration table as the library gives it; an open
+  // one is chosen by its options in the part picker (mitcad#810).
+  QJsonObject table;
+  // The options chosen ({"Length": "800 mm"}): `build_place`'s
+  // `part.parameters`; empty for a row as it is. A part with options has
+  // an options key (optionsKey).
+  QJsonObject parameters;
+  // Whether its table is open: options, not only rows.
+  bool openTable() const;
 
   QString role() const;
   // "B8 30" (system, slot, grid), or the systems a connector fits.
@@ -97,6 +106,18 @@ struct Part {
 // "30 mm" -> 30; a plain number is millimetres; NaN when it is not one.
 double millimetres(const QJsonValue& value);
 
+// A part of an open table with options chosen in the part picker
+// (mitcad#810) is chosen by an options key: its tile's key with the row the
+// combination matches (empty for none) in place of the tile's row, then '?'
+// and the options as compact JSON: "lib|shelf-board|?{"Color":"'Black'"}".
+// Catalog::find gives the part with those options.
+QString optionsKey(const QString& tileKey, const QString& row, const QJsonObject& parameters);
+// The key without its options ("lib|shelf-board|"), and the options.
+QString baseKey(const QString& key);
+QJsonObject keyOptions(const QString& key);
+// The key's part without its row: "lib|shelf-board", "source:S1".
+QString keyPrefix(const QString& key);
+
 // The parts of the pickers and the connectors of junctions, read when a
 // command starts and after it placed something. Shared by the commands'
 // definitions (their lambdas), so guarded: an inspection may read it on
@@ -112,7 +133,8 @@ public:
   // and "panel" no sheets.
   void refresh(const QString& role, const CommandContext& context);
   QVector<Part> parts(const QString& role) const;
-  // A part by its key, from any role read.
+  // A part by its key, from any role read; an options key (optionsKey)
+  // gives its component's part in the key's row with the key's options.
   bool find(const QString& key, Part& part) const;
   // Why nothing is listed, when the library commands said so.
   QString problem(const QString& role) const;
@@ -140,7 +162,8 @@ private:
 };
 
 // The picker's options: the parts whose words match and whose system is
-// `system` (empty: any), the chosen one always among them.
+// `system` (empty: any), the chosen one always among them (a part with
+// options chosen in place of its tile, by its options key).
 Choices partChoices(const QVector<Part>& parts, const QString& words, const QString& system,
                     const QString& current);
 // The systems of the parts, for the picker's filter ("" all of them first).

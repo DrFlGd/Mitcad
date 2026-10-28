@@ -132,6 +132,22 @@ pub struct Nurbs {
     pub knots: Vec<f64>,
 }
 
+/// A knot inserted once ([`Nurbs::insert_knot`], mitcad#836): the same
+/// curve with one more control point.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnotInsertion {
+    /// The refined spline: the same point at every parameter.
+    pub spline: Nurbs,
+    /// The knot inserted (an existing knot when it was that near one).
+    pub knot: f64,
+    /// The refined spline's control points `first..=last` are new: they
+    /// take the place of the old `first..last` (one fewer). Those before
+    /// `first` are the old ones; those after `last` the old ones from
+    /// `last` on, one place further.
+    pub first: usize,
+    pub last: usize,
+}
+
 impl Nurbs {
     pub fn domain(&self) -> (f64, f64) {
         (
@@ -338,6 +354,83 @@ impl Nurbs {
             Vec::new()
         };
         t
+    }
+
+    /// Inserts the knot `t` once (Boehm's algorithm; The NURBS Book, A5.1
+    /// with one insertion, in homogeneous coordinates; mitcad#836): the same
+    /// curve, at the same parameters, with one more control point. Clamped
+    /// and unclamped knot vectors alike, so a closed spline stays closed. A
+    /// value within `1e-12` of the domain length of an existing knot snaps
+    /// to it. None outside the open domain (the ends of a clamped spline
+    /// are control points already) and where the knot is there `degree`
+    /// times already (the curve passes through a control point there).
+    pub fn insert_knot(&self, t: f64) -> Option<KnotInsertion> {
+        let p = self.degree;
+        let n = self.control.len();
+        if p == 0 || n <= p || self.knots.len() != n + p + 1 || !t.is_finite() {
+            return None;
+        }
+        let (lo, hi) = self.domain();
+        if hi <= lo {
+            return None;
+        }
+        let snap = 1e-12 * (hi - lo).max(1.0);
+        let t = self
+            .knots
+            .iter()
+            .copied()
+            .find(|k| (k - t).abs() <= snap)
+            .unwrap_or(t);
+        if t <= lo || t >= hi {
+            return None;
+        }
+        let s = self.knots.iter().filter(|k| **k == t).count();
+        if s >= p {
+            return None;
+        }
+        // The span of t: its last knot at or before t, so `k >= p`, and the
+        // new points are `k - p + 1..=k - s`.
+        let k = self.span(t);
+        let (first, last) = (k + 1 - p, k - s);
+        let u = &self.knots;
+        // Each point with its weight; the old ones as they were.
+        let refined: Vec<(P2, f64)> = (0..=n)
+            .map(|i| {
+                if i < first {
+                    (self.control[i], self.weight(i))
+                } else if i > last {
+                    (self.control[i - 1], self.weight(i - 1))
+                } else {
+                    // `u[i] <= t < u[i + p]`, so the span is not empty.
+                    let alpha = (t - u[i]) / (u[i + p] - u[i]);
+                    let (wa, wb) = ((1.0 - alpha) * self.weight(i - 1), alpha * self.weight(i));
+                    let w = wa + wb;
+                    let (a, b) = (self.control[i - 1], self.control[i]);
+                    (
+                        [(wa * a[0] + wb * b[0]) / w, (wa * a[1] + wb * b[1]) / w],
+                        w,
+                    )
+                }
+            })
+            .collect();
+        let mut knots = self.knots.clone();
+        knots.insert(k + 1, t);
+        let spline = Nurbs {
+            degree: p,
+            control: refined.iter().map(|(c, _)| *c).collect(),
+            weights: if self.weights.is_empty() {
+                Vec::new()
+            } else {
+                refined.iter().map(|(_, w)| *w).collect()
+            },
+            knots,
+        };
+        Some(KnotInsertion {
+            spline,
+            knot: t,
+            first,
+            last,
+        })
     }
 
     /// The piece between `t0` and `t1` as a clamped B-spline.
@@ -978,6 +1071,156 @@ mod tests {
         let (knots, mults) = cubic.piece(0.1, 0.9).distinct_knots();
         assert_eq!(knots, vec![0.1, 0.5, 0.9]);
         assert_eq!(mults, vec![4, 1, 4]);
+    }
+
+    /// The refined spline is the same curve at every parameter (within
+    /// 1e-9) and has one more control point.
+    fn same_curve(old: &Nurbs, refined: &KnotInsertion) {
+        let new = &refined.spline;
+        assert_eq!(new.control.len(), old.control.len() + 1);
+        assert_eq!(new.knots.len(), old.knots.len() + 1);
+        assert_eq!(new.domain(), old.domain());
+        assert_eq!(new.weights.is_empty(), old.weights.is_empty());
+        let (lo, hi) = old.domain();
+        for i in 0..=200 {
+            let t = lo + (hi - lo) * i as f64 / 200.0;
+            let (a, b) = (old.eval(t)[0], new.eval(t)[0]);
+            assert!(dist(a, b) < 1e-9, "at {t}: {a:?} {b:?}");
+        }
+        // The control points outside first..=last are the old ones.
+        assert_eq!(new.control[..refined.first], old.control[..refined.first]);
+        assert_eq!(new.control[refined.last + 1..], old.control[refined.last..]);
+    }
+
+    #[test]
+    fn a_knot_inserted_keeps_the_curve() {
+        // A cubic with uneven interior knots: in a span, at an existing
+        // knot (twice, up to a corner) and near the ends.
+        let cubic = Nurbs {
+            degree: 3,
+            control: vec![
+                [0.0, 0.0],
+                [10.0, 25.0],
+                [30.0, 30.0],
+                [45.0, -5.0],
+                [60.0, 10.0],
+                [75.0, 0.0],
+            ],
+            weights: Vec::new(),
+            knots: vec![0.0, 0.0, 0.0, 0.0, 0.3, 0.45, 1.0, 1.0, 1.0, 1.0],
+        };
+        for t in [0.01, 0.2, 0.3, 0.44, 0.7, 0.99] {
+            let refined = cubic.insert_knot(t).expect("inside the domain");
+            assert_eq!(refined.knot, t);
+            assert_eq!(
+                refined.last - refined.first + 1,
+                if t == 0.3 { 2 } else { 3 }
+            );
+            same_curve(&cubic, &refined);
+        }
+        // A value next to a knot snaps to it.
+        assert_eq!(cubic.insert_knot(0.3 + 1e-14).unwrap().knot, 0.3);
+        // Twice at 0.3 is three times: the curve passes through a control
+        // point there, and a fourth time is refused.
+        let twice = cubic.insert_knot(0.3).unwrap().spline;
+        let three = twice.insert_knot(0.3).unwrap();
+        same_curve(&twice, &three);
+        let on = cubic.eval(0.3)[0];
+        assert!(three.spline.control.iter().any(|c| dist(*c, on) < 1e-9));
+        assert!(three.spline.insert_knot(0.3).is_none());
+        // The ends of a clamped spline and outside are refused.
+        for t in [0.0, 1.0, -0.5, 1.5, f64::NAN] {
+            assert!(cubic.insert_knot(t).is_none(), "{t}");
+        }
+        // Default knots (clamped uniform) and a line of degree 1, whose new
+        // point is on it.
+        let quadratic = Nurbs {
+            degree: 2,
+            control: vec![[0.0, 0.0], [5.0, 8.0], [12.0, 3.0], [20.0, 9.0]],
+            weights: Vec::new(),
+            knots: clamped_uniform_knots(4, 2),
+        };
+        same_curve(&quadratic, &quadratic.insert_knot(0.25).unwrap());
+        let polyline = Nurbs {
+            degree: 1,
+            control: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+            weights: Vec::new(),
+            knots: clamped_uniform_knots(3, 1),
+        };
+        let refined = polyline.insert_knot(0.25).unwrap();
+        same_curve(&polyline, &refined);
+        assert_eq!((refined.first, refined.last), (1, 1));
+        assert!(close(refined.spline.control[1], [5.0, 0.0]));
+    }
+
+    #[test]
+    fn a_knot_inserted_into_a_rational_spline_keeps_the_circle() {
+        let arc = quarter_circle();
+        for t in [0.1, 0.5, 0.8] {
+            let refined = arc.insert_knot(t).unwrap();
+            same_curve(&arc, &refined);
+            assert_eq!(refined.spline.weights.len(), 4);
+            for i in 0..=20 {
+                let p = refined.spline.eval(i as f64 / 20.0)[0];
+                assert!((norm(p) - 1.0).abs() < 1e-12, "{p:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_knot_inserted_into_a_closed_spline_keeps_it_closed() {
+        // Periodic: a uniform unclamped cubic whose last three control
+        // points are its first three, a smooth closed curve on [3, 8].
+        let ring = [
+            [0.0, -20.0],
+            [20.0, -15.0],
+            [25.0, 5.0],
+            [5.0, 22.0],
+            [-18.0, 10.0],
+        ];
+        let mut control = ring.to_vec();
+        control.extend_from_slice(&ring[..3]);
+        let periodic = Nurbs {
+            degree: 3,
+            control,
+            weights: Vec::new(),
+            knots: (0..12).map(f64::from).collect(),
+        };
+        assert!(periodic.is_closed());
+        let (lo, hi) = periodic.domain();
+        assert_eq!((lo, hi), (3.0, 8.0));
+        for t in [3.001, 3.5, 5.0, 6.25, 7.999] {
+            let refined = periodic.insert_knot(t).unwrap();
+            same_curve(&periodic, &refined);
+            assert!(refined.spline.is_closed(), "{t}");
+            // Smooth where it closes: the same tangent at both ends.
+            let (a, b) = (refined.spline.eval(lo)[1], refined.spline.eval(hi)[1]);
+            assert!(dist(a, b) < 1e-9, "{t}: {a:?} {b:?}");
+        }
+        // Clamped and closed: the first control point is the last.
+        let clamped = Nurbs {
+            degree: 3,
+            control: vec![
+                [0.0, 0.0],
+                [30.0, -5.0],
+                [40.0, 20.0],
+                [5.0, 18.0],
+                [-10.0, 8.0],
+                [0.0, 0.0],
+            ],
+            weights: Vec::new(),
+            knots: clamped_uniform_knots(6, 3),
+        };
+        for t in [0.05, 0.5, 0.95] {
+            let refined = clamped.insert_knot(t).unwrap();
+            same_curve(&clamped, &refined);
+            assert!(refined.spline.is_closed(), "{t}");
+            // Its ends stay where they were.
+            let last = refined.spline.control.len() - 1;
+            assert_eq!(refined.spline.control[0], [0.0, 0.0]);
+            assert_eq!(refined.spline.control[last], [0.0, 0.0]);
+            assert!(refined.first >= 1 && refined.last < last);
+        }
     }
 
     #[test]

@@ -53,6 +53,8 @@ pub use bambu::version as bambu_version;
 mod cura;
 mod prusa;
 pub(crate) mod source;
+// The installed Bambu-family slicers' own presets (mitcad#830).
+pub mod installed;
 
 use std::collections::{BTreeMap, BTreeSet};
 

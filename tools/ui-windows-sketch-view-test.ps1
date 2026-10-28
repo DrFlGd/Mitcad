@@ -40,7 +40,7 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'view.environment.dark' = 'F8'; 'view.environment.light' = 'F9';
-  'view.front' = 'F11' }
+  'view.front' = 'F11' } -StepPause 0
 
 # Expect-Recoloured "dark|light": the sketch entities shown were recoloured
 # for that background, the rectangle's four lines among the fully
@@ -112,7 +112,7 @@ Write-Host '--- A sketch on XY, its origin the design origin (mitcad#254)'
 Ui-StartApp 'sketch-view'
 Ui-Step 'light background (F9)'          { Ui-Key 'F9' }
 Ui-Step 'create sketch on XY (F7)'       { Ui-CreateSketch 'F7' 'xy' }
-Ui-ExpectLog 'Create Sketch: origin planes shown' 'a new design (its empty Component1 active): the origin planes shown (mitcad#294)'
+Ui-ExpectLog 'Create Sketch: origin planes shown' 'a new design: the origin planes shown (mitcad#844)'
 Ui-ExpectLog 'Sketch view' 'the sketch view is logged'
 Ui-ExpectLog 'Sketch origin at 0.00, 0.00, 0.00 mm in the design; the design origin at x 0.00, y 0.00 mm in the sketch' `
   'the sketch origin is the design origin'
@@ -390,26 +390,18 @@ function Expect-Centred([string]$Description) {
 }
 
 # Sketch-OnOrigin plane: Create Sketch on an origin plane, clicked in the
-# view when Create Sketch shows the origin planes there, else in the
-# browser's Origin folder, which offers them (mitcad#694): New Design opens
-# with the root active beside its Component1 (mitcad#426), which keeps the
-# planes out of the view (mitcad#294).
+# view: Create Sketch shows the origin planes in every design (mitcad#844),
+# also after New Design, which opens with the root active beside its
+# Component1 (mitcad#426).
 function Sketch-OnOrigin([string]$Plane) {
   $name = $Plane.ToUpperInvariant()
   Ui-Mark
   Ui-Key 'F7'
-  Ui-ExpectNew 'Create Sketch: origin planes ' 'Create Sketch says where the origin planes are' | Out-Null
+  Ui-ExpectNew 'Create Sketch: origin planes shown' 'Create Sketch shows the origin planes' | Out-Null
+  Ui-ExpectNew "Datum $Plane at" "the $name plane can be picked" | Out-Null
   Start-Sleep -Milliseconds 300
   Ui-Sync
-  $shown = Ui-LogLines | Select-Object -Skip $script:UiMark |
-    Where-Object { $_.Contains('Create Sketch: origin planes shown') }
-  if ($shown) {
-    Ui-ClickLogged "Datum $Plane"
-  } else {
-    Ui-ExpectNew "Browser Root/Origin/$name at" "the browser offers $name" | Out-Null
-    Ui-Sync
-    Ui-ClickLogged "Browser Root/Origin/$name"
-  }
+  Ui-ClickLogged "Datum $Plane"
   Ui-ExpectNew "Sketch started on $Plane" "sketch started on $Plane" | Out-Null
 }
 

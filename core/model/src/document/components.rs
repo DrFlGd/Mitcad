@@ -73,6 +73,12 @@ pub struct InsertOptions {
     /// the joint the frame asks for (mitcad#525); `transform` is then not
     /// used. None: dropped in at `transform`.
     pub mount: Option<super::mounts::MountInput>,
+    /// Linked with options (mitcad#801): values of the design's or the
+    /// library component's user parameters, expressions of this design's
+    /// parameters; the component is then made by a derived part that
+    /// follows them. None: its bodies as they are (or as its row makes
+    /// them).
+    pub parameters: Option<BTreeMap<String, crate::features::ValueInput>>,
 }
 
 impl Default for InsertOptions {
@@ -83,6 +89,7 @@ impl Default for InsertOptions {
             name: None,
             base: None,
             mount: None,
+            parameters: None,
         }
     }
 }
@@ -712,17 +719,25 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    /// Shows or hides an occurrence (and what it contains).
+    /// Shows or hides an occurrence (and what it contains). A condition its
+    /// visibility followed (mitcad#800) is removed in the same undo step.
     pub fn set_occurrence_visible(
         &mut self,
         uid: OccurrenceUid,
         visible: bool,
     ) -> Result<(), ModelError> {
         let occurrence = self.state.require_occurrence(uid)?;
-        if occurrence.visible == visible {
+        if occurrence.visible == visible
+            && !self
+                .state
+                .bindings
+                .occurrence_visible_when
+                .contains_key(&uid)
+        {
             return Ok(());
         }
         self.apply_with(|state| {
+            state.bindings.occurrence_visible_when.remove(&uid);
             let name = state.assembly.occurrence_name(uid);
             state.assembly.occurrence_mut(uid).expect("exists").visible = visible;
             let verb = if visible { "Show" } else { "Hide" };
@@ -1111,6 +1126,9 @@ impl<K: Kernel> Document<K> {
         path: &str,
         options: &InsertOptions,
     ) -> Result<super::mounts::Inserted, ModelError> {
+        if let Some(parameters) = &options.parameters {
+            return self.insert_file_with_options(path, options, parameters);
+        }
         check_transform(&options.transform)?;
         let parent = self.state.assembly.active;
         self.state.editable(parent)?;
@@ -1194,6 +1212,8 @@ impl<K: Kernel> Document<K> {
                 joint,
                 frames,
                 plan,
+                moves: Vec::new(),
+                broken: None,
             };
             Ok((label, inserted))
         })
@@ -1393,10 +1413,13 @@ impl<K: Kernel> Document<K> {
             .iter()
             // Library parts are read from their libraries (mitcad#64).
             .filter(|c| c.library.is_none())
+            // A design linked with options is a source (mitcad#801).
+            .filter(|c| self.state.options_part(c.uid).is_none())
             .filter_map(|c| Some((c.uid, c.link.clone()?)))
             .collect();
         let mut messages = Vec::new();
         let mut updates = self.library_link_updates(&mut messages)?;
+        let sources = self.options_file_updates(base, &mut messages);
         for (component, link) in links {
             let name = self.state.assembly.name(component);
             let resolved = resolve_path(&link.path, base);
@@ -1432,8 +1455,9 @@ impl<K: Kernel> Document<K> {
         }
         // Part of opening the file: no undo step, but a new revision. The
         // new state is computed before it is taken.
-        if !updates.is_empty() {
+        if !updates.is_empty() || !sources.is_empty() {
             let mut state = self.state.clone();
+            super::component_options::apply_file_updates(&mut state, sources)?;
             for (component, link, digest, bodies, mounts) in updates {
                 // Its mount frames follow the file (mitcad#525).
                 super::mounts::update_linked_mounts(&mut state, component, &mounts)?;
@@ -1449,6 +1473,8 @@ impl<K: Kernel> Document<K> {
                     l.digest = digest;
                 }
             }
+            // A file read again leaves its old source unused (mitcad#801).
+            state.prune_library_sources(&self.state);
             let result = self.compute(&state)?;
             self.state = state;
             self.state_changed();
@@ -1471,7 +1497,7 @@ pub(super) fn check_transform(transform: &Transform) -> Result<(), ModelError> {
     }
 }
 
-fn resolve_path(path: &str, base: Option<&Path>) -> PathBuf {
+pub(super) fn resolve_path(path: &str, base: Option<&Path>) -> PathBuf {
     let p = Path::new(path);
     match base {
         Some(base) if p.is_relative() => base.join(p),

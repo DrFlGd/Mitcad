@@ -11,7 +11,11 @@
 // owns the document: the window waits as for any job (progress dialog after
 // 400 ms, MCP queries answered busy with a time to retry), and the view
 // finds the triangulations and keeps them. Cancel stops the meshing only
-// (what the job computed stays); the view meshes what is left.
+// (what the job computed stays); the view meshes what is left. A face whose
+// triangulation does not end lets the cancel return all the same, within
+// about io::kMeshAbandonSeconds (mitcad#846): the meshing is abandoned in
+// the background, and the view draws the bodies with the faces meshed by
+// then and never meshes the others itself.
 //
 // Two tiers (mitcad#635). The final tier is the view's meshes as above,
 // written into the bodies' own faces. A preview's bodies are meshed in the
@@ -82,7 +86,9 @@ struct DisplayMeshing {
 // on is not drawn, and neither this nor the view meshes it again
 // (mitcad#589: meshing such a face again took without end, on the UI
 // thread). A shape left when the meshing stopped or threw is left to the
-// view, as before.
+// view, as before; but when a cancel abandoned a face that did not end
+// (io::MeshReport::abandoned, mitcad#846), every shape is marked as meshed
+// to the end, its faces without a triangulation not drawn.
 //
 // In the interactive tier each such shape gets a stand-in meshed instead
 // (see above), unless it has one; a shape that has a triangulation on
@@ -106,7 +112,8 @@ DisplayShapes refinableShapes(const DisplayShapes& shown);
 // On the UI thread after the job: "Display meshes of <label>: 2 bodies in
 // 85 ms on the model's thread", when it meshed any, and "Display meshes of
 // <label>: 1 bodies with faces that could not be meshed (not drawn)" when
-// some faces failed. With MITCAD_MESH_TRACE (io::mesh_tracing, mitcad#635)
+// some faces failed ("Display meshes of <label>: cancelled, 1 faces that did
+// not end abandoned; ..." after an abandon, mitcad#846). With MITCAD_MESH_TRACE (io::mesh_tracing, mitcad#635)
 // also "Mesh trace <label> <tier>: <n> bodies ready, <m> meshed, <r> faces
 // reused; <the report's line>": which faces kept the triangulation they
 // had, which were meshed, the phases' times and the slowest faces.

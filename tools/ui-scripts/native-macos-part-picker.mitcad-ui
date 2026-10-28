@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: MIT
+# Native Part Picker (mitcad#819) through BUILD Profile's real Part tile:
+# the shared picker in an AppKit utility panel, never a Qt window, with its
+# pictured grid; a click chooses while the keyboard stays with the command.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+wait-idle
+native-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+window-resize 1280 820
+focus-main
+
+# The command's Part tile opens the picker in front of the document.
+mark
+command build.profile
+expect-log 'Command Profile started'
+expect-native-visible input_part true
+native-click input_part
+expect-log 'Part picker opened: 2 parts for build.profile'
+expect-native-tiles qt-hidden partPicker '^Part Picker'
+expect-native-tiles focus '^Part Picker'
+expect-native-tiles count partPickerGrid 2
+expect-native-tiles pictures partPickerGrid 2
+expect-native-tiles captions partPickerGrid
+expect-native-tiles groups partPickerGroups 3
+screenshot '${MITCAD_TEST_WORK}/picker-${MITCAD_TEST_COLOR_SCHEME}.png'
+
+# A click on a tile chooses the part in the running command; the command's
+# tile shows it and the keyboard stays with the document.
+native-tiles click partPickerGrid 'Profile 30 test'
+expect-log 'Part picker chose test-profiles/p30-test'
+expect-log 'Panel Profile tile part: Profile 30 test'
+expect-native-tiles current partPickerGrid 'Profile 30 test'
+expect-native-tiles focus '^Part Picker'
+
+# Pinned, the picker stays when the command ends (Escape reaches the
+# command, not the picker) and the next Profile takes it over.
+native-tiles press partPickerPin
+expect-log 'Part picker pinned on'
+native-key-event Escape
+expect-log 'Command Profile cancelled'
+expect-log 'Part picker stays pinned after build.profile'
+# The new command's part follows the shared rule of both frontends
+# (mitcad#452): a design without placed profiles starts with the picker's
+# first part, so the pinned picker now shows the 20 profile, not the 30
+# chosen in the cancelled command.
+mark
+command build.profile
+expect-log 'Command Profile started'
+expect-log "BUILD profile starts with test-profiles/p20-test: the picker's first part"
+expect-log 'Part picker opened: 2 parts for build.profile'
+expect-native-tiles focus '^Part Picker'
+expect-native-tiles current partPickerGrid 'Profile 20 test'
+native-tiles press partPickerPin
+expect-log 'Part picker pinned off'
+
+# Close: the panel goes and the keyboard returns to the document.
+focus-dialog '^Part Picker'
+button '^Close$'
+expect-native-dialog-gone '^Part Picker'
+expect-native-tiles document
+expect-native-tiles qt-hidden partPicker '^Part Picker'
+
+# Reopened from the tile; its search takes the keyboard, Command-W closes
+# it and the keyboard returns to the document, where the command goes on.
+mark
+native-click input_part
+expect-log 'Part picker opened: 2 parts for build.profile'
+expect-native-tiles focus '^Part Picker'
+native-type partPickerSearch 30
+expect-native-tiles count partPickerGrid 1
+key ctrl+w
+expect-native-dialog-gone '^Part Picker'
+expect-native-tiles document
+native-key-event Escape
+expect-log 'Command Profile cancelled'
+expect-native-tiles qt-hidden partPicker '^Part Picker'

@@ -990,7 +990,7 @@ cubic feet, radians, kilograms); its definition tells what they are
   element *(seen: the parameter definitions of the 2024 and 2025 projects
   `c805df44`, `bb62c161`, `33271010` and `037165e5`; verified: lengths,
   areas and angles against the types' names and the sections' published
-  areas, in `core/import-rvt/tests/rvt_corpus.rs`)*. Before 2021 the
+  areas, in `core/import-rvt/tests/corpus/rvt_corpus.rs`)*. Before 2021 the
   definition has a `m_unitType` number instead of the spec *(seen)*; it
   is not read.
 - The values: an element's own in its parameter sets
@@ -1014,11 +1014,11 @@ cubic feet, radians, kilograms); its definition tells what they are
 family (container, pages, members, metadata, schema, walks, chains,
 element views, saved meshes) and `tests/corpus.rs` on the corpus (skipped
 without `MITCAD_RVT_CORPUS`). The import: `core/import-rvt/src` (mock
-kernel), `core/import-rvt/tests/rvt_mullion_trims.rs` (the trimmed mullions' rule
+kernel), `core/import-rvt/tests/corpus/rvt_mullion_trims.rs` (the trimmed mullions' rule
 against their stored ends on three projects),
-`core/import-rvt/tests/rvt_corpus.rs` (mitcad#501: parameters in their
+`core/import-rvt/tests/corpus/rvt_corpus.rs` (mitcad#501: parameters in their
 units against the types' names on `c805df44` and `bb62c161`),
-`core/import-rvt/tests/rvt_rails.rs` (mitcad#391: the multistory stairs' copies
+`core/import-rvt/tests/corpus/rvt_rails.rs` (mitcad#391: the multistory stairs' copies
 where the file places them, the helix corner on its stored Hermite
 faces; mitcad#395: the landings with their run's treads against their
 stored treads, the mitred rails against their stored faces; mitcad#397:

@@ -3,13 +3,15 @@
 // sweeps and boolean cut; seconds in a debug build) asks its source as it
 // goes and reports its progress to it (mitcad#82), stops inside when the
 // source says so or another thread cancels,
-// and throws Cancelled; the scope restores the source before it, and a
+// and throws Cancelled, also while a thread builds its tools on all cores
+// (mitcad#843); the scope restores the source before it, and a
 // source that never says yes changes nothing.
 
 #include <atomic>
 #include <chrono>
 #include <exception>
 #include <limits>
+#include <string>
 #include <thread>
 
 #include "check.hpp"
@@ -171,12 +173,57 @@ void test_cancel_from_another_thread() {
   CHECK(after < 1000);
 }
 
+void test_cancel_tools_in_parallel() {
+  // Four rods 20 long on a plate, threaded in one feature: their tools are
+  // built at once on all cores (mitcad#843). Cancelled 100 ms in, while
+  // they are built, every job stops and the thread throws Cancelled
+  // within a second.
+  ShapePtr body = extrude("P", {rectangle(1, -10, -10, 110, 20)}, -5, 0);
+  ThreadSpec spec = m10();
+  spec.faces.clear();
+  for (int k = 0; k < 4; ++k) {
+    const ShapePtr rod = extrude("R" + std::to_string(k), {circle(k + 2, 30.0 * k, 0, 5)}, 0, 20);
+    const BooleanResult joined = boolean(BooleanOp::Join, {body.get()}, *rod);
+    CHECK(joined.pieces.size() == 1);
+    body = joined.pieces.at(0).shape;
+    spec.faces.push_back("R" + std::to_string(k) + ":side(c" + std::to_string(k + 2) + ")");
+  }
+  CancelFlag flag;
+  std::atomic<bool> started{false};
+  bool cancelled = false;
+  std::exception_ptr other;
+  std::thread worker([&] {
+    try {
+      const CancelScope scope(flag);
+      started = true;
+      modeled_thread(*body, spec);
+    } catch (const Cancelled&) {
+      cancelled = true;
+    } catch (...) {
+      other = std::current_exception();
+    }
+  });
+  while (!started) {
+    std::this_thread::yield();
+  }
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  const Clock::time_point requested = Clock::now();
+  flag.cancel();
+  worker.join();
+  const double after = ms(Clock::now() - requested);
+  std::printf("cancel: four modelled threads built in parallel stopped %.0f ms after the request\n", after);
+  CHECK(cancelled);
+  CHECK(!other);
+  CHECK(after < 1000);
+}
+
 } // namespace
 
 void cancel_tests() {
   guarded("test_scopes", test_scopes);
   guarded("test_asked_inside", test_asked_inside);
   guarded("test_cancel_from_another_thread", test_cancel_from_another_thread);
+  guarded("test_cancel_tools_in_parallel", test_cancel_tools_in_parallel);
 }
 
 } // namespace test

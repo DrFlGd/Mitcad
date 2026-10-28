@@ -25,7 +25,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin
+Ui-Init $App $Out $QtBin -StepPause 0
 
 # Place-Valid "Browser <path>": the row's place was logged and has not gone
 # out of sight since (BrowserPanel::logLayout).
@@ -118,6 +118,8 @@ Browser-Reveal 'Browser Root/Bodies/Body1' 3
 Ui-Mark
 Ui-Step 'click Body1'                    { Ui-ClickLogged 'Browser Root/Bodies/Body1' }
 Ui-ExpectNew 'Selected: 1 body [body F2.b0]' 'Body1 selected'
+# The row's selection logged before it is read below, as the Linux test waits.
+Ui-ExpectNew 'Browser selected: Root/Bodies/Body1' 'its row selected'
 Write-Host '--- Quick clicks on light bulbs (mitcad#344)'
 # Five light bulbs clicked one after the other with no pause, the mouse
 # moving a little while each button is down: each toggles its row once and
@@ -126,6 +128,9 @@ function Quick-Eyes([string[]]$Paths) {
   $places = @()
   foreach ($path in $Paths) { $places += , (Ui-LoggedAt "Browser eye $path") }
   foreach ($p in $places) {
+    # Apart from a press there a moment ago (the rows are further apart,
+    # so the round itself does not wait).
+    Ui-Apart $script:UiWindow $p[0] $p[1]
     [UiInput]::Move($script:UiWindow, $p[0], $p[1], 0)
     [UiInput]::Button($script:UiWindow, 0x201, $p[0], $p[1], 0x01)
     [UiInput]::Move($script:UiWindow, $p[0] + 2, $p[1] + 1, 0x01)

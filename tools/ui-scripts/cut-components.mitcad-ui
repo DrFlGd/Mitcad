@@ -55,7 +55,7 @@ native-action edit.redo
 expect-model-bodies 3 11680
 
 # Edit the one stored feature; explicit none is a recoverable empty state.
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 mark
 native-activate native.history.F5
 expect-log 'Editing F5 with Extrude'

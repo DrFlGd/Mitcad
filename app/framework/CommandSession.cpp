@@ -45,6 +45,9 @@ constexpr int kCachedPreviews = 24;
 // A preview shown in the interactive tier is meshed in the final one once
 // no input changed for this long and no drag goes on (mitcad#635).
 constexpr int kRefineDelayMs = 250;
+// A held drag of a motion's handle (CommandDef::dragMotion, mitcad#838)
+// that rests this long asks for the exact preview of where it is.
+constexpr int kMotionPauseMs = 250;
 constexpr double kDegreesPerRadian = 57.29577951308232;
 
 const QColor kFailedColor(0xd0, 0x20, 0x20);
@@ -163,6 +166,15 @@ CommandSession::CommandSession(const CommandDef& def, CommandHost& host, const Q
   m_refineTimer.setInterval(kRefineDelayMs);
   connect(&m_refineTimer, &QTimer::timeout, this, &CommandSession::refinePreview);
   TestSync::watch(&m_refineTimer);
+  // A held drag of a motion's handle that rests asks for the exact preview
+  // (mitcad#838).
+  m_motionPause.setSingleShot(true);
+  m_motionPause.setInterval(kMotionPauseMs);
+  connect(&m_motionPause, &QTimer::timeout, this, [this] {
+    m_motionPaused = true;
+    schedulePreview(0);
+  });
+  TestSync::watch(&m_motionPause);
   // The hover of a tangent chain (mitcad#290); emitted while the view paints.
   connect(&m_host.viewer(), &OcctViewer::hovered, this, &CommandSession::hovered, Qt::QueuedConnection);
   // The point under the mouse, for a command that previews a click there
@@ -1935,6 +1947,9 @@ void CommandSession::runPreview() {
   if (m_done || !m_presenter) {
     return;
   }
+  if (motionDeferred()) {
+    return; // the drag's pause or its end asks again (mitcad#838)
+  }
   if (m_host.modelBusy()) {
     if (!m_previewWaiting) {
       m_previewWaiting = true;
@@ -2043,9 +2058,20 @@ void CommandSession::runPreview() {
   }
   // The inputs the preview is computed from: a drag proxy's basis
   // (mitcad#636).
-  const auto computedFrom = [requested = m_state, structure = m_structureGeneration](Preview preview) {
+  // A provisional motion's, worked out now that the model is idle
+  // (mitcad#838).
+  std::optional<DragMotion> motion;
+  if (m_def.dragMotion) {
+    try {
+      motion = m_def.dragMotion(m_state, m_host);
+    } catch (const std::exception&) {
+      motion.reset();
+    }
+  }
+  const auto computedFrom = [requested = m_state, structure = m_structureGeneration, motion](Preview preview) {
     preview.state = requested;
     preview.structure = structure;
+    preview.motion = motion;
     return preview;
   };
   if (m_host.asynchronousPreviews()) {
@@ -2431,7 +2457,7 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
   } else {
     viewer.setPreview(preview.tool, OcctViewer::PreviewStyle::Add);
   }
-  exactPreviewShown(preview);
+  exactPreviewShown(preview, bodies);
 }
 
 // The preview shown is drawn through stand-ins of the interactive tier

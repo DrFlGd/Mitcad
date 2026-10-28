@@ -9,7 +9,7 @@ content is its tests (`#![cfg(test)]`); its ctest is `core.model.<area>`.
 
 | Crate folder | ctest | What it tests |
 |---|---|---|
-| `api` | `core.model.api` | Commands and queries in general: the document query, the browser, named views and DXF insert, small UI gaps and metric defaults, failed features, inserting at a timeline position, autoselected profiles, faces and edges, text parameters, parameter limits, the result caches and store, cancelling recomputes, preview placement |
+| `api` | `core.model.api` | Commands and queries in general: the document query, the browser, named views and DXF insert, small UI gaps and metric defaults, failed features, inserting at a timeline position, autoselected profiles, faces and edges, text parameters, parameter limits, the result caches and store, cancelling recomputes, preview placement, tables |
 | `appearance` | `core.model.appearance` | Appearances, texture maps, render settings, mesh export, typed properties, materials |
 | `analysis` | `core.model.analysis` | Section analyses, Measure, plane geometry, measurement objects and annotations, image references |
 | `sketch` | `core.model.sketch` | The general sketch: entities, constraints, dimensions, patterns, offsets, text, the sketch's axes, inactive constraints, one solve per edit, copy and paste |
@@ -24,9 +24,10 @@ content is its tests (`#![cfg(test)]`); its ctest is `core.model.<area>`.
 | `drawing` | `core.model.drawing` | Drawings: the sheet, stored drawings, templates and revisions, tables, the .dwg export |
 | `drawing-views` | `core.model.drawing-views` | Drawing views: features, following the model, picks, annotations on views |
 | `print` | `core.model.print` | Slicers' print settings files, purge volumes, printed fits, the print library and profiles, Print Analysis, the print bed face (and the ignored `3mf.corpus` test) |
-| `files` | `core.model.files` | Import and export, the design file, design comparison, Reorient Design, import notes |
+| `files` | `core.model.files` | Import and export, the design file, design comparison, Reorient Design, import notes, tables in the file and the comparison |
 | `build-frames` | `core.model.build-frames` | BUILD: frames, placement, closing, sides and ends, junctions |
 | `build-timber` | `core.model.build-timber` | BUILD: timber, wall bearings and splices, fasteners, profiled boards, the cut list, bound lengths, library sources |
+| `imports` | `core.model.imports` | The imports' tests that need the api (mitcad#831): the `.ipt` reader's test designs replayed by the import, the IFC import's property set levels, the `.solidcraft` import's contact sets, motion studies and motion links |
 | `support` | — | Not tests: BUILD's test library of synthetic parts, shared by the BUILD crates |
 
 ## Where a new test goes
@@ -46,6 +47,21 @@ content is its tests (`#![cfg(test)]`); its ctest is `core.model.<area>`.
   planning itself lives in `core/model-build`, which has no tests of its
   own (import `mitcad_model_build::prelude::*` for `part_info`,
   `build_junctions` and the other BUILD methods).
+- An import's test: beside the import (its crate under `core/import-*`,
+  `core/ipt`) when it checks what the import made through the model's
+  own types (the report, `Document`'s features, parameters, bodies and
+  properties), so that the import's tests need neither the api nor, for a
+  reader that does not depend on the model, the model; into `imports`
+  when it needs the api's commands or queries (mitcad#831). An import
+  crate keeps `mitcad-model-api` out of its `[dev-dependencies]`: a
+  change in the api then rebuilds `imports` alone, not each import's
+  tests. (`core/import` and `core/vcs` keep it: the replay runs the api's
+  commands its callers pass in, and the version history's tests make
+  their designs with the api's commands.)
+- A crate without tests of its own sets `test = false` in its `[lib]`
+  and has no ctest, so that a change in the model does not build and
+  link an empty test binary for it (mitcad#831); its first test removes
+  that line and adds its `mitcad_cargo_test` line.
 
 The tests name the model as `mitcad_model::…`, the drawing crate as
 `mitcad_model_drawing::…` and the api as `mitcad_model_api::…`

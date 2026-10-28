@@ -36,10 +36,10 @@ BANNER="Create Sketch: pick a plane or a planar face. Esc cancels."
 WAITING="Create Sketch is waiting for a plane: pick one or press Esc."
 
 # A block (F1.b0) in the root and beside it a cylinder (F2.b0) standing on
-# xy in the component Pin (O1): with a component the origin planes are not
-# shown for the pick (mitcad#294), so none lies behind the cylinder for a
-# click to pick through it. The root's sketches may lie on Pin's faces
-# (mitcad#220).
+# xy in the component Pin (O1). The origin planes are shown for the pick in
+# every design (mitcad#844), behind the model: a click on the cylinder's
+# side is refused, also where a plane lies behind it, never picked through
+# it. The root's sketches may lie on Pin's faces (mitcad#220).
 cat > "$WORK/model.json" << 'EOF'
 [{"cmd": "add_feature", "def": {"type": "box", "plane": {"type": "origin", "plane": "xy"},
   "corner": [0, 0], "length": 40, "width": 40, "height": 20, "operation": "new_body"}},

@@ -52,7 +52,9 @@ const QSet<QString>& reservedNamesInAnyCase() {
           "or",      "not",     "ceiling", "roundup", "mround", "trunc",   "rounddown", "int",      "mod",
           "even",    "odd",     "sum",     "average", "product", "median", "clamp",     "quotient", "ifs",
           "switch",  "choose",  "iferror", "let",     "value",  "radians", "degrees",   "pi",       "random",
-          "gravity", "speedoflight"}) {
+          "gravity", "speedoflight",
+          // Table lookups (mitcad#667).
+          "xlookup", "match", "index"}) {
       all.insert(QString::fromLatin1(name));
     }
     return all;
@@ -438,6 +440,108 @@ QString numberWithUnit(const QString& expression, const QString& unit) {
     return expression;
   }
   return unit.trimmed().isEmpty() ? number : number + QLatin1Char(' ') + unit.trimmed();
+}
+
+std::vector<SuggestedTable> suggestedTables(const QJsonArray& tables) {
+  std::vector<SuggestedTable> result;
+  result.reserve(static_cast<std::size_t>(tables.size()));
+  for (const QJsonValue& value : tables) {
+    const QJsonObject t = value.toObject();
+    SuggestedTable table;
+    table.name = t.value(QStringLiteral("name")).toString();
+    if (table.name.isEmpty()) {
+      continue;
+    }
+    table.comment = t.value(QStringLiteral("comment")).toString();
+    for (const QJsonValue& c : t.value(QStringLiteral("columns")).toArray()) {
+      const QJsonObject column = c.toObject();
+      table.columns.push_back(
+          {column.value(QStringLiteral("name")).toString(), column.value(QStringLiteral("unit")).toString()});
+    }
+    result.push_back(std::move(table));
+  }
+  return result;
+}
+
+ColumnFragment columnFragmentAt(const QString& text, int caret) {
+  ColumnFragment fragment;
+  const int at = std::clamp(caret, 0, static_cast<int>(text.size()));
+  int start = at;
+  while (start > 0 && isNameChar(text.at(start - 1))) {
+    --start;
+  }
+  int end = at;
+  while (end < text.size() && isNameChar(text.at(end))) {
+    ++end;
+  }
+  if (start == 0 || text.at(start - 1) != QLatin1Char('.')) {
+    return fragment;
+  }
+  if (end > start && !isNameStart(text.at(start))) {
+    return fragment; // "Screws.5"
+  }
+  const int dot = start - 1;
+  int tableStart = dot;
+  while (tableStart > 0 && isNameChar(text.at(tableStart - 1))) {
+    --tableStart;
+  }
+  if (tableStart == dot || !isNameStart(text.at(tableStart))) {
+    return fragment; // ".5", "2.5"
+  }
+  if (tableStart > 0 && text.at(tableStart - 1) == QLatin1Char('.')) {
+    return fragment; // a chain: "a.b.c"
+  }
+  fragment.active = true;
+  fragment.table = text.mid(tableStart, dot - tableStart);
+  fragment.start = start;
+  fragment.length = end - start;
+  fragment.typed = text.mid(start, at - start);
+  return fragment;
+}
+
+const SuggestedTable* tableNamed(const std::vector<SuggestedTable>& tables, const QString& name) {
+  for (const SuggestedTable& table : tables) {
+    if (table.name == name) {
+      return &table;
+    }
+  }
+  return nullptr;
+}
+
+std::vector<SuggestedTable::Column> matchColumns(const SuggestedTable& table, const QString& filter) {
+  const QString wanted = filter.trimmed();
+  std::vector<SuggestedTable::Column> starting;
+  std::vector<SuggestedTable::Column> containing;
+  for (const SuggestedTable::Column& column : table.columns) {
+    if (wanted.isEmpty() || column.name.startsWith(wanted, Qt::CaseInsensitive)) {
+      starting.push_back(column);
+    } else if (column.name.contains(wanted, Qt::CaseInsensitive)) {
+      containing.push_back(column);
+    }
+  }
+  starting.insert(starting.end(), containing.begin(), containing.end());
+  return starting;
+}
+
+std::vector<const SuggestedTable*> matchTables(const std::vector<SuggestedTable>& tables, const QString& filter,
+                                               bool comments) {
+  const QString wanted = filter.trimmed();
+  std::vector<const SuggestedTable*> starting;
+  std::vector<const SuggestedTable*> containing;
+  for (const SuggestedTable& table : tables) {
+    if (wanted.isEmpty() || table.name.startsWith(wanted, Qt::CaseInsensitive)) {
+      starting.push_back(&table);
+    } else if (table.name.contains(wanted, Qt::CaseInsensitive) ||
+               (comments && table.comment.contains(wanted, Qt::CaseInsensitive))) {
+      containing.push_back(&table);
+    }
+  }
+  starting.insert(starting.end(), containing.begin(), containing.end());
+  return starting;
+}
+
+QString columnLabel(const SuggestedTable::Column& column) {
+  return QStringLiteral("%1 [%2]").arg(column.name, column.unit);
 }
 
 } // namespace mitcad

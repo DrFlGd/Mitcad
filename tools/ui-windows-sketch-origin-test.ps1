@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# check-all sources: app/sketch app/MainWindow.cpp app/MainWindowVisibility.cpp app/browser
+# check-all sources: app/sketch app/MainWindow.cpp app/MainWindowVisibility.cpp app/browser app/projects tools/cli
 # Input-driven Windows UI test of the sketch's own origin and axes in a new
 # design, whose Origin folder's light bulb is off (mitcad#739), in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted); the
@@ -19,6 +19,10 @@
 #      was never switched ("Visibility Root/Origin" is never logged).
 #   5. Editing an existing sketch (the XZ one) draws its origin and axes
 #      too, and its origin is snapped to.
+#   6. New Design in a project (mitcad#844; the project made with
+#      mitcad-cli): the new design opens with its Component1 active, Create
+#      Sketch shows the origin planes, XY clicked in the view starts the
+#      sketch in Component1, and the light bulb stays off.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-sketch-origin-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -28,7 +32,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7' } -StepPause 0
 
 $hidden = "Design origin hidden in the view; the Origin folder's light bulb off"
 $shown = "Design origin shown in the view; the Origin folder's light bulb off"
@@ -168,5 +172,40 @@ Ui-ExpectNew 'Sketch finished' 'the edited sketch finished'
 Ui-WaitIdle
 Expect-OriginOff 'after the edit'
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
+
+Write-Host '--- New Design in a project: Component1 active, the origin planes for the pick (mitcad#844)'
+$cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
+  ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
+$projects = Join-Path $script:UiOut 'projects'
+Remove-Item -Recurse -Force $projects -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $projects | Out-Null
+# The Projects panel lists the test's own projects, not the user's.
+$env:MITCAD_PROJECTS_DIR = $projects
+$project = Join-Path $projects 'Shop'
+$output = & $cli project create $project --author 'Windows Tester <windows@example.invalid>' --design base.mitcad 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli project create: $($output -join ' / ')" }
+Ui-StartApp 'sketch-origin-project' @('--open', (Join-Path $project 'base.mitcad'))
+Ui-ExpectLog 'base.mitcad' 'a design of the project opened'
+Ui-Mark
+Ui-Step 'new design (Ctrl+N)'            { Ui-Key 'ctrl+n' }
+Ui-ExpectNew 'New Design: in ' 'a design of the current project, not an untitled one'
+Ui-ExpectNew 'Projects panel: naming a new design in ' 'named in the Projects panel' 20
+Ui-Step 'take its name (Enter)'          { Ui-Key 'Return' }
+Ui-ExpectNew 'New Design: made ' 'made as a version' 20
+Ui-ExpectNew 'Opened the new design with Component1 active' 'the new design opens with Component1 active' 20
+if (-not (Test-Path (Join-Path $project 'Design1.mitcad'))) { Ui-Fail 'the new design is not in the project' }
+Ui-WaitIdle
+Expect-OriginOff 'the new design'
+Ui-CreateSketch 'F7' 'xy'
+Ui-ExpectNew 'Create Sketch: origin planes shown' 'the origin planes shown for the pick'
+Ui-ExpectNew $shown 'the design''s origin shown for the pick, its light bulb off'
+Ui-ExpectNew 'Sketch Sketch1 is in Component1' 'XY clicked in the view starts the sketch in Component1'
+Expect-OriginOff 'the new design''s sketch'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'the new design''s sketch finished'
+Ui-WaitIdle
+Expect-OriginOff 'after the new design''s sketch'
 
 Ui-Finish 'UI Windows sketch origin test'

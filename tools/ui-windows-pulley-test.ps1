@@ -45,7 +45,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'solid.pulley' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'solid.pulley' = 'F7' } -StepPause 0
 
 # The shaft of part 4, made by mitcad-cli.
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
@@ -87,6 +87,7 @@ Start-Sleep -Milliseconds 800
 Write-Host '--- A GT2 pulley on XY, its teeth and flanges changed in the preview'
 Ui-Mark
 Ui-Step 'pulley (F7)'                    { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Pulley started' 'the panel opened' 30
 Ui-PlaceOnXy 'Pulley'
 Ui-ExpectNew 'Panel Pulley note: Pitch diameter 12.7324 mm' 'its pitch diameter shown'
 Ui-Mark

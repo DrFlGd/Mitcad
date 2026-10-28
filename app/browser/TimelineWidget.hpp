@@ -21,6 +21,7 @@ class QLineEdit;
 class QScrollArea;
 class QToolButton;
 class QTreeWidget;
+class QWheelEvent;
 
 namespace mitcad {
 
@@ -42,7 +43,8 @@ class TimelineStrip;
 // name, type, component and status: a field beside the filter button
 // (Ctrl+F, Cmd+F on macOS), the matches outlined in the strip and listed
 // with their components over it, stepped through with Enter and the arrow
-// keys. What the actions do is the BrowserController's.
+// keys. The mouse wheel over the strip scrolls it sideways (mitcad#826).
+// What the actions do is the BrowserController's.
 class TimelineWidget : public QWidget {
   Q_OBJECT
 
@@ -166,6 +168,9 @@ private:
   void placeSearchList();
   void showSearchMenu();
   void logSearchList();
+  // A wheel over the strip or its scroll bar (mitcad#826): the larger of
+  // its two deltas scrolls the strip sideways; nothing goes on to the view.
+  void wheelStrip(QWheelEvent* event);
 
   std::function<QString(const QString&)> m_featureDetails;
   QStringList m_hoveredFeatures;
@@ -198,6 +203,7 @@ private:
   bool m_externalSearch = false; // Native presentation owns focus, results and scrolling.
   bool m_searching = false;  // the field has a text
   int m_savedScroll = 0;     // when the search began
+  double m_wheelRemainder = 0; // part of a wheel step not scrolled yet, in pixels
   QStringList m_savedSelection;
   QString m_searchSelected;  // the match last selected by a step
   QString m_loggedSearch;

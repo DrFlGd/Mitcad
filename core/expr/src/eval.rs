@@ -8,8 +8,9 @@ use std::fmt;
 use std::hash::BuildHasher;
 
 use super::Span;
-use super::ast::{BinaryOp, Expr, Function, Node, NodeKind};
+use super::ast::{BinaryOp, ColumnPlace, Expr, Function, Node, NodeKind};
 use super::format::{DEFAULT_DECIMALS, format_number, format_value};
+use super::lookups::{ColumnError, MatchMode, TableColumn};
 use super::units::{AngleUnit, Dims, LengthUnit, Quantity, Ratio, Unit};
 
 /// Source of parameter values for evaluation.
@@ -22,6 +23,19 @@ pub trait Lookup {
     /// there is none. A name has a number or a text, not both.
     fn lookup_text(&self, _name: &str) -> Option<String> {
         None
+    }
+
+    /// The column `column` of the table `table` (mitcad#667), for a column
+    /// reference `table.column` in the lookup functions (`xlookup`, `match`,
+    /// `index`) and the aggregates: its unit and its cells from the first
+    /// row down, borrowed from `self`.
+    ///
+    /// `Err(ColumnError::NoTable)` when there is no such table (the
+    /// default, so lookups without tables need not implement it), and
+    /// `Err(ColumnError::NoColumn)` when the table has no such column.
+    /// Names are case-sensitive.
+    fn column(&self, _table: &str, _column: &str) -> Result<TableColumn<'_>, ColumnError> {
+        Err(ColumnError::NoTable)
     }
 }
 
@@ -220,6 +234,79 @@ pub enum EvalError {
     TextTooLong {
         span: Span,
     },
+    // Table lookups (mitcad#667).
+    /// A column reference, `Screws.dk`, where a value is expected (the
+    /// parser refuses it first; only a tree built by hand gets here).
+    ColumnOutsideLookup {
+        table: String,
+        column: String,
+        span: Span,
+    },
+    /// A value where a lookup function needs a column (only a tree built
+    /// by hand; the parser refuses it).
+    NotColumn {
+        function: &'static str,
+        span: Span,
+    },
+    UnknownTable {
+        name: String,
+        span: Span,
+    },
+    UnknownColumn {
+        table: String,
+        column: String,
+        span: Span,
+    },
+    /// `keys` and `results` of `xlookup` from two tables.
+    DifferentTables {
+        function: &'static str,
+        span: Span,
+    },
+    /// No row matches the key: `column` is `Screws.Size`, `key` the key as
+    /// an expression writes it (`'M7'`, `7 mm`). A value error.
+    NotFound {
+        column: String,
+        key: String,
+        mode: MatchMode,
+        span: Span,
+    },
+    /// The cell looked up is empty: `row` counts from 1, `label` is the
+    /// row's first cell. A value error.
+    EmptyCell {
+        column: String,
+        row: usize,
+        label: Option<String>,
+        span: Span,
+    },
+    /// A row of `index` outside the column's rows. A value error.
+    RowOutOfRange {
+        column: String,
+        row: f64,
+        rows: usize,
+        span: Span,
+    },
+    /// A match mode that the function does not have.
+    InvalidMode {
+        function: &'static str,
+        mode: f64,
+        span: Span,
+    },
+    /// A lookup feature not supported: wildcard matching, the search order.
+    LookupUnsupported {
+        what: &'static str,
+        span: Span,
+    },
+    /// An approximate match (the next smaller or larger) with a text key.
+    ApproximateText {
+        function: &'static str,
+        span: Span,
+    },
+    /// An aggregate whose columns have only empty cells and no other
+    /// values. A value error.
+    NoValues {
+        function: &'static str,
+        span: Span,
+    },
 }
 
 impl EvalError {
@@ -241,13 +328,27 @@ impl EvalError {
             | Self::NotText { span }
             | Self::MixedValues { span, .. }
             | Self::InvalidFormat { span, .. }
-            | Self::TextTooLong { span } => Some(*span),
+            | Self::TextTooLong { span }
+            | Self::ColumnOutsideLookup { span, .. }
+            | Self::NotColumn { span, .. }
+            | Self::UnknownTable { span, .. }
+            | Self::UnknownColumn { span, .. }
+            | Self::DifferentTables { span, .. }
+            | Self::NotFound { span, .. }
+            | Self::EmptyCell { span, .. }
+            | Self::RowOutOfRange { span, .. }
+            | Self::InvalidMode { span, .. }
+            | Self::LookupUnsupported { span, .. }
+            | Self::ApproximateText { span, .. }
+            | Self::NoValues { span, .. } => Some(*span),
             Self::WrongDimension { .. } | Self::NotUnitless { .. } => None,
         }
     }
 
     /// Errors about a value rather than the expression's structure: the
-    /// ones `iferror` catches.
+    /// ones `iferror` catches. A key not found in a table, an empty cell,
+    /// a row outside a column and an aggregate of empty cells are value
+    /// errors too (mitcad#667).
     fn is_value_error(&self) -> bool {
         matches!(
             self,
@@ -255,6 +356,10 @@ impl EvalError {
                 | Self::Domain { .. }
                 | Self::NotFinite { .. }
                 | Self::NoMatch { .. }
+                | Self::NotFound { .. }
+                | Self::EmptyCell { .. }
+                | Self::RowOutOfRange { .. }
+                | Self::NoValues { .. }
         )
     }
 }
@@ -314,6 +419,69 @@ impl fmt::Display for EvalError {
             )?,
             Self::TextTooLong { .. } => {
                 write!(f, "the text is longer than {MAX_TEXT_BYTES} bytes")?;
+            }
+            Self::ColumnOutsideLookup { table, column, .. } => write!(
+                f,
+                "{table}.{column} is a column: look a value up with XLOOKUP or INDEX"
+            )?,
+            Self::NotColumn { function, .. } => {
+                write!(f, "'{function}' needs a column such as Table.Column here")?;
+            }
+            Self::UnknownTable { name, .. } => write!(f, "unknown table '{name}'")?,
+            Self::UnknownColumn { table, column, .. } => {
+                write!(f, "table '{table}' has no column '{column}'")?;
+            }
+            Self::DifferentTables { function, .. } => write!(
+                f,
+                "'{function}' needs its keys and results from columns of one table"
+            )?,
+            Self::NotFound {
+                column, key, mode, ..
+            } => {
+                write!(f, "no row of {column} is {key}")?;
+                match mode {
+                    MatchMode::Exact => {}
+                    MatchMode::NextSmaller => f.write_str(" or less")?,
+                    MatchMode::NextLarger => f.write_str(" or more")?,
+                }
+            }
+            Self::EmptyCell {
+                column, row, label, ..
+            } => {
+                write!(f, "{column} is empty in row {row}")?;
+                if let Some(label) = label {
+                    write!(f, " ({label})")?;
+                }
+            }
+            Self::RowOutOfRange {
+                column, row, rows, ..
+            } => write!(
+                f,
+                "row {} is outside the rows of {column} (1 to {rows})",
+                format_number(*row, DEFAULT_DECIMALS)
+            )?,
+            Self::InvalidMode { function, mode, .. } => {
+                let modes = if *function == "match" {
+                    "0 (exact), 1 (exact or the next smaller) or -1 (exact or the next larger)"
+                } else {
+                    "0 (exact), -1 (exact or the next smaller) or 1 (exact or the next larger)"
+                };
+                write!(
+                    f,
+                    "'{function}' takes the mode {modes}, not {}",
+                    format_number(*mode, DEFAULT_DECIMALS)
+                )?;
+            }
+            Self::LookupUnsupported { what, .. } => write!(f, "{what} is not supported")?,
+            Self::ApproximateText { function, .. } => write!(
+                f,
+                "'{function}' finds the next smaller or larger value only for a number key"
+            )?,
+            Self::NoValues { function, .. } => {
+                write!(
+                    f,
+                    "'{function}' has no values: the column's cells are empty"
+                )?;
             }
         }
         if let Some(span) = self.span() {
@@ -451,7 +619,7 @@ fn finite(q: Quantity, span: Span) -> Result<Quantity, EvalError> {
 /// comparisons.
 const EQUALITY_TOLERANCE: f64 = 1e-9;
 
-fn compare(op: BinaryOp, a: f64, b: f64) -> bool {
+pub(crate) fn compare(op: BinaryOp, a: f64, b: f64) -> bool {
     let close = (a - b).abs() <= EQUALITY_TOLERANCE * a.abs().max(b.abs()).max(1.0);
     match op {
         BinaryOp::Eq => close,
@@ -556,9 +724,9 @@ impl NumberPattern {
     }
 }
 
-struct Evaluator<'a> {
-    lookup: &'a dyn Lookup,
-    context: EvalContext,
+pub(crate) struct Evaluator<'a> {
+    pub(crate) lookup: &'a dyn Lookup,
+    pub(crate) context: EvalContext,
     /// Values of the enclosing `let`s' names, innermost last.
     locals: RefCell<Vec<(String, Value)>>,
 }
@@ -566,7 +734,7 @@ struct Evaluator<'a> {
 impl Evaluator<'_> {
     /// The value of a node: a number or a text (mitcad#664). Nodes that can
     /// only give numbers are [`Evaluator::eval`]'s.
-    fn value(&self, node: &Node) -> Result<Value, EvalError> {
+    pub(crate) fn value(&self, node: &Node) -> Result<Value, EvalError> {
         let span = node.span;
         match &node.kind {
             NodeKind::Text(text) => Ok(Value::Text(text.clone())),
@@ -608,6 +776,9 @@ impl Evaluator<'_> {
                 | Function::Choose
                 | Function::IfError
                 | Function::Let => self.choice(*function, args, span),
+                // Table lookups (mitcad#667): a number or a text.
+                Function::XLookup => self.xlookup(args, span),
+                Function::Index => self.index(args),
                 Function::Concat => {
                     let mut out = String::new();
                     for arg in args {
@@ -671,7 +842,7 @@ impl Evaluator<'_> {
     /// A number as text in the default unit of its dimension (mitcad#664):
     /// `15 mm`, `30 deg`, `6` for a unitless one, with at most six
     /// decimals.
-    fn number_text(&self, q: Quantity) -> String {
+    pub(crate) fn number_text(&self, q: Quantity) -> String {
         let context = &self.context;
         match Unit::in_defaults(
             q.dims,
@@ -757,7 +928,7 @@ impl Evaluator<'_> {
         }
     }
 
-    fn eval(&self, node: &Node) -> Result<Quantity, EvalError> {
+    pub(crate) fn eval(&self, node: &Node) -> Result<Quantity, EvalError> {
         let span = node.span;
         let q = match &node.kind {
             NodeKind::Number(v) => Quantity::unitless(*v),
@@ -816,6 +987,14 @@ impl Evaluator<'_> {
             NodeKind::Call { function, args } => self.call(*function, args, span)?,
             NodeKind::Local(_) => number(self.value(node)?, span)?,
             NodeKind::UnitText(unit) => Quantity::new(unit.factor(), unit.dims()),
+            // Only a tree built by hand: the parser refuses it (mitcad#667).
+            NodeKind::Column { table, column } => {
+                return Err(EvalError::ColumnOutsideLookup {
+                    table: table.clone(),
+                    column: column.clone(),
+                    span,
+                });
+            }
         };
         finite(q, span)
     }
@@ -846,7 +1025,7 @@ impl Evaluator<'_> {
     /// `first` given the kind of `second`, as [`Evaluator::unify`] does for
     /// numbers; two texts stay as they are, a text and a number are an
     /// error.
-    fn unify_pair(
+    pub(crate) fn unify_pair(
         &self,
         operation: &'static str,
         first: Value,
@@ -863,13 +1042,13 @@ impl Evaluator<'_> {
     }
 
     /// Reads a dimensionless value in the default unit of `dims`.
-    fn promote(&self, q: Quantity, dims: Dims) -> Quantity {
+    pub(crate) fn promote(&self, q: Quantity, dims: Dims) -> Quantity {
         Quantity::new(q.value * self.context.default_factor(dims), dims)
     }
 
     /// Gives two operands the same dimensions, promoting a dimensionless
     /// one.
-    fn unify(
+    pub(crate) fn unify(
         &self,
         operation: &'static str,
         l: Quantity,
@@ -955,12 +1134,20 @@ impl Evaluator<'_> {
                 let t = text(self.value(&args[0])?, args[0].span)?;
                 return Ok(Quantity::unitless(t.chars().count() as f64));
             }
+            // Table lookups (mitcad#667).
+            Function::XLookup => return number(self.xlookup(args, span)?, span),
+            Function::Index => return number(self.index(args)?, span),
+            Function::Match => return self.match_row(args, span),
             _ => {}
         }
-        let mut values = args
-            .iter()
-            .map(|a| self.eval(a))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut values = if function.column_place(0) == ColumnPlace::Allowed {
+            // The aggregates take columns beside values (mitcad#667).
+            self.aggregate_values(function.name(), args, span)?
+        } else {
+            args.iter()
+                .map(|a| self.eval(a))
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let name = function.name();
         let x = values[0];
         let x_span = args[0].span;
@@ -1066,7 +1253,7 @@ impl Evaluator<'_> {
                 values
                     .into_iter()
                     .reduce(pick)
-                    .expect("arity is at least two")
+                    .expect("min and max have a value")
             }
             Function::Pow => pow(values[0], values[1], span)?,
             Function::And | Function::Or => {
@@ -1092,7 +1279,10 @@ impl Evaluator<'_> {
             | Function::Text
             | Function::Left
             | Function::Right
-            | Function::Len => unreachable!("handled above"),
+            | Function::Len
+            | Function::XLookup
+            | Function::Match
+            | Function::Index => unreachable!("handled above"),
             // Functions in the style of spreadsheet formulas (mitcad#663).
             Function::Floor | Function::Ceil | Function::Ceiling | Function::MRound => {
                 let round: fn(f64) -> f64 = match function {
@@ -1280,7 +1470,7 @@ impl Evaluator<'_> {
 
     /// Evaluates `node`, keeping a value error (division by zero and the
     /// like) for the caller to weigh; other errors return at once.
-    fn eval_lenient(&self, node: &Node) -> Result<Result<Value, EvalError>, EvalError> {
+    pub(crate) fn eval_lenient(&self, node: &Node) -> Result<Result<Value, EvalError>, EvalError> {
         match self.value(node) {
             Ok(value) => Ok(Ok(value)),
             Err(e) if e.is_value_error() => Ok(Err(e)),
@@ -1535,7 +1725,11 @@ impl Evaluator<'_> {
     }
 }
 
-fn dimensionless(operation: &'static str, q: Quantity, span: Span) -> Result<f64, EvalError> {
+pub(crate) fn dimensionless(
+    operation: &'static str,
+    q: Quantity,
+    span: Span,
+) -> Result<f64, EvalError> {
     if q.is_dimensionless() {
         Ok(q.value)
     } else {

@@ -736,6 +736,20 @@ impl Kernel for OcctKernel {
         transform::ffi::transform_shape(occt(shape)?, &affine, &rename).map_err(failed)
     }
 
+    fn move_shape(
+        &self,
+        shape: &Self::Shape,
+        map: &Transform,
+        instance: Option<Instance>,
+    ) -> Result<Self::Shape, KernelError> {
+        let affine = transform::ffi::Affine {
+            linear: std::array::from_fn(|i| map.linear[i / 3][i % 3]),
+            translation: map.translation,
+        };
+        let rename = instance.map(|i| i.prefix()).unwrap_or_default();
+        transform::ffi::move_shape(occt(shape)?, &affine, &rename).map_err(failed)
+    }
+
     fn unite(&self, shapes: &[&Self::Shape]) -> Result<Self::Shape, KernelError> {
         let mut list = shape::ffi::new_shape_list();
         for shape in shapes {
@@ -2472,6 +2486,14 @@ impl Kernel for OcctKernel {
         )
         .map_err(failed)?;
         Ok(found.chunks(3).map(|p| [p[0], p[1], p[2]]).collect())
+    }
+
+    // Features evaluated on worker threads (the recompute, mitcad#842): OCCT's
+    // crash handlers on the thread, as on the import's workers.
+
+    fn worker_thread<R>(&self, f: impl FnOnce() -> R) -> R {
+        exchange::ffi::catch_occt_crashes();
+        f()
     }
 }
 

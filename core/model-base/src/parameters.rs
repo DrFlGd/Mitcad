@@ -7,10 +7,11 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use crate::expr::{
     AngleUnit, Dims, EvalContext, Expr, LengthUnit, ParamKind, ParamSpec, ParameterTable,
-    TableError, Unit,
+    TableError, TableSource, Unit,
 };
 use crate::expr::{Bounds, ParamLimits};
 pub use crate::expr::{ChangeSet, ParamId, Parameter};
@@ -132,6 +133,16 @@ impl Parameters {
         context: EvalContext,
         specs: Vec<(ParamSpec, Option<FeatureUid>)>,
     ) -> Result<Self, TableError> {
+        Self::build_with_tables(context, specs, None)
+    }
+
+    /// [`Parameters::build`] whose expressions look values up in the
+    /// document's `tables` (mitcad#667).
+    pub fn build_with_tables(
+        context: EvalContext,
+        specs: Vec<(ParamSpec, Option<FeatureUid>)>,
+        tables: Option<Arc<dyn TableSource>>,
+    ) -> Result<Self, TableError> {
         let mut owners = BTreeMap::new();
         let mut table_specs = Vec::with_capacity(specs.len());
         for (i, (mut spec, owner)) in specs.into_iter().enumerate() {
@@ -143,7 +154,7 @@ impl Parameters {
             table_specs.push((id, spec));
         }
         Ok(Self {
-            table: ParameterTable::build_with_ids(context, table_specs)?,
+            table: ParameterTable::build_with_tables(context, table_specs, tables)?,
             owners,
         })
     }
@@ -436,6 +447,47 @@ impl Parameters {
                 self.set_owner(id, None);
             }
         }
+    }
+
+    // Tables (mitcad#667): the document's tables, which the expressions
+    // look values up in. The model keeps them (`DocState::tables`); the
+    // parameters evaluate with the same tables.
+
+    /// The tables lookups read.
+    pub fn tables(&self) -> Option<&Arc<dyn TableSource>> {
+        self.table.tables()
+    }
+
+    /// Parameters whose expressions or limits name the table `name`, in
+    /// creation order.
+    pub fn table_users(&self, name: &str) -> Vec<ParamId> {
+        self.table.table_users(name)
+    }
+
+    /// Replaces the tables and re-evaluates the parameters that use one of
+    /// the tables `changed`, and their dependents, in one step; on failure
+    /// nothing changes. Returns the parameters whose values changed.
+    pub fn set_tables(
+        &mut self,
+        tables: Option<Arc<dyn TableSource>>,
+        changed: &[&str],
+    ) -> Result<ChangeSet, ParameterError> {
+        Ok(self.table.set_tables(tables, changed)?)
+    }
+
+    /// Renames a table (`column` None) or one of its columns in every
+    /// expression and limit; `tables` are the tables after the rename.
+    /// Returns the parameters that were rewritten.
+    pub fn rename_table_references(
+        &mut self,
+        tables: Option<Arc<dyn TableSource>>,
+        table: &str,
+        column: Option<&str>,
+        new_name: &str,
+    ) -> Result<Vec<ParamId>, ParameterError> {
+        Ok(self
+            .table
+            .rename_table_references(tables, table, column, new_name)?)
     }
 }
 

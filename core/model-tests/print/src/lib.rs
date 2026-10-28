@@ -15,3 +15,4 @@ mod print_library_tests;
 mod print_profile_tests;
 mod print_tests;
 mod purge_tests;
+mod slicer_presets_tests;

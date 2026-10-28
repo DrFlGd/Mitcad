@@ -22,7 +22,7 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 # Popups such as the File menu close at once in session 0: shortcuts.
-Ui-Init $App $Out $QtBin @{ 'file.export' = 'F9'; 'file.import' = 'F11' }
+Ui-Init $App $Out $QtBin @{ 'file.export' = 'F9'; 'file.import' = 'F11' } -StepPause 0
 $work = Join-Path $script:UiOut 'files'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 $designs = Join-Path $work 'designs'

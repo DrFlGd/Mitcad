@@ -194,6 +194,20 @@ int import_f3d_timeline(const Arguments& a) {
   if (const std::string* seconds = a.option("--hang-limit")) {
     add(R"("hang_limit": )" + std::to_string(std::atof(seconds->c_str())));
   }
+  // A factor on the time an item is tried from its own start (mitcad#847):
+  // a debug build's checks give their slowdown.
+  if (const std::string* factor = a.option("--own-start-time-scale")) {
+    char* end = nullptr;
+    const double scale = std::strtod(factor->c_str(), &end);
+    if (end == factor->c_str() || *end != '\0' || !(scale > 0.0) || !std::isfinite(scale)) {
+      return usage("--own-start-time-scale needs a factor greater than 0");
+    }
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text.precision(17);
+    text << scale;
+    add(R"("own_start_time_scale": )" + text.str());
+  }
   // How far the replay's geometry may be from the file's (mitcad#224).
   if (const std::string* mm = a.option("--geometric-tolerance")) {
     char* end = nullptr;
@@ -289,7 +303,7 @@ int import_f3d(const std::vector<std::string>& args) {
   if (!parse_arguments(args,
                        {"--save", "--report", "--dump", "--design", "--time-limit", "--hang-limit", "--threads",
                         "--learn", "--references", "--geometric-tolerance", "--retry-bodies",
-                        "--accept-deviations"},
+                        "--accept-deviations", "--own-start-time-scale"},
                        {"--bodies-only", "--history", "--owners", "--json", "--no-verify", "--no-fallback",
                         "--no-compare", "--no-references"},
                        a, problem)) {

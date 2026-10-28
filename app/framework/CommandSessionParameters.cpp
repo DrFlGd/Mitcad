@@ -39,7 +39,10 @@ void CommandSession::parametersChanged(const QJsonObject& command, bool done, bo
     return;
   }
   const QString name = command.value(QStringLiteral("name")).toString();
-  if (command.value(QStringLiteral("cmd")).toString() == QStringLiteral("rename_parameter")) {
+  // A table's name is a name of the parameters' namespace (mitcad#667):
+  // `Screws.dk` follows a renamed Screws as a parameter's name does.
+  if (command.value(QStringLiteral("cmd")).toString() == QStringLiteral("rename_parameter") ||
+      command.value(QStringLiteral("cmd")).toString() == QStringLiteral("rename_table")) {
     const QString renamedTo = command.value(QStringLiteral("new_name")).toString();
     for (const Slot& slot : slotsOf(false)) {
       if (slot.def->type != InputDef::Type::Value) {

@@ -35,6 +35,9 @@ pub(crate) enum Tok {
     Str,
     /// `&`, which joins texts (mitcad#664).
     Amp,
+    /// The `.` of a column reference, `Screws.dk` (mitcad#667): only
+    /// directly between a name and a name start, with no space around it.
+    Dot,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -74,6 +77,15 @@ pub(crate) fn lex(text: &str) -> Result<Vec<Token>, ParseError> {
                 ParseError::new(ParseErrorKind::InvalidNumber, Span::new(start, i))
             })?;
             Tok::Number(value)
+        } else if c == '.'
+            && tokens
+                .last()
+                .is_some_and(|t| t.tok == Tok::Ident && t.span.end == i)
+            && text[i + 1..].chars().next().is_some_and(is_name_start)
+        {
+            // `Screws.dk` (mitcad#667); before it, the text was an error.
+            i += 1;
+            Tok::Dot
         } else if is_name_start(c) {
             i += text[i..]
                 .char_indices()
@@ -440,5 +452,33 @@ mod tests {
         );
         // A comma before `&` ends a number with a decimal comma.
         assert_eq!(kinds("5,&'a'"), [Tok::Number(5.0), Tok::Amp, Tok::Str]);
+    }
+
+    #[test]
+    fn dots_between_names() {
+        // mitcad#667: a column reference.
+        assert_eq!(kinds("Screws.dk"), [Tok::Ident, Tok::Dot, Tok::Ident]);
+        assert_eq!(lex("Screws.dk").unwrap()[1].span, Span::new(6, 7));
+        assert_eq!(kinds("T.in"), [Tok::Ident, Tok::Dot, Tok::Ident]);
+        // Numbers keep their points.
+        assert_eq!(kinds("d1.5"), [Tok::Ident, Tok::Number(0.5)]);
+        assert_eq!(kinds("5.e2"), [Tok::Number(500.0)]);
+        // Elsewhere a dot is the error it was.
+        for text in [
+            "Screws .dk",
+            "Screws. dk",
+            ".dk",
+            "Screws.",
+            "2 .x",
+            "a.'b'",
+        ] {
+            assert!(
+                matches!(
+                    lex(text).unwrap_err().kind,
+                    ParseErrorKind::UnexpectedChar('.')
+                ),
+                "{text}"
+            );
+        }
     }
 }

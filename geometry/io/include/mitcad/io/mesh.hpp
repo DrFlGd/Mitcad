@@ -99,6 +99,16 @@ bool plane_area_fits(double triangulated, double boundary);
 // check_planes must catch); a null handle restores Delabella's.
 void use_fast_plane_algorithms_for_tests(const occ::handle<IMeshTools_MeshAlgoFactory>& factory);
 
+// For tests (mitcad#846): the algorithms every face's triangulation is
+// taken from in place of the default insertion (also check_planes' second
+// triangulation), for the meshings started after the call (a stand-in for
+// a face that does not end); a null handle restores the default.
+void use_face_algorithms_for_tests(const occ::handle<IMeshTools_MeshAlgoFactory>& factory);
+
+// How long a stopped meshing waits for the faces being triangulated to end
+// (mitcad#846): a face still not done by then is abandoned (mesh_in_place).
+constexpr double kMeshAbandonSeconds = 2.0;
+
 // The smallest surface deviation (mm) that keeps a face's mesh within
 // about `face_triangles` triangles: proportional to the integral of the
 // square root of the surface's Gaussian curvature over the face (a
@@ -132,6 +142,9 @@ struct MeshReport {
   // Planes triangulated again by the default insertion after Delabella's
   // triangulation was missing or its area off (MeshOptions::check_planes).
   std::size_t planes_redone = 0;
+  // Faces whose triangulation had not ended kMeshAbandonSeconds after the
+  // meshing was stopped, and was abandoned (mesh_in_place, mitcad#846).
+  std::size_t abandoned = 0;
   double build = 0.0;
   double edges = 0.0;
   double heal = 0.0;
@@ -156,7 +169,8 @@ struct MeshReport {
   std::vector<FaceTime> every_face_time;
   // One line: "faces=94 kept=0 meshed=94 failed=0 build=... ms; meshed
   // plane 3, cylinder 91; slowest plane wires=84 points=6060 412.3 ms, ...",
-  // with "; planes redone 2" when any were.
+  // with "; planes redone 2" when any were and "; abandoned 1" when a face
+  // was abandoned.
   std::string line() const;
 };
 
@@ -184,6 +198,18 @@ std::size_t presentation_faces_meshed();
 // then finds them meshed. Returns false when `range` was stopped (the faces
 // meshed so far keep their triangulations); a mesh body is left as it is.
 // `report` (optional) gets what the meshing did.
+//
+// A stop returns within about kMeshAbandonSeconds even when a face's
+// triangulation does not end (mitcad#846: OCCT's algorithms test the stop
+// between faces, and inside a face only in a part of the default
+// insertion). With a range that can be stopped, the faces are triangulated
+// on threads of the meshing's own, each on a private copy of its face,
+// whose triangulation is moved into the face when it ends. Once stopped,
+// the meshing waits that long for the faces under way; a face still not
+// done is abandoned: its thread goes on in the background with what it
+// needs, and its result is discarded when it ends, never written into the
+// shape (MeshReport::abandoned). Without such a range, OCCT's thread pool
+// as before.
 bool mesh_in_place(const TopoDS_Shape& shape, const MeshOptions& options,
                    const Message_ProgressRange& range = Message_ProgressRange(), MeshReport* report = nullptr);
 

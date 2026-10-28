@@ -78,6 +78,9 @@ pub mod clipboard;
 pub mod placement;
 // Items other Mitcad crates use; not part of this crate's API (mitcad#811).
 pub mod internal;
+// Insert Point on a spline: a fit point, or a control point by knot
+// insertion (mitcad#836).
+pub mod spline_points;
 
 #[cfg(test)]
 mod tests;

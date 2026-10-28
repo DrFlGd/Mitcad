@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MIT
 #include <cstdio>
 
+#include <QApplication>
 #include <QComboBox>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QKeyEvent>
+#include <QListWidget>
+#include <QTextCursor>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -15,6 +21,78 @@ void check(bool value,const char* expression,int line) {
   if (!value) { std::fprintf(stderr,"formula_editor.cpp:%d: %s\n",line,expression); ++failures; }
 }
 #define CHECK(value) check((value),#value,__LINE__)
+
+// A key as the keyboard gives it, then what the event loop does after it.
+void press(QWidget* widget,int key,const QString& text=QString()) {
+  QKeyEvent down(QEvent::KeyPress,key,Qt::NoModifier,text);
+  QApplication::sendEvent(widget,&down);
+  QKeyEvent up(QEvent::KeyRelease,key,Qt::NoModifier,text);
+  QApplication::sendEvent(widget,&up);
+  QApplication::processEvents();
+}
+
+void typeText(QWidget* widget,const QString& text) {
+  for (const QChar c:text) press(widget,0,QString(c));
+}
+
+// Completion (mitcad#667): only typed text opens the list, a caret move
+// closes it and leaves its keys to the text, `Screws.` goes on with the
+// table's columns, and a `.` that follows already is not doubled.
+void completionTests(mitcad::ParameterSource source,const mitcad::ParameterFieldOptions& options) {
+  using namespace mitcad;
+  source.query=[](const QJsonObject&) {
+    return QJsonObject{{QStringLiteral("functions"),QJsonArray{
+        QJsonObject{{QStringLiteral("name"),QStringLiteral("SIN")},{QStringLiteral("description"),QStringLiteral("Sine")},{QStringLiteral("example"),QStringLiteral("SIN(30 deg)")}}}},
+        {QStringLiteral("tables"),QJsonArray{QJsonObject{{QStringLiteral("name"),QStringLiteral("Screws")},
+            {QStringLiteral("columns"),QJsonArray{
+                QJsonObject{{QStringLiteral("name"),QStringLiteral("Size")},{QStringLiteral("unit"),QStringLiteral("Text")}},
+                QJsonObject{{QStringLiteral("name"),QStringLiteral("dk")},{QStringLiteral("unit"),QStringLiteral("mm")}}}}}}}};
+  };
+  FormulaEditor editor(source,options,QString());
+  editor.show();
+  auto* text=editor.findChild<QPlainTextEdit*>(QStringLiteral("formulaText"));
+  auto* list=editor.findChild<QListWidget*>(QStringLiteral("formulaCompletions"));
+  CHECK(text && list);
+  if (!text || !list) return;
+  const auto caretAt=[text](int position) {
+    QTextCursor cursor=text->textCursor(); cursor.setPosition(position); text->setTextCursor(cursor);
+    QApplication::processEvents();
+  };
+  // Text put in and a caret moved after a name: no list.
+  text->setPlainText(QStringLiteral("SIN"));
+  caretAt(3);
+  CHECK(!list->isVisible());
+  // Typed: the tables and functions that start with it; Enter takes the
+  // first, Screws., and the list goes on with its columns.
+  text->clear();
+  typeText(text,QStringLiteral("S"));
+  CHECK(list->isVisible() && list->count()==2);
+  press(text,Qt::Key_Return);
+  CHECK(text->toPlainText()==QStringLiteral("Screws."));
+  CHECK(list->isVisible() && list->count()==2);
+  typeText(text,QStringLiteral("d"));
+  CHECK(list->isVisible() && list->count()==1);
+  press(text,Qt::Key_Tab);
+  CHECK(text->toPlainText()==QStringLiteral("Screws.dk"));
+  CHECK(!list->isVisible());
+  // A caret move closes an open list: Enter is a new line again.
+  text->setPlainText(QStringLiteral("1 + "));
+  caretAt(4);
+  typeText(text,QStringLiteral("Sc"));
+  CHECK(list->isVisible());
+  press(text,Qt::Key_Left);
+  CHECK(!list->isVisible());
+  press(text,Qt::Key_Return);
+  CHECK(text->toPlainText().contains(QLatin1Char('\n')));
+  // A `.` that follows already: `Scr|.dk` gives `Screws.dk`.
+  text->setPlainText(QStringLiteral("Sc.dk"));
+  caretAt(2);
+  typeText(text,QStringLiteral("r"));
+  CHECK(list->isVisible());
+  press(text,Qt::Key_Return);
+  CHECK(text->toPlainText()==QStringLiteral("Screws.dk"));
+  editor.reject();
+}
 }
 
 int formulaEditorTests() {
@@ -67,5 +145,6 @@ int formulaEditorTests() {
       {QStringLiteral("arguments"),QJsonArray{QStringLiteral("value"),QStringLiteral("[step]")}},
       {QStringLiteral("argument"),1}});
   CHECK(signature==QStringLiteral("FLOOR(value; <b><u>[step]</u></b>)"));
+  completionTests(source,options);
   return failures;
 }

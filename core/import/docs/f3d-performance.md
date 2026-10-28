@@ -14,7 +14,10 @@ its imports run to the end unless the user stops them.
 
 **Item time.** An item's definitions are tried for `item_seconds` (60 s;
 the part of it on bodies brought to the state before it exactly gets half
-again). The definitions are evaluated with a monitor whose deadline is the
+again). The first route, an item's state from its own start, has half
+of it; `own_start_time_scale` (`mitcad-cli import-f3d
+--own-start-time-scale`, `Options::own_start_scale`) multiplies that half
+alone, for a debug build's checks (mitcad#847). The definitions are evaluated with a monitor whose deadline is the
 end of that time (`RecomputeMonitor::within`, mitcad#69), so that the
 kernel's long operations stop inside one definition (a rectangular pattern
 of 35 × 35 copies took 113 s): the definition fails ("the item's time was

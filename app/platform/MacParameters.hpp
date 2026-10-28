@@ -4,6 +4,7 @@
 #include <QtGlobal>
 
 #include "MacDialogs.hpp"
+#include "NativeDialogs.hpp"
 
 class QDialog;
 class QFormLayout;
@@ -40,7 +41,8 @@ namespace mitcad::mac {
 #ifdef Q_OS_MACOS
 namespace parameters {
 
-constexpr int kRefusedRole = Qt::UserRole + 2;
+// The shared role, so that the AppKit table shows the same state.
+constexpr int kRefusedRole = NativeRefusedRole;
 
 } // namespace parameters
 
@@ -87,7 +89,7 @@ inline void styleParameterForm(QDialog* dialog, QFormLayout* form) {
 inline void styleParametersDialog(QDialog* dialog, QTreeWidget* table, QLineEdit* filter,
                                  QPushButton* add, QPushButton* remove, QPushButton* ok) {
   styleDialog(dialog);
-  dialog->resize(1240, 520); // with the limits' columns (mitcad#665)
+  dialog->resize(1240, 590); // with the limits' columns (mitcad#665) and the tabs (mitcad#667)
   dialog->setMinimumSize(640, 360);
   dialog->layout()->setContentsMargins(20, 20, 20, 20);
   dialog->layout()->setSpacing(12);

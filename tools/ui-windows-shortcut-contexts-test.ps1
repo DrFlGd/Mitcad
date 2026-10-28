@@ -30,7 +30,7 @@ param(
 
 # Keyboard Shortcuts by a key: the command search's popup closes at once in
 # session 0.
-Ui-Init $App $Out $QtBin @{ 'tools.shortcuts' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'tools.shortcuts' = 'F9' } -StepPause 0
 
 # Searches-Since-Mark: the command searches opened since Ui-Mark.
 function Searches-Since-Mark {

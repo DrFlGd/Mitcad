@@ -44,7 +44,20 @@ enum class FitMode {
 // at two thirds of the screen instead), and moves it up or left when it
 // would stick out of the screen. Before the window is shown its frame is
 // not known: room is kept for a typical one, and the next call, from
-// showEvent, takes the real one.
-void fitWindowToContents(QWidget* window, FitMode mode = FitMode::Fit);
+// showEvent, takes the real one. A valid `preferred` size is a roomier one
+// the window opens at where the screen has room for it (the hint expanded
+// to it), still within the screen.
+void fitWindowToContents(QWidget* window, FitMode mode = FitMode::Fit, const QSize& preferred = QSize());
+
+// Makes a shown top-level window no larger than its screen's available
+// area minus the window frame, and moves it inside that area (mitcad#818);
+// a window that fits keeps its size and place. Never makes it larger.
+void capWindowToScreen(QWidget* window);
+
+// Keeps a shown top-level window on its screen: when the screen's
+// available area changes (another resolution, the Dock shown) or the
+// window moves to another screen, capWindowToScreen. Call it once the
+// window has its native window (from showEvent); further calls do nothing.
+void keepWindowOnScreen(QWidget* window);
 
 } // namespace mitcad

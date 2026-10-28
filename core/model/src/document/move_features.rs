@@ -239,7 +239,7 @@ impl<K: Kernel> Document<K> {
             }
             let refs = entry.def.references().features;
             let mut touched = BTreeSet::new();
-            match self.result.result(entry.uid) {
+            match self.feature_result(entry.uid) {
                 Some(r) if r.status == FeatureStatus::Ok && r.output.is_some() => {
                     let output = r.output.as_ref().expect("checked");
                     for change in &output.changes {

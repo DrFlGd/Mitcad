@@ -28,7 +28,7 @@ use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Kernel;
 use crate::material::{self, DEFAULT_MATERIAL, Material, MaterialChange};
 use crate::print_library::{BasedOn, ItemData, ItemKind};
-use crate::print_profile::new_item_name;
+use crate::print_profile::{copy_name, new_item_name};
 
 /// What `set_body_material` does with the body's appearance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -304,6 +304,8 @@ impl<K: Kernel> Document<K> {
         };
         let mut attributes = self.body_attributes(uid);
         attributes.material = material.map(str::to_owned);
+        // A material set by hand ends the body's binding (mitcad#800).
+        attributes.material_expr = None;
         if replace {
             // The appearance of the material it is made of now: its own,
             // else its components'.
@@ -485,7 +487,7 @@ impl<K: Kernel> Document<K> {
 
     /// Makes a material of the document from `based_on`'s fields (a
     /// material of the document or built in, or a library's item with the
-    /// appearance it carries, mitcad#655; none: `New Material` of 1 g/cm³)
+    /// appearance it carries, mitcad#655; none: `Material 1` of 1 g/cm³)
     /// and the given ones. Without an id it is `custom1`, `custom2`,
     /// ... A built-in's id makes the document's take its place. Returns
     /// the id.
@@ -592,14 +594,11 @@ impl<K: Kernel> Document<K> {
             Some(id) => id.to_owned(),
             None => format!("custom{free}"),
         };
-        // A copy is named after its source, `<name> 2` (mitcad#655: the
-        // user's own copy of a built-in or library material), a new one
-        // `New Material`.
+        // A copy is named after its source, `<name> (copy)` (mitcad#655:
+        // the user's own copy of a built-in or library material;
+        // mitcad#828), a new one `Material 1`.
         new.name = match source_class {
-            Some(_) => (2..)
-                .map(|n| format!("{} {n}", new.name))
-                .find(|name| !taken(name))
-                .expect("a free name"),
+            Some(_) => copy_name(&new.name, taken),
             None => new_item_name("Material", free),
         };
         change.apply_to(&mut new);

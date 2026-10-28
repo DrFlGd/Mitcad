@@ -50,7 +50,7 @@ from pathlib import Path
 import sys
 path = Path(sys.argv[1])
 path.write_text(path.read_text().replace("dblclick-logged '^Timeline Drag boss at '",
-    "menu 'View/Show History'\nnative-activate native.history." + sys.argv[2])
+    "expect-native-visible native.historyCard true\nnative-activate native.history." + sys.argv[2])
     .replace("button '^OK$'", "native-click commandOk"))
 PY
   fi

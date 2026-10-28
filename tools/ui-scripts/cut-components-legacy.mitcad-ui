@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 wait-idle 30
 expect-model-bodies 2 7840
-menu 'View/Show History'
+expect-native-visible native.historyCard true
 mark
 native-activate native.history.F4
 expect-log 'Editing F4 with Extrude'

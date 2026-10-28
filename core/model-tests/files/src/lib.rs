@@ -12,3 +12,4 @@ mod exchange_tests;
 mod file_tests;
 mod import_notes_tests;
 mod reorient_tests;
+mod tables_tests;

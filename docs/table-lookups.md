@@ -204,7 +204,9 @@ expression that does not evaluate.
   `parameters_csv.rs`; a header with semicolons and no comma is read with
   `;`.
 - **Reading cells.** A header without brackets is a `Text` column when any
-  cell is not a number, else a unitless one. A cell is read as a constant
+  cell is not a number, else a unitless one (mitcad#804: a column whose
+  cells have units takes the first one's unit, in the design's default
+  units, so `10 mm` makes an `mm` column). A cell is read as a constant
   expression, so `5,5` (from a `;`-separated file) is 5.5, and `0.25 in`
   in an `mm` column is stored as 6.35. A name the model cannot use
   (`Head diameter`) gets a free one (`Head_diameter`), as the parameters
@@ -214,8 +216,9 @@ expression that does not evaluate.
   export and import give the same table.
 - **Import** creates the table or replaces it whole. It goes through the
   same atomic check as `set_table`: parameters whose values change are
-  listed, and a parameter that would fail refuses the import. The preview
-  shows this first; the import is one undo step.
+  listed, and a parameter that would fail refuses the import, as a refused
+  cell does (mitcad#804). The preview shows this first; the import is one
+  undo step.
 
 ## UI
 

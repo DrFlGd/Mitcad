@@ -33,9 +33,9 @@ use crate::material::{DEFAULT_MATERIAL, Material};
 use crate::print_keys::{self, Dialect, KeyDef, PrintSet};
 use crate::print_library::{BasedOn, ItemData, ItemKind};
 use crate::print_profile::{
-    PROFILE_KEY, PrintProfile, PrintPropertySet, ProfileChange, ProfileKind, PropertyForm, free_id,
-    from_property, new_item_name, print_set_of, property_form, slicer_set, slug, to_property,
-    value_of,
+    PROFILE_KEY, PrintProfile, PrintPropertySet, ProfileChange, ProfileKind, PropertyForm,
+    copy_name, free_id, from_property, new_item_name, print_set_of, property_form, slicer_set,
+    slug, to_property, value_of,
 };
 use crate::properties::{
     BaseType, Property, PropertyOwner, PropertyType, PropertyValue, Source, same_name,
@@ -424,14 +424,11 @@ impl<K: Kernel> Document<K> {
                     && !taken(&new_item_name(title, *n))
             })
             .expect("a free number");
-        // A copy is named after its source, `<name> 2` (mitcad#655: the
-        // user's own copy of a built-in or library item), a new one `New
-        // Printer`.
+        // A copy is named after its source, `<name> (copy)` (mitcad#655:
+        // the user's own copy of a built-in or library item; mitcad#828), a
+        // new one `Printer 1`.
         new.name = match change.based_on {
-            Some(_) => (2..)
-                .map(|n| format!("{} {n}", new.name))
-                .find(|name| !taken(name))
-                .expect("a free name"),
+            Some(_) => copy_name(&new.name, taken),
             None => new_item_name(title, free),
         };
         change.apply_to(&mut new);

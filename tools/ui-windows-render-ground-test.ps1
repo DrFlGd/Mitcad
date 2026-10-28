@@ -20,7 +20,7 @@ param(
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
 Ui-Init $App $Out $QtBin @{ 'view.rendered' = 'F8'; 'view.orthographic' = 'F9'; 'view.perspective' = 'F11';
-  'view.iso' = 'F12' }
+  'view.iso' = 'F12' } -StepPause 0
 # On the CPU, few samples: the test checks what the frames cover.
 Add-Content -Encoding ascii (Join-Path $script:UiSettings 'Mitcad\Mitcad.ini') @('[render]', 'device=cpu')
 $samples = 8

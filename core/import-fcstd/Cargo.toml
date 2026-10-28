@@ -22,8 +22,9 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
-# The mock geometry kernel of the model tests.
+# The mock geometry kernel of the model tests (the library is built on the
+# model already). No api (mitcad#831): the tests read the features' and
+# sketches' definitions from the model.
 mitcad-model = { workspace = true, features = ["testing"] }
-mitcad-model-api = { path = "../model-api" }
 # Test documents packed in memory.
 mitcad-zip = { path = "../zip" }

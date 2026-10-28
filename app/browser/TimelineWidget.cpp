@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 #include "TimelineWidget.hpp"
+#include "Bindings.hpp"
 #include "TimelinePresentation.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <utility>
 
@@ -35,6 +37,7 @@
 #include <QToolButton>
 #include <QToolTip>
 #include <QTreeWidget>
+#include <QWheelEvent>
 #include <QtLogging>
 
 #include "ComponentColors.hpp"
@@ -544,8 +547,12 @@ protected:
         painter.drawRoundedRect(QRectF(rect.left() + 4, kBandTop, kItem - 8, kBand - 0.5), 1.5, 1.5);
       }
       painter.setOpacity(off ? 0.3 : 1.0);
-      const QPixmap pixmap = themeIcon(head ? QStringLiteral("folder") : featureIcon(feature.type))
-                                 .pixmap(QSize(kIcon, kIcon), devicePixelRatioF());
+      QIcon icon = themeIcon(head ? QStringLiteral("folder") : featureIcon(feature.type));
+      // Suppressed when a condition holds (mitcad#809): an fx badge.
+      if (!head && !feature.suppressedWhen.isEmpty()) {
+        icon = boundIcon(icon);
+      }
+      const QPixmap pixmap = icon.pixmap(QSize(kIcon, kIcon), devicePixelRatioF());
       painter.drawPixmap(cell(i).left() + (kItem - kIcon) / 2, kTop + (kItem - kIcon) / 2, pixmap);
       painter.setOpacity(1.0);
       if (head) {
@@ -824,6 +831,10 @@ protected:
       if (!isHead(i) && (!feature.succeeded() || feature.suppressed || i >= m_marker)) {
         state += tr("<br>No geometry to show");
       }
+      // The condition it is suppressed under (mitcad#809).
+      if (!isHead(i) && !feature.suppressedWhen.isEmpty()) {
+        state += tr("<br>Suppressed when %1").arg(feature.suppressedWhen.toHtmlEscaped());
+      }
       const QString tip = isHead(i) ? state : details + state;
       QToolTip::showText(help->globalPos(), tip, this, cell(i));
       if (tip != m_loggedTip) {
@@ -1011,6 +1022,11 @@ TimelineWidget::TimelineWidget(const CommandContext& model, QWidget* parent)
   });
   connect(scrollBar, &QScrollBar::valueChanged, this,
           [this] { QTimer::singleShot(0, this, &TimelineWidget::logLayout); });
+  // The wheel over the strip and its scroll bar scrolls the strip sideways
+  // (mitcad#826): ahead of the scroll area, which gives a vertical delta to
+  // its vertical bar, and of a floating card, which swallows the rest.
+  m_scroll->viewport()->installEventFilter(this);
+  scrollBar->installEventFilter(this);
   // Its places are logged again when it moves in the window (a banner or
   // another panel makes room above or beside it).
   new PlaceWatcher(this, [this] { logLayout(); });
@@ -1794,6 +1810,12 @@ void TimelineWidget::showSearchMenu(const QPoint& globalPosition) {
 }
 
 bool TimelineWidget::eventFilter(QObject* watched, QEvent* event) {
+  if (event->type() == QEvent::Wheel && m_scroll != nullptr &&
+      (watched == m_scroll->viewport() || watched == m_scroll->horizontalScrollBar())) {
+    wheelStrip(static_cast<QWheelEvent*>(event));
+    event->accept();
+    return true;
+  }
   if (watched == m_searchField) {
     switch (event->type()) {
     case QEvent::ShortcutOverride: {
@@ -1852,6 +1874,43 @@ bool TimelineWidget::eventFilter(QObject* watched, QEvent* event) {
     placeSearchList();
   }
   return QWidget::eventFilter(watched, event);
+}
+
+void TimelineWidget::wheelStrip(QWheelEvent* event) {
+  QScrollBar* bar = m_scroll->horizontalScrollBar();
+  // The larger of the two deltas, so that a diagonal swipe does not jitter.
+  // Down (negative) and a tilt or swipe to the right (negative) both move
+  // towards the newer features, to the right.
+  const auto larger = [](const QPoint& delta) {
+    return std::abs(delta.y()) > std::abs(delta.x()) ? delta.y() : delta.x();
+  };
+  double pixels = 0;
+  if (event->phase() != Qt::NoScrollPhase && !event->pixelDelta().isNull()) {
+    // A trackpad's stream of scrolling: its own pixels. (A wheel's pixel
+    // delta, where one comes, depends on the driver.)
+    pixels = larger(event->pixelDelta());
+  } else {
+    // A wheel: the bar's single step for each of the wheel's lines a notch
+    // (120 eighths of a degree).
+    pixels = larger(event->angleDelta()) / 120.0 * QApplication::wheelScrollLines() * bar->singleStep();
+  }
+  if (pixels * m_wheelRemainder < 0) {
+    m_wheelRemainder = 0; // turned the other way
+  }
+  m_wheelRemainder += pixels;
+  // Whole pixels only, the rest kept for the next event; no more than a page.
+  const int step = std::clamp(static_cast<int>(m_wheelRemainder), -bar->pageStep(), bar->pageStep());
+  m_wheelRemainder -= static_cast<int>(m_wheelRemainder);
+  if (step == 0) {
+    return;
+  }
+  const int before = bar->value();
+  bar->setValue(before - step); // the bar stops at both ends
+  if (bar->value() == before) {
+    m_wheelRemainder = 0;
+  }
+  qDebug().noquote()
+      << QStringLiteral("Timeline wheel: scrolled to %1 of %2").arg(bar->value()).arg(bar->maximum());
 }
 
 void TimelineWidget::resizeEvent(QResizeEvent* event) {

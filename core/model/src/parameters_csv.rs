@@ -4,13 +4,15 @@
 //! but does not write.
 //!
 //! Mitcad's table has the header
-//! `name,kind,unit,expression,value,comment,favorite,min,max,step,strict`:
+//! `name,kind,unit,expression,value,comment,favorite,min,max,step,strict,values`:
 //! one row per parameter in creation order, its kind (`user`, `model`,
 //! `reference`), its unit (`""` for unitless, `Text` for a text parameter,
 //! mitcad#664), its expression, its value as a number in its unit (a text
 //! parameter's text as it is), its comment, whether it is a favourite
 //! (`true`, `false`) and its limits (mitcad#665): `min`, `max` and `step`
-//! as written (empty when not set) and `strict` (`true`, `false`).
+//! as written (empty when not set) and `strict` (`true`, `false`), and its
+//! allowed values (mitcad#798): `values`, the list as a JSON array of
+//! expression texts (`["300 mm","500 mm"]`; empty when not set).
 //!
 //! The `.f3d` application's parameter table CSV has the header
 //! `Name,Unit,Expression,Value,Comments,Favorite`: an empty unit for
@@ -37,7 +39,7 @@ use crate::expr::{is_reserved_name, is_valid_name, value_to_expression};
 use crate::parameters::Parameters;
 
 /// The header of Mitcad's own table.
-pub const HEADER: [&str; 11] = [
+pub const HEADER: [&str; 12] = [
     "name",
     "kind",
     "unit",
@@ -49,6 +51,7 @@ pub const HEADER: [&str; 11] = [
     "max",
     "step",
     "strict",
+    "values",
 ];
 
 /// The header of the `.f3d` application's parameter table CSV.
@@ -97,6 +100,9 @@ pub struct CsvRow {
     /// The `strict` cell; None when the column is missing or the cell is
     /// empty or not a truth value (the parameter keeps what it has).
     pub strict: Option<bool>,
+    /// The `values` cell (mitcad#798): a JSON array of expression texts,
+    /// empty for none; None when the table has no such column.
+    pub values: Option<String>,
 }
 
 impl CsvRow {
@@ -152,7 +158,7 @@ impl std::error::Error for CsvError {}
 
 /// The records of a CSV text, each with the line it starts on. `separator`
 /// is `,` or `;`.
-fn records(text: &str, separator: char) -> Result<Vec<(usize, Vec<String>)>, CsvError> {
+pub(crate) fn records(text: &str, separator: char) -> Result<Vec<(usize, Vec<String>)>, CsvError> {
     let mut out = Vec::new();
     let mut record = Vec::new();
     let mut field = String::new();
@@ -224,6 +230,17 @@ fn records(text: &str, separator: char) -> Result<Vec<(usize, Vec<String>)>, Csv
     Ok(out)
 }
 
+/// The separator of a CSV text: `;` when its first line that is not empty
+/// has semicolons and no comma, else `,`.
+pub(crate) fn separator(text: &str) -> char {
+    let first_line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    if !first_line.contains(',') && first_line.contains(';') {
+        ';'
+    } else {
+        ','
+    }
+}
+
 /// A truth value of a favourite cell: `true`, `false`, `yes`, `no`, `1`,
 /// `0` (any case); None for an empty or other text.
 fn truth(text: &str) -> Option<bool> {
@@ -238,13 +255,7 @@ fn truth(text: &str) -> Option<bool> {
 /// parameter table, told apart by the header.
 pub fn parse(text: &str) -> Result<CsvTable, CsvError> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
-    let first_line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
-    let separator = if !first_line.contains(',') && first_line.contains(';') {
-        ';'
-    } else {
-        ','
-    };
-    let mut records = records(text, separator)?.into_iter();
+    let mut records = records(text, separator(text))?.into_iter();
     let Some((_, header)) = records.next() else {
         return Err(CsvError::Empty);
     };
@@ -271,6 +282,7 @@ pub fn parse(text: &str) -> Result<CsvTable, CsvError> {
     let max = column(&["max"]);
     let step = column(&["step"]);
     let strict = column(&["strict"]);
+    let values = column(&["values"]);
     let mut rows = Vec::new();
     for (line, cells) in records {
         let cell = |i: Option<usize>| i.map(|i| cells.get(i).map_or("", |c| c.as_str()));
@@ -288,6 +300,7 @@ pub fn parse(text: &str) -> Result<CsvTable, CsvError> {
             max: trimmed(max),
             step: trimmed(step),
             strict: cell(strict).and_then(truth),
+            values: trimmed(values),
         };
         // A row of empty cells is an empty line.
         if cells.iter().all(|c| c.trim().is_empty()) {
@@ -338,8 +351,13 @@ pub fn write(parameters: &Parameters, favorites: &BTreeSet<ParamId>) -> String {
             None => number_in_unit(p.value(), p.unit()),
         };
         let flag = |yes: bool| if yes { "true" } else { "false" };
-        // The limits as written (mitcad#665).
+        // The limits as written (mitcad#665, mitcad#798).
         let limits = p.limits();
+        let values = limits
+            .values
+            .as_ref()
+            .map(|values| serde_json::to_string(values).expect("texts serialize"))
+            .unwrap_or_default();
         write_record(
             &mut out,
             &[
@@ -354,6 +372,7 @@ pub fn write(parameters: &Parameters, favorites: &BTreeSet<ParamId>) -> String {
                 limits.max.as_deref().unwrap_or(""),
                 limits.step.as_deref().unwrap_or(""),
                 flag(limits.strict),
+                values.as_str(),
             ],
         );
     }

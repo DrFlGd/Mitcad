@@ -37,6 +37,7 @@
 
 #include "../framework/DialogFolders.hpp"
 #include "../framework/Dialogs.hpp"
+#include "../framework/FitToScreen.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
@@ -58,6 +59,8 @@ constexpr double kDegree = 3.14159265358979323846 / 180.0;
 // MAX_EMBEDDED_IMAGE).
 constexpr qint64 kMaxEmbedded = qint64(32) << 20;
 constexpr int kIconSize = 22;
+// The size the dialog opens at where the screen has room for it.
+constexpr QSize kPreferredSize(820, 780);
 
 QString hexOf(const QColor& color) { return color.name(QColor::HexRgb); }
 
@@ -75,10 +78,23 @@ QString number(double value) { return QString::number(value, 'g', 6); }
 AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_host(host) {
   setWindowTitle(tr("Appearances"));
   setWindowIcon(themeIcon(QStringLiteral("appearance")));
-  resize(820, 780);
+  resize(kPreferredSize);
   auto* layout = new QVBoxLayout(this);
+  // The body scrolls on a screen too low for it, so that the dialog fits
+  // the screen and the buttons below the body stay visible (mitcad#818).
+  // An AppKit window scrolls its whole body itself (NativeWindowFit.hpp).
+  auto* scroll = new FittingScrollArea;
+  scroll->setObjectName(QStringLiteral("appearanceBody"));
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setProperty("nativeWindowBody", true);
+  auto* body = new QWidget;
+  auto* bodyLayout = new QVBoxLayout(body);
+  bodyLayout->setContentsMargins(0, 0, 0, 0);
+  scroll->setWidget(body);
+  layout->addWidget(scroll, 1);
   auto* columns = new QHBoxLayout;
-  layout->addLayout(columns, 1);
+  bodyLayout->addLayout(columns, 1);
 
   // The browser (mitcad#315): the appearances or a texture source, a search
   // and a category.
@@ -207,11 +223,11 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   m_clearFaces->setAutoDefault(false);
   m_clearFaces->setToolTip(tr("The selected faces show their body's appearance again"));
   facesRow->addWidget(m_clearFaces);
-  layout->addLayout(facesRow);
+  bodyLayout->addLayout(facesRow);
   m_faces = new QListWidget;
   m_faces->setSelectionMode(QAbstractItemView::ExtendedSelection);
   m_faces->setMaximumHeight(110);
-  layout->addWidget(m_faces);
+  bodyLayout->addWidget(m_faces);
 
   m_message = new QLabel;
   m_message->setWordWrap(true);
@@ -343,6 +359,19 @@ AppearanceDialog::~AppearanceDialog() = default;
 
 void AppearanceDialog::showEvent(QShowEvent* event) {
   QDialog::showEvent(event);
+  // Within the screen's available area, title bar included (mitcad#818):
+  // first at its preferred size where that fits, later as the user left
+  // it; the body scrolls when the screen is lower. An AppKit presentation
+  // (not shown on screen) fits its own window.
+  if (!testAttribute(Qt::WA_DontShowOnScreen)) {
+    if (!m_fitted) {
+      m_fitted = true;
+      fitWindowToContents(this, FitMode::Fit, kPreferredSize);
+    } else {
+      capWindowToScreen(this);
+    }
+    keepWindowOnScreen(this);
+  }
   // Preferences may have changed the texture folders meanwhile.
   if (TextureSettings::load() != m_textureSettings) {
     loadSources();

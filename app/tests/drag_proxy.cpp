@@ -3,8 +3,11 @@
 // copy of a meshed tool (proxyMeshOf), its changes for each dragged value
 // (applyDragProxy: one side, flipped, negative, symmetric, two sides, the
 // start offset, a placement that turns the arrow, a tool that does not
-// fit) and Extrude's rules for when and how (extrudeDragProxy). No window
-// and no model: the tools are OCCT boxes meshed here.
+// fit) and Extrude's rules for when and how (extrudeDragProxy). Move/
+// Copy's provisional motion (mitcad#838): the placements a drag gives the
+// bodies it moves and the components it places (draggedPlacement), and
+// the motion of its inputs (moveMotion). No window and no model: the tools
+// are OCCT boxes meshed here.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -22,6 +25,7 @@
 #include <gp_Vec.hxx>
 
 #include "commands/ExtrudeDragProxy.hpp"
+#include "commands/MoveDragMotion.hpp"
 #include "framework/DragProxy.hpp"
 
 namespace {
@@ -334,6 +338,87 @@ void testExtrudeRules() {
   CHECK(!extrudeDragProxy(shown, shown, QStringLiteral("taper"), 0.2));
 }
 
+gp_Trsf moved(double x, double y, double z) {
+  gp_Trsf trsf;
+  trsf.SetTranslation(gp_Vec(x, y, z));
+  return trsf;
+}
+
+// A quarter turn about Z through `through`.
+gp_Trsf quarter(const gp_Pnt& through) {
+  gp_Trsf trsf;
+  trsf.SetRotation(gp_Ax1(through, gp_Dir(0, 0, 1)), std::atan(1.0) * 2.0);
+  return trsf;
+}
+
+bool at(const gp_Pnt& point, double x, double y, double z) { return point.Distance(gp_Pnt(x, y, z)) < 1e-9; }
+
+void testMotions() {
+  using mitcad::MotionSide;
+  using mitcad::draggedPlacement;
+  // A body the move moved 5 mm along X, dragged to 12: 7 mm further.
+  gp_Trsf placed = draggedPlacement(gp_Trsf(), MotionSide::Shape, moved(5, 0, 0), moved(12, 0, 0), gp_Trsf());
+  CHECK(at(gp_Pnt(1, 2, 3).Transformed(placed), 8, 2, 3));
+  // Not moved: where the exact preview draws it.
+  placed = draggedPlacement(moved(0, 50, 0), MotionSide::None, moved(5, 0, 0), moved(12, 0, 0), gp_Trsf());
+  CHECK(at(gp_Pnt(0, 0, 0).Transformed(placed), 0, 50, 0));
+  // In an occurrence 50 mm along Y: the body turns in its component's
+  // coordinates, a quarter about (10, 0, 0) there, and is drawn where the
+  // occurrence puts it.
+  placed = draggedPlacement(moved(0, 50, 0), MotionSide::Shape, gp_Trsf(), quarter(gp_Pnt(10, 0, 0)), gp_Trsf());
+  CHECK(at(gp_Pnt(20, 0, 0).Transformed(placed), 10, 60, 0));
+  // An occurrence the move places, in a component 100 mm along X: the
+  // turn about that component's (10, 0, 0), the design's (110, 0, 0).
+  placed = draggedPlacement(moved(110, 0, 0), MotionSide::Occurrence, gp_Trsf(), quarter(gp_Pnt(10, 0, 0)),
+                            moved(100, 0, 0));
+  CHECK(at(gp_Pnt(0, 0, 0).Transformed(placed), 110, 0, 0));
+  CHECK(at(gp_Pnt(10, 0, 0).Transformed(placed), 110, 10, 0));
+  // From a shown motion to another: only the change is applied.
+  placed = draggedPlacement(moved(5, 0, 0), MotionSide::Occurrence, moved(5, 0, 0), moved(5, 0, 9), gp_Trsf());
+  CHECK(at(gp_Pnt(0, 0, 0).Transformed(placed), 5, 0, 9));
+  CHECK(mitcad::sameMotion(moved(1, 2, 3), moved(1, 2, 3 + 1e-12)));
+  CHECK(!mitcad::sameMotion(moved(1, 2, 3), moved(1, 2, 3.001)));
+
+  // Free Move about the pivot (10, 0, 0): a quarter about Z, then 5 up.
+  CommandState state;
+  state.setChoice(QStringLiteral("type"), QStringLiteral("free"));
+  for (const char* id : {"tx", "ty", "tz", "rx", "ry", "rz"}) {
+    state.setValue(QString::fromLatin1(id), 0.0);
+  }
+  const gp_Pnt pivot(10, 0, 0);
+  auto motion = mitcad::cmd::moveMotion(state, pivot);
+  CHECK(motion && mitcad::sameMotion(*motion, gp_Trsf()));
+  state.setValue(QStringLiteral("rz"), std::atan(1.0) * 2.0);
+  state.setValue(QStringLiteral("tz"), 5.0);
+  motion = mitcad::cmd::moveMotion(state, pivot);
+  CHECK(motion && at(gp_Pnt(20, 0, 0).Transformed(*motion), 10, 10, 5));
+  CHECK(motion && at(pivot.Transformed(*motion), 10, 0, 5));
+  // A drag of X from there: the body where the new motion puts it.
+  CommandState dragged = state;
+  dragged.setValue(QStringLiteral("tx"), 8.0);
+  const auto to = mitcad::cmd::moveMotion(dragged, pivot);
+  CHECK(to && motion);
+  if (to && motion) {
+    placed = draggedPlacement(gp_Trsf(), MotionSide::Shape, *motion, *to, gp_Trsf());
+    CHECK(at(gp_Pnt(20, 0, 0).Transformed(*motion).Transformed(placed), 18, 10, 5));
+  }
+  // A value that is not a number: none.
+  state.setValue(QStringLiteral("ty"), std::numeric_limits<double>::quiet_NaN());
+  CHECK(!mitcad::cmd::moveMotion(state, pivot));
+  // Translate: its distances.
+  CommandState translate;
+  translate.setChoice(QStringLiteral("type"), QStringLiteral("translate"));
+  translate.setValue(QStringLiteral("x"), 1.0);
+  translate.setValue(QStringLiteral("y"), -2.0);
+  translate.setValue(QStringLiteral("z"), 3.0);
+  motion = mitcad::cmd::moveMotion(translate, pivot);
+  CHECK(motion && at(gp_Pnt(0, 0, 0).Transformed(*motion), 1, -2, 3));
+  // The motions of picked geometry: none.
+  CommandState rotate = translate;
+  rotate.setChoice(QStringLiteral("type"), QStringLiteral("rotate"));
+  CHECK(!mitcad::cmd::moveMotion(rotate, pivot));
+}
+
 } // namespace
 
 int main() {
@@ -341,6 +426,7 @@ int main() {
   testStretches();
   testAxes();
   testExtrudeRules();
+  testMotions();
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

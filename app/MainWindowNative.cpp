@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <utility>
 
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
 #include <QCloseEvent>
@@ -16,9 +17,11 @@
 #include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
+#include <QModelIndex>
 #include <QObject>
 #include <QPalette>
 #include <QSet>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QTimer>
 #include <QTabBar>
@@ -30,6 +33,7 @@
 #include "browser/TimelineWidget.hpp"
 #include "files/ProjectIndicator.hpp"
 #include "files/LockController.hpp"
+#include "framework/AppSettings.hpp"
 #include "framework/AutoselectPanel.hpp"
 #include "framework/CommandRegistry.hpp"
 #include "framework/ComputeProgress.hpp"
@@ -112,6 +116,35 @@ QString symbolForNode(const BrowserNode& node) {
   case BrowserNode::Type::NamedView: return QStringLiteral("viewfinder");
   case BrowserNode::Type::Joint: return QStringLiteral("link");
   default: return node.isFolder() ? QStringLiteral("folder") : QStringLiteral("square.dashed");
+  }
+}
+
+// The side cards' widths dragged by their edges (mitcad#818): Projects's
+// in the Floating card's setting (projects/cardWidth, mitcad#529), so that
+// both frontends open it as wide; Browser's and the inspector's in
+// browser/cardWidth and inspector/cardWidth.
+void rememberNativeCardWidth(const QString& card, int width) {
+  if (card == QLatin1String("projects")) {
+    ProjectsSettings settings = ProjectsSettings::load();
+    settings.cardWidth = width;
+    settings.save();
+  } else {
+    QSettings().setValue(card + QStringLiteral("/cardWidth"), width);
+  }
+  qInfo().noquote() << QStringLiteral("Native %1 card: width %2 remembered").arg(card).arg(width);
+}
+
+void restoreNativeCardWidths(NativeMacWindow& window) {
+  const QSettings settings;
+  const int projects = ProjectsSettings::load().cardWidth;
+  const int browser = std::max(0, settings.value(QStringLiteral("browser/cardWidth")).toInt());
+  const int inspector = std::max(0, settings.value(QStringLiteral("inspector/cardWidth")).toInt());
+  window.setCardWidth(QStringLiteral("projects"), projects);
+  window.setCardWidth(QStringLiteral("browser"), browser);
+  window.setCardWidth(QStringLiteral("inspector"), inspector);
+  if (projects > 0 || browser > 0 || inspector > 0) {
+    qInfo().noquote() << QStringLiteral("Native card widths: projects %1, browser %2, inspector %3 (remembered)")
+                             .arg(projects).arg(browser).arg(inspector);
   }
 }
 
@@ -288,10 +321,14 @@ void MainWindow::createNativeWindow() {
     m_viewer->setOverlayInsets(insets);
     m_viewer->setCoveredRects(covered);
   };
+  callbacks.cardWidthChosen = rememberNativeCardWidth;
+  // The focused Projects outline's keys are the shared panel's (mitcad#816).
+  callbacks.projectsKey = [this](int key) { return m_projectsPanel != nullptr && m_projectsPanel->treeKey(key); };
   m_nativeWindow = std::make_unique<NativeMacWindow>(this, std::move(callbacks));
   if (!m_nativeWindow->isEmbedded()) {
     throw std::runtime_error(m_nativeWindow->embeddingError().toStdString());
   }
+  restoreNativeCardWidths(*m_nativeWindow);
   setNativeDialogWindow(m_nativeWindow->nativeWindow());
   connect(m_controller->browser(), &BrowserPanel::contentHeightChanged, this, [this] {
     m_nativeSnapshotKey.clear();
@@ -307,6 +344,37 @@ void MainWindow::createNativeWindow() {
   // AppKit expansion/model notifications must finish before measuring rows.
   connect(m_projectsPanel, &ProjectsPanel::contentHeightChanged, this,
           &MainWindow::refreshNativeProjects, Qt::QueuedConnection);
+  // New Design, New Folder and Rename name the row in the visible AppKit
+  // outline, and its rows move by dragging, with the panel's own rules
+  // (mitcad#816). Registered before the outline is first presented.
+  const QPointer<ProjectsPanel> projects(m_projectsPanel);
+  m_projectsPanel->setNativeEditor(
+      [this, projects](const QModelIndex& index, const QString& text) {
+        // The row the panel added or renames must be in the outline first.
+        refreshNativeProjects();
+        const QString identifier = index.data(NativeControlIdentifierRole).toString();
+        return m_nativeWindow != nullptr &&
+               m_nativeWindow->editProjectsRow(identifier, text, [projects](const QString& name, bool accepted) {
+                 if (projects != nullptr) projects->finishNativeEditing(name, accepted);
+               });
+      },
+      [this] {
+        if (m_nativeWindow != nullptr) m_nativeWindow->closeProjectsEditor();
+      });
+  if (auto* tree = m_projectsPanel->findChild<QAbstractItemView*>(QStringLiteral("projectsTree"))) {
+    NativeRowMoves moves;
+    moves.draggable = [projects](const QModelIndex& row) { return projects != nullptr && projects->canDragRow(row); };
+    moves.allowed = [projects](const QModelIndex& dragged, const QModelIndex& over) {
+      return projects != nullptr && projects->canDropRow(dragged, over);
+    };
+    moves.drop = [projects](const QModelIndex& dragged, const QModelIndex& over) {
+      if (projects != nullptr) projects->dropRow(dragged, over);
+    };
+    moves.dragging = [projects](const QModelIndex& dragged, bool dragging) {
+      if (projects != nullptr) projects->setNativeDragging(dragged, dragging);
+    };
+    setNativeRowMoves(tree, std::move(moves));
+  }
   if (QMenu* view = findChild<QMenu*>(QStringLiteral("viewMenu"))) {
     QAction* browser = view->addAction(tr("Browser"));
     browser->setCheckable(true);

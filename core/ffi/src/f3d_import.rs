@@ -2223,6 +2223,14 @@ pub struct TimelineOptions {
     /// trying definitions.
     #[serde(default)]
     pub time_limit: Option<f64>,
+    /// A factor on the time an item is tried from its own start first
+    /// (`mitcad_import::Options::own_start_scale`, half of the item's 60 s;
+    /// mitcad#847): a debug build's checks give it their slowdown, so that
+    /// an item's outcome does not hang on the build or the load. None, or
+    /// not a number above 0: 1. Passed on to the documents the design
+    /// refers to.
+    #[serde(default)]
+    pub own_start_time_scale: Option<f64>,
     /// How far (mm) the replay's geometry may be from the file's where no
     /// exact result is (`mitcad_import::Options::geometric_tolerance`,
     /// mitcad#224); 0.01 mm when left out.
@@ -2307,6 +2315,16 @@ pub struct TimelineOptions {
     /// Not passed on to the documents the design refers to.
     #[serde(default)]
     pub accept_deviations: Option<AcceptDeviationsOption>,
+}
+
+/// The import's `own_start_scale` of
+/// [`TimelineOptions::own_start_time_scale`] (mitcad#847): 1 without a
+/// factor above 0.
+fn own_start_scale(options: &TimelineOptions) -> f64 {
+    options
+        .own_start_time_scale
+        .filter(|s| s.is_finite() && *s > 0.0)
+        .unwrap_or(1.0)
 }
 
 /// [`TimelineOptions::accept_deviations`].
@@ -3228,6 +3246,7 @@ impl Document {
             stop_at: attempt.stop_at,
             failed_items: attempt.failed.clone(),
             threads: options.threads.unwrap_or(1).max(1),
+            own_start_scale: own_start_scale(options),
             spawn: Some(worker_spawner()),
             commands: Some(import_commands()),
             geometric_tolerance: options
@@ -3310,6 +3329,35 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The own-start time scale of the command's JSON (`mitcad-cli
+    /// import-f3d --own-start-time-scale`) reaches the import's options
+    /// (mitcad#847): it scales the time an item is tried from its own
+    /// start (half of the item's 60 s) and leaves the item's time as it
+    /// is; left out or not above 0, 30 s.
+    #[test]
+    fn the_own_start_time_scale_reaches_the_import_s_options() {
+        let import = |json: Value| {
+            let options: TimelineOptions = serde_json::from_value(json).unwrap();
+            mitcad_import::Options {
+                own_start_scale: own_start_scale(&options),
+                ..mitcad_import::Options::default()
+            }
+        };
+        let scaled = import(json!({"own_start_time_scale": 3.0}));
+        assert_eq!(scaled.own_start_scale, 3.0);
+        assert_eq!(scaled.own_start_seconds(), 90.0);
+        assert_eq!(scaled.item_seconds, 60.0);
+        let halved = import(json!({"own_start_time_scale": 0.5}));
+        assert_eq!(halved.own_start_seconds(), 15.0);
+        for json in [
+            json!({}),
+            json!({"own_start_time_scale": 0.0}),
+            json!({"own_start_time_scale": -2.0}),
+        ] {
+            assert_eq!(import(json).own_start_seconds(), 30.0);
+        }
+    }
 
     /// An item changed its blob where its operation did, or where the
     /// operations no item names since the last named one did (a pattern

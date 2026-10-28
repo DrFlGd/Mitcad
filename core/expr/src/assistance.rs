@@ -93,24 +93,28 @@ pub fn function_help(function: Function) -> FunctionHelp {
             ),
             Min => (
                 &["value1", "value2", "..."],
-                "Smallest value",
+                "Smallest value, also of a table column",
                 "MIN(12 mm; 8 mm)",
             ),
             Max => (
                 &["value1", "value2", "..."],
-                "Largest value",
+                "Largest value, also of a table column",
                 "MAX(12 mm; 8 mm)",
             ),
-            Sum => (&["value1", "..."], "Sum of values", "SUM(2 mm; 3 mm; 4 mm)"),
+            Sum => (
+                &["value1", "..."],
+                "Sum of values, also of a table column",
+                "SUM(2 mm; 3 mm; 4 mm)",
+            ),
             Average => (
                 &["value1", "..."],
-                "Arithmetic mean of values",
+                "Arithmetic mean of values, also of a table column",
                 "AVERAGE(2 mm; 4 mm)",
             ),
             Product => (&["value1", "..."], "Product of values", "PRODUCT(2; 3; 4)"),
             Median => (
                 &["value1", "..."],
-                "Middle value after sorting",
+                "Middle value after sorting, also of a table column",
                 "MEDIAN(2; 9; 4)",
             ),
             Pow => (
@@ -195,6 +199,23 @@ pub fn function_help(function: Function) -> FunctionHelp {
                 &["text"],
                 "The number of characters in a text",
                 "LEN(\"Box\")",
+            ),
+            XLookup => (
+                &["key", "keys", "results", "[if_not_found]", "[mode]"],
+                "Look a key up in a table column and give the cell of another column in that \
+                 row; mode 0 exact, -1 or the next smaller, 1 or the next larger",
+                "XLOOKUP('M5'; Screws.Size; Screws.dk)",
+            ),
+            Match => (
+                &["key", "keys", "[mode]"],
+                "The row number of a key in a table column; mode 0 exact, 1 or the next \
+                 smaller, -1 or the next larger",
+                "MATCH('M5'; Screws.Size)",
+            ),
+            Index => (
+                &["column", "row"],
+                "The cell of a table column in a row, counting from one",
+                "INDEX(Screws.dk; 3)",
             ),
         };
     FunctionHelp {

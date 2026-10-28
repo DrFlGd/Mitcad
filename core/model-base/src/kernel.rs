@@ -29,10 +29,13 @@ use crate::exchange::{MeshTolerance, TriangleMesh};
 // FreeCAD helices (mitcad#4).
 use crate::sweeps::HelixSpec;
 
-pub trait Kernel {
+/// A kernel goes to the threads that evaluate features beside a recompute
+/// or an import ([`Kernel::fork`], mitcad#95, mitcad#842), so it is `Send`,
+/// and those threads share its shapes, so they are `Send + Sync`.
+pub trait Kernel: Send {
     /// A kernel-owned shape with face names (see [`crate::topo`]). Cloning
     /// must be cheap (a shared handle); shapes are never modified.
-    type Shape: Clone;
+    type Shape: Clone + Send + Sync;
 
     // Named material domains, exact trimming and chart reconstruction.
     fn sheet_trim_domain(
@@ -298,6 +301,20 @@ pub trait Kernel {
         _instance: Option<Instance>,
     ) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("transforms"))
+    }
+
+    /// The shape moved by `transform` for a Move (mitcad#838): a rotation
+    /// and a translation as a location on the same shape, whose faces keep
+    /// the display meshes they have, so the view meshes nothing again; the
+    /// input is not changed. A kernel without locations moves a copy, as
+    /// [`Kernel::transform_shape`] does (the same geometry and names).
+    fn move_shape(
+        &self,
+        shape: &Self::Shape,
+        transform: &Transform,
+        instance: Option<Instance>,
+    ) -> Result<Self::Shape, KernelError> {
+        self.transform_shape(shape, transform, instance)
     }
 
     /// The union of the shapes with their face names: one shape of one or
@@ -1688,6 +1705,17 @@ pub trait Kernel {
         _plane: &DatumPlane,
     ) -> Result<Vec<[f64; 3]>, KernelError> {
         Err(KernelError::Unsupported("section points"))
+    }
+
+    // Features evaluated on worker threads (the recompute, mitcad#842).
+
+    /// Runs `f`, the work of a thread that evaluates features on a fork of
+    /// this kernel ([`Kernel::fork`]) beside the recompute's own thread:
+    /// the kernel sets the thread up as it does the threads it computes on
+    /// (the OCCT kernel: its crash handlers). Kernels that need nothing
+    /// just run `f`.
+    fn worker_thread<R>(&self, f: impl FnOnce() -> R) -> R {
+        f()
     }
 }
 

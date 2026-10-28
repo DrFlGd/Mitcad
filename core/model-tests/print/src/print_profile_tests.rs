@@ -107,8 +107,8 @@ fn profiles_are_made_edited_and_deleted() {
     );
     assert_eq!(profiles[0]["chosen_by"], json!([]));
 
-    // Without a name: New Process, process1 (mitcad#655: one pattern for
-    // every kind).
+    // Without a name: Process 1, process1 (mitcad#655: one pattern for
+    // every kind; mitcad#828).
     let made = command(
         &mut doc,
         json!({"cmd": "create_print_profile", "kind": "process"}),
@@ -119,7 +119,7 @@ fn profiles_are_made_edited_and_deleted() {
         json!({"cmd": "edit_print_profile", "id": "process1", "name": "Fine",
                "values": {"layer_height": 0.12, "fill_density": "15%"}}),
     );
-    assert_eq!(undo_label(&doc), "Edit Process New Process");
+    assert_eq!(undo_label(&doc), "Edit Process Process 1");
     let fine = doc.print_profile("process1").unwrap();
     assert_eq!(fine.name, "Fine");
     // A percentage is kept as its number.
@@ -636,7 +636,8 @@ fn own_process_values_are_listed_with_slicer_default() {
 
 #[test]
 fn new_items_are_named_alike() {
-    // mitcad#655: "New Printer", "New Process", "New Material", then "… 2".
+    // mitcad#655, mitcad#828: "Printer 1", "Process 1", "Material 1", then
+    // "… 2"; never "New …", which read as 3D Print's New process… action.
     let mut doc = block();
     for _ in 0..2 {
         command(
@@ -649,27 +650,56 @@ fn new_items_are_named_alike() {
         .iter()
         .map(|p| p.name.clone())
         .collect();
-    assert_eq!(names, ["New Printer", "New Printer 2"]);
+    assert_eq!(names, ["Printer 1", "Printer 2"]);
     command(&mut doc, json!({"cmd": "create_material"}));
-    assert_eq!(doc.custom_materials()[0].name, "New Material");
-    // A copy is named after its source.
+    assert_eq!(doc.custom_materials()[0].name, "Material 1");
+    // A copy is named after its source, " (copy)" (mitcad#828).
     command(
         &mut doc,
         json!({"cmd": "create_material", "based_on": "custom1"}),
     );
-    assert_eq!(doc.custom_materials()[1].name, "New Material 2");
+    assert_eq!(doc.custom_materials()[1].name, "Material 1 (copy)");
     command(
         &mut doc,
         json!({"cmd": "create_print_profile", "based_on": "printer1"}),
     );
-    assert_eq!(doc.print_profiles()[2].name, "New Printer 3");
-    // A new process made the design's choice in the same undo step.
+    assert_eq!(doc.print_profiles()[2].name, "Printer 1 (copy)");
+    // The next copy " (copy 2)", also of the copy, never "(copy) (copy)".
+    let copy = doc.print_profiles()[2].id.clone();
+    command(
+        &mut doc,
+        json!({"cmd": "create_print_profile", "based_on": copy}),
+    );
+    assert_eq!(doc.print_profiles()[3].name, "Printer 1 (copy 2)");
+    command(
+        &mut doc,
+        json!({"cmd": "create_material", "based_on": "custom1"}),
+    );
+    assert_eq!(doc.custom_materials()[2].name, "Material 1 (copy 2)");
+    // A new process made the design's choice in the same undo step: 3D
+    // Print's New process… twice gives Process 1 and Process 2.
+    let first = command(
+        &mut doc,
+        json!({"cmd": "create_print_profile", "kind": "process", "choose": true}),
+    );
+    let first_name = doc
+        .print_profile(first["id"].as_str().unwrap())
+        .unwrap()
+        .name
+        .clone();
+    assert_eq!(first_name, "Process 1");
     let depth = doc.undo_depth();
     let made = command(
         &mut doc,
         json!({"cmd": "create_print_profile", "kind": "process", "choose": true}),
     );
     assert_eq!(doc.undo_depth(), depth + 1);
+    let made_name = doc
+        .print_profile(made["id"].as_str().unwrap())
+        .unwrap()
+        .name
+        .clone();
+    assert_eq!(made_name, "Process 2");
     let rows = query(&doc, json!({"query": "library_items", "kind": "process"}));
     let row = rows["items"]
         .as_array()

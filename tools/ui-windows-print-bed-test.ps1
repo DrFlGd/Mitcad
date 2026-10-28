@@ -35,7 +35,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'solid.offset_face' = 'F7'; 'make.print3d' = 'F8'; 'inspect.print_analysis' = 'F9' }
+Ui-Init $App $Out $QtBin @{ 'solid.offset_face' = 'F7'; 'make.print3d' = 'F8'; 'inspect.print_analysis' = 'F9' } -StepPause 0
 if (-not $Cli) {
   $Cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
     ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1

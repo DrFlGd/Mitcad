@@ -125,6 +125,16 @@ not a level of its own, and MitCad has no separate assembly file.
 |---|---|---|
 | **Inactive** (constraint, dimension) | A sketch constraint or dimension kept in the sketch and drawn (pink), but left out of the solve until it is activated; an inactive dimension keeps its value. An import makes those its file does not meet inactive. Not *suppressed*, which is said of features, and not *driven*, which is a dimension that only measures. UI: *Activate*, *Deactivate*; the tooltip *Not applied: …*. | `Constraint::active`, `Dimension::active` (`core/sketch/src/lib.rs`), `sketch.set_active` |
 
+## Configurations
+
+| Term | What it is | In the code |
+|---|---|---|
+| **Configuration** | A design's options, rows and rules: the design as a family of products. UI: the *Configurations…* window, the *Configuration* bar. Not a configuration of the program (that is a preference or a setting). | `Configurations` (`core/model-base/src/configurations.rs`), `ConfigurationsDialog`, `ConfigurationBar` |
+| **Option** | A user parameter that the configuration names, chosen by the user in the options' order. Not a command's option in its panel, which user-facing text calls an input or a setting where both could be meant. **Driven option**: one whose expression is a formula; nothing chooses it. | `Configurations::options`, `OptionReport` |
+| **Domain** | What an option can be before the rules: a list, a range or free. **Allowed values**: what the rules leave of it now. | `Domain` |
+| **Row** | A named preset of option values, with its designation, part number and supplier URL. Not a row of a table in general where both could be meant. A **closed** configuration allows only its rows' combinations; an **open** one any that the rules allow. | `ConfigurationRow` |
+| **Rule** | A condition and what it allows or forbids; rules only narrow. **Move**: an option the cascade changes to an allowed value after a change; **refused**: a change no move can repair. | `ConfigurationRule`, `ConfigurationMove` |
+
 ## UI names in user-facing text
 
 The user guide, the help, the README, tooltips, status messages and

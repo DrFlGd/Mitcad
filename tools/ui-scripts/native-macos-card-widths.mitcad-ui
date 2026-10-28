@@ -1,0 +1,105 @@
+# SPDX-License-Identifier: MIT
+# Native side card widths and secondary windows within the visible screen
+# (mitcad#818). Run by ui-macos-native-card-widths-test.sh on a design whose
+# body and project have long synthetic names, with MITCAD_TEST_WORK set.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+wait-log 'Projects panel: 1 project' 30
+sleep 800
+native-resize 1280 820
+expect-native-visible native.projectsCard true
+expect-native-visible native.sidebar true
+expect-native-visible native.inspectorCard false
+expect-native-layout
+expect-native-card-width native.projectsCard 260
+expect-native-card-width native.sidebar 260
+expect-native-name-fits '^Synthetic project with a long name$' false
+expect-native-name-fits '^Synthetic body with a deliberately long name for width checks$' false
+screenshot '${MITCAD_TEST_WORK}/card-widths-default.png'
+
+# AppKit pointer drags on the cards' inner edges (with the resize cursor)
+# give the long names room; the widths are remembered in the shared
+# settings, Projects' in the Floating card's.
+mark
+native-card-width native.projectsCard 700
+expect-native-card-width native.projectsCard 700
+expect-log 'Native projects card: width 700 remembered'
+expect-setting projects/cardWidth 700
+native-card-width native.sidebar 600
+expect-native-card-width native.sidebar 600
+expect-log 'Native browser card: width 600 remembered'
+expect-setting browser/cardWidth 600
+expect-native-layout
+expect-native-name-fits '^Synthetic project with a long name$' true
+expect-native-name-fits '^Synthetic body with a deliberately long name for width checks$' true
+screenshot '${MITCAD_TEST_WORK}/card-widths-wide.png'
+
+# A drag stops at the card's minimum.
+native-card-width native.sidebar 40
+expect-native-card-width native.sidebar 180
+expect-setting browser/cardWidth 180
+native-card-width native.projectsCard 40
+expect-native-card-width native.projectsCard 230
+expect-native-layout
+native-card-width native.projectsCard 700
+native-card-width native.sidebar 600
+expect-native-card-width native.projectsCard 700
+expect-native-card-width native.sidebar 600
+
+# The inspector's left edge, while a command form shows it: the free canvas
+# between the sides limits it (1280 - 2 x 12 - 160 - 700 = 396 points).
+mark
+native-action solid.box
+expect-log 'Command Box started'
+expect-native-visible native.inspectorCard true
+native-card-width native.inspectorCard 5000
+expect-native-card-width native.inspectorCard 396
+native-card-width native.inspectorCard 340
+expect-native-card-width native.inspectorCard 340
+expect-log 'Native inspector card: width 340 remembered'
+expect-setting inspector/cardWidth 340
+expect-native-layout
+
+# A compact window narrows the cards, the inspector first, and keeps the
+# remembered widths for a larger window.
+native-resize 900 640
+expect-native-layout
+expect-native-card-width native.inspectorCard 300
+expect-native-card-width native.projectsCard 416
+expect-native-card-width native.sidebar 416
+screenshot '${MITCAD_TEST_WORK}/card-widths-compact.png'
+native-resize 1280 820
+expect-native-card-width native.projectsCard 700
+expect-native-card-width native.sidebar 600
+expect-native-card-width native.inspectorCard 340
+expect-setting projects/cardWidth 700
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
+
+native-appearance dark
+sleep 250
+expect-native-layout
+expect-native-card-width native.sidebar 600
+screenshot '${MITCAD_TEST_WORK}/card-widths-dark.png'
+native-appearance light
+
+# Appearances within the visible screen, title bar included: its buttons
+# stay below the scrolling body, also after a display change to a lower
+# screen, in both appearances.
+mark
+native-action solid.appearances
+expect-log 'Appearances dialog opened'
+focus-dialog '^Appearances$'
+expect-native-window-fits '^Appearances$'
+screenshot '${MITCAD_TEST_WORK}/appearances.png'
+native-screen-limit 900 520
+expect-native-window-fits '^Appearances$'
+screenshot '${MITCAD_TEST_WORK}/appearances-compact.png'
+native-appearance dark
+sleep 250
+expect-native-window-fits '^Appearances$'
+screenshot '${MITCAD_TEST_WORK}/appearances-compact-dark.png'
+native-appearance light
+native-screen-limit 0 0
+button '^Close$'
+expect-native-dialog-gone '^Appearances$'
+focus-main

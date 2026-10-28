@@ -1226,6 +1226,44 @@ void SketchController::setDimensionSigned(const QString& id, bool on) {
                                  changed != nullptr ? changed->expression : QString());
 }
 
+QString SketchController::splineAt(const QPointF& screen) const {
+  const QString id = entityAt(screen, PickCurves);
+  const CurveData* c = m_model.curve(id);
+  if (c == nullptr || !c->isSpline() || c->reference || m_model.offsetOf(id) != nullptr) {
+    return QString();
+  }
+  return id;
+}
+
+bool SketchController::insertSplinePoint(const QString& curve, const QPointF& screen) {
+  const CurveData* c = m_model.curve(curve);
+  const std::optional<V2> pointer = sketchAt(screen);
+  if (c == nullptr || !c->isSpline() || !pointer) {
+    return false;
+  }
+  // The model takes the place on the curve nearest to this one.
+  const V2 on = c->curve.nearest(*pointer);
+  SketchOp op(*this);
+  QJsonObject cmd = op.command(QStringLiteral("sketch.insert_spline_point"));
+  cmd.insert(QStringLiteral("curve"), curve);
+  cmd.insert(QStringLiteral("at"), xy(on));
+  QJsonObject result;
+  if (!op.run(cmd, &result)) {
+    const QString reason = op.error();
+    op.rollback();
+    error(tr("Insert Point: %1").arg(reason));
+    return false;
+  }
+  op.commit();
+  const QJsonArray made = result.value(QStringLiteral("made")).toArray();
+  // "Inserted point p12 into c3 at 20.000,5.000", for UI tests.
+  qDebug().noquote() << QStringLiteral("Inserted point %1 into %2 at %3,%4")
+                            .arg(made.isEmpty() ? QString() : made.first().toString(), curve)
+                            .arg(on.x, 0, 'f', 3)
+                            .arg(on.y, 0, 'f', 3);
+  return true;
+}
+
 void SketchController::setItemsActive(const QStringList& ids, bool on) {
   if (ids.isEmpty()) {
     return;
@@ -1987,6 +2025,10 @@ bool SketchController::viewerEvent(QEvent* event) {
         m_host.sketchClickable(pressed, false)) {
       m_pressed = true;
       m_dragEntity = entity;
+      // A press on one of several selected curves and points drags them
+      // all (mitcad#837); on anything else only what is under the mouse.
+      // The press does not change the selection.
+      m_dragSelection = selectionDraggedWith(entity);
       m_pressPosition = e->position();
       m_pressModifiers = e->modifiers();
       return true;
@@ -2029,6 +2071,7 @@ bool SketchController::viewerEvent(QEvent* event) {
         forwardClick(e);
       }
       m_dragEntity.clear();
+      m_dragSelection.clear();
       m_dragDimension.clear();
       return true;
     }
@@ -2088,6 +2131,16 @@ bool SketchController::viewerEvent(QEvent* event) {
         m_viewer.cancelPointerInteraction();
         qDebug().noquote() << QStringLiteral("Double-click on %1: %2").arg(id, QString::fromLatin1(command));
         m_host.trigger(QString::fromLatin1(command));
+        return true;
+      }
+      // A spline the first click picked gets a point where it is
+      // double-clicked (Insert Point, mitcad#836).
+      if (selected.first().kind == SelectKind::SketchCurve && splineAt(e->position()) == id) {
+        m_pressed = false;
+        m_dragEntity.clear();
+        m_viewer.cancelPointerInteraction();
+        qDebug().noquote() << QStringLiteral("Double-click on %1: Insert Point").arg(id);
+        insertSplinePoint(id, e->position());
         return true;
       }
     }
@@ -2161,7 +2214,30 @@ void SketchController::startDrag() {
   if (m_dragDimension.isEmpty()) {
     emit geometryDragStarted();
   }
-  hint(tr("Drag: the geometry follows as far as its constraints let it."));
+  hint(m_dragSelection.isEmpty()
+           ? tr("Drag: the geometry follows as far as its constraints let it.")
+           : tr("Drag: the selection moves together as far as its constraints let it."));
+}
+
+QStringList SketchController::selectionDraggedWith(const QString& entity) const {
+  QStringList ids;
+  bool pressed = false;
+  for (const SelectionItem& item : m_host.selection()) {
+    if (item.owner != m_uid ||
+        (item.kind != SelectKind::SketchPoint && item.kind != SelectKind::SketchCurve)) {
+      continue;
+    }
+    if ((m_model.point(item.name) == nullptr && m_model.curve(item.name) == nullptr) ||
+        ids.contains(item.name)) {
+      continue;
+    }
+    ids.append(item.name);
+    pressed = pressed || item.name == entity;
+  }
+  if (!pressed || ids.size() < 2) {
+    return {};
+  }
+  return ids;
 }
 
 void SketchController::applyDrag() {
@@ -2181,11 +2257,26 @@ void SketchController::applyDrag() {
     return;
   }
   QJsonObject cmd{{QStringLiteral("cmd"), QStringLiteral("sketch.drag")},
-                  {QStringLiteral("sketch"), m_uid},
-                  {QStringLiteral("entity"), m_dragEntity}};
-  if (m_model.point(m_dragEntity) != nullptr) {
+                  {QStringLiteral("sketch"), m_uid}};
+  if (!m_dragSelection.isEmpty()) {
+    // The selection together (mitcad#837), in one sketch.drag: by the
+    // offset that brings the grabbed point to the cursor, as a curve's
+    // single drag does.
+    V2 grabbed = m_dragLast;
+    if (const auto p = m_model.pointAt(m_dragEntity)) {
+      grabbed = *p;
+    } else if (const CurveData* c = m_model.curve(m_dragEntity)) {
+      grabbed = c->curve.nearest(m_dragLast);
+    } else {
+      return;
+    }
+    cmd.insert(QStringLiteral("entities"), QJsonArray::fromStringList(m_dragSelection));
+    cmd.insert(QStringLiteral("by"), xy(target - grabbed));
+  } else if (m_model.point(m_dragEntity) != nullptr) {
+    cmd.insert(QStringLiteral("entity"), m_dragEntity);
     cmd.insert(QStringLiteral("to"), xy(target));
   } else if (const CurveData* c = m_model.curve(m_dragEntity)) {
+    cmd.insert(QStringLiteral("entity"), m_dragEntity);
     if (c->isCircle()) {
       cmd.insert(QStringLiteral("radius"), std::max(dist(target, c->curve.center), 1e-3));
     } else {
@@ -2219,6 +2310,7 @@ void SketchController::interruptDrag() {
   m_pressed = false;
   if (!m_dragging) {
     m_dragEntity.clear();
+    m_dragSelection.clear();
     m_dragDimension.clear();
     return;
   }
@@ -2259,7 +2351,12 @@ void SketchController::endDrag() {
     return;
   }
   const QString entity = m_dragEntity;
+  const QStringList together = m_dragSelection;
   m_dragEntity.clear();
+  m_dragSelection.clear();
+  if (!together.isEmpty()) {
+    qDebug().noquote() << QStringLiteral("Drag of the selection: %1").arg(together.join(QLatin1Char(' ')));
+  }
   if (m_dragSteps > 1) {
     try {
       runModel({{QStringLiteral("cmd"), QStringLiteral("merge_undo")},

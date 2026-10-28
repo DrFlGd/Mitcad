@@ -3,9 +3,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
 #include <cstdlib>
+#include <exception>
+#include <functional>
+#include <new>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -32,6 +38,7 @@
 #include <BRepTools.hxx>
 #include <BRepTools_ReShape.hxx>
 #include <BRep_Builder.hxx>
+#include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2dAPI_Interpolate.hxx>
 #include <Geom2dConvert.hxx>
@@ -46,6 +53,7 @@
 #include <Geom_Surface.hxx>
 #include <NCollection_HArray1.hxx>
 #include <NCollection_List.hxx>
+#include <OSD_Parallel.hxx>
 #include <ShapeAnalysis_Surface.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -56,12 +64,21 @@
 #include <gp_Ax3.hxx>
 #include <gp_GTrsf2d.hxx>
 #include <gp_Pnt2d.hxx>
+// OSD_Parallel.hxx brings in windows.h on Windows, whose empty near and far
+// macros would remove those names below.
+#ifdef near
+#undef near
+#endif
+#ifdef far
+#undef far
+#endif
 
 #include "helix_brep.hpp"
 #include "history.hpp"
 #include "local_boolean.hpp"
 #include "mitcad/geometry/reference.hpp"
 #include "sweep.hpp"
+#include "thread_options.hpp"
 #include "util.hpp"
 
 namespace mitcad::geometry {
@@ -77,6 +94,109 @@ constexpr double kMinCrest = 0.02;
 // How near the screw surfaces of the grooves' faces keep to the screw
 // motion (mm), finer than the sweeps a turn at a time (on_screw_surfaces).
 constexpr double kScrewExact = 1.0e-7;
+
+using Clock = std::chrono::steady_clock;
+
+double seconds_since(Clock::time_point start) {
+  return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+// The value of an environment variable, if it is set.
+std::optional<std::string> environment(const char* name) {
+#ifdef _MSC_VER
+  char* value = nullptr;
+  std::size_t length = 0;
+  if (_dupenv_s(&value, &length, name) != 0 || value == nullptr) {
+    return std::nullopt;
+  }
+  std::string text(value);
+  std::free(value);
+  return text;
+#else
+  const char* value = std::getenv(name);
+  if (value == nullptr) {
+    return std::nullopt;
+  }
+  return std::string(value);
+#endif
+}
+
+// Whether MITCAD_BOOLEAN_TRACE asks for the threads' lines on standard
+// error too (mitcad#843): per face where its time goes (its tools, the
+// booleans with the body, the checks of the material past its ends), per
+// thread its phases.
+bool tracing() {
+  static const bool on = environment("MITCAD_BOOLEAN_TRACE").has_value();
+  return on;
+}
+
+// Where one face's thread spends its time (tracing()).
+struct FaceTrace {
+  double tools = 0.0;
+  double booleans = 0.0;
+  double checks = 0.0;
+};
+
+double* tools_time(FaceTrace* trace) { return trace != nullptr ? &trace->tools : nullptr; }
+double* booleans_time(FaceTrace* trace) { return trace != nullptr ? &trace->booleans : nullptr; }
+double* checks_time(FaceTrace* trace) { return trace != nullptr ? &trace->checks : nullptr; }
+
+// Adds the time from its making to its end to `total` when tracing.
+class Timed {
+public:
+  explicit Timed(double* total) : m_total(tracing() ? total : nullptr), m_start(Clock::now()) {}
+  ~Timed() {
+    if (m_total != nullptr) {
+      *m_total += seconds_since(m_start);
+    }
+  }
+  Timed(const Timed&) = delete;
+  Timed& operator=(const Timed&) = delete;
+
+private:
+  double* m_total;
+  Clock::time_point m_start;
+};
+
+// The phases of one thread, traced when it ends (tracing()), as the
+// booleans' "boolean-trace" lines.
+class ThreadTrace {
+public:
+  explicit ThreadTrace(std::string what) : m_what(std::move(what)), m_start(Clock::now()), m_last(m_start) {}
+  void mark(const std::string& phase) {
+    if (!tracing()) {
+      return;
+    }
+    m_line += " " + phase + "=" + std::to_string(seconds_since(m_last));
+    m_last = Clock::now();
+  }
+  void note(const std::string& text) {
+    if (tracing()) {
+      m_line += " " + text;
+    }
+  }
+  ~ThreadTrace() {
+    if (tracing()) {
+      mark("rest");
+      std::fprintf(stderr, "thread-trace: %s total=%f%s\n", m_what.c_str(), seconds_since(m_start), m_line.c_str());
+    }
+  }
+  ThreadTrace(const ThreadTrace&) = delete;
+  ThreadTrace& operator=(const ThreadTrace&) = delete;
+
+private:
+  std::string m_what;
+  std::string m_line;
+  Clock::time_point m_start;
+  Clock::time_point m_last;
+};
+
+void trace_face(const std::string& feature, const std::string& face, const char* how, const FaceTrace& trace) {
+  if (tracing()) {
+    std::fprintf(stderr, "thread-trace: %s face=%s %s tools=%f booleans=%f checks=%f\n", feature.c_str(),
+                 face.c_str(), how, trace.tools, trace.booleans, trace.checks);
+  }
+}
 
 // One face's thread: the face's cylinder and the profile on it.
 struct Thread {
@@ -338,21 +458,31 @@ Thread thread_of(const CylinderFace& cylinder, const ThreadSpec& spec) {
   return t;
 }
 
-// The solid between a face's pieces and their copies on the cylinder of
-// radius `radius` about the same axis (the pieces thickened along their
-// radii).
-TopoDS_Shape radial_band(const Shape& body, const std::string& face, double face_radius, double radius) {
+// Copies of a face's pieces (InputCopy): the offset in radial_band writes
+// into its input.
+std::vector<TopoDS_Shape> face_pieces(const Shape& body, const std::string& face) {
+  std::vector<TopoDS_Shape> pieces;
+  for (const int i : body.find_faces(face)) {
+    pieces.push_back(detail::InputCopy(body.face(i)).shape());
+  }
+  return pieces;
+}
+
+// The solid between a face's pieces (copies, face_pieces) and their copies
+// on the cylinder of radius `radius` about the same axis (the pieces
+// thickened along their radii).
+TopoDS_Shape radial_band(const std::vector<TopoDS_Shape>& pieces, const std::string& face, double face_radius,
+                         double radius) {
   BRep_Builder builder;
   TopoDS_Compound band;
   builder.MakeCompound(band);
-  for (const int i : body.find_faces(face)) {
-    // The offset writes into its input. Its direction is the surface's
-    // normal, whichever way the face runs: the side is checked.
-    const detail::InputCopy copy(body.face(i));
+  for (const TopoDS_Shape& piece : pieces) {
+    // The offset's direction is the surface's normal, whichever way the
+    // face runs: the side is checked.
     TopoDS_Shape thick;
     for (const double distance : {radius - face_radius, face_radius - radius}) {
       BRepOffset_MakeOffset maker;
-      maker.Initialize(copy.shape(), distance, 1.0e-7, BRepOffset_Skin, false, false, GeomAbs_Arc, true);
+      maker.Initialize(piece, distance, 1.0e-7, BRepOffset_Skin, false, false, GeomAbs_Arc, true);
       detail::interruptible([&](const Message_ProgressRange& range) { maker.MakeOffsetShape(range); });
       if (!maker.IsDone()) {
         continue;
@@ -437,58 +567,81 @@ double chamfer_depth(const Thread& t, const EndChamfers& c, double material, con
   return depth;
 }
 
-// The chamfers at the free ends of the thread's part from `from` to `to`
-// cut out of `body` (`free_low`, `free_high`: nothing lies beyond those
-// ends); `inner` and `outer` bound the material at the face.
-ShapePtr cut_chamfers(ShapePtr body, const Thread& t, double from, double to, const EndChamfers& c, bool free_low,
-                      bool free_high, double inner, double outer, double material, const std::string& face) {
+// The stages of a face's thread, in the order they change the body.
+enum class Stage { Band, Taper, ChamferLow, ChamferHigh, BeyondCrest, Grooves };
+constexpr Stage kStages[] = {Stage::Band,        Stage::Taper,       Stage::ChamferLow,
+                             Stage::ChamferHigh, Stage::BeyondCrest, Stage::Grooves};
+
+const char* stage_name(Stage stage) {
+  switch (stage) {
+  case Stage::Band:
+    return "band";
+  case Stage::Taper:
+    return "taper";
+  case Stage::ChamferLow:
+    return "chamfer-low";
+  case Stage::ChamferHigh:
+    return "chamfer-high";
+  case Stage::BeyondCrest:
+    return "beyond-crest";
+  case Stage::Grooves:
+    return "grooves";
+  }
+  return "other";
+}
+
+// The band is fused to the body, the other tools are cut out of it.
+detail::LocalOperation operation_of(Stage stage) {
+  return stage == Stage::Band ? detail::LocalOperation::Fuse : detail::LocalOperation::Cut;
+}
+
+using Screws = std::vector<occ::handle<Geom_Surface>>;
+
+// One tool of a face's thread: `build` makes it from the face's thread
+// alone (shapes of its own, nothing of the body), a null shape where it
+// takes nothing; the grooves' build gives `screws` the screw surfaces
+// their faces approximate. Its faces get `name`.
+struct Step {
+  Stage stage;
+  std::string name;
+  std::function<TopoDS_Shape(Screws& screws)> build;
+};
+
+// The end chamfers at the free ends of the thread's part from `from` to
+// `to` (`free_low`, `free_high`: nothing lies beyond those ends); `inner`
+// and `outer` bound the material at the face, `material` the radius the
+// cones cut.
+void chamfer_steps(std::vector<Step>& steps, const Thread& t, double from, double to, const EndChamfers& c,
+                   bool free_low, bool free_high, double inner, double outer, double material,
+                   const std::string& face) {
   const bool low = c.low && free_low;
   const bool high = c.high && free_high;
   if (!low && !high) {
-    return body;
+    return;
   }
   const double depth = chamfer_depth(t, c, material, face);
   if ((low ? depth : 0.0) + (high ? depth : 0.0) >= to - from - kSame) {
     throw std::invalid_argument("the thread's end chamfers on face " + face + " are deeper than the thread is long");
   }
   if (low) {
-    body = detail::local_boolean(*body, chamfer_tool(t, from, -1.0, c, inner, outer), detail::LocalOperation::Cut,
-                                 c.low_name)
-               .shape;
+    steps.push_back({Stage::ChamferLow, c.low_name,
+                     [t, from, c, inner, outer](Screws&) { return chamfer_tool(t, from, -1.0, c, inner, outer); }});
   }
   if (high) {
-    body = detail::local_boolean(*body, chamfer_tool(t, to, 1.0, c, inner, outer), detail::LocalOperation::Cut,
-                                 c.high_name)
-               .shape;
+    steps.push_back({Stage::ChamferHigh, c.high_name,
+                     [t, to, c, inner, outer](Screws&) { return chamfer_tool(t, to, 1.0, c, inner, outer); }});
   }
-  return body;
-}
-
-// A cosmetic thread's end chamfers on one face: no profile, only the cones
-// at its free ends.
-ShapePtr chamfer_face(const Shape& body, const Thread& t, double from, double to, const EndChamfers& c,
-                      const std::string& face) {
-  if (!c.low && !c.high) {
-    return std::make_shared<Shape>(body);
-  }
-  const double margin = 0.1 * t.pitch;
-  const double inner = t.internal ? std::max(t.face_radius - margin, 0.5 * t.face_radius) : c.radius;
-  const double outer = t.internal ? c.radius : t.face_radius + margin;
-  const bool free_low = from <= kSame && !material_past(body.occt(), t, from, -1.0, inner, outer);
-  const bool free_high = to >= t.length - kSame && !material_past(body.occt(), t, to, 1.0, inner, outer);
-  return cut_chamfers(std::make_shared<Shape>(body), t, from, to, c, free_low, free_high, inner, outer,
-                      t.face_radius, face);
 }
 
 // A taper pipe thread's cone of radius `radius` (at the origin, growing by
-// the slope along the axis) cut out of `body` over [from, to] (mitcad#733):
-// for an internal thread what lies inside it, down to a little inside the
-// face, for an external one what lies outside it, up to a little outside
-// the face; from `beyond` past `from` and `to` (a free end's run-out), and
-// only where the cone lies off the face. The body as it was where the cone
-// does not reach the face.
-ShapePtr cut_taper(ShapePtr body, const Thread& t, double radius, double from, double to, double beyond_from,
-                   double beyond_to, const std::string& name) {
+// the slope along the axis) to cut out of the body over [from, to]
+// (mitcad#733): for an internal thread what lies inside it, down to a
+// little inside the face, for an external one what lies outside it, up to
+// a little outside the face; from `beyond` past `from` and `to` (a free
+// end's run-out), and only where the cone lies off the face. A null shape
+// where the cone does not reach the face.
+TopoDS_Shape taper_tool(const Thread& t, double radius, double from, double to, double beyond_from,
+                        double beyond_to) {
   const double margin = 0.1 * t.pitch;
   const double face = t.face_radius;
   // The other radius of the tool's section: inside the face for an
@@ -512,7 +665,7 @@ ShapePtr cut_taper(ShapePtr body, const Thread& t, double radius, double from, d
   }
   const auto off_face = [&](double s) { return t.internal ? at(s) > face + kSame : at(s) < face - kSame; };
   if (high - low <= kSame || !(off_face(low) || off_face(high))) {
-    return body;
+    return TopoDS_Shape();
   }
   const auto point = [&](double s, double r) {
     return t.origin.Translated(gp_Vec(t.along) * s + gp_Vec(t.reference) * r);
@@ -527,7 +680,7 @@ ShapePtr cut_taper(ShapePtr body, const Thread& t, double radius, double from, d
     corners.push_back(point(high, other));
   }
   if (corners.size() < 3) {
-    return body;
+    return TopoDS_Shape();
   }
   BRepBuilderAPI_MakePolygon section;
   for (const gp_Pnt& corner : corners) {
@@ -542,104 +695,208 @@ ShapePtr cut_taper(ShapePtr body, const Thread& t, double radius, double from, d
   if (!revol.IsDone()) {
     throw std::runtime_error("the thread's taper could not be built");
   }
-  return detail::local_boolean(*body, revol.Shape(), detail::LocalOperation::Cut, name).shape;
+  return revol.Shape();
 }
 
-// One face's thread on the body: the teeth added where the face lies
-// inside the crest, the end chamfers cut, then the grooves (and what lies
-// beyond the crest) removed. `screws` gets the screw surfaces the grooves'
-// faces approximate.
-ShapePtr thread_face(const Shape& body, const std::string& face_reference, const Thread& t, double from, double to,
-                     const EndChamfers& chamfers, const std::string& name,
-                     std::vector<occ::handle<Geom_Surface>>& screws) {
+// A face's grooves from `from` to `to`, from the root to a little past the
+// crest (no further: the grooves of neighbouring turns must not meet), cut
+// to length within the radius `outer`.
+TopoDS_Shape thread_grooves(const Thread& t, double from, double to, double outer, Screws& screws) {
   const double margin = 0.1 * t.pitch;
-  if (t.slope != 0.0) {
+  // Where the flanks of a tooth meet.
+  const double reach = t.reach();
+  if (t.internal) {
+    const double past = std::min(margin / 2.0, 0.5 * (t.minor_radius - (t.pitch_radius - reach)));
+    return grooves(t, t.minor_radius - past, t.major_radius, from, to, outer, screws);
+  }
+  const double past = std::min(margin / 2.0, 0.5 * (t.pitch_radius + reach - t.major_radius));
+  return grooves(t, t.minor_radius, t.major_radius + past, from, to, outer, screws);
+}
+
+// One face of a thread as modeled_thread reads it from the body and the
+// spec (plan_face): the thread on the face's cylinder, its part along the
+// axis, its end chamfers and its names.
+struct FacePlan {
+  std::string face;
+  Thread thread;
+  double from = 0.0;
+  double to = 0.0;
+  EndChamfers chamfers;
+  // A taper pipe thread's free ends (mitcad#733), as its start was read.
+  bool free_low = false;
+  bool free_high = false;
+  // A modelled thread's faces' name.
+  std::string name;
+};
+
+// The first step of a face's modelled straight thread where the face lies
+// inside the crest: the band between them, filled over the face itself
+// (its pieces, read from `body`, moved out to the crest along the radii).
+std::vector<Step> band_steps(const Shape& body, const FacePlan& p, const ThreadSpec& spec) {
+  std::vector<Step> steps;
+  const Thread& t = p.thread;
+  if (!spec.groove || t.slope != 0.0) {
+    return steps;
+  }
+  const double beyond = t.internal ? t.face_radius - t.crest() : t.crest() - t.face_radius;
+  if (beyond <= kSame) {
+    return steps;
+  }
+  const std::vector<TopoDS_Shape> pieces = face_pieces(body, p.face);
+  steps.push_back({Stage::Band, p.name, [t, pieces, face = p.face, from = p.from, to = p.to](Screws&) {
+                     TopoDS_Shape band = radial_band(pieces, face, t.face_radius, t.crest());
+                     if (from > kSame || to < t.length - kSame) {
+                       const double margin = 0.1 * t.pitch;
+                       band = common_of(band, tube(t, 0.0, std::max(t.face_radius, t.crest()) + margin, from, to),
+                                        "the thread's teeth could not be cut to length");
+                     }
+                     return band;
+                   }});
+  return steps;
+}
+
+// The other steps of a face's thread, with the checks of the material past
+// the ends of its part on `body` (the body as the band left it): a
+// modelled straight thread's end chamfers, what lies beyond the crest and
+// the grooves; a taper pipe thread's crest cone and grooves; a cosmetic
+// thread's taper cone or end chamfers.
+std::vector<Step> other_steps(const Shape& body, const FacePlan& p, const ThreadSpec& spec, FaceTrace* trace) {
+  std::vector<Step> steps;
+  const Thread& t = p.thread;
+  double from = p.from;
+  double to = p.to;
+  const double margin = 0.1 * t.pitch;
+  if (spec.groove && t.slope != 0.0) {
     // A taper pipe thread (mitcad#733): no teeth added (the face inside
     // the crest leaves them short, as a tap leaves a drilled bore); what
     // lies beyond the crest's cone goes, then the grooves between the
     // root's and the crest's cones, past the free ends by a pitch.
-    ShapePtr current = std::make_shared<Shape>(body);
     const double inner = t.internal ? std::max(0.0, std::min(t.face_radius, t.crest()) - margin) : t.minor_radius;
     const double outer = t.internal ? t.major_radius : std::max(t.face_radius, t.crest()) + margin;
     // (The radii at either end of the part.)
     const double low_grown = t.slope * from;
     const double high_grown = t.slope * to;
-    const bool free_low = from <= kSame && !material_past(current->occt(), t, from, -1.0, inner + low_grown,
-                                                          outer + low_grown);
-    const bool free_high = to >= t.length - kSame && !material_past(current->occt(), t, to, 1.0,
-                                                                     inner + high_grown, outer + high_grown);
+    bool free_low = false;
+    bool free_high = false;
+    {
+      const Timed timed(checks_time(trace));
+      free_low = from <= kSame && !material_past(body.occt(), t, from, -1.0, inner + low_grown, outer + low_grown);
+      free_high = to >= t.length - kSame &&
+                  !material_past(body.occt(), t, to, 1.0, inner + high_grown, outer + high_grown);
+    }
     const double run_low = free_low ? t.pitch : 0.0;
     const double run_high = free_high ? t.pitch : 0.0;
-    current = cut_taper(current, t, t.crest(), from, to, run_low, run_high, name);
-    const double reach = t.reach();
+    steps.push_back({Stage::Taper, p.name, [t, from, to, run_low, run_high](Screws&) {
+                       return taper_tool(t, t.crest(), from, to, run_low, run_high);
+                     }});
     const double widest = std::max(std::abs(t.slope * (from - run_low)), std::abs(t.slope * (to + run_high)));
-    TopoDS_Shape cut;
-    if (t.internal) {
-      const double past = std::min(margin / 2.0, 0.5 * (t.minor_radius - (t.pitch_radius - reach)));
-      cut = grooves(t, t.minor_radius - past, t.major_radius, from - run_low, to + run_high,
-                    t.major_radius + widest + margin, screws);
-    } else {
-      const double past = std::min(margin / 2.0, 0.5 * (t.pitch_radius + reach - t.major_radius));
-      cut = grooves(t, t.minor_radius, t.major_radius + past, from - run_low, to + run_high,
-                    t.major_radius + widest + margin, screws);
-    }
-    return detail::local_boolean(*current, cut, detail::LocalOperation::Cut, name).shape;
+    const double reach_out = t.major_radius + widest + margin;
+    steps.push_back({Stage::Grooves, p.name, [t, from, to, run_low, run_high, reach_out](Screws& screws) {
+                       return thread_grooves(t, from - run_low, to + run_high, reach_out, screws);
+                     }});
+    return steps;
   }
-  // The face inside the crest: the band between them is filled first,
-  // over the face itself (its pieces moved out to the crest, along the
-  // radii).
+  if (spec.groove) {
+    const double beyond = t.internal ? t.face_radius - t.crest() : t.crest() - t.face_radius;
+    const double face = beyond > kSame ? t.crest() : t.face_radius;
+    // Past the ends of the face, where nothing lies beyond them, the tools
+    // run out by a pitch.
+    const double inner = t.internal ? std::max(0.0, std::min(face, t.crest()) - margin) : t.minor_radius;
+    const double outer = t.internal ? t.major_radius : std::max(face, t.crest()) + margin;
+    bool free_low = false;
+    bool free_high = false;
+    {
+      const Timed timed(checks_time(trace));
+      free_low = from <= kSame && !material_past(body.occt(), t, from, -1.0, inner, outer);
+      free_high = to >= t.length - kSame && !material_past(body.occt(), t, to, 1.0, inner, outer);
+    }
+    // The end chamfers, before the grooves: the first turn starts on the
+    // cone.
+    const EndChamfers& chamfers = p.chamfers;
+    if (chamfers.low || chamfers.high) {
+      const double material = t.internal ? std::min(face, t.crest()) : std::max(face, t.crest());
+      const double tool_inner = t.internal ? std::max(material - margin, 0.5 * material) : chamfers.radius;
+      const double tool_outer = t.internal ? chamfers.radius : material + margin;
+      chamfer_steps(steps, t, from, to, chamfers, free_low, free_high, tool_inner, tool_outer, material, p.face);
+    }
+    if (free_low) {
+      from -= t.pitch;
+    }
+    if (free_high) {
+      to += t.pitch;
+    }
+    // What lies beyond the crest goes first, then the grooves.
+    if (std::abs(face - t.crest()) > kSame) {
+      steps.push_back({Stage::BeyondCrest, p.name, [t, face, from, to, margin](Screws&) {
+                         return t.internal ? tube(t, std::max(0.0, face - margin), t.minor_radius, from, to)
+                                           : tube(t, t.major_radius, face + margin, from, to);
+                       }});
+    }
+    const double reach_out = t.major_radius + margin;
+    steps.push_back({Stage::Grooves, p.name, [t, from, to, reach_out](Screws& screws) {
+                       return thread_grooves(t, from, to, reach_out, screws);
+                     }});
+    return steps;
+  }
+  if (spec.taper > 0.0) {
+    // The cone of the bore's minor diameter, or of the shaft's major one,
+    // past the free ends by a tenth of a pitch.
+    const double run = 0.1 * t.pitch;
+    const double radius = t.internal ? t.minor_radius : t.major_radius;
+    const double run_low = p.free_low ? run : 0.0;
+    const double run_high = p.free_high ? run : 0.0;
+    steps.push_back({Stage::Taper, face_name(spec.feature, "thread_taper", p.face),
+                     [t, radius, from, to, run_low, run_high](Screws&) {
+                       return taper_tool(t, radius, from, to, run_low, run_high);
+                     }});
+    return steps;
+  }
+  // A cosmetic thread's end chamfers: no profile, only the cones at its
+  // free ends.
+  const EndChamfers& c = p.chamfers;
+  if (!c.low && !c.high) {
+    return steps;
+  }
+  const double inner = t.internal ? std::max(t.face_radius - margin, 0.5 * t.face_radius) : c.radius;
+  const double outer = t.internal ? c.radius : t.face_radius + margin;
+  bool free_low = false;
+  bool free_high = false;
+  {
+    const Timed timed(checks_time(trace));
+    free_low = from <= kSame && !material_past(body.occt(), t, from, -1.0, inner, outer);
+    free_high = to >= t.length - kSame && !material_past(body.occt(), t, to, 1.0, inner, outer);
+  }
+  chamfer_steps(steps, t, from, to, c, free_low, free_high, inner, outer, t.face_radius, p.face);
+  return steps;
+}
+
+// One face's thread on the body, its steps one after another: the band
+// first, then the others with the checks on the body the band left.
+ShapePtr thread_one_face(const Shape& body, const FacePlan& p, const ThreadSpec& spec, Screws& screws,
+                         FaceTrace* trace) {
   ShapePtr current = std::make_shared<Shape>(body);
-  const double beyond = t.internal ? t.face_radius - t.crest() : t.crest() - t.face_radius;
-  if (beyond > kSame) {
-    TopoDS_Shape band = radial_band(body, face_reference, t.face_radius, t.crest());
-    if (from > kSame || to < t.length - kSame) {
-      band = common_of(band, tube(t, 0.0, std::max(t.face_radius, t.crest()) + margin, from, to),
-                       "the thread's teeth could not be cut to length");
+  const auto apply = [&](const std::vector<Step>& steps) {
+    for (const Step& step : steps) {
+      TopoDS_Shape tool;
+      {
+        const Timed timed(tools_time(trace));
+        tool = step.build(screws);
+      }
+      if (tool.IsNull()) {
+        continue;
+      }
+      const Timed timed(booleans_time(trace));
+      current = detail::local_boolean(*current, tool, operation_of(step.stage), step.name).shape;
     }
-    current = detail::local_boolean(*current, band, detail::LocalOperation::Fuse, name).shape;
+  };
+  std::vector<Step> band;
+  {
+    const Timed timed(tools_time(trace));
+    band = band_steps(*current, p, spec);
   }
-  const double face = beyond > kSame ? t.crest() : t.face_radius;
-
-  // Past the ends of the face, where nothing lies beyond them, the tools
-  // run out by a pitch.
-  const double inner = t.internal ? std::max(0.0, std::min(face, t.crest()) - margin) : t.minor_radius;
-  const double outer = t.internal ? t.major_radius : std::max(face, t.crest()) + margin;
-  const bool free_low = from <= kSame && !material_past(current->occt(), t, from, -1.0, inner, outer);
-  const bool free_high = to >= t.length - kSame && !material_past(current->occt(), t, to, 1.0, inner, outer);
-  // The end chamfers, before the grooves: the first turn starts on the cone.
-  if (chamfers.low || chamfers.high) {
-    const double material = t.internal ? std::min(face, t.crest()) : std::max(face, t.crest());
-    const double tool_inner = t.internal ? std::max(material - margin, 0.5 * material) : chamfers.radius;
-    const double tool_outer = t.internal ? chamfers.radius : material + margin;
-    current = cut_chamfers(current, t, from, to, chamfers, free_low, free_high, tool_inner, tool_outer, material,
-                           face_reference);
-  }
-  if (free_low) {
-    from -= t.pitch;
-  }
-  if (free_high) {
-    to += t.pitch;
-  }
-
-  // What lies beyond the crest goes first, then the grooves from the root
-  // to a little past the crest (no further: the grooves of neighbouring
-  // turns must not meet).
-  if (std::abs(face - t.crest()) > kSame) {
-    const TopoDS_Shape beyond_crest = t.internal ? tube(t, std::max(0.0, face - margin), t.minor_radius, from, to)
-                                                 : tube(t, t.major_radius, face + margin, from, to);
-    current = detail::local_boolean(*current, beyond_crest, detail::LocalOperation::Cut, name).shape;
-  }
-  // Where the flanks of a tooth meet.
-  const double reach = t.reach();
-  TopoDS_Shape cut;
-  if (t.internal) {
-    const double past = std::min(margin / 2.0, 0.5 * (t.minor_radius - (t.pitch_radius - reach)));
-    cut = grooves(t, t.minor_radius - past, t.major_radius, from, to, t.major_radius + margin, screws);
-  } else {
-    const double past = std::min(margin / 2.0, 0.5 * (t.pitch_radius + reach - t.major_radius));
-    cut = grooves(t, t.minor_radius, t.major_radius + past, from, to, t.major_radius + margin, screws);
-  }
-  return detail::local_boolean(*current, cut, detail::LocalOperation::Cut, name).shape;
+  apply(band);
+  apply(other_steps(*current, p, spec, trace));
+  return current;
 }
 
 // Checks that the extra clearance leaves a thread on an internal or an
@@ -1055,7 +1312,397 @@ ShapePtr on_screw_surfaces(const Shape& body, const std::vector<std::string>& th
   return namer.shape();
 }
 
+
+// The options of the innermost ThreadOptionsScope on this thread.
+thread_local const detail::ThreadOptions* t_thread_options = nullptr;
+// thread_counts().
+std::atomic<std::size_t> g_planned_faces{0};
+std::atomic<std::size_t> g_ordered_faces{0};
+std::atomic<std::size_t> g_merged_booleans{0};
+std::atomic<std::size_t> g_merged_tools{0};
+
+// Reads the k-th face of the spec from the body: its cylinder, the checks
+// of the spec against it, its part along the thread's axis and its end
+// chamfers; a taper pipe thread's free ends and slope.
+FacePlan plan_face(const Shape& body, const ThreadSpec& spec, std::size_t k, FaceTrace* trace) {
+  const std::string& face = spec.faces[k];
+  const CylinderFace cylinder = face_cylinder(body, face);
+  if (spec.groove) {
+    check_clearance(spec, cylinder.internal);
+    if (!cylinder.internal && cylinder.radius <= spec.minor / 2.0 - spec.radial_clearance + kSame) {
+      throw std::invalid_argument("face " + face + " is too thin for the thread");
+    }
+    if (cylinder.internal && cylinder.radius >= spec.major / 2.0 + spec.radial_clearance - kSame) {
+      throw std::invalid_argument("face " + face + " is too wide for the thread");
+    }
+  }
+  const double tolerance = 1.0e-6;
+  double from = 0.0;
+  double to = cylinder.length;
+  if (!spec.full_length) {
+    if (spec.high_end) {
+      to = cylinder.length - spec.offset;
+      from = to - spec.length;
+    } else {
+      from = spec.offset;
+      to = from + spec.length;
+    }
+    if (from < -tolerance || to > cylinder.length + tolerance) {
+      throw std::invalid_argument("the thread does not fit on face " + face);
+    }
+    from = std::max(from, 0.0);
+    to = std::min(to, cylinder.length);
+  }
+  Thread thread = thread_of(cylinder, spec);
+  if (!spec.angles.empty()) {
+    if (spec.angles.size() != spec.faces.size()) {
+      throw std::invalid_argument("the thread's angles must be given for each face");
+    }
+    thread.angle = spec.angles[k];
+  }
+  EndChamfers chamfers;
+  if (spec.chamfer) {
+    chamfers.low = spec.chamfer_ends[k].low;
+    chamfers.high = spec.chamfer_ends[k].high;
+    chamfers.radius = spec.chamfer_diameter / 2.0;
+    chamfers.tan = std::tan(spec.chamfer_angle);
+    chamfers.low_name = face_name(spec.feature, "thread_chamfer_low", face);
+    chamfers.high_name = face_name(spec.feature, "thread_chamfer_high", face);
+  }
+  const bool reversed = !thread.along.IsEqual(cylinder.axis.Direction(), 1.0e-9);
+  if (reversed) {
+    // Measured along the thread's axis.
+    std::swap(from, to);
+    from = cylinder.length - from;
+    to = cylinder.length - to;
+    std::swap(chamfers.low, chamfers.high);
+    std::swap(chamfers.low_name, chamfers.high_name);
+  }
+  // A taper pipe thread (mitcad#733): where it starts, and which ends
+  // of its part are free (nothing of the body beyond them).
+  bool free_low = false;
+  bool free_high = false;
+  if (spec.taper > 0.0) {
+    const double margin = 0.1 * thread.pitch;
+    const double inner = std::max(thread.face_radius - margin, 0.5 * thread.face_radius);
+    const double outer = thread.face_radius + margin;
+    {
+      const Timed timed(checks_time(trace));
+      free_low = from <= kSame && !material_past(body.occt(), thread, from, -1.0, inner, outer);
+      free_high = to >= thread.length - kSame && !material_past(body.occt(), thread, to, 1.0, inner, outer);
+    }
+    bool start_high = false;
+    if (!spec.full_length) {
+      start_high = spec.high_end != reversed;
+    } else if (free_low != free_high) {
+      start_high = free_high;
+    } else {
+      start_high = spec.taper_high_end != reversed;
+    }
+    // From the start into the thread the diameters shrink inside a
+    // hole and grow along a shaft.
+    const double into = start_high ? -1.0 : 1.0;
+    thread.slope = (thread.internal ? -1.0 : 1.0) * into * spec.taper / 2.0;
+    const double start = start_high ? to : from;
+    thread.pitch_radius -= thread.slope * start;
+    thread.major_radius -= thread.slope * start;
+    thread.minor_radius -= thread.slope * start;
+  }
+  FacePlan plan;
+  plan.face = face;
+  plan.thread = thread;
+  plan.from = from;
+  plan.to = to;
+  plan.chamfers = chamfers;
+  plan.free_low = free_low;
+  plan.free_high = free_high;
+  if (spec.groove) {
+    plan.name = face_name(spec.feature, "thread", face);
+  }
+  return plan;
+}
+
+// The faces one by one, each read from the body the one before left (all
+// faces before mitcad#843; the faces whose reaches meet since). `plans`
+// gets the faces as they were read, `screws` each face's screw surfaces.
+ShapePtr thread_in_order(const Shape& body, const ThreadSpec& spec, std::vector<FacePlan>& plans,
+                         std::vector<Screws>& screws) {
+  ShapePtr current = std::make_shared<Shape>(body);
+  plans.clear();
+  screws.assign(spec.faces.size(), Screws());
+  for (std::size_t k = 0; k < spec.faces.size(); ++k) {
+    FaceTrace trace;
+    plans.push_back(plan_face(*current, spec, k, &trace));
+    current = thread_one_face(*current, plans.back(), spec, screws[k], &trace);
+    trace_face(spec.feature, spec.faces[k], "in-order", trace);
+  }
+  return current;
+}
+
+// A box round all that a face's thread can change and the points its
+// checks past the ends of its part classify: about its axis out to its
+// largest radius (the face's, the thread's, the chamfers' with their run
+// past the end, a taper's growth) and a margin, and along it two pitches
+// past both ends of its part (the tools run out by a pitch at most).
+Bnd_Box reach_of(const FacePlan& p) {
+  const Thread& t = p.thread;
+  const double low = p.from - 2.0 * t.pitch;
+  const double high = p.to + 2.0 * t.pitch;
+  double radius = std::max({t.face_radius, t.major_radius, t.minor_radius});
+  if (p.chamfers.low || p.chamfers.high) {
+    radius = std::max(radius, p.chamfers.radius + 0.1 * t.pitch * p.chamfers.tan);
+  }
+  radius += std::abs(t.slope) * std::max(std::abs(low), std::abs(high)) + 0.2 * t.pitch;
+  const gp_Pnt a = t.origin.Translated(gp_Vec(t.along) * low);
+  const gp_Pnt b = t.origin.Translated(gp_Vec(t.along) * high);
+  // How far a circle of the radius about the axis reaches across a
+  // coordinate axis.
+  const auto across = [&](double d) { return radius * std::sqrt(std::max(0.0, 1.0 - d * d)); };
+  Bnd_Box box;
+  box.Update(std::min(a.X(), b.X()) - across(t.along.X()), std::min(a.Y(), b.Y()) - across(t.along.Y()),
+             std::min(a.Z(), b.Z()) - across(t.along.Z()), std::max(a.X(), b.X()) + across(t.along.X()),
+             std::max(a.Y(), b.Y()) + across(t.along.Y()), std::max(a.Z(), b.Z()) + across(t.along.Z()));
+  box.Enlarge(1.0e-3 * std::max(1.0, radius));
+  return box;
+}
+
+// Whether an error stops the thread whichever way its faces are made: a
+// cancel request, or memory running out (detail::run's "<operation>: out
+// of memory" too).
+bool fatal(const std::exception_ptr& error) {
+  try {
+    std::rethrow_exception(error);
+  } catch (const Cancelled&) {
+    return true;
+  } catch (const Standard_OutOfMemory&) {
+    return true;
+  } catch (const std::bad_alloc&) {
+    return true;
+  } catch (const std::exception& other) {
+    const std::string text = other.what();
+    const std::string out = "out of memory";
+    return text.size() >= out.size() && text.compare(text.size() - out.size(), out.size(), out) == 0;
+  } catch (...) {
+    return false;
+  }
+}
+
+// The thread planned from the body as given (thread_options.hpp): every
+// face read from it, the tools of the faces whose reach meets no other
+// face's built at once (on all cores with `options.parallel`), then
+// applied stage by stage (a stage's tools of all those faces in one local
+// boolean where that can be done, with `options.merged`), then the other
+// faces one by one as thread_in_order threads them. `plans` gets the faces
+// as they were read, `screws` each face's screw surfaces. Nothing where a
+// face cannot be planned so (an error reading it or building its tools,
+// before the body changed): thread_in_order then makes the thread, and its
+// errors, as before. A cancel request and memory running out stop it.
+std::optional<ShapePtr> thread_planned(const Shape& body, const ThreadSpec& spec,
+                                       const detail::ThreadOptions& options, std::vector<FacePlan>& plans,
+                                       std::vector<Screws>& screws, ThreadTrace& trace) {
+  const std::size_t count = spec.faces.size();
+  std::vector<FaceTrace> traces(count);
+  plans.clear();
+  try {
+    for (std::size_t k = 0; k < count; ++k) {
+      plans.push_back(plan_face(body, spec, k, &traces[k]));
+    }
+  } catch (...) {
+    if (fatal(std::current_exception())) {
+      throw;
+    }
+    trace.note("planned=no");
+    return std::nullopt;
+  }
+  // The faces whose reach meets no other face's: their tools go ahead.
+  std::vector<Bnd_Box> reaches;
+  for (const FacePlan& p : plans) {
+    reaches.push_back(reach_of(p));
+  }
+  std::vector<bool> ahead(count, true);
+  std::size_t ahead_count = 0;
+  for (std::size_t k = 0; k < count; ++k) {
+    for (std::size_t j = 0; j < count && ahead[k]; ++j) {
+      ahead[k] = j == k || reaches[k].IsOut(reaches[j]);
+    }
+    ahead_count += ahead[k] ? 1 : 0;
+  }
+  trace.note("ahead=" + std::to_string(ahead_count));
+  trace.mark("plan");
+
+  // Their steps, with the checks past their ends on the body as given:
+  // the faces' tools do not reach each other's checks.
+  std::vector<std::vector<Step>> steps(count);
+  try {
+    for (std::size_t k = 0; k < count; ++k) {
+      if (!ahead[k]) {
+        continue;
+      }
+      {
+        const Timed timed(tools_time(&traces[k]));
+        steps[k] = band_steps(body, plans[k], spec);
+      }
+      for (Step& step : other_steps(body, plans[k], spec, &traces[k])) {
+        steps[k].push_back(std::move(step));
+      }
+    }
+  } catch (...) {
+    if (fatal(std::current_exception())) {
+      throw;
+    }
+    trace.note("planned=no");
+    return std::nullopt;
+  }
+  trace.mark("prepare");
+
+  // Their tools built, each from shapes of its own (the face pieces the
+  // bands thicken are copies): the grooves, the longest, first. Each job
+  // runs as an operation of its own (detail::run: OCCT's exceptions and
+  // crashes are its errors) under the calling thread's cancel source.
+  struct Job {
+    std::size_t face;
+    std::size_t step;
+  };
+  std::vector<Job> jobs;
+  for (const bool longest : {true, false}) {
+    for (std::size_t k = 0; k < count; ++k) {
+      for (std::size_t i = 0; i < steps[k].size(); ++i) {
+        if ((steps[k][i].stage == Stage::Grooves) == longest) {
+          jobs.push_back({k, i});
+        }
+      }
+    }
+  }
+  std::vector<std::vector<TopoDS_Shape>> built(count);
+  for (std::size_t k = 0; k < count; ++k) {
+    built[k].resize(steps[k].size());
+  }
+  screws.assign(count, Screws());
+  std::vector<std::exception_ptr> errors(jobs.size());
+  std::vector<double> seconds(jobs.size(), 0.0);
+  const CancelSource* source = cancel_source();
+  OSD_Parallel::For(
+      0, static_cast<int>(jobs.size()),
+      [&](int i) {
+        const auto j = static_cast<std::size_t>(i);
+        const Job& job = jobs[j];
+        const Clock::time_point start = Clock::now();
+        const auto work = [&] { built[job.face][job.step] = steps[job.face][job.step].build(screws[job.face]); };
+        try {
+          if (source != nullptr) {
+            const CancelScope scope(*source);
+            detail::run("thread tools", work);
+          } else {
+            detail::run("thread tools", work);
+          }
+        } catch (...) {
+          errors[j] = std::current_exception();
+        }
+        seconds[j] = seconds_since(start);
+      },
+      !options.parallel || jobs.size() < 2);
+  for (const std::exception_ptr& error : errors) {
+    if (error && fatal(error)) {
+      std::rethrow_exception(error);
+    }
+  }
+  for (const std::exception_ptr& error : errors) {
+    if (error) {
+      trace.note("planned=no");
+      return std::nullopt;
+    }
+  }
+  for (std::size_t j = 0; j < jobs.size(); ++j) {
+    traces[jobs[j].face].tools += seconds[j];
+  }
+  trace.note("jobs=" + std::to_string(jobs.size()) + (options.parallel ? " parallel" : " serial"));
+  trace.mark("tools");
+
+  // Stage by stage: the faces' tools do not reach each other's, so the
+  // order of the faces within a stage changes nothing.
+  ShapePtr current = std::make_shared<Shape>(body);
+  for (const Stage stage : kStages) {
+    std::vector<detail::NamedTool> tools;
+    for (std::size_t k = 0; k < count; ++k) {
+      for (std::size_t i = 0; i < steps[k].size(); ++i) {
+        if (steps[k][i].stage == stage && !built[k][i].IsNull()) {
+          tools.push_back({built[k][i], steps[k][i].name});
+        }
+      }
+    }
+    if (tools.empty()) {
+      continue;
+    }
+    bool merged = false;
+    if (options.merged && tools.size() > 1) {
+      current = detail::local_boolean_all(*current, tools, operation_of(stage), &merged);
+    } else {
+      for (const detail::NamedTool& tool : tools) {
+        current = detail::local_boolean(*current, tool.shape, operation_of(stage), tool.name).shape;
+      }
+    }
+    if (merged) {
+      ++g_merged_booleans;
+      g_merged_tools += tools.size();
+    }
+    trace.note(std::string(stage_name(stage)) + "-tools=" + std::to_string(tools.size()) + (merged ? " merged" : ""));
+    trace.mark(stage_name(stage));
+  }
+  for (std::size_t k = 0; k < count; ++k) {
+    if (ahead[k]) {
+      trace_face(spec.feature, spec.faces[k], "ahead", traces[k]);
+    }
+  }
+  g_planned_faces += ahead_count;
+
+  // The other faces one by one.
+  for (std::size_t k = 0; k < count; ++k) {
+    if (ahead[k]) {
+      continue;
+    }
+    plans[k] = plan_face(*current, spec, k, &traces[k]);
+    current = thread_one_face(*current, plans[k], spec, screws[k], &traces[k]);
+    trace_face(spec.feature, spec.faces[k], "in-order", traces[k]);
+    ++g_ordered_faces;
+  }
+  if (ahead_count < count) {
+    trace.mark("in-order");
+  }
+  return current;
+}
 } // namespace
+
+namespace detail {
+
+ThreadOptions thread_options() {
+  if (t_thread_options != nullptr) {
+    return *t_thread_options;
+  }
+  ThreadOptions options;
+  const std::optional<std::string> sequential = environment("MITCAD_THREAD_SEQUENTIAL");
+  options.planned = !sequential || sequential->empty() || *sequential == "0";
+  options.parallel = environment("MITCAD_THREAD_PARALLEL").value_or("1") != "0";
+  options.merged = environment("MITCAD_THREAD_MERGE").value_or("1") != "0";
+  return options;
+}
+
+ThreadOptionsScope::ThreadOptionsScope(const ThreadOptions& options)
+    : m_previous(t_thread_options), m_options(options) {
+  t_thread_options = &m_options;
+}
+
+ThreadOptionsScope::~ThreadOptionsScope() { t_thread_options = m_previous; }
+
+ThreadCounts thread_counts() {
+  ThreadCounts counts;
+  counts.planned_faces = g_planned_faces.load();
+  counts.ordered_faces = g_ordered_faces.load();
+  counts.merged_booleans = g_merged_booleans.load();
+  counts.merged_tools = g_merged_tools.load();
+  return counts;
+}
+
+} // namespace detail
 
 ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
   if (spec.faces.empty()) {
@@ -1113,108 +1760,35 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
     throw std::invalid_argument("the thread's flank clearance must not be negative");
   }
   return detail::run("thread", [&] {
-    ShapePtr current = std::make_shared<Shape>(body);
+    ThreadTrace trace(spec.feature + " faces=" + std::to_string(spec.faces.size()));
+    const detail::ThreadOptions options = detail::thread_options();
+    // The faces as they were read, and the screw surfaces of each one's
+    // grooves.
+    std::vector<FacePlan> plans;
+    std::vector<Screws> face_screws;
+    ShapePtr current;
+    if (options.planned) {
+      if (std::optional<ShapePtr> planned = thread_planned(body, spec, options, plans, face_screws, trace)) {
+        current = *planned;
+      }
+    } else {
+      trace.note("in-order");
+    }
+    if (!current) {
+      current = thread_in_order(body, spec, plans, face_screws);
+      trace.mark("faces");
+    }
     std::vector<std::string> threads;
     // The threads' names and the threaded faces', numbered along their axes.
     std::vector<TurnNamed> named;
-    std::vector<occ::handle<Geom_Surface>> screws;
-    for (std::size_t k = 0; k < spec.faces.size(); ++k) {
-      const std::string& face = spec.faces[k];
-      const CylinderFace cylinder = face_cylinder(*current, face);
-      if (spec.groove) {
-        check_clearance(spec, cylinder.internal);
-        if (!cylinder.internal && cylinder.radius <= spec.minor / 2.0 - spec.radial_clearance + kSame) {
-          throw std::invalid_argument("face " + face + " is too thin for the thread");
-        }
-        if (cylinder.internal && cylinder.radius >= spec.major / 2.0 + spec.radial_clearance - kSame) {
-          throw std::invalid_argument("face " + face + " is too wide for the thread");
-        }
-      }
-      const double tolerance = 1.0e-6;
-      double from = 0.0;
-      double to = cylinder.length;
-      if (!spec.full_length) {
-        if (spec.high_end) {
-          to = cylinder.length - spec.offset;
-          from = to - spec.length;
-        } else {
-          from = spec.offset;
-          to = from + spec.length;
-        }
-        if (from < -tolerance || to > cylinder.length + tolerance) {
-          throw std::invalid_argument("the thread does not fit on face " + face);
-        }
-        from = std::max(from, 0.0);
-        to = std::min(to, cylinder.length);
-      }
-      Thread thread = thread_of(cylinder, spec);
-      if (!spec.angles.empty()) {
-        if (spec.angles.size() != spec.faces.size()) {
-          throw std::invalid_argument("the thread's angles must be given for each face");
-        }
-        thread.angle = spec.angles[k];
-      }
-      EndChamfers chamfers;
-      if (spec.chamfer) {
-        chamfers.low = spec.chamfer_ends[k].low;
-        chamfers.high = spec.chamfer_ends[k].high;
-        chamfers.radius = spec.chamfer_diameter / 2.0;
-        chamfers.tan = std::tan(spec.chamfer_angle);
-        chamfers.low_name = face_name(spec.feature, "thread_chamfer_low", face);
-        chamfers.high_name = face_name(spec.feature, "thread_chamfer_high", face);
-      }
-      const bool reversed = !thread.along.IsEqual(cylinder.axis.Direction(), 1.0e-9);
-      if (reversed) {
-        // Measured along the thread's axis.
-        std::swap(from, to);
-        from = cylinder.length - from;
-        to = cylinder.length - to;
-        std::swap(chamfers.low, chamfers.high);
-        std::swap(chamfers.low_name, chamfers.high_name);
-      }
-      // A taper pipe thread (mitcad#733): where it starts, and which ends
-      // of its part are free (nothing of the body beyond them).
-      bool free_low = false;
-      bool free_high = false;
-      if (spec.taper > 0.0) {
-        const double margin = 0.1 * thread.pitch;
-        const double inner = std::max(thread.face_radius - margin, 0.5 * thread.face_radius);
-        const double outer = thread.face_radius + margin;
-        free_low = from <= kSame && !material_past(current->occt(), thread, from, -1.0, inner, outer);
-        free_high = to >= thread.length - kSame && !material_past(current->occt(), thread, to, 1.0, inner, outer);
-        bool start_high = false;
-        if (!spec.full_length) {
-          start_high = spec.high_end != reversed;
-        } else if (free_low != free_high) {
-          start_high = free_high;
-        } else {
-          start_high = spec.taper_high_end != reversed;
-        }
-        // From the start into the thread the diameters shrink inside a
-        // hole and grow along a shaft.
-        const double into = start_high ? -1.0 : 1.0;
-        thread.slope = (thread.internal ? -1.0 : 1.0) * into * spec.taper / 2.0;
-        const double start = start_high ? to : from;
-        thread.pitch_radius -= thread.slope * start;
-        thread.major_radius -= thread.slope * start;
-        thread.minor_radius -= thread.slope * start;
-      }
-      if (spec.groove) {
-        threads.push_back(face_name(spec.feature, "thread", face));
-        std::vector<occ::handle<Geom_Surface>> own;
-        current = thread_face(*current, face, thread, from, to, chamfers, threads.back(), own);
-        screws.insert(screws.end(), own.begin(), own.end());
-        named.push_back({threads.back(), thread.origin, thread.along});
-        named.push_back({face, thread.origin, thread.along});
-      } else if (spec.taper > 0.0) {
-        // The cone of the bore's minor diameter, or of the shaft's major
-        // one, past the free ends by a tenth of a pitch.
-        const double run = 0.1 * thread.pitch;
-        current = cut_taper(current, thread, thread.internal ? thread.minor_radius : thread.major_radius, from, to,
-                            free_low ? run : 0.0, free_high ? run : 0.0,
-                            face_name(spec.feature, "thread_taper", face));
-      } else {
-        current = chamfer_face(*current, thread, from, to, chamfers, face);
+    Screws screws;
+    if (spec.groove) {
+      for (std::size_t k = 0; k < plans.size(); ++k) {
+        const FacePlan& plan = plans[k];
+        threads.push_back(plan.name);
+        screws.insert(screws.end(), face_screws[k].begin(), face_screws[k].end());
+        named.push_back({plan.name, plan.thread.origin, plan.thread.along});
+        named.push_back({plan.face, plan.thread.origin, plan.thread.along});
       }
     }
     // The threads' faces and the threaded faces' pieces (a crest the face
@@ -1224,7 +1798,9 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
     // stored in files keep threads (fillet, detail::join_surface_pieces).
     if (!threads.empty()) {
       current = per_turn_names(*current, named);
+      trace.mark("names");
       current = on_screw_surfaces(*current, threads, screws);
+      trace.mark("screws");
     }
     // Number the pieces of split names, and check the faces that changed.
     detail::FaceNamer namer(current->occt());
@@ -1246,6 +1822,7 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
       }
     }
     detail::require_valid_near(namer.result(), changed, "the thread");
+    trace.mark("check");
     return namer.shape();
   });
 }

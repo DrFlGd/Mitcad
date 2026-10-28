@@ -29,7 +29,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{}
+Ui-Init $App $Out $QtBin @{} -StepPause 0
 
 # Ui-NotSince "text" "description": no line since the mark has the text.
 function Ui-NotSince([string]$Text, [string]$Description) {

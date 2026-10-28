@@ -17,3 +17,5 @@ mod side_end_tests;
 mod side_offset_tests;
 mod tilt_tests;
 mod two_points_tests;
+// A BUILD part's options (mitcad#801).
+mod options_tests;

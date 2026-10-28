@@ -29,7 +29,7 @@ values continue to reach the model through the existing sketch commands.
 | `core/model-api` (`mitcad-model-api`) | Rust | The JSON command, query and preview API of a document, with its reference [commands.md](../core/model-api/src/commands.md) ([README](../core/model-api/README.md)). Above the model (mitcad#777): the document's api methods are extension traits (`DocumentApi`, `prelude`). |
 | `core/model-build` (`mitcad-model-build`) | Rust | The BUILD tab's planning: placing and editing parts, connectors, panels, timber members, joinery, spacing sets, frames, fasteners, the junctions and the cut list ([README](../core/model-build/README.md)). Above the model, below the api (mitcad#777); what the design file keeps of BUILD stays in `mitcad_model::build` and is re-exported. The document's BUILD methods are extension traits (`prelude`). |
 | `core/model-diff` (`mitcad-model-diff`) | Rust | Comparison of two designs or versions in the model's terms, for the version history ([README](../core/model-diff/README.md)). Above the model (mitcad#777); used by `vcs` and `ffi`. |
-| `core/model-tests/<area>` (`mitcad-model-tests-<area>`) | Rust | The model's tests through the JSON api, a small crate per area (sketch, features, parts, assembly, joints, drawing, print, BUILD, ...; ctest `core.model.<area>`), so that a new test recompiles only its own crate ([README](../core/model-tests/README.md)); `support` holds BUILD's test library. |
+| `core/model-tests/<area>` (`mitcad-model-tests-<area>`) | Rust | The model's tests through the JSON api, a small crate per area (sketch, features, parts, assembly, joints, drawing, print, BUILD, the imports' tests that need the api, ...; ctest `core.model.<area>`), so that a new test recompiles only its own crate ([README](../core/model-tests/README.md)); `support` holds BUILD's test library. |
 | `core/model-base` (`mitcad-model-base`) | Rust | Below the model's core (mitcad#777): the `Kernel` trait with the data it takes and gives (exchange options and meshes, drawing views, sheet metal charts, named segments), and the base data that needs nothing of the core: ids, topological names, profiles, datums, transforms, sweep and surface specifications, parameters, properties, configurations, appearances, render settings, the recompute monitor, fingerprints, hashes ([README](../core/model-base/README.md)). The model re-exports every module at its old path (`mitcad_model::kernel`, `mitcad_model::topo`, ...). |
 | `core/model-testkit` (`mitcad-model-testkit`) | Rust | The mock geometry kernel of the model's tests (`MockKernel`, `MockShape`) on `mitcad-model-base` alone, so that an edit in it rebuilds only test binaries ([README](../core/model-testkit/README.md)). The model's own tests use it as a dev-dependency; its `testing` feature re-exports it as `mitcad_model::testing`. |
 | `core/model-drawing` (`mitcad-model-drawing`) | Rust | The drawing layout and writers above the model (mitcad#777): sheets laid out with their views, dimensions, annotations, hole tables, parts lists, frame and title block from a sheet template, written as PDF, SVG, DXF and DWG; the built-in templates and the template libraries; the projection cache (`DrawingCache`, in the document's side cache). What a design file keeps of a drawing stays in the model (`core/model/src/drawing`: `def.rs`, `annotate_def.rs`, `tables_def.rs`, `template_def.rs`), which this crate re-exports under the same paths ([README](../core/model-drawing/README.md)). |
@@ -107,6 +107,13 @@ design in a project.
 
 - `Document`: parameters, timeline (`Vec<FeatureUid>` + features), the
   timeline marker (roll-back point), components and occurrences, settings.
+- **Tables** (mitcad#667, `core/model/src/tables.rs`,
+  [table-lookups.md](table-lookups.md)): named tables of constant cells
+  beside the parameters, which expressions read with `Table.Column` and
+  `XLOOKUP`, `MATCH`, `INDEX`. The parameter table evaluates with the
+  document's tables (`TableSource`); a table edit re-evaluates the
+  parameters that use it in one atomic step, so features recompute only
+  where a value changed.
 - `FeatureEntry { uid, name, suppressed, component, def: FeatureDef }`.
   Each `FeatureDef` variant has its own module in
   `core/model/src/features/` giving dependencies, validation and
@@ -121,9 +128,23 @@ design in a project.
   `Read::Datum`). A result's version is a 128-bit fingerprint of uid,
   definition and inputs (`core/model-base/src/fingerprint.rs`), stable across
   documents and processes.
+- **Appending to a long timeline** (mitcad#841): a command's recompute
+  goes on after the document's last results when the new state begins
+  with the same feature entries and nothing they read of the state
+  changed (parameter values, join tolerance, library sources, split
+  memory, the assembly; no joints): it takes their results as they are
+  and goes through only the features after them
+  (`recompute::recompute_after`), with the result a recompute from the
+  start gives. An importer's batches of features (`FeatureBatch`) thus
+  cost what they add, not the timeline before them. Features are looked
+  up by uid through an index (`core/model/src/feature_index.rs`) that
+  checks every position it gives against the timeline, so it needs no
+  upkeep when the timeline changes.
 - **Result store** (`core/model/src/store.rs`): costly results are also
   kept on disk under the same key, so reopening a design or an older
-  version reuses them. Shapes are stored with their names
+  version reuses them. Shapes are stored with their face names and the
+  edge and vertex names derived from them, which a shape read back takes
+  instead of deriving them again
   (`geometry/include/mitcad/geometry/persist.hpp`); results of another
   build are ignored; sketches, construction and plain base features are
   not stored. An import's worker hands every result a store takes over
@@ -184,7 +205,32 @@ design in a project.
   read (mitcad#245, mitcad#676), and builds the history's
   bodies ahead of the replay (mitcad#103, *Work beside the replay*); the
   timeline items
-  themselves are replayed one after another.
+  themselves are replayed one after another. Every `Kernel` is `Send`
+  with `Send + Sync` shapes, since forks go to other threads.
+- **Components evaluated in parallel** (mitcad#842,
+  `core/model/src/recompute/ahead.rs`): with recompute workers
+  (`Document::set_recompute_workers`, 1 by default; the environment
+  variable `MITCAD_RECOMPUTE_WORKERS`, which the ctests
+  `core.model.<area>.workers` set), the recompute cuts the timeline into
+  windows that end at barriers: joints and the other features that move
+  or make occurrences, sketches with driven dimensions and Bound Length
+  (they write parameters), and features that change other components'
+  bodies. In a window each component's features run ahead on a worker
+  with a kernel of its own (`Kernel::fork`, `Kernel::worker_thread`);
+  a feature that reads other components (links, or reads of their
+  bodies, placements or results in its last result) is left to the
+  recompute. The recompute itself goes through the timeline in order as
+  with one thread and takes a worker's result only where it would take a
+  cached one (the same definition, every recorded read holding where the
+  recompute is, the definition's parameter values the same) and the
+  evaluation succeeded; otherwise it evaluates the feature and cancels
+  the rest of that worker's job. Results, versions, topological names,
+  statuses, warnings, the memory cache and the monitor's progress are
+  therefore those of one thread; a stop cancels every worker and keeps
+  nothing they returned. Results not yet taken count against the memory
+  cache's budget, and the workers are stopped (and waited for) before the
+  cache drops results for its budget, since the cache keeps what a worker
+  still holds.
 - **Memory:** an allocation that fails ends the process (Rust's cannot be
   caught; OCCT's `Standard_OutOfMemory` and `std::bad_alloc` inside a
   kernel operation become its error "<operation>: out of memory",
@@ -875,7 +921,21 @@ the `Shape` type.
   faces with the kept pieces, and the checker sees only the faces that
   changed. Anything unusual (several solids or shells, a result that
   falls apart, a piece that cannot be classified) runs the ordinary
-  boolean.
+  boolean. Several tools, each one solid and with boxes apart from each
+  other's, go into one local boolean (`local_boolean_all`), else each in
+  turn. A modelled thread of several faces (mitcad#843,
+  `geometry/src/thread_options.hpp`) reads every face from the body it is
+  given; the tools of the faces whose reach (a box round all their tools
+  can change) meets no other face's are built at once on OCCT's thread
+  pool, each job an operation of its own under the caller's cancel source
+  and from shapes of its own, and applied stage by stage (bands,
+  chamfers, beyond the crest, grooves), a stage's tools in one local
+  boolean; faces whose reaches meet follow one by one, each read from the
+  body the one before left. `MITCAD_THREAD_SEQUENTIAL=1` threads every
+  face so, `MITCAD_THREAD_PARALLEL=0` builds the tools on the calling
+  thread, `MITCAD_THREAD_MERGE=0` applies them one by one; with
+  `MITCAD_BOOLEAN_TRACE` each thread prints `thread-trace:` lines (per
+  face its tools', booleans' and checks' time, per thread its phases).
 - Booleans on perforated bodies (`geometry/src/far_features.hpp`,
   mitcad#72): OCCT's boolean, the face merge after it and its checker go
   through every wire of a face they touch, some once per wire or per pair
@@ -1412,8 +1472,9 @@ not recompute.
   computed again, and an edited feature's own parameters stay the
   panel's; in sketch mode a change is a sketch action's undo step and the
   sketch is read again. Create Sketch shows the
-  origin planes for its pick only while the design has no component but
-  the active one and a root without bodies (mitcad#294). A command shows
+  origin planes for its pick in every design, behind the model's faces
+  for picking, without touching the Origin folder's light bulb
+  (mitcad#844, replacing mitcad#294). A command shows
   the sketches it uses for its time, as if their light bulbs were on (an
   edited feature's `sketches`, a new command's starting profiles; a view
   state of the window, `view/CommandSketches.hpp`, never a model command:
@@ -1467,7 +1528,15 @@ not recompute.
   view makes them, so that the view only finds and keeps them, and a
   design of large curved faces keeps the window (and live MCP, which then
   answers busy) responsive; the job's Cancel stops that meshing only, and
-  the view meshes what is left. All the bodies of a job are meshed
+  the view meshes what is left. A face whose triangulation does not end
+  does not hold the Cancel (mitcad#846): with a job's stop, the faces are
+  triangulated on the meshing's own detached threads, each on a private
+  copy of its face whose triangulation is moved into the face when it
+  ends; once stopped, the meshing waits `io::kMeshAbandonSeconds` (2 s)
+  for the faces under way and then abandons the rest, whose results are
+  discarded whenever they end (`MeshReport::abandoned`). The bodies are
+  then drawn with the faces meshed by then, and the view never meshes
+  them itself. All the bodies of a job are meshed
   together in one compound (`io::mesh_all_in_place`, mitcad#438), so that
   OCCT meshes the faces of all of them in parallel on every core (one body
   at a time, a design of many small bodies used a core or two) and a face
@@ -1481,12 +1550,11 @@ not recompute.
   themselves keep no triangulation until a job meshes them in the final
   tier: the command that commits the preview, or a refinement job (no
   model change, no undo step) once a drag ends and the inputs rest, and
-  opening a design (`viewMeshOptions`: planes through Delabella too, each
-  checked, mitcad#644: a plane Delabella leaves without a triangulation,
-  or whose triangles' area is off the area its boundary's discretization
-  encloses by more than 0.1 % or 0.001 mm², is triangulated again by the
-  default insertion, whose result stands; `io::MeshOptions::check_planes`,
-  `MeshReport::planes_redone`). So a
+  opening a design (`viewMeshOptions`: planes by the default insertion;
+  mitcad#644's checked Delabella, `checkedPlaneMeshOptions`, where a plane
+  Delabella leaves without a triangulation or whose triangles' area is off
+  its boundary's is triangulated again by the default, was the final tier
+  until a design hung in it, mitcad#846). So a
   committed body never keeps a preview's meshes, and no job writes into a
   shape the view draws. Both tiers first take the triangulations of the
   faces a command or preview left untouched from the bodies as shown
@@ -1519,6 +1587,27 @@ not recompute.
   still follow the exact previews only. `MITCAD_LOG_TIMING=1` logs each
   update; every drag logs its inputs, proxy updates, exact previews and
   frames drawn (`OcctViewer::framesDrawn`) apart.
+  Move/Copy's handles drive a provisional motion instead (mitcad#838;
+  `CommandDef::dragMotion`, `commands/MoveDragMotion`): when an exact
+  preview is asked for (the model idle), the command works out what its
+  motion needs of the model (Free Move's pivot, the placement of the
+  component the move works in) and keeps it with the preview as a function
+  of the inputs. Each dragged value then draws the exact preview's bodies
+  where it puts them: a body the move moved or copied at its placement
+  times the change, a body of an occurrence it places with the change
+  taken into the design before its placement (`draggedPlacement`). The
+  view keeps a body that is only placed elsewhere and moves its drawn
+  objects (`OcctViewer::placeBody`, `AIS_InteractiveContext::SetLocation`),
+  so a drag costs no model query, no presentation and no meshing. While
+  the handle is held and the bodies follow, the exact preview waits until
+  the pointer rests for 250 ms or the button goes up; it then replaces the
+  provisional placements and stays what OK commits. The exact result reuses
+  the meshes too: a rigid motion of a Move or an Align places the body as a
+  location on its own B-rep (`geometry::move_shape`, `Kernel::move_shape`)
+  instead of a transformed copy, so its faces keep their surfaces and
+  triangulations and both tiers find them meshed (the input is not changed;
+  it shares its sub-shapes with the result). Mirrors, scales and mesh
+  bodies are copied as before.
 - **macOS computation scheduling** (`app/platform/macos/MacWork.mm`,
   through `MacChrome.hpp`, mitcad#556): model and section workers set
   `QOS_CLASS_USER_INITIATED` on entering their thread loops. Before either
@@ -1879,7 +1968,11 @@ NativeText hints and the shortcut overview.
 `CommandPresenter` separates command-session actions and displayed state
 from controls. `NativeForms` builds real AppKit inputs from `InputDef`;
 `CommandPanel` remains the Qt presenter. Only one presenter is attached to
-a command. Secondary dialogs and Settings use `NativeDialogs`, which binds
+a command. The AppKit form lays its captions and controls out as the
+shared form does and hands its OK and Cancel to the window as a footer
+under the scrolling inputs; its value fields run the shared
+`ParameterField` expression tools on hidden Qt proxies
+(`NativeControls`, mitcad#815). Secondary dialogs and Settings use `NativeDialogs`, which binds
 the existing hidden Qt presenter models and signals to AppKit controls.
 Those widgets initialize their existing workflows but are never drawn.
 Presenter-tree events and control/model/selection signals coalesce into one
@@ -1895,6 +1988,15 @@ select widget-backed storage before setting their initial file and filter,
 so AppKit can read them without showing a Qt chooser. Native alerts and
 secondary modal sheets preserve existing synchronous result semantics;
 native command previews, inspections and commits use the asynchronous model API.
+
+Child windows of a presenter (context menus, message boxes) are not part of
+its native structure, so they never rebuild its controls or move their
+keyboard focus. A presenter can opt its outline into row drags
+(`setNativeRowMoves`): it keeps the rules, the outline carries the drag. The
+Projects panel uses that and gives the native window its tree keys
+(`ProjectsPanel::treeKey`) and a visible row name editor
+(`ProjectsPanel::setNativeEditor`, `platform/macos/NativeProjects.mm`), so
+the native outline drives the same project actions (mitcad#816).
 
 The viewport alone remains Qt/OCCT content. A standalone viewport host is
 embedded as a native sibling of the AppKit panes through the public

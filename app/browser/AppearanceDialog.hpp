@@ -147,6 +147,7 @@ private:
   QPushButton* m_assignBodies = nullptr;
   QPushButton* m_close = nullptr;
   bool m_building = false;
+  bool m_fitted = false; // sized to the screen at its first show (mitcad#818)
   QString m_logged; // the logged places
   QString m_loggedTexture; // the texture line last logged
   // Texture sources (mitcad#315): the selector's entry 0 is the

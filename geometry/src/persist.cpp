@@ -47,8 +47,9 @@ namespace {
 
 // "Mitcad shape", then the format version. A new version is a new
 // kernel_build_id, so stored results of an older one are not read.
+// Format 2 (mitcad#841) keeps the edges' and vertices' names and faces.
 constexpr char kMagic[4] = {'M', 'C', 'S', 'H'};
-constexpr std::uint32_t kFormat = 1;
+constexpr std::uint32_t kFormat = 2;
 
 class Writer {
 public:
@@ -223,6 +224,24 @@ std::string serialize_shape(const Shape& shape) {
       out.text(name);
     }
   }
+  // What the faces' names give the edges and vertices (format 2): reading
+  // a stored shape worked them out again for every shape, the most of a
+  // large design's restored results (mitcad#841). A face as its index + 1,
+  // 0 for none.
+  for (int i = 0; i < shape.edge_count(); ++i) {
+    const std::array<int, 2> pair = shape.edge_faces(i);
+    out.u32(static_cast<std::uint32_t>(pair[0] + 1));
+    out.u32(static_cast<std::uint32_t>(pair[1] + 1));
+    out.text(shape.edge_name(i));
+  }
+  for (int i = 0; i < shape.vertex_count(); ++i) {
+    const std::vector<int>& at = shape.vertex_faces(i);
+    out.u32(static_cast<std::uint32_t>(at.size()));
+    for (const int f : at) {
+      out.u32(static_cast<std::uint32_t>(f + 1));
+    }
+    out.text(shape.vertex_name(i));
+  }
   out.u32(static_cast<std::uint32_t>(shape.notes().size()));
   for (const std::string& note : shape.notes()) {
     out.text(note);
@@ -277,7 +296,43 @@ ShapePtr deserialize_shape(std::string_view data) {
       named.push_back({faceMap(i), std::move(names)});
     }
   }
-  auto shape = std::make_shared<Shape>(std::move(occt), named);
+  // A face as its index + 1, 0 for none; the shape checks the indices.
+  const auto face = [&in, faces]() {
+    const std::uint32_t stored = in.u32();
+    if (stored > static_cast<std::uint32_t>(faces)) {
+      throw std::runtime_error("stored shape: an edge or vertex names a face it does not have");
+    }
+    return static_cast<int>(stored) - 1;
+  };
+  Shape::DerivedNames derived;
+  derived.edge_faces.reserve(static_cast<std::size_t>(edges));
+  derived.edge_names.reserve(static_cast<std::size_t>(edges));
+  for (int i = 0; i < edges; ++i) {
+    const int first = face();
+    const int second = face();
+    derived.edge_faces.push_back(std::array<int, 2>{{first, second}});
+    derived.edge_names.push_back(in.text());
+  }
+  derived.vertex_faces.reserve(static_cast<std::size_t>(vertices));
+  derived.vertex_names.reserve(static_cast<std::size_t>(vertices));
+  for (int i = 0; i < vertices; ++i) {
+    const std::uint32_t count = in.u32();
+    if (count > static_cast<std::uint32_t>(faces)) {
+      throw std::runtime_error("stored shape: a vertex has more faces than the shape");
+    }
+    std::vector<int> at;
+    at.reserve(count);
+    for (std::uint32_t k = 0; k < count; ++k) {
+      const int f = face();
+      if (f < 0) {
+        throw std::runtime_error("stored shape: an edge or vertex names a face it does not have");
+      }
+      at.push_back(f);
+    }
+    derived.vertex_faces.push_back(std::move(at));
+    derived.vertex_names.push_back(in.text());
+  }
+  auto shape = std::make_shared<Shape>(std::move(occt), named, std::move(derived));
   const std::uint32_t notes = in.u32();
   for (std::uint32_t i = 0; i < notes; ++i) {
     shape->add_note(in.text());

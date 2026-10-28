@@ -1,0 +1,300 @@
+// SPDX-License-Identifier: MIT
+#include "SlicerImport.hpp"
+
+#include <exception>
+#include <utility>
+
+#include <QAction>
+#include <QDialog>
+#include <QFileInfo>
+#include <QHBoxLayout>
+#include <QJsonArray>
+#include <QJsonValue>
+#include <QLabel>
+#include <QMenu>
+#include <QPoint>
+#include <QPushButton>
+#include <QStringList>
+#include <QVector>
+#include <QtLogging>
+
+#include "../framework/Command.hpp"
+#include "../framework/DialogFolders.hpp"
+#include "../framework/Dialogs.hpp"
+#include "../framework/TestSync.hpp"
+#include "../framework/Theme.hpp"
+#include "../platform/MacDialogs.hpp"
+#include "ImportDetailsDialog.hpp"
+#include "PrintItemsHost.hpp"
+#include "PrintKeys.hpp"
+#include "PrintLibrary.hpp"
+#include "SlicerPresetsDialog.hpp"
+
+namespace mitcad {
+
+QString chooseSlicerFile(QWidget* parent) {
+  const QString path = dialogOpenFileName(parent, QObject::tr("Import from Slicer"),
+                                          dialogStartFolder(DialogGroup::Import, QString()), slicerFileFilter());
+  if (!path.isEmpty()) {
+    rememberDialogFolder(DialogGroup::Import, path);
+  }
+  return path;
+}
+
+bool runSlicerImport(PrintItemsHost& host, const QString& path, const QString& into, const QString& log,
+                     SlicerImportResult* result, QString* error) {
+  // Into the design its root chooses the printer and process read, in the
+  // import's one undo step; into a library only its files change.
+  const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("import_print_profile")},
+                            {QStringLiteral("path"), path}};
+  return runPrintImport(host, command, QFileInfo(path).fileName(), into, log, result, error);
+}
+
+QJsonArray installedSlicers(PrintItemsHost& host, const QString& into) {
+  QJsonObject query{{QStringLiteral("query"), QStringLiteral("slicer_presets")}, {QStringLiteral("into"), into}};
+  const QString project = host.projectFolder();
+  if (!project.isEmpty() && into != QStringLiteral("user")) {
+    query.insert(QStringLiteral("project"), project);
+  }
+  try {
+    return host.model().queryObject(query).value(QStringLiteral("slicers")).toArray();
+  } catch (const std::exception& e) {
+    qDebug().noquote() << QStringLiteral("Installed slicers not read: %1").arg(QString::fromUtf8(e.what()));
+    return {};
+  }
+}
+
+bool runPrintImport(PrintItemsHost& host, QJsonObject command, const QString& file, const QString& into,
+                    const QString& log, SlicerImportResult* result, QString* error) {
+  command.insert(QStringLiteral("into"), into);
+  const QString project = host.projectFolder();
+  if (!project.isEmpty() && into != QStringLiteral("user")) {
+    command.insert(QStringLiteral("project"), project);
+  }
+  // The problems by the plain names of their keys (mitcad#655).
+  PrintKeyTable keys;
+  try {
+    keys = PrintKeyTable(host.model().queryObject({{QStringLiteral("query"), QStringLiteral("print_keys")}}));
+  } catch (const std::exception&) {
+    // Without the names: as reported.
+  }
+  QJsonObject answer;
+  if (!host.runModelCommand(command, &answer)) {
+    if (error != nullptr) {
+      *error = host.lastCancelled() ? QString() : plainModelError(host.lastError(), keys, command);
+    }
+    qDebug().noquote() << QStringLiteral("%1 import refused: %2").arg(log, host.lastError());
+    return false;
+  }
+  SlicerImportResult done;
+  done.file = file;
+  done.into = into;
+  done.answer = answer;
+  done.summary = printImportSummary(done.file, into, answer, &keys);
+  const PrintImportSummary& summary = done.summary;
+  if (into == QStringLiteral("design")) {
+    const auto names = [&answer](const char* field) {
+      QStringList list;
+      for (const QJsonValue& value : answer.value(QLatin1String(field)).toArray()) {
+        list << value.toObject().value(QStringLiteral("name")).toString();
+      }
+      return list.join(QStringLiteral(", "));
+    };
+    const QJsonObject report = answer.value(QStringLiteral("report")).toObject();
+    qInfo().noquote() << QStringLiteral("Imported print settings from %1: printers: %2; processes: %3; materials: %4; "
+                                        "mapped %5, kept %6, left out: %7%8")
+                             .arg(done.file, names("printers"), names("processes"), names("materials"))
+                             .arg(report.value(QStringLiteral("mapped")).toInt())
+                             .arg(report.value(QStringLiteral("kept")).toInt())
+                             .arg(summary.leftOut.isEmpty() ? QStringLiteral("nothing")
+                                                            : summary.leftOut.join(QStringLiteral("; ")),
+                                  summary.problems.isEmpty()
+                                      ? QString()
+                                      : QStringLiteral("; not read: %1").arg(summary.problems.join(QStringLiteral("; "))));
+    qInfo().noquote() << QStringLiteral("%1 import: %2").arg(log, summary.line);
+  } else {
+    QStringList items;
+    for (const QJsonValue& value : answer.value(QStringLiteral("items")).toArray()) {
+      const QJsonObject item = value.toObject();
+      items << QStringLiteral("%1 %2").arg(item.value(QStringLiteral("kind")).toString(),
+                                           item.value(QStringLiteral("name")).toString());
+    }
+    qDebug().noquote() << QStringLiteral("%1 imported into %2: %3")
+                              .arg(log, into, items.isEmpty() ? QStringLiteral("nothing") : items.join(QStringLiteral(", ")));
+    qDebug().noquote() << QStringLiteral("%1 import: %2").arg(log, summary.line);
+  }
+  if (result != nullptr) {
+    *result = std::move(done);
+  }
+  return true;
+}
+
+SlicerImportBar::SlicerImportBar(PrintItemsHost& host, const QString& logName, QWidget* parent)
+    : QWidget(parent), m_host(host), m_log(logName) {
+  m_row = new QHBoxLayout(this);
+  m_row->setContentsMargins(0, 0, 0, 0);
+  m_line = new QLabel;
+  m_line->setStyleSheet(QStringLiteral("color: gray;"));
+  m_line->hide();
+  m_details = new QPushButton(tr("Details…"));
+  m_details->hide();
+  m_import = new QPushButton(tr("Import from Slicer…"));
+  m_row->addStretch(1);
+  m_row->addWidget(m_line);
+  m_row->addWidget(m_details);
+  m_row->addWidget(m_import);
+  for (QPushButton* button : {m_details, m_import}) {
+    mac::auxiliaryButton(button);
+  }
+  connect(m_import, &QPushButton::clicked, this, &SlicerImportBar::importClicked);
+  connect(m_details, &QPushButton::clicked, this, [this] { ImportDetailsDialog::showReport(m_summary, window()); });
+}
+
+SlicerImportBar::~SlicerImportBar() = default;
+
+QString SlicerImportBar::into() const { return target ? target() : QStringLiteral("design"); }
+
+void SlicerImportBar::clear() {
+  m_line->hide();
+  m_details->hide();
+  m_summary = PrintImportSummary();
+  scheduleLogPlaces();
+}
+
+void SlicerImportBar::findSlicers() {
+  // An installed Bambu-family slicer's presets (mitcad#830): the button
+  // opens a menu of a file or a slicer's presets.
+  m_slicers = installedSlicers(m_host, into());
+  m_import->setText(m_slicers.isEmpty() ? tr("Import from Slicer…") : tr("Import from Slicer ▾"));
+}
+
+void SlicerImportBar::importClicked() {
+  if (!m_host.canChangePrintSettings()) {
+    showRefusal(m_host.changeBlockedReason());
+    return;
+  }
+  // Looked for again: a slicer may have come or gone since.
+  findSlicers();
+  if (m_slicers.isEmpty()) {
+    importFile();
+    return;
+  }
+  QMenu menu(this);
+  QAction* file = menu.addAction(tr("From a file…"));
+  QStringList entries{file->text()};
+  QVector<QAction*> presets;
+  for (const QJsonValue& slicer : std::as_const(m_slicers)) {
+    presets.append(menu.addAction(tr("Presets of %1…").arg(SlicerPresetsDialog::slicerTitle(slicer.toObject()))));
+    entries << presets.last()->text();
+  }
+  qDebug().noquote() << QStringLiteral("%1 import menu: %2").arg(m_log, entries.join(QStringLiteral(" | ")));
+  QAction* chosen = execMenu(&menu, m_import->mapToGlobal(QPoint(0, m_import->height())));
+  if (chosen == file) {
+    importFile();
+  } else if (chosen != nullptr) {
+    importPresets(static_cast<int>(presets.indexOf(chosen)));
+  }
+}
+
+void SlicerImportBar::importFile() {
+  const QString path = chooseSlicerFile(window());
+  if (path.isEmpty()) {
+    return;
+  }
+  SlicerImportResult result;
+  QString error;
+  if (!runSlicerImport(m_host, path, into(), m_log, &result, &error)) {
+    if (!error.isEmpty()) {
+      showRefusal(error);
+    }
+    return;
+  }
+  showImported(result);
+}
+
+void SlicerImportBar::importPresets(int index) {
+  if (index < 0 || index >= m_slicers.size()) {
+    return;
+  }
+  SlicerPresetsDialog dialog(m_slicers, index, into(), window());
+  prepareModal(&dialog);
+  if (execDialog(&dialog) != QDialog::Accepted || dialog.tickedCount() == 0) {
+    qDebug().noquote() << QStringLiteral("Slicer presets cancelled");
+    return;
+  }
+  // "3 presets" in the line and the report: "3 presets imported into My
+  // library", "Imported 3 presets (Bambu Studio) into this design."
+  const int count = dialog.tickedCount();
+  const QString what = count == 1 ? tr("1 preset") : tr("%1 presets").arg(count);
+  SlicerImportResult result;
+  QString error;
+  if (!runPrintImport(m_host, dialog.command(), what, into(), m_log, &result, &error)) {
+    if (!error.isEmpty()) {
+      showRefusal(error);
+    }
+    return;
+  }
+  showImported(result);
+}
+
+void SlicerImportBar::showImported(const SlicerImportResult& result) {
+  m_summary = result.summary;
+  m_line->setText(m_summary.line);
+  m_line->setStyleSheet(QStringLiteral("color: gray;"));
+  m_line->show();
+  m_details->setVisible(!m_summary.details.isEmpty());
+  // A running command's panel (3D Print's) follows the design.
+  m_host.commandInputsChanged();
+  emit imported(result);
+  scheduleLogPlaces();
+}
+
+void SlicerImportBar::showRefusal(const QString& error) {
+  m_line->setText(error);
+  setErrorStyleSheet(m_line);
+  m_line->show();
+  m_details->hide();
+  scheduleLogPlaces();
+}
+
+void SlicerImportBar::showEvent(QShowEvent* event) {
+  QWidget::showEvent(event);
+  findSlicers();
+  m_loggedPlaces.clear();
+  scheduleLogPlaces();
+}
+
+void SlicerImportBar::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  scheduleLogPlaces();
+}
+
+void SlicerImportBar::scheduleLogPlaces() {
+  TestSync::singleShot(0, this, [this] { logPlaces(); });
+}
+
+void SlicerImportBar::logPlaces() {
+  // In the main window's coordinates (the parent of the bar's window), as
+  // the other logged places.
+  if (!isVisible() || window()->parentWidget() == nullptr) {
+    return;
+  }
+  const QPoint origin = window()->parentWidget()->window()->mapToGlobal(QPoint(0, 0));
+  QStringList lines;
+  const std::pair<const char*, QWidget*> widgets[] = {{"import", m_import}, {"details", m_details}};
+  for (const auto& [name, widget] : widgets) {
+    if (widget->isVisibleTo(this)) {
+      const QPoint global = widget->mapToGlobal(widget->rect().center()) - origin;
+      lines << QStringLiteral("%1 %2 at %3,%4").arg(m_log, QLatin1String(name)).arg(global.x()).arg(global.y());
+    }
+  }
+  const QString logged = lines.join(QLatin1Char('\n'));
+  if (logged != m_loggedPlaces) {
+    m_loggedPlaces = logged;
+    for (const QString& line : std::as_const(lines)) {
+      qDebug().noquote() << line;
+    }
+  }
+}
+
+} // namespace mitcad

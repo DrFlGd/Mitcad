@@ -27,6 +27,7 @@ namespace mitcad {
 
 class DocumentHost;
 class SettingsForm;
+class SlicerImportBar;
 
 // The printers' and processes' list and editor (mitcad#655), shared by
 // the Printers and Processes window and My Library's Printers and
@@ -156,7 +157,10 @@ private:
 // can choose, the panel above on the open design. Edit Printers and
 // Processes (MAKE, next to 3D Print) and Edit… of 3D Print's and Property
 // Sets' Printer and Process rows open it; a non-modal window that follows
-// the model, with My Library… (mitcad#704) and Close on the right.
+// the model, with My Library… (mitcad#704) and Close on the right. At the
+// top Import from Slicer… (mitcad#829, SlicerImportBar: 3D Print's import
+// into the design), its line and Details… before it; the items read show
+// selected in the list.
 class ProfilesDialog : public QDialog {
   Q_OBJECT
 
@@ -171,6 +175,7 @@ public:
 
 private:
   DesignItemsHost m_designHost;
+  SlicerImportBar* m_import = nullptr; // Import from Slicer… (mitcad#829)
   ProfilesPanel* m_panel = nullptr;
 };
 

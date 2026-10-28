@@ -7,6 +7,8 @@
 #include "mitcad/io/mesh_compare.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -17,6 +19,7 @@
 #include <map>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <utility>
 
 #include <BRepAdaptor_Surface.hxx>
@@ -910,6 +913,130 @@ int circle_points(const TopoDS_Shape& meshed) {
   return most;
 }
 
+// A stand-in for a face whose triangulation does not end (use_face_
+// algorithms_for_tests, mitcad#846): a cylinder's face loops until it is
+// released, never testing the stop, and then leaves a triangulation of the
+// default insertion in the face it was given; other faces are triangulated
+// by the default insertion and counted.
+struct EndlessState {
+  std::atomic<bool> entered{false};
+  std::atomic<bool> release{false};
+  std::atomic<bool> returned{false};
+  std::atomic<int> others{0};
+};
+
+class EndlessFace : public IMeshTools_MeshAlgo {
+public:
+  EndlessFace(EndlessState& state, occ::handle<IMeshTools_MeshAlgo> inner, bool endless)
+      : m_state(state), m_inner(std::move(inner)), m_endless(endless) {}
+
+  void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
+               const Message_ProgressRange& range) override {
+    if (!m_endless) {
+      m_inner->Perform(face, parameters, range);
+      ++m_state.others;
+      return;
+    }
+    m_state.entered = true;
+    while (!m_state.release) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    m_inner->Perform(face, parameters, Message_ProgressRange());
+    m_state.returned = true;
+  }
+
+private:
+  EndlessState& m_state;
+  occ::handle<IMeshTools_MeshAlgo> m_inner;
+  bool m_endless;
+};
+
+class EndlessCylinders : public IMeshTools_MeshAlgoFactory {
+public:
+  explicit EndlessCylinders(EndlessState& state) : m_state(state) {}
+
+  occ::handle<IMeshTools_MeshAlgo> GetAlgo(const GeomAbs_SurfaceType type,
+                                           const IMeshTools_Parameters& parameters) const override {
+    return new EndlessFace(m_state, BRepMesh_MeshAlgoFactory().GetAlgo(type, parameters),
+                           type == GeomAbs_Cylinder);
+  }
+
+private:
+  EndlessState& m_state;
+};
+
+// Stops once the endless face is under way and the other faces are done.
+class StopWhenStuck : public Message_ProgressIndicator {
+public:
+  StopWhenStuck(const EndlessState& state, int others) : m_state(state), m_others(others) {}
+  bool UserBreak() override { return m_state.entered && m_state.others >= m_others; }
+  void Show(const Message_ProgressScope&, const bool) override {}
+
+private:
+  const EndlessState& m_state;
+  int m_others;
+};
+
+// A meshing stopped while a face's triangulation does not end (mitcad#846):
+// it returns as stopped within a few seconds (kMeshAbandonSeconds after the
+// stop), the face counted as abandoned, the other faces keeping their
+// triangulations; the abandoned face, once it ends, writes nothing into the
+// shape. Then meshings go on as before, in parallel, and a meshing without
+// a stop is not affected by the stand-in's absence.
+void test_abandoned_face() {
+  const mitcad::io::MeshOptions view{0.01, 5.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
+  EndlessState state;
+  mitcad::io::use_face_algorithms_for_tests(new EndlessCylinders(state));
+  const TopoDS_Shape cylinder = BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape();
+  const occ::handle<StopWhenStuck> stop = new StopWhenStuck(state, 2);
+  mitcad::io::MeshReport report;
+  const auto start = std::chrono::steady_clock::now();
+  const bool done = mitcad::io::mesh_in_place(cylinder, view, stop->Start(), &report);
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  std::printf("Endless face stopped: %.2f s; %s\n", seconds, report.line().c_str());
+  CHECK(!done);
+  CHECK(state.entered);
+  CHECK(seconds < mitcad::io::kMeshAbandonSeconds + 3.0);
+  CHECK(report.abandoned == 1);
+  CHECK(report.line().find("; abandoned 1") != std::string::npos);
+  int planes = 0;
+  TopoDS_Face round;
+  for (TopExp_Explorer it(cylinder, TopAbs_FACE); it.More(); it.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    TopLoc_Location location;
+    if (BRepAdaptor_Surface(face, false).GetType() == GeomAbs_Cylinder) {
+      round = face;
+      CHECK(BRep_Tool::Triangulation(face, location).IsNull());
+    } else {
+      planes += BRep_Tool::Triangulation(face, location).IsNull() ? 0 : 1;
+    }
+  }
+  CHECK(planes == 2);
+  mitcad::io::use_face_algorithms_for_tests(occ::handle<IMeshTools_MeshAlgoFactory>());
+
+  // The abandoned face ends: its triangulation stays its private copy's.
+  state.release = true;
+  for (int i = 0; i < 2000 && !state.returned; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(state.returned);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  TopLoc_Location location;
+  CHECK(!round.IsNull() && BRep_Tool::Triangulation(round, location).IsNull());
+
+  // Meshings go on: with a range that is never stopped, and without one.
+  const TopoDS_Shape again = BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape();
+  const occ::handle<StopWhenStuck> never = new StopWhenStuck(state, 1000);
+  CHECK(mitcad::io::mesh_in_place(again, view, never->Start()));
+  CHECK(mitcad::io::has_triangulation(again));
+  const TopoDS_Shape plain = BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape();
+  mitcad::io::MeshReport plainReport;
+  CHECK(mitcad::io::mesh_in_place(plain, view, Message_ProgressRange(), &plainReport));
+  CHECK(mitcad::io::has_triangulation(plain));
+  CHECK(plainReport.abandoned == 0 && plainReport.meshed == 3);
+  CHECK(face_triangles(plain) == face_triangles(again));
+}
+
 // Building-scale cylinders and cones (mitcad#438): at the view's absolute
 // 0.01 mm a turn round a radius of metres took thousands of pieces, which
 // their faces' triangles follow (BRepMesh puts no points inside a
@@ -1424,6 +1551,7 @@ int main(int argc, char** argv) {
     test_reuse_triangulations();
     test_compare_meshing();
     test_checked_planes();
+    test_abandoned_face();
     test_building_scale_round_faces();
     test_stl(dir);
     test_indexed_mesh(dir);

@@ -32,7 +32,7 @@ param(
 # at once in session 0, so the Diagnostics page and Open Log Folder get
 # keys of the test's own.
 Ui-Init $App $Out $QtBin @{ 'tools.preferences.diagnostics' = 'F8'; 'help.open_log_folder' = 'F9';
-  'test.nested_wait' = 'F11'; 'test.leave_wait_cursor' = 'F12' }
+  'test.nested_wait' = 'F11'; 'test.leave_wait_cursor' = 'F12' } -StepPause 0
 
 $work = Join-Path $script:UiOut 'debug-log'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
@@ -95,6 +95,9 @@ function Preferences-DebugLog([string]$Description) {
   Ui-ExpectNew 'Preferences opened: Diagnostics, ' 'Preferences on its Diagnostics page'
   Ui-FocusDialog '^Preferences$'
   Ui-Step "$Description (Alt+W)"            { Ui-Key 'alt+w' }
+  # The check box toggles a moment after its key (animateClick), as the
+  # Linux test waits; nothing is logged for it, and Enter clicks OK at once.
+  Start-Sleep -Milliseconds 300
   Ui-Step 'OK (Enter)'                      { Ui-Key 'Return' }
   Ui-FocusMain
 }

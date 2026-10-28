@@ -20,7 +20,7 @@ corpus position (f01, ...; see [CORPUS_REPORT.md](CORPUS_REPORT.md)).
 |---|---|
 | `world` | The scene graph (below). |
 | `Fusion_mesh_000` | Float32 vertices and u32 indices of body faces, body edges and sketch profiles. Absent in assemblies of external components (no bodies in the scene). |
-| `stream_mesh_000` | Small meshes of work geometry (origin point, axes, planes): 8-float vertices and u32 indices such as `0 1 2 2 3 0`. Not used. |
+| `stream_mesh_000` | Small meshes of work geometry (origin point, axes, planes): 8-float vertices and u32 indices such as `0 1 2 2 3 0`. In some documents also every body face (layout 0 below; such a document has no `Fusion_mesh_000`). |
 
 The `_000` suffix suggests large scenes are split into several buffers; a
 face record names its buffer by number *(assumed: every corpus face uses
@@ -62,12 +62,31 @@ and 0x08.
 | 0 | 46 bytes, the same in every face (25 zero bytes, f32 1.0, 17 zero bytes) |
 | 46 | u8 flags: 0x08 the face has a mesh, 0 it has none |
 | 47 | u16 0 |
-| 49 | with a mesh: u32 vertex layout, always 7 (interleaved position, normal and uv floats followed by triangle indices) |
+| 49 | with a mesh: u32 vertex layout, 7 (interleaved position, normal and uv floats followed by triangle indices) or 0 (an inline mesh in `stream_mesh_NNN`, below); the rows below are layout 7 |
 | 53 | u32 buffer number (`Fusion_mesh_NNN`) |
 | 57 | u32 byte offset of the face's data in the buffer |
 | 61 | u32 counts: position floats, normal floats, uv floats, indices |
 | 77 | u32 n, then n u32 edge indices into the body's `Edges` list |
 | | 6 x f64 bounding box of the face (min xyz, max xyz) |
+
+**Layout 0** *(verified on the one corpus document that uses it: all its
+1,111 faces)*: the layout word is followed by an inline mesh object, then
+the face's bounding box (6 x f64). Objects here are a flag byte 1 and the
+type name; ids are u32 16 and 16 hex digits.
+
+| Object | Content |
+|---|---|
+| `OgsSimpleMesh` | 6 x f32 box (not the face's), u32 4 (triangle list), u8 1, u8 0 |
+| `VertexFormat` | id; the first object with an id defines it: u32 n attributes of 6 x u32 (type: 2 three floats, 1 two floats; semantic: 0 position, 1 normal, 2 uv, 3 and 4 further vectors; float offset in the vertex; three zeros); then u32 1 stream and u32 buffer number, byte offset and byte count of the face's vertices |
+| `AIndexBuffer` | id (one per face), u8 0, u32 buffer number, byte offset and byte count of the face's u32 indices (a triangle list local to the face) |
+| | 5 zero bytes (no edge list) |
+
+The faces' vertex formats have 14 floats per vertex (position at 0,
+normal at 3, uv at 6, two more vectors at 8 and 11); every vertex lies in
+its face's box, and the index data follows the vertex data of the same
+face in the buffer. The formats can be defined first by other objects (a
+`ProfileFace` of a sketch); the reader collects every `VertexFormat`
+definition of `world` first.
 
 Without a mesh the bounding box follows the u16 directly. Faces without a
 mesh were seen in one body only, which has a `VisibilityAttribute` and is

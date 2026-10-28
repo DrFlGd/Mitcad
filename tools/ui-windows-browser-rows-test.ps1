@@ -27,7 +27,7 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'tools.preferences.display' = 'F8'; 'view.top' = 'F7' }
+Ui-Init $App $Out $QtBin @{ 'tools.preferences.display' = 'F8'; 'view.top' = 'F7' } -StepPause 0
 # The middle button orbits (the drag beside the rows). No Projects card:
 # the Browser's card starts below the floating rows and has the room down
 # to the timeline. The Browser on its card, for the choice of Rows (the
@@ -220,6 +220,9 @@ Set-Background 'card' 'Up'
 Ui-ExpectNew 'Browser view beside the rows out of sight' 'the place beside the rows is gone'
 Ui-Mark
 Ui-Step 'click where the rows left room'    { Ui-Click $beside[0] $beside[1] }
+# A moment for a pick that would come, as the Linux test waits.
+Start-Sleep -Milliseconds 500
+Ui-Sync
 # The card's tree may select the row there; the plate behind is not picked.
 if ((Since-Mark 'Selected: 1 face').Count -ne 0) { Ui-Fail 'the click went past the card to the view' }
 Write-Host 'ok   the card takes the click again'

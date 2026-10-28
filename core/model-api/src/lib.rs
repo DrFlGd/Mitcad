@@ -101,6 +101,15 @@ mod sketch_clipboard;
 mod sketch_plane;
 // Image references: images on planes and faces to model from (mitcad#782).
 mod image_references;
+// Configurations: options, rules, the cascade, `configure` and Check Rules
+// (mitcad#797).
+mod configurations;
+// Options of inserted components (mitcad#801).
+mod component_options;
+// Tables of data that expressions look values up in (mitcad#667).
+mod tables;
+// A table as CSV: its export, the preview and the import (mitcad#804).
+mod tables_csv;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -129,6 +138,7 @@ pub mod prelude {
     pub(crate) use super::build::BuildCrateOps;
     pub(crate) use super::cache::CacheOps;
     pub(crate) use super::components::ComponentsCrateOps;
+    pub(crate) use super::configurations::ConfigurationsOps;
     pub(crate) use super::dispatch::DispatchOps;
     pub use super::drawing::DrawingApi;
     pub(crate) use super::drawing::DrawingOps;
@@ -175,6 +185,10 @@ pub mod prelude {
     pub(crate) use mitcad_model_drawing::DrawingCache;
     // Copy, Cut and Paste of sketch geometry (mitcad#788).
     pub(crate) use super::sketch_clipboard::SketchClipboardOps;
+    // Tables of data that expressions look values up in (mitcad#667).
+    pub(crate) use super::tables::TablesOps;
+    // A table as CSV (mitcad#804).
+    pub(crate) use super::tables_csv::TablesCsvOps;
 }
 
 use std::fmt;
@@ -256,8 +270,13 @@ named_enum! {
         },
         "suppress_feature" => SuppressFeature {
             uid: FeatureUid,
-            #[serde(default = "yes")]
-            suppressed: bool,
+            /// True when left out (and no `expression` is given).
+            #[serde(default)]
+            suppressed: Option<bool>,
+            /// A condition the suppression follows instead (mitcad#800);
+            /// "" removes it.
+            #[serde(default)]
+            expression: Option<String>,
         },
         "reorder_feature" => ReorderFeature {
             uid: FeatureUid,
@@ -295,6 +314,9 @@ named_enum! {
             step: Option<Value>,
             #[serde(default)]
             strict: Option<bool>,
+            // Allowed values (mitcad#798): a list, null or [] removes it.
+            #[serde(default, deserialize_with = "limits::present")]
+            values: Option<Value>,
         },
         "set_parameter" => SetParameter {
             name: String,
@@ -318,6 +340,9 @@ named_enum! {
             step: Option<Value>,
             #[serde(default)]
             strict: Option<bool>,
+            // Allowed values (mitcad#798): a list, null or [] removes it.
+            #[serde(default, deserialize_with = "limits::present")]
+            values: Option<Value>,
         },
         "set_units" => SetUnits {
             length: String,
@@ -335,7 +360,12 @@ named_enum! {
         // Body attributes (F5).
         "set_body_visible" => SetBodyVisible {
             uid: BodyUid,
-            visible: bool,
+            #[serde(default)]
+            visible: Option<bool>,
+            /// A condition the visibility follows instead (mitcad#800);
+            /// "" removes it.
+            #[serde(default)]
+            expression: Option<String>,
         },
         "set_body_material" => SetBodyMaterial {
             uid: BodyUid,
@@ -353,11 +383,19 @@ named_enum! {
             /// The project's folder, when the design is in one.
             #[serde(default)]
             project: Option<String>,
+            /// An expression the material follows instead (mitcad#800);
+            /// "" removes it.
+            #[serde(default)]
+            expression: Option<String>,
         },
         "set_body_appearance" => SetBodyAppearance {
             uid: BodyUid,
             #[serde(default)]
             appearance: Option<String>,
+            /// An expression the appearance follows instead (mitcad#800);
+            /// "" removes it.
+            #[serde(default)]
+            expression: Option<String>,
         },
         // Appearances of single faces (mitcad#53).
         "set_face_appearance" => SetFaceAppearance {
@@ -365,6 +403,10 @@ named_enum! {
             faces: Vec<String>,
             #[serde(default)]
             appearance: Option<String>,
+            /// An expression the faces' appearance follows instead
+            /// (mitcad#800); "" removes it.
+            #[serde(default)]
+            expression: Option<String>,
         },
         "clear_face_appearances" => ClearFaceAppearances {
             uid: BodyUid,
@@ -501,8 +543,13 @@ named_enum! {
     }
 }
 
-fn yes() -> bool {
-    true
+/// The error for a value given together with the expression that would
+/// replace it (mitcad#800).
+fn both(field: &str) -> ApiError {
+    ApiError(format!(
+        "`{field}` and `expression` are both given: give the value, or the expression it \
+         follows"
+    ))
 }
 
 /// A parameter value in a command: a number (millimetres or radians) or
@@ -838,9 +885,21 @@ named_enum! {
             name: String,
         },
         "image_reference_outline" => ImageReferenceOutline(Box<image_references::OutlineQuery>),
+        // Tables of data that expressions look values up in (mitcad#667,
+        // `tables.rs`).
+        "tables" => Tables(tables::TablesQuery),
         "image_info" => ImageInfo {
             path: String,
         },
+        // An installed slicer's user presets (mitcad#830, `print_profiles.rs`).
+        "slicer_presets" => SlicerPresets(print_profiles::SlicerPresetsQuery),
+        // Configurations: the choosers' report and Check Rules (mitcad#797,
+        // `configurations.rs`).
+        "configure" => Configure(configurations::ConfigureQuery),
+        "check_rules" => CheckRules(configurations::CheckRulesQuery),
+        // A table as CSV (mitcad#804, `tables_csv.rs`).
+        "table_csv" => TableCsv(tables_csv::TableCsvQuery),
+        "table_csv_preview" => TableCsvPreview(tables_csv::TableCsvPreviewQuery),
     }
 }
 
@@ -949,6 +1008,9 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
                                    "owner": params.owner(p.id()),
                                    "dependencies": dependencies,
                                    "favorite": self.is_favorite_parameter(p.name())});
+                            // The table columns it looks values up in
+                            // (mitcad#667): `Screws.dk`.
+                            value["table_dependencies"] = json!(tables::table_dependencies(p));
                             if let Some(context) = p.expression_context() {
                                 value["expression_units"] = json!({
                                     "length": context.default_length_unit.symbol(),
@@ -956,6 +1018,16 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
                                 });
                             }
                             limits::add_fields(&mut value, p, intrinsic.get(&p.id()));
+                            // Configurations (mitcad#797): an option, and the
+                            // rules that use it.
+                            let table = self.configurations();
+                            if table.is_option(p.name()) {
+                                value["option"] = json!(true);
+                            }
+                            let rules = table.rules_using(p.name());
+                            if !rules.is_empty() {
+                                value["rules"] = json!(rules);
+                            }
                             value
                         })
                         .collect(),
@@ -1026,6 +1098,7 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
                     value["visible"] = json!(visible);
                     value["visible_set"] = json!(self.feature_visible(uid).is_some());
                 }
+                self.add_suppressed_when(uid, &mut value);
                 value
             }
             Query::Faces(query) => self.faces_json(&query)?,
@@ -1053,7 +1126,19 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
                 let occurrence = self
                     .analysis_plane_occurrence(&query.plane, query.occurrence.as_ref())
                     .map_err(ApiError)?;
-                json!({"origin": plane.origin, "normal": plane.normal, "occurrence": occurrence})
+                let mut answer = json!({"origin": plane.origin, "normal": plane.normal,
+                    "occurrence": occurrence});
+                // The axis turned about (mitcad#823), in design coordinates.
+                if let (Some(reference), Some(axis)) =
+                    (&query.axis, self.section_axis(&query).map_err(ApiError)?)
+                {
+                    let axis_occurrence = self
+                        .analysis_axis_occurrence(reference, query.axis_occurrence.as_ref())
+                        .map_err(ApiError)?;
+                    answer["axis"] = json!({"origin": axis.origin, "direction": axis.direction});
+                    answer["axis_occurrence"] = json!(axis_occurrence);
+                }
+                answer
             }
             Query::CompareStep(query) => self.compare_step_json(&query)?,
             Query::Threads => self.threads_json(),
@@ -1236,6 +1321,16 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
             Query::ImageReferenceImage { name } => self.image_reference_image_json(&name)?,
             Query::ImageReferenceOutline(query) => self.image_outline_json(&query)?,
             Query::ImageInfo { path } => image_references::image_info_json(&path)?,
+            // An installed slicer's user presets (mitcad#830).
+            Query::SlicerPresets(query) => self.slicer_presets_query(&query)?,
+            // Configurations (mitcad#797).
+            Query::Configure(query) => self.configure_json(&query)?,
+            Query::CheckRules(query) => self.check_rules_json(&query),
+            // Tables of data that expressions look values up in (mitcad#667).
+            Query::Tables(query) => self.tables_json(&query)?,
+            // A table as CSV (mitcad#804).
+            Query::TableCsv(query) => self.table_csv_json(&query)?,
+            Query::TableCsvPreview(query) => self.table_csv_preview_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1296,6 +1391,11 @@ trait DocumentLocal<K: Kernel> {
     fn require_body(&self, uid: BodyUid) -> Result<&K::Shape, ApiError>;
 
     fn timeline_json(&self) -> Value;
+
+    /// A feature's suppression condition (mitcad#800), the parameters it
+    /// uses and why it does not hold, as the `timeline` and `feature`
+    /// queries give them.
+    fn add_suppressed_when(&self, uid: FeatureUid, value: &mut Value);
 
     fn bodies_json(&self, properties: bool, volumes: bool) -> Result<Value, ApiError>;
 
@@ -1435,8 +1535,16 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                 let deleted = self.delete_feature(uid, dependents)?;
                 json!({"deleted": deleted})
             }
-            Command::SuppressFeature { uid, suppressed } => {
-                self.set_suppressed(uid, suppressed)?;
+            Command::SuppressFeature {
+                uid,
+                suppressed,
+                expression,
+            } => {
+                match (suppressed, expression) {
+                    (Some(_), Some(_)) => return Err(both("suppressed")),
+                    (_, Some(expression)) => self.bind_suppressed(uid, &expression)?,
+                    (suppressed, None) => self.set_suppressed(uid, suppressed.unwrap_or(true))?,
+                }
                 json!({})
             }
             Command::ReorderFeature { uid, index } => {
@@ -1472,6 +1580,7 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                 max,
                 step,
                 strict,
+                values,
             } => {
                 let unit = unit.as_deref().map(parse_unit).transpose()?;
                 let limits = limits::LimitInput {
@@ -1479,6 +1588,7 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                     max,
                     step,
                     strict,
+                    values,
                 }
                 .apply_to(mitcad_model::expr::ParamLimits::default())?;
                 match expression_of(value, expression)? {
@@ -1506,6 +1616,7 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                 max,
                 step,
                 strict,
+                values,
             } => {
                 let unit = unit.as_deref().map(parse_unit).transpose()?;
                 let mut changed = Vec::new();
@@ -1514,7 +1625,12 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                     max,
                     step,
                     strict,
+                    values,
                 };
+                // The cascade of configuration rules runs on a value change
+                // (mitcad#799); a comment or a favourite moves nothing.
+                let edits_value =
+                    limits.is_given() || value.is_some() || expression.is_some() || unit.is_some();
                 if limits.is_given() {
                     // With the expression and unit in one step (mitcad#665).
                     let current = self
@@ -1567,13 +1683,31 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                         }
                     };
                 }
+                let moves = if edits_value {
+                    self.configuration_moves().to_vec()
+                } else {
+                    Vec::new()
+                };
                 if let Some(comment) = comment {
                     self.set_parameter_comment(&name, &comment)?;
                 }
                 if let Some(favorite) = favorite {
                     self.set_parameter_favorite(&name, favorite)?;
                 }
-                json!({"changed": changed})
+                let mut answer = json!({"changed": changed});
+                if !moves.is_empty() {
+                    // The moved options changed too.
+                    for m in &moves {
+                        if !changed.contains(&m.option) {
+                            changed.push(m.option.clone());
+                        }
+                    }
+                    answer = json!({
+                        "changed": changed,
+                        "moves": configurations::moves_json(&moves),
+                    });
+                }
+                answer
             }
             Command::SetUnits { length } => {
                 let unit = parse_unit(&length)?;
@@ -1599,11 +1733,47 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                 self.try_recompute()?;
                 json!({})
             }
-            Command::SetBodyVisible { uid, visible } => {
-                self.set_body_visible(uid, visible)?;
+            Command::SetBodyVisible {
+                uid,
+                visible,
+                expression,
+            } => {
+                match (visible, expression) {
+                    (Some(_), Some(_)) => return Err(both("visible")),
+                    (None, None) => {
+                        return Err(ApiError(
+                            "set_body_visible needs `visible` or `expression`".to_owned(),
+                        ));
+                    }
+                    (Some(visible), None) => self.set_body_visible(uid, visible)?,
+                    (None, Some(expression)) => self.bind_body_visible(uid, &expression)?,
+                }
                 json!({})
             }
             Command::SetBodyMaterial {
+                expression: Some(expression),
+                uid,
+                material,
+                appearance,
+                library,
+                project,
+            } => {
+                if material.is_some()
+                    || appearance.is_some()
+                    || library.is_some()
+                    || project.is_some()
+                {
+                    return Err(ApiError(
+                        "an `expression` is given without `material`, `appearance`, `library` \
+                         and `project`"
+                            .to_owned(),
+                    ));
+                }
+                self.bind_body_material(uid, &expression)?;
+                json!({})
+            }
+            Command::SetBodyMaterial {
+                expression: None,
                 uid,
                 material,
                 appearance,
@@ -1640,16 +1810,31 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                 }
                 json!({})
             }
-            Command::SetBodyAppearance { uid, appearance } => {
-                self.set_body_appearance(uid, appearance.as_deref())?;
+            Command::SetBodyAppearance {
+                uid,
+                appearance,
+                expression,
+            } => {
+                match (appearance, expression) {
+                    (Some(_), Some(_)) => return Err(both("appearance")),
+                    (_, Some(expression)) => self.bind_body_appearance(uid, &expression)?,
+                    (appearance, None) => self.set_body_appearance(uid, appearance.as_deref())?,
+                }
                 json!({})
             }
             Command::SetFaceAppearance {
                 uid,
                 faces,
                 appearance,
+                expression,
             } => {
-                self.set_face_appearance(uid, &faces, appearance.as_deref())?;
+                match (appearance, expression) {
+                    (Some(_), Some(_)) => return Err(both("appearance")),
+                    (_, Some(expression)) => self.bind_face_appearance(uid, &faces, &expression)?,
+                    (appearance, None) => {
+                        self.set_face_appearance(uid, &faces, appearance.as_deref())?
+                    }
+                }
                 json!({})
             }
             Command::ClearFaceAppearances { uid } => {
@@ -1883,6 +2068,17 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
             .ok_or_else(|| ApiError(format!("body {uid} does not exist at the timeline marker")))
     }
 
+    fn add_suppressed_when(&self, uid: FeatureUid, value: &mut Value) {
+        let Some(text) = self.suppressed_when(uid) else {
+            return;
+        };
+        value["suppressed_when"] = json!(text);
+        value["dependencies"] = json!(mitcad_model::DocState::expression_parameters([text]));
+        if let Some(warning) = self.state().feature_binding_warning(uid) {
+            value["binding_warning"] = json!(warning);
+        }
+    }
+
     fn timeline_json(&self) -> Value {
         let used = self.state().used_sketches();
         let sketches = self.state().sketches_used_by();
@@ -1924,6 +2120,7 @@ impl<K: Kernel> DocumentLocal<K> for Document<K> {
                 if let Some(uses) = sketches.get(&item.entry.uid) {
                     value["sketches"] = json!(uses);
                 }
+                self.add_suppressed_when(item.entry.uid, &mut value);
                 value
             })
             .collect();

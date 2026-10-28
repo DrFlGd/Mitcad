@@ -358,6 +358,9 @@ private:
     std::optional<CommandState> state;
     quint64 structure = 0;
     std::shared_ptr<const ProxyMesh> toolMesh;
+    // A provisional motion's basis (mitcad#838, CommandDef::dragMotion):
+    // the motion of the inputs it was computed from.
+    std::optional<DragMotion> motion;
   };
 
   // Every input (shown only: those shown now) in the panel's order.
@@ -705,6 +708,17 @@ private:
     quint64 structure = 0;
     std::shared_ptr<const ProxyMesh> mesh;
     std::vector<gp_Trsf> placements;
+    // A provisional motion (CommandDef::dragMotion, mitcad#838): the exact
+    // preview's motion, the bodies it drew (with the tool overlays) and
+    // what a drag does to each, and the number of the preview shown.
+    std::optional<DragMotion> motion;
+    std::vector<BodyDisplay> drawn;
+    std::vector<MotionSide> sides;
+    quint64 shown = 0;
+    // The first moved body's middle in its shape's coordinates, and its
+    // index in `drawn` (-1: none), for the log.
+    gp_Pnt middle;
+    int middleIndex = -1;
   };
   std::optional<ProxyBasis> m_proxyBasis; // the shown exact preview's
   QString m_proxyKey;                     // the input dragged, empty: none
@@ -729,9 +743,23 @@ private:
   void updateDragProxy();
   void hideDragProxy(const QString& why, bool forget);
   void dragProxyFinished(const QString& key);
-  // An exact preview is shown: it becomes the basis, and the proxy follows
-  // it or goes when its value is the one dragged to.
-  void exactPreviewShown(const Preview& preview);
+  // An exact preview is shown (`drawn`: the bodies the view draws for it):
+  // it becomes the basis, and the proxy follows it or goes when its value
+  // is the one dragged to.
+  void exactPreviewShown(const Preview& preview, const std::vector<BodyDisplay>& drawn);
+  // A provisional motion (CommandDef::dragMotion, mitcad#838): the exact
+  // preview's bodies drawn where the dragged value puts them, their meshes
+  // only moved (OcctViewer::setBodies keeps a body only placed elsewhere).
+  // While it is shown and the handle held, the exact preview waits until
+  // the pointer rests for a moment (m_motionPause) or the button goes up.
+  void updateMotionProxy();
+  bool motionDeferred() const;
+  // The value of an input as the log writes it: mm, degrees or a number.
+  QString proxyValueText(const QString& key, double value) const;
+  QTimer m_motionPause;
+  bool m_motionPaused = false;
+  quint64 m_motionShown = 0;     // exact previews shown (ProxyBasis::shown)
+  quint64 m_motionDrawnFrom = 0; // the basis the motion proxy was drawn from
   // `tool` placed at `toolPlacements` (a compound of placed copies when
   // there are several), null when none is shown.
   static TopoDS_Shape placedTool(const TopoDS_Shape& tool, const std::vector<gp_Trsf>& placements);

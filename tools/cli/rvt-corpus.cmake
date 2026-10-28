@@ -80,7 +80,7 @@ endif()
 # The project's 854 building elements the reference reader lists (its 970
 # elements but 116 rooms, which are spaces) and its other elements of
 # building categories: every one placed, as features or a body
-# (core/import-rvt/tests/rvt_corpus.rs checks them one by one).
+# (core/import-rvt/tests/corpus/rvt_corpus.rs checks them one by one).
 math(EXPR placed_total "${features} + ${bodies}")
 if(placed_total LESS 854 OR NOT not_built EQUAL 0 OR NOT memory EQUAL 0)
   message(FATAL_ERROR "${id}: ${features} features and ${bodies} bodies, ${not_built} not built, ${memory} left out for memory")

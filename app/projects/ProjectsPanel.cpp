@@ -245,6 +245,14 @@ public:
     return true;
   }
 
+  // A row's name cell and back, for the AppKit presentation (mitcad#816).
+  QModelIndex indexOf(const QTreeWidgetItem* item) const {
+    return item == nullptr ? QModelIndex() : indexFromItem(item, kName);
+  }
+  QTreeWidgetItem* itemOf(const QModelIndex& index) const {
+    return index.isValid() && index.model() == model() ? itemFromIndex(index) : nullptr;
+  }
+
 protected:
   bool event(QEvent* event) override {
     // The panel's keys before the window's shortcuts (Return confirms a
@@ -262,19 +270,9 @@ protected:
   }
 
   void keyPressEvent(QKeyEvent* event) override {
-    if (!editing() && currentItem() != nullptr) {
-      if (event->key() == Qt::Key_F2) {
-        m_panel.renameCurrent();
-        return;
-      }
-      if (isDeleteKey(event->key())) {
-        m_panel.deleteCurrent();
-        return;
-      }
-      if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
-        m_panel.openCurrent();
-        return;
-      }
+    // F2, Delete and Return on the current row (the AppKit outline's too).
+    if (m_panel.treeKey(event->key())) {
+      return;
     }
     QTreeWidget::keyPressEvent(event);
   }
@@ -476,10 +474,12 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
       startNewFolder(root, sameRoot(root, selectedRoot()) ? selectedFolder() : QString());
     }
   });
+  m_newFolder->setObjectName(QStringLiteral("projectsNewFolder"));
   // Rename has no button (a crowded toolbar): F2 and the rows' context menu.
   m_delete = action("delete", tr("Delete"),
                     tr("Deletes the selected design or folder as a new version: the history keeps it (Del)"),
                     [this] { deleteCurrent(); });
+  m_delete->setObjectName(QStringLiteral("projectsDelete"));
   m_history = action("version-history", tr("Version History"), tr("The selected design's versions"), [this] {
     QTreeWidgetItem* item = m_tree->currentItem();
     if (typeOf(item) == RowType::Design) {
@@ -666,7 +666,7 @@ void ProjectsPanel::readFinished(RemoteTask* task) {
                                          .toString());
   }
   const QVector<ProjectRow> rows = projectRows(answer);
-  if (m_isEditing || m_tree->dragging()) {
+  if (rowsHeld()) {
     // Not under the name being typed or the row being dragged.
     m_waitingRows = rows;
     m_rowsWaiting = true;
@@ -680,8 +680,18 @@ void ProjectsPanel::readFinished(RemoteTask* task) {
   }
 }
 
+bool ProjectsPanel::rowsHeld() const { return m_isEditing || m_tree->dragging() || m_nativeDragging; }
+
 void ProjectsPanel::applyWaitingRows() {
-  if (!m_rowsWaiting || m_isEditing || m_tree->dragging()) {
+  if (m_marksWaiting && !m_isEditing) {
+    // Marks that changed under the AppKit name editor (mitcad#816); a
+    // rebuild below applies them too.
+    m_marksWaiting = false;
+    if (!m_rowsWaiting || rowsHeld()) {
+      applyMarks();
+    }
+  }
+  if (!m_rowsWaiting || rowsHeld()) {
     return;
   }
   m_rowsWaiting = false;
@@ -853,6 +863,12 @@ QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QStri
 }
 
 void ProjectsPanel::updateMarks() {
+  if (m_nativeEditing) {
+    // Not under the AppKit name editor (mitcad#816): a changed row would
+    // replace its native cell, and the editor with it.
+    m_marksWaiting = true;
+    return;
+  }
   if (!m_building) {
     applyMarks();
   }
@@ -1275,6 +1291,7 @@ void ProjectsPanel::startNew(bool folder, const QString& root, const QString& pa
   item->setData(kName, kRootRole, rootOf(host));
   item->setData(kName, kPathRole, parent);
   item->setData(kName, kKeyRole, QStringLiteral("%1 (new)").arg(keyOf(host)));
+  item->setData(kName, NativeControlIdentifierRole, QStringLiteral("projects.row.%1 (new)").arg(keyOf(host)));
   item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable);
   m_editing = Editing();
   m_editing.kind = RowType::NewItem;
@@ -1301,6 +1318,17 @@ void ProjectsPanel::openEditor(QTreeWidgetItem* item, const QString& line) {
     }
     m_tree->setCurrentItem(item);
     m_tree->scrollToItem(item);
+    if (m_openNativeEditor) {
+      // The AppKit presentation's own editor in its row, not the hidden
+      // tree's (mitcad#816); its end comes back to finishNativeEditing.
+      m_nativeEditing = true;
+      qInfo().noquote() << line;
+      if (!m_openNativeEditor(m_tree->indexOf(item), item->text(kName)) && m_nativeEditing) {
+        m_nativeEditing = false;
+        editingClosed(false);
+      }
+      return;
+    }
     m_tree->setFocus(Qt::OtherFocusReason);
     m_tree->editItem(item, kName);
     qInfo().noquote() << line;
@@ -1341,6 +1369,14 @@ bool ProjectsPanel::cancelEditing() {
 void ProjectsPanel::editingClosed(bool accepted) {
   if (!m_isEditing) {
     return;
+  }
+  if (m_nativeEditing) {
+    // Closed from here (Esc in the window, another name started): the
+    // AppKit editor goes without a result of its own (mitcad#816).
+    m_nativeEditing = false;
+    if (m_closeNativeEditor) {
+      m_closeNativeEditor();
+    }
   }
   const Editing editing = m_editing;
   m_isEditing = false;
@@ -1563,6 +1599,74 @@ void ProjectsPanel::dropped(QTreeWidgetItem* dragged, QTreeWidgetItem* over) {
   const QString to = joinPath(folder, lastPart(from));
   qInfo().noquote() << QStringLiteral("Projects panel: drag %1 to %2").arg(from, to);
   emit moveRequested(rootOf(dragged), from, to, typeOf(dragged) == RowType::Folder);
+}
+
+// ---------------------------------------------------------------------------
+// The AppKit presentation's keys, name editor and drags (mitcad#816)
+
+bool ProjectsPanel::treeKey(int key) {
+  if (m_tree->editing() || m_tree->currentItem() == nullptr) {
+    return false;
+  }
+  if (key == Qt::Key_F2) {
+    renameCurrent();
+    return true;
+  }
+  if (isDeleteKey(key)) {
+    deleteCurrent();
+    return true;
+  }
+  if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+    openCurrent();
+    return true;
+  }
+  return false;
+}
+
+void ProjectsPanel::setNativeEditor(std::function<bool(const QModelIndex&, const QString&)> openRow,
+                                    std::function<void()> closeRow) {
+  m_openNativeEditor = std::move(openRow);
+  m_closeNativeEditor = std::move(closeRow);
+}
+
+void ProjectsPanel::finishNativeEditing(const QString& text, bool accepted) {
+  if (!m_nativeEditing || !m_isEditing) {
+    return;
+  }
+  m_nativeEditing = false;
+  // What the tree's delegate does: the typed name into the row, then the
+  // editor's end.
+  if (accepted && m_editing.item != nullptr) {
+    m_editing.item->setText(kName, text);
+  }
+  editingClosed(accepted);
+}
+
+bool ProjectsPanel::canDragRow(const QModelIndex& index) const {
+  const RowType type = typeOf(m_tree->itemOf(index));
+  return !m_isEditing && (type == RowType::Design || type == RowType::Folder);
+}
+
+bool ProjectsPanel::canDropRow(const QModelIndex& dragged, const QModelIndex& over) const {
+  return dropTarget(m_tree->itemOf(dragged), m_tree->itemOf(over), nullptr);
+}
+
+void ProjectsPanel::dropRow(const QModelIndex& dragged, const QModelIndex& over) {
+  if (QTreeWidgetItem* item = m_tree->itemOf(dragged)) {
+    dropped(item, m_tree->itemOf(over));
+  }
+}
+
+void ProjectsPanel::setNativeDragging(const QModelIndex& dragged, bool dragging) {
+  if (m_nativeDragging == dragging) {
+    return;
+  }
+  m_nativeDragging = dragging;
+  if (dragging) {
+    qInfo().noquote() << QStringLiteral("Projects panel: dragging %1").arg(keyOf(m_tree->itemOf(dragged)));
+  } else {
+    applyWaitingRows();
+  }
 }
 
 // ---------------------------------------------------------------------------

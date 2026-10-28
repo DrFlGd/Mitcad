@@ -25,10 +25,7 @@ geometry::PrimitiveKind geometry_kind(PrimitiveKind kind) {
   }
 }
 
-} // namespace
-
-std::shared_ptr<geometry::Shape> transform_shape(const geometry::Shape& shape, const Affine& map,
-                                                 rust::Str rename) {
+geometry::Affine affine_of(const Affine& map) {
   geometry::Affine affine;
   for (std::size_t r = 0; r < 3; ++r) {
     for (std::size_t c = 0; c < 3; ++c) {
@@ -36,7 +33,18 @@ std::shared_ptr<geometry::Shape> transform_shape(const geometry::Shape& shape, c
     }
     affine.translation[r] = map.translation[r];
   }
-  return geometry::transform_shape(shape, affine, std::string(rename));
+  return affine;
+}
+
+} // namespace
+
+std::shared_ptr<geometry::Shape> transform_shape(const geometry::Shape& shape, const Affine& map,
+                                                 rust::Str rename) {
+  return geometry::transform_shape(shape, affine_of(map), std::string(rename));
+}
+
+std::shared_ptr<geometry::Shape> move_shape(const geometry::Shape& shape, const Affine& map, rust::Str rename) {
+  return geometry::move_shape(shape, affine_of(map), std::string(rename));
 }
 
 std::shared_ptr<geometry::Shape> unite(const ShapeList& shapes) {

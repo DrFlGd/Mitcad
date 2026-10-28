@@ -28,6 +28,7 @@
 //                                        and p95 (MITCAD_MESH_TRACE=1 adds the
 //                                        meshings' phases and faces)
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -35,6 +36,8 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
+#include <utility>
 #include <vector>
 
 #include <QByteArray>
@@ -47,6 +50,11 @@
 #include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepMesh_MeshAlgoFactory.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <IMeshTools_MeshAlgo.hxx>
+#include <IMeshTools_MeshAlgoFactory.hxx>
 #include <BRep_Tool.hxx>
 #include <Poly_Triangulation.hxx>
 #include <Prs3d_Drawer.hxx>
@@ -282,7 +290,7 @@ int compare(bool holes, int samples) {
   const std::size_t bound = mitcad::kViewFaceTriangles;
   const Candidate candidates[] = {
       {"final: 0.01 mm, 5 deg", mitcad::viewMeshOptions()},
-      {"final before mitcad#644 (planes by the default)", mitcad::defaultPlaneMeshOptions()},
+      {"checked planes (mitcad#644)", mitcad::checkedPlaneMeshOptions()},
       {"fast planes: 0.01 mm, 5 deg", mitcad::io::MeshOptions{0.01, 5 * degree, false, bound, true, false}},
       {"0.02 mm, 10 deg", mitcad::io::MeshOptions{0.02, 10 * degree, false, bound, false, false}},
       {"0.05 mm, 20 deg", mitcad::io::MeshOptions{0.05, 20 * degree, false, bound, false, false}},
@@ -635,6 +643,121 @@ void testCancelFailureDestruction() {
   }
 }
 
+// A stand-in for a face whose triangulation does not end (mitcad#846, io::
+// use_face_algorithms_for_tests): a cylinder's face loops until released,
+// never testing the stop, then leaves a triangulation in the face it was
+// given; other faces are triangulated by the default insertion and counted.
+struct Endless {
+  std::atomic<bool> entered{false};
+  std::atomic<bool> release{false};
+  std::atomic<bool> returned{false};
+  std::atomic<int> others{0};
+};
+
+class EndlessFace : public IMeshTools_MeshAlgo {
+public:
+  EndlessFace(Endless& state, occ::handle<IMeshTools_MeshAlgo> inner, bool endless)
+      : m_state(state), m_inner(std::move(inner)), m_endless(endless) {}
+
+  void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
+               const Message_ProgressRange& range) override {
+    if (!m_endless) {
+      m_inner->Perform(face, parameters, range);
+      ++m_state.others;
+      return;
+    }
+    m_state.entered = true;
+    while (!m_state.release) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    m_inner->Perform(face, parameters, Message_ProgressRange());
+    m_state.returned = true;
+  }
+
+private:
+  Endless& m_state;
+  occ::handle<IMeshTools_MeshAlgo> m_inner;
+  bool m_endless;
+};
+
+class EndlessCylinders : public IMeshTools_MeshAlgoFactory {
+public:
+  explicit EndlessCylinders(Endless& state) : m_state(state) {}
+
+  occ::handle<IMeshTools_MeshAlgo> GetAlgo(const GeomAbs_SurfaceType type,
+                                           const IMeshTools_Parameters& parameters) const override {
+    return new EndlessFace(m_state, BRepMesh_MeshAlgoFactory().GetAlgo(type, parameters),
+                           type == GeomAbs_Cylinder);
+  }
+
+private:
+  Endless& m_state;
+};
+
+// A display meshing (the final tier, as opening a design meshes it)
+// cancelled while one face's triangulation does not end (mitcad#846):
+// meshForDisplay returns within a few seconds of the cancel, that face
+// abandoned; the body is marked as meshed to the end, so the view draws the
+// faces it has and never meshes the body itself; the abandoned face, once
+// it ends, writes nothing into the body.
+void testCancelEndlessFace() {
+  Endless state;
+  mitcad::io::use_face_algorithms_for_tests(new EndlessCylinders(state));
+  const auto body = std::make_shared<mitcad::geometry::Shape>(BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape());
+  mitcad::ModelJob job;
+  // Cancel as the window's Cancel does, once the endless face is under way
+  // and the two planes are done.
+  std::thread cancel([&state, &job] {
+    for (int i = 0; i < 6000 && !(state.entered && state.others >= 2); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    job.control().cancel();
+  });
+  const auto start = std::chrono::steady_clock::now();
+  const mitcad::DisplayMeshing meshing = mitcad::meshForDisplay({body}, job, mitcad::DisplayTier::Final);
+  const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+  cancel.join();
+  mitcad::io::use_face_algorithms_for_tests(occ::handle<IMeshTools_MeshAlgoFactory>());
+  mitcad::logDisplayMeshing(meshing, QStringLiteral("endless face"));
+  std::printf("display meshing with an endless face cancelled: %.2f s; %s\n", seconds,
+              meshing.report.line().c_str());
+  CHECK(state.entered);
+  CHECK(seconds < mitcad::io::kMeshAbandonSeconds + 5.0);
+  CHECK(meshing.report.abandoned == 1);
+  CHECK(meshing.incomplete == 1);
+  CHECK(body->display_meshed());
+  CHECK(!mitcad::viewMeshes(*body));
+  int planes = 0;
+  TopoDS_Face round;
+  for (TopExp_Explorer it(body->occt(), TopAbs_FACE); it.More(); it.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    TopLoc_Location location;
+    if (BRepAdaptor_Surface(face, false).GetType() == GeomAbs_Cylinder) {
+      round = face;
+      CHECK(BRep_Tool::Triangulation(face, location).IsNull());
+    } else {
+      planes += BRep_Tool::Triangulation(face, location).IsNull() ? 0 : 1;
+    }
+  }
+  CHECK(planes == 2);
+
+  state.release = true;
+  for (int i = 0; i < 2000 && !state.returned; ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+  }
+  CHECK(state.returned);
+  std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  TopLoc_Location location;
+  CHECK(!round.IsNull() && BRep_Tool::Triangulation(round, location).IsNull());
+
+  // The next display meshing is as before.
+  const auto next = std::make_shared<mitcad::geometry::Shape>(BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape());
+  mitcad::ModelJob again;
+  const mitcad::DisplayMeshing meshed = mitcad::meshForDisplay({next}, again, mitcad::DisplayTier::Final);
+  CHECK(meshed.bodies == 1 && meshed.incomplete == 0 && meshed.report.abandoned == 0);
+  CHECK(mitcad::io::has_triangulation(next->occt()));
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -673,6 +796,7 @@ int main(int argc, char** argv) {
   testInteractiveTier();
   testCommitUndoEdit();
   testCancelFailureDestruction();
+  testCancelEndlessFace();
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

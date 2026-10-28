@@ -40,7 +40,7 @@ param(
 
 Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'sketch.clean_up_projections' = 'F8'
   'sketch.clean_up_stale_projections' = 'F9'; 'sketch.constraint.coincident' = 'Shift+F5'; 'sketch.point' = 'Shift+F6'
-  'sketch.intersect' = 'Shift+F7' }
+  'sketch.intersect' = 'Shift+F7' } -StepPause 0
 
 Write-Host '--- A block and a sketch on its front face'
 Ui-StartApp 'projections'

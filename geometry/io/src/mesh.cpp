@@ -5,11 +5,15 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
+#include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -23,7 +27,6 @@
 #include <BRepMesh_DiscretFactory.hxx>
 #include <BRepMesh_EdgeDiscret.hxx>
 #include <BRepMesh_DelabellaMeshAlgoFactory.hxx>
-#include <BRepMesh_FaceDiscret.hxx>
 #include <BRepMesh_IncrementalMesh.hxx>
 #include <BRepMesh_MeshAlgoFactory.hxx>
 #include <BRepMesh_ShapeTool.hxx>
@@ -47,13 +50,17 @@
 #include <IMeshTools_CurveTessellator.hxx>
 #include <IMeshTools_MeshAlgo.hxx>
 #include <IMeshTools_MeshAlgoFactory.hxx>
+#include <IMeshTools_ModelAlgo.hxx>
 #include <IMeshTools_Parameters.hxx>
+#include <Message_ProgressIndicator.hxx>
+#include <OSD.hxx>
 #include <OSD_Environment.hxx>
 #include <TCollection_AsciiString.hxx>
 #include <Message_ProgressScope.hxx>
 #include <OSD_Parallel.hxx>
 #include <Poly_PolygonOnTriangulation.hxx>
 #include <Precision.hxx>
+#include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
@@ -392,16 +399,29 @@ const char* surface_name(GeomAbs_SurfaceType type) {
 
 namespace {
 
-// The faces' triangulation times of one meshing, from BRepMesh's threads.
-struct FaceTimes {
+// What one meshing shares with the threads that triangulate its faces and
+// the algorithms they run (mitcad#846). Each of them holds it, so that a
+// meshing abandoned after a stop (a face that does not end, StoppableFace
+// Discret) leaves them nothing that is freed under them. `mutex` orders
+// the faces' results against the abandon: once `abandoned` is set, nothing
+// is written into the shapes' own faces or into `times` any more.
+struct MeshShared {
   std::mutex mutex;
-  std::vector<MeshReport::FaceTime> faces;
+  bool abandoned = false;
+  std::size_t busy = 0;      // faces being triangulated (PrivateFaceAlgo)
+  std::size_t left = 0;      // of them, abandoned
+  bool timed = false;        // each face's time into `times`
+  std::vector<MeshReport::FaceTime> times;
+  std::atomic<std::size_t> redone{0}; // CheckedPlaneAlgo
+  std::atomic<bool> stop{false};      // the meshing's range was stopped
 };
+using MeshSharedPtr = std::shared_ptr<MeshShared>;
 
 // BRepMesh's algorithm for a face, timed (MeshReport::slowest).
 class TimedAlgo : public IMeshTools_MeshAlgo {
 public:
-  TimedAlgo(occ::handle<IMeshTools_MeshAlgo> inner, FaceTimes& times) : m_inner(std::move(inner)), m_times(times) {}
+  TimedAlgo(occ::handle<IMeshTools_MeshAlgo> inner, MeshSharedPtr shared)
+      : m_inner(std::move(inner)), m_shared(std::move(shared)) {}
 
   void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
                const Message_ProgressRange& range) override {
@@ -428,12 +448,66 @@ private:
         time.points += std::max(0, wire->GetEdge(e)->GetCurve()->ParametersNb() - 1);
       }
     }
-    const std::lock_guard<std::mutex> lock(m_times.mutex);
-    m_times.faces.push_back(std::move(time));
+    const std::lock_guard<std::mutex> lock(m_shared->mutex);
+    if (!m_shared->abandoned) {
+      m_shared->times.push_back(std::move(time));
+    }
   }
 
   occ::handle<IMeshTools_MeshAlgo> m_inner;
-  FaceTimes& m_times;
+  MeshSharedPtr m_shared;
+};
+
+// A face's algorithm run on a private copy of the face (mitcad#846): the
+// same surface, location, orientation, tolerance and triangulation, no
+// sub-shapes (BRepMesh takes the boundary from its own model). What the
+// algorithm leaves in the copy is moved into the face itself when it ends,
+// unless the meshing was abandoned meanwhile: a face that ends after that
+// writes into nothing anyone else reads.
+class PrivateFaceAlgo : public IMeshTools_MeshAlgo {
+public:
+  PrivateFaceAlgo(occ::handle<IMeshTools_MeshAlgo> inner, MeshSharedPtr shared)
+      : m_inner(std::move(inner)), m_shared(std::move(shared)) {}
+
+  void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
+               const Message_ProgressRange& range) override {
+    const TopoDS_Face original = face->GetFace();
+    TopLoc_Location location;
+    const occ::handle<Poly_Triangulation> before = BRep_Tool::Triangulation(original, location);
+    const TopoDS_Face own = TopoDS::Face(original.EmptyCopied());
+    BRep_Builder().UpdateFace(own, before);
+    {
+      const std::lock_guard<std::mutex> lock(m_shared->mutex);
+      ++m_shared->busy;
+    }
+    face->SetShape(own);
+    try {
+      m_inner->Perform(face, parameters, range);
+    } catch (...) {
+      finish(face, original, own, before);
+      throw;
+    }
+    finish(face, original, own, before);
+  }
+
+private:
+  void finish(const IMeshData::IFaceHandle& face, const TopoDS_Face& original, const TopoDS_Face& own,
+              const occ::handle<Poly_Triangulation>& before) {
+    const std::lock_guard<std::mutex> lock(m_shared->mutex);
+    --m_shared->busy;
+    if (m_shared->abandoned) {
+      return;
+    }
+    TopLoc_Location location;
+    const occ::handle<Poly_Triangulation> made = BRep_Tool::Triangulation(own, location);
+    if (made != before) {
+      BRep_Builder().UpdateFace(original, made);
+    }
+    face->SetShape(original);
+  }
+
+  occ::handle<IMeshTools_MeshAlgo> m_inner;
+  MeshSharedPtr m_shared;
 };
 
 // The area check of MeshOptions::check_planes (plane_area_fits).
@@ -560,8 +634,8 @@ double covered_area(const Poly_Triangulation& triangulation) {
 class CheckedPlaneAlgo : public IMeshTools_MeshAlgo {
 public:
   CheckedPlaneAlgo(occ::handle<IMeshTools_MeshAlgo> first, occ::handle<IMeshTools_MeshAlgoFactory> again,
-                   std::atomic<std::size_t>* redone)
-      : m_first(std::move(first)), m_again(std::move(again)), m_redone(redone) {}
+                   MeshSharedPtr shared)
+      : m_first(std::move(first)), m_again(std::move(again)), m_shared(std::move(shared)) {}
 
   void Perform(const IMeshData::IFaceHandle& face, const IMeshTools_Parameters& parameters,
                const Message_ProgressRange& range) override {
@@ -588,7 +662,7 @@ public:
       face->SetStatus(IMeshData_UserBreak);
       return;
     }
-    ++*m_redone;
+    ++m_shared->redone;
     const occ::handle<IMeshTools_MeshAlgo> again = m_again->GetAlgo(GeomAbs_Plane, parameters);
     if (again.IsNull()) {
       face->SetStatus(IMeshData_Failure);
@@ -600,12 +674,14 @@ public:
 private:
   occ::handle<IMeshTools_MeshAlgo> m_first;
   occ::handle<IMeshTools_MeshAlgoFactory> m_again;
-  std::atomic<std::size_t>* m_redone;
+  MeshSharedPtr m_shared;
 };
 
 // use_fast_plane_algorithms_for_tests: null for Delabella's.
 std::mutex g_fastPlanesMutex;
 occ::handle<IMeshTools_MeshAlgoFactory> g_fastPlanesForTests;
+// use_face_algorithms_for_tests: null for the default (CSF_MeshAlgo).
+occ::handle<IMeshTools_MeshAlgoFactory> g_facesForTests;
 
 occ::handle<IMeshTools_MeshAlgoFactory> fast_plane_algorithms() {
   const std::lock_guard<std::mutex> lock(g_fastPlanesMutex);
@@ -615,22 +691,31 @@ occ::handle<IMeshTools_MeshAlgoFactory> fast_plane_algorithms() {
   return new BRepMesh_DelabellaMeshAlgoFactory();
 }
 
+occ::handle<IMeshTools_MeshAlgoFactory> default_algorithms() {
+  {
+    const std::lock_guard<std::mutex> lock(g_fastPlanesMutex);
+    if (!g_facesForTests.IsNull()) {
+      return g_facesForTests;
+    }
+  }
+  TCollection_AsciiString algorithm = OSD_Environment("CSF_MeshAlgo").Value();
+  algorithm.LowerCase();
+  if (algorithm == "delabella" || algorithm == "1") {
+    return new BRepMesh_DelabellaMeshAlgoFactory();
+  }
+  return new BRepMesh_MeshAlgoFactory();
+}
+
 // The faces' algorithms: BRepMesh_Context's default (CSF_MeshAlgo), with
 // planes through Delabella's base triangulation when `fast_planes`
 // (MeshOptions::fast_planes), checked and made again by the default when
-// `check_planes` too (CheckedPlaneAlgo, counted in `redone`), each timed
-// when `times` is given.
+// `check_planes` too (CheckedPlaneAlgo, counted in the shared `redone`),
+// each on a private copy of its face (PrivateFaceAlgo), each timed when
+// the meshing is.
 class FaceAlgoFactory : public IMeshTools_MeshAlgoFactory {
 public:
-  FaceAlgoFactory(bool fast_planes, bool check_planes, FaceTimes* times, std::atomic<std::size_t>* redone)
-      : m_check(fast_planes && check_planes), m_times(times), m_redone(redone) {
-    TCollection_AsciiString algorithm = OSD_Environment("CSF_MeshAlgo").Value();
-    algorithm.LowerCase();
-    if (algorithm == "delabella" || algorithm == "1") {
-      m_default = new BRepMesh_DelabellaMeshAlgoFactory();
-    } else {
-      m_default = new BRepMesh_MeshAlgoFactory();
-    }
+  FaceAlgoFactory(bool fast_planes, bool check_planes, MeshSharedPtr shared)
+      : m_default(default_algorithms()), m_check(fast_planes && check_planes), m_shared(std::move(shared)) {
     m_planes = fast_planes ? fast_plane_algorithms() : m_default;
   }
 
@@ -638,21 +723,186 @@ public:
                                            const IMeshTools_Parameters& parameters) const override {
     occ::handle<IMeshTools_MeshAlgo> algorithm =
         (type == GeomAbs_Plane ? m_planes : m_default)->GetAlgo(type, parameters);
-    if (!algorithm.IsNull() && m_check && type == GeomAbs_Plane) {
-      algorithm = new CheckedPlaneAlgo(algorithm, m_default, m_redone);
-    }
-    if (algorithm.IsNull() || m_times == nullptr) {
+    if (algorithm.IsNull()) {
       return algorithm;
     }
-    return new TimedAlgo(algorithm, *m_times);
+    if (m_check && type == GeomAbs_Plane) {
+      algorithm = new CheckedPlaneAlgo(algorithm, m_default, m_shared);
+    }
+    algorithm = new PrivateFaceAlgo(algorithm, m_shared);
+    if (m_shared->timed) {
+      algorithm = new TimedAlgo(algorithm, m_shared);
+    }
+    return algorithm;
   }
 
 private:
   occ::handle<IMeshTools_MeshAlgoFactory> m_default;
   occ::handle<IMeshTools_MeshAlgoFactory> m_planes;
   bool m_check;
-  FaceTimes* m_times;
-  std::atomic<std::size_t>* m_redone;
+  MeshSharedPtr m_shared;
+};
+
+// The stop of a face's triangulation on a worker of StoppableFaceDiscret:
+// the meshing's (MeshShared::stop), which the meshing's own thread sets
+// from its range. The workers never read that range: it may be gone once
+// the meshing is abandoned.
+class SharedStop : public Message_ProgressIndicator {
+public:
+  explicit SharedStop(MeshSharedPtr shared) : m_shared(std::move(shared)) {}
+  bool UserBreak() override { return m_shared->stop.load(); }
+  void Show(const Message_ProgressScope&, const bool) override {}
+
+private:
+  MeshSharedPtr m_shared;
+};
+
+// The faces of one meshing, triangulated one at a time by each worker, as
+// BRepMesh_FaceDiscret triangulates them.
+struct FaceWork {
+  FaceWork(occ::handle<IMeshData_Model> model_, occ::handle<IMeshTools_MeshAlgoFactory> factory_,
+           const IMeshTools_Parameters& parameters_, MeshSharedPtr shared_)
+      : model(std::move(model_)), factory(std::move(factory_)), parameters(parameters_), shared(std::move(shared_)) {}
+
+  // BRepMesh_FaceDiscret::process.
+  void process(int index, const Message_ProgressRange& range) const {
+    const IMeshData::IFaceHandle& face = model->GetFace(index);
+    if (face->IsSet(IMeshData_Failure) || face->IsSet(IMeshData_Reused)) {
+      return;
+    }
+    try {
+      OCC_CATCH_SIGNALS
+      const occ::handle<IMeshTools_MeshAlgo> algorithm =
+          factory->GetAlgo(face->GetSurface()->GetType(), parameters);
+      if (algorithm.IsNull()) {
+        face->SetStatus(IMeshData_Failure);
+        return;
+      }
+      if (shared->stop.load() || !range.More()) {
+        face->SetStatus(IMeshData_UserBreak);
+        return;
+      }
+      algorithm->Perform(face, parameters, range);
+    } catch (const Standard_Failure&) {
+      face->SetStatus(IMeshData_Failure);
+    }
+  }
+
+  // A worker: the next face not taken, until none is left.
+  void run() {
+    OSD::SetThreadLocalSignal(OSD::SignalMode(), catch_fpe);
+    const occ::handle<SharedStop> stop = new SharedStop(shared);
+    for (int index = next++; index < model->FacesNb(); index = next++) {
+      process(index, stop->Start());
+    }
+    const std::lock_guard<std::mutex> lock(mutex);
+    --running;
+    idle.notify_all();
+  }
+
+  const occ::handle<IMeshData_Model> model;
+  const occ::handle<IMeshTools_MeshAlgoFactory> factory;
+  const IMeshTools_Parameters parameters;
+  const MeshSharedPtr shared;
+  const bool catch_fpe = OSD::ToCatchFloatingSignals();
+  std::atomic<int> next{0};
+  std::mutex mutex;
+  std::condition_variable idle;
+  int running = 0;
+};
+
+// BRepMesh's face discretization (BRepMesh_FaceDiscret) whose stop does not
+// wait for a face that does not end (mitcad#846). OCCT's algorithms test
+// the stop between faces, and inside one only in a part of the default
+// insertion; BRepMesh_Delaun::frontierAdjust (mitcad#589) and Delabella's
+// base triangulation not at all, and OCCT's thread pool waits for every
+// face it started. With a range that can be stopped, the faces are taken
+// one at a time by detached workers of the meshing's own, which hold what
+// they need (FaceWork, MeshShared), while this thread watches the range.
+// Once stopped, the workers take no other face and the faces under way get
+// kMeshAbandonSeconds to end; then the meshing is abandoned: the faces still
+// under way are counted (MeshShared::left), their results discarded when
+// they end (PrivateFaceAlgo), and this returns as stopped. Without such a
+// range, BRepMesh's own parallel loop.
+class StoppableFaceDiscret : public IMeshTools_ModelAlgo {
+public:
+  StoppableFaceDiscret(occ::handle<IMeshTools_MeshAlgoFactory> factory, MeshSharedPtr shared)
+      : m_factory(std::move(factory)), m_shared(std::move(shared)) {}
+
+protected:
+  bool performInternal(const occ::handle<IMeshData_Model>& model, const IMeshTools_Parameters& parameters,
+                       const Message_ProgressRange& range) override {
+    if (model.IsNull()) {
+      return false;
+    }
+    const int faces = model->FacesNb();
+    const auto work = std::make_shared<FaceWork>(model, m_factory, parameters, m_shared);
+    if (!range.IsActive()) {
+      OSD_Parallel::For(
+          0, faces, [&work](int index) { work->process(index, Message_ProgressRange()); },
+          !parameters.InParallel || faces <= 1);
+      return true;
+    }
+    if (!range.More()) {
+      return false; // stopped before any face, as BRepMesh_FaceDiscret
+    }
+    const int threads = parameters.InParallel ? std::max(1, std::min(faces, OSD_Parallel::NbLogicalProcessors())) : 1;
+    {
+      const std::lock_guard<std::mutex> lock(work->mutex);
+      work->running = threads;
+    }
+    int started = 0;
+    for (int i = 0; i < threads; ++i) {
+      try {
+        std::thread([work] { work->run(); }).detach();
+        ++started;
+      } catch (const std::system_error&) {
+        const std::lock_guard<std::mutex> lock(work->mutex);
+        --work->running;
+      }
+    }
+    if (started == 0) {
+      {
+        const std::lock_guard<std::mutex> lock(work->mutex);
+        work->running = 1;
+      }
+      work->run(); // no thread to be had: here, to the end
+    }
+    const auto grace = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(kMeshAbandonSeconds));
+    bool stopped = false;
+    Clock::time_point deadline;
+    std::unique_lock<std::mutex> lock(work->mutex);
+    while (work->running > 0) {
+      work->idle.wait_for(lock, std::chrono::milliseconds(20));
+      if (work->running == 0) {
+        break;
+      }
+      if (!stopped) {
+        lock.unlock();
+        stopped = !range.More();
+        lock.lock();
+        if (stopped) {
+          m_shared->stop = true;
+          deadline = Clock::now() + grace;
+        }
+      } else if (Clock::now() >= deadline) {
+        break;
+      }
+    }
+    const bool abandon = work->running > 0;
+    lock.unlock();
+    if (abandon) {
+      const std::lock_guard<std::mutex> guard(m_shared->mutex);
+      m_shared->abandoned = true;
+      m_shared->left = m_shared->busy;
+      return false;
+    }
+    return range.More();
+  }
+
+private:
+  occ::handle<IMeshTools_MeshAlgoFactory> m_factory;
+  MeshSharedPtr m_shared;
 };
 
 // BRepMesh's own context, with the edges of large cylinders and cones
@@ -668,11 +918,10 @@ private:
 class BoundedContext : public BRepMesh_Context {
 public:
   BoundedContext(std::size_t face_triangles, bool fast_planes, bool check_planes, MeshReport* report)
-      : m_faceTriangles(face_triangles), m_report(report) {
-    if (fast_planes || m_report != nullptr) {
-      SetFaceDiscret(new BRepMesh_FaceDiscret(
-          new FaceAlgoFactory(fast_planes, check_planes, m_report ? &m_times : nullptr, &m_redone)));
-    }
+      : m_faceTriangles(face_triangles), m_report(report), m_shared(std::make_shared<MeshShared>()) {
+    m_shared->timed = m_report != nullptr;
+    SetFaceDiscret(
+        new StoppableFaceDiscret(new FaceAlgoFactory(fast_planes, check_planes, m_shared), m_shared));
   }
 
   bool BuildModel() override {
@@ -732,6 +981,12 @@ public:
     const Clock::time_point start = Clock::now();
     const bool done = BRepMesh_Context::DiscretizeFaces(range);
     add(&MeshReport::triangulate, start);
+    if (m_report != nullptr) {
+      const std::lock_guard<std::mutex> lock(m_shared->mutex);
+      if (m_shared->abandoned) {
+        m_report->abandoned += m_shared->left;
+      }
+    }
     return done;
   }
 
@@ -773,12 +1028,14 @@ private:
     for (const auto& [surface, count] : surfaces) {
       m_report->meshed_by_surface.emplace_back(surface, count);
     }
-    m_report->planes_redone += m_redone.load();
+    m_report->planes_redone += m_shared->redone.load();
+    const std::lock_guard<std::mutex> lock(m_shared->mutex);
+    const std::vector<MeshReport::FaceTime>& times = m_shared->times;
     if (m_report->every_face) {
-      m_report->every_face_time.insert(m_report->every_face_time.end(), m_times.faces.begin(), m_times.faces.end());
+      m_report->every_face_time.insert(m_report->every_face_time.end(), times.begin(), times.end());
     }
     std::vector<MeshReport::FaceTime>& slowest = m_report->slowest;
-    slowest.insert(slowest.end(), m_times.faces.begin(), m_times.faces.end());
+    slowest.insert(slowest.end(), times.begin(), times.end());
     std::sort(slowest.begin(), slowest.end(), [](const MeshReport::FaceTime& a, const MeshReport::FaceTime& b) {
       return a.milliseconds > b.milliseconds;
     });
@@ -789,8 +1046,7 @@ private:
 
   std::size_t m_faceTriangles;
   MeshReport* m_report;
-  FaceTimes m_times;
-  std::atomic<std::size_t> m_redone{0}; // CheckedPlaneAlgo
+  MeshSharedPtr m_shared; // with the faces' workers and algorithms
 };
 
 // Faces the presentations' algorithm triangulated (presentation_faces_meshed).
@@ -911,6 +1167,9 @@ std::string MeshReport::line() const {
   if (planes_redone > 0) {
     out += "; planes redone " + std::to_string(planes_redone);
   }
+  if (abandoned > 0) {
+    out += "; abandoned " + std::to_string(abandoned);
+  }
   return out;
 }
 
@@ -966,6 +1225,11 @@ PlaneMeshArea plane_mesh_area(const TopoDS_Face& face) {
 void use_fast_plane_algorithms_for_tests(const occ::handle<IMeshTools_MeshAlgoFactory>& factory) {
   const std::lock_guard<std::mutex> lock(g_fastPlanesMutex);
   g_fastPlanesForTests = factory;
+}
+
+void use_face_algorithms_for_tests(const occ::handle<IMeshTools_MeshAlgoFactory>& factory) {
+  const std::lock_guard<std::mutex> lock(g_fastPlanesMutex);
+  g_facesForTests = factory;
 }
 
 double face_deviation_floor(const TopoDS_Face& face, double deviation, std::size_t face_triangles) {

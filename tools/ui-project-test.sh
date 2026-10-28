@@ -185,12 +185,19 @@ new_design() {
   ui_expect_new "New Design: made " "made as a version" 20
 }
 
+# expect_exit description: waits for the app to quit with exit code 0 (a
+# crash while quitting fails here, mitcad#825).
 expect_exit() {
   for _ in $(seq 1 50); do
     kill -0 "$UI_RUNNER" 2> /dev/null || break
     sleep 0.2
   done
   kill -0 "$UI_RUNNER" 2> /dev/null && ui_fail "$1: Mitcad did not exit"
+  if command -v gdb > /dev/null && [ "${UI_GDB:-0}" = 1 ]; then
+    grep -q "exited normally" "$UI_LOG" || ui_fail "$1: abnormal exit"
+  else
+    wait "$UI_RUNNER" || ui_fail "$1: exit code $?"
+  fi
   UI_RUNNER=""
   echo "ok   $1"
 }
@@ -796,7 +803,10 @@ ui_focus_main
 ui_expect_new "(linked) from block.mitcad" "inserted from the file dialog"
 ui_key ctrl+q
 ui_focus_dialog '^MitCad$'
-ui_step "don't save (D)"                 ui_key d
-expect_exit "exited"
+# Don't Save ends the app: no ui_step, whose sync key may come after the
+# app is gone (a late xdotool on a busy machine) and whose crash check then
+# took the normal end for a crash (mitcad#825); expect_exit checks the end.
+ui_key d
+expect_exit "don't save (D): exited"
 
 ui_finish "UI project test"

@@ -29,6 +29,9 @@ pub struct Spec {
     pub seq: u64,
     /// Linux: in a systemd scope of its own (cgroup v2).
     pub cgroup: bool,
+    /// Variables set for it on top of the runner's environment (a corpus
+    /// test's children, `corpus`).
+    pub env: Vec<(String, String)>,
 }
 
 /// How the process ended.

@@ -29,7 +29,7 @@ param(
 
 Ui-Init $App $Out $QtBin @{
   'sheet.face' = 'Shift+F2'; 'sheet.flange' = 'Shift+F3'; 'sheet.edit_rules' = 'Shift+F4'
-  'sheet.flat_pattern' = 'Shift+F5'; 'sheet.export_dxf' = 'Shift+F6'; 'sheet.show_flat' = 'Shift+F8' }
+  'sheet.flat_pattern' = 'Shift+F5'; 'sheet.export_dxf' = 'Shift+F6'; 'sheet.show_flat' = 'Shift+F8' } -StepPause 0
 $work = Join-Path $script:UiOut 'files'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null

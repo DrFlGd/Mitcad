@@ -913,7 +913,22 @@ impl<K: Kernel> Importer<'_, '_, K> {
             .filter_map(|(i, _)| sketch.curves.get(&(i as i32)).map(|id| format!("c{id}")))
             .collect();
         if points.is_empty() {
-            points = sketch.points.values().map(|id| format!("p{id}")).collect();
+            // The sketch's points in FreeCAD's order, construction ones left
+            // out as FreeCAD's sketch shape leaves them out. Coincident
+            // points are one Mitcad point (the sketch merges them): FreeCAD
+            // drills there once, and the same position twice would make the
+            // hole's tools overlap (mitcad#835).
+            for (i, g) in fc_sketch.geometry.iter().enumerate() {
+                if g.construction || !matches!(g.curve, Curve::Point { .. }) {
+                    continue;
+                }
+                if let Some(id) = sketch.points.get(&(i as i32)) {
+                    let point = format!("p{id}");
+                    if !points.contains(&point) {
+                        points.push(point);
+                    }
+                }
+            }
         }
         if points.is_empty() {
             return Err("the profile sketch has no circles or points".to_owned());

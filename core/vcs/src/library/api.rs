@@ -21,6 +21,7 @@ use crate::api::{optional, text};
 use crate::remote::commands::answer;
 use crate::remote::{Control, GitCli};
 use mitcad_model::Configurations;
+use mitcad_model::part_options::{self, Naming};
 
 fn invalid(message: impl Into<String>) -> VcsError {
     VcsError::Command(message.into())
@@ -71,6 +72,7 @@ pub fn command(
         "library_add" => publish::add_command(&command)?,
         "index_entry" => publish::index_entry_command(&command)?,
         "library_build_candidates" => build_candidates(cache, &command)?,
+        "library_configure" => configure(cache, &command)?,
         other => return Err(invalid(format!("unknown library command '{other}'"))),
     };
     Ok(answer.to_string())
@@ -174,9 +176,10 @@ fn component_design(repo: &LibraryRepo, commit: ObjectId, path: &str) -> Option<
     serde_json::from_slice(&data).ok()
 }
 
-/// A design's configuration table, if it has one. Row fields the table
-/// does not hold (a row's `part_number`, mitcad#375) are read apart, with
-/// [`build::rows`].
+/// A design's configuration table, if it has one, in the form of
+/// mitcad#798 (an old table's selectors made options, as opening the
+/// design makes them). Row fields read apart (a row's `part_number`,
+/// mitcad#375) are read with [`build::rows`].
 fn design_table(design: &Value) -> Option<Configurations> {
     let mut table = design.get("configurations")?.clone();
     if let Some(rows) = table.get_mut("rows").and_then(Value::as_array_mut) {
@@ -186,7 +189,16 @@ fn design_table(design: &Value) -> Option<Configurations> {
             });
         }
     }
-    serde_json::from_value(table).ok()
+    let mut table: Configurations = serde_json::from_value(table).ok()?;
+    let names: BTreeSet<String> = design
+        .get("parameters")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|p| Some(p.get("name")?.as_str()?.to_owned()))
+        .collect();
+    table.migrate_selectors(&|name| names.contains(name), None);
+    Some(table)
 }
 
 /// A design's rows' own part numbers, by row.
@@ -234,12 +246,16 @@ fn component_json(
             .into_iter()
             .map(|row| (row.name.clone(), row))
             .collect();
+        // `selectors`, `selector_values` and the rows' `select` are the
+        // options' values as text, as pickers read them before mitcad#798.
         value["configurations"] = json!({
-            "selectors": table.selectors,
+            "options": table.options,
+            "closed": table.closed,
+            "selectors": table.options,
             "selector_values": table.selector_values(),
             "default": table.default_row().map(|r| r.name.clone()),
             "rows": table.rows.iter().map(|r| {
-                let mut row = json!({"name": r.name, "select": r.select});
+                let mut row = json!({"name": r.name, "select": table.row_option_texts(r)});
                 if let Some(number) = own.get(&r.name).and_then(|o| o.part_number.as_ref()) {
                     row["part_number"] = json!(number);
                 }
@@ -256,8 +272,98 @@ fn component_json(
                 row
             }).collect::<Vec<_>>(),
         });
+        // Each option with its domain and allowed values in the default
+        // row, for a chooser per option (mitcad#801).
+        if !table.options.is_empty() {
+            value["options"] = component_state(repo, commit, &component.path)
+                .and_then(|state| {
+                    part_options::configure_state(
+                        &state,
+                        &component.name,
+                        None,
+                        &[],
+                        &BTreeSet::new(),
+                    )
+                    .ok()
+                })
+                .map_or_else(
+                    || json!([]),
+                    |c| part_options::options_json(&c.state, &BTreeMap::new()),
+                );
+        }
     }
     value
+}
+
+/// A component's design at a commit, read as a design (for its options).
+fn component_state(
+    repo: &LibraryRepo,
+    commit: ObjectId,
+    path: &str,
+) -> Option<mitcad_model::DocState> {
+    let data = repo.read(commit, path).ok()??;
+    let text = String::from_utf8(data).ok()?;
+    mitcad_model::file::load_state(&text)
+        .ok()
+        .map(|(state, _)| state)
+}
+
+/// The pattern a library component's designation follows.
+fn naming(component: &ManifestComponent) -> Naming<'_> {
+    Naming {
+        pattern: &component.designation,
+        standard: &component.standard,
+        name: &component.name,
+        fallback: if component.standard.trim().is_empty() {
+            "{name} {config}"
+        } else {
+            "{standard} {config}"
+        },
+    }
+}
+
+/// `library_configure` (mitcad#801): the `configure` query's answer
+/// (`options` with their allowed values and `restricted_by`, `row`,
+/// `designation_values`, `designation`, `moves`, `refused`, `problems`) on
+/// a library component's design in the row `config` (its default row
+/// when left out) with `values` tried ({option: a text option's text, a
+/// number in mm or rad, or a constant expression}): what Insert from
+/// Library and the BUILD pickers show before the part is inserted. The
+/// values tried are not moved; one that breaks a rule is `refused`, and
+/// the later options move.
+fn configure(cache: &LibraryCache, command: &Value) -> Result<Value, VcsError> {
+    let repo = repo_of(cache, command)?;
+    let commit = commit_of(&repo, command)?;
+    let manifest = repo.manifest(commit)?;
+    let id = text(command, "component")?;
+    let component = manifest
+        .component(id)
+        .ok_or_else(|| VcsError::NotFound(format!("{} has no component '{id}'", manifest.id)))?;
+    let state = component_state(&repo, commit, &component.path)
+        .ok_or_else(|| invalid(format!("the design of {id} cannot be read")))?;
+    let mut values = Vec::new();
+    if let Some(given) = command.get("values").and_then(Value::as_object) {
+        for (name, value) in given {
+            let value = part_options::command_value(&state.parameters, name, value)
+                .map_err(|e| invalid(format!("{id}: {e}")))?;
+            values.push((name.clone(), value));
+        }
+    }
+    let pinned: BTreeSet<String> = values.iter().map(|(name, _)| name.clone()).collect();
+    let mut answer = part_options::configure_json(
+        &state,
+        &component.name,
+        optional(command, "config"),
+        &values,
+        &pinned,
+        &BTreeMap::new(),
+        Some(&naming(component)),
+    )
+    .map_err(|e| invalid(format!("{id}: {e}")))?;
+    answer["component"] = json!(component.id);
+    answer["library"] = json!(manifest.id);
+    answer["rev"] = json!(commit.to_string());
+    Ok(answer)
 }
 
 /// `library_show`: a library at a version (its manifest, components with

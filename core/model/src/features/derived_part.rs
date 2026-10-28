@@ -15,8 +15,15 @@
 //! not. Every `mount:<name>` joint origin of the source becomes a frame of
 //! the feature, `<F>:mount(<name>)`, which joints and other features name
 //! as `{"mount": ...}`.
+//!
+//! A library part or a linked design inserted with options is a derived
+//! part too (mitcad#801, `crate::part_options`): its `parameters` may be
+//! numbers or texts in its source's units, and the source's rules hold. A
+//! constant the rules do not allow is moved (a warning); a value bound to
+//! the design's parameters that breaks a rule fails the part with the
+//! rule's name.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -30,6 +37,7 @@ use crate::document::DocState;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::{BooleanOp, BoundingBox, Kernel};
 use crate::parameters::ParamId;
+use crate::part_options::PartValue;
 use crate::profile::SketchFrame;
 use crate::recompute::{Cache, FeatureResult, Read};
 use crate::topo::FaceName;
@@ -310,40 +318,21 @@ pub struct Evaluated<S> {
     pub mounts: BTreeMap<String, Transform>,
 }
 
-/// The source's state with the row and the parameters applied.
+/// The source's state with the row and the parameters applied (numbers in
+/// millimetres or radians), none of them moved by the source's rules
+/// (`crate::part_options::configure` for texts and the cascade).
 #[doc(hidden)]
 pub fn configured(
     source: &LibrarySourceDef,
     config: Option<&str>,
     values: &[(String, f64)],
 ) -> Result<DocState, String> {
-    let design = source.design.state()?;
-    let mut state = (*design).clone();
-    let table = state.configurations.clone();
-    let row = match config {
-        Some(name) => Some(
-            table
-                .row(name)
-                .cloned()
-                .ok_or_else(|| format!("{} has no configuration {name}", source.label()))?,
-        ),
-        None => table.default_row().cloned(),
-    };
-    if let Some(row) = &row {
-        mitcad_model_base::internal::configurations::apply_values(&mut state.parameters, row)
-            .map_err(|e| format!("{} {}: {e}", source.label(), row.name))?;
-    }
-    for (name, value) in values {
-        let id = state
-            .parameters
-            .find(name)
-            .ok_or_else(|| format!("{} has no parameter {name}", source.label()))?;
-        state
-            .parameters
-            .set_value(id, *value)
-            .map_err(|e| format!("{name}: {e}"))?;
-    }
-    Ok(state)
+    let values: Vec<(String, PartValue)> = values
+        .iter()
+        .map(|(name, value)| (name.clone(), PartValue::Number(*value)))
+        .collect();
+    let pinned: BTreeSet<String> = values.iter().map(|(name, _)| name.clone()).collect();
+    Ok(crate::part_options::configure(source, config, &values, &pinned)?.state)
 }
 
 /// Evaluates a source's state with the kernel.
@@ -505,9 +494,20 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
             .as_ref()
             .map(|l| l.parameter.clone())
             .filter(|p| !p.is_empty());
+        // Its values, numbers or texts (mitcad#801); those bound to the
+        // design's parameters are never moved by the source's rules.
         let mut values = Vec::with_capacity(self.parameters.len());
+        let mut pinned = BTreeSet::new();
         for (name, id) in &self.parameters {
-            values.push((name.clone(), ctx.param(*id)?));
+            let value = if ctx.env.params.text(*id).is_some() {
+                PartValue::Text(ctx.param_text(*id)?)
+            } else {
+                PartValue::Number(ctx.param(*id)?)
+            };
+            if crate::part_options::is_bound(ctx.env.params, *id, ctx.uid) {
+                pinned.insert(name.clone());
+            }
+            values.push((name.clone(), value));
         }
         let mut angles = [0.0; 2];
         let mut tilts = [Tilt::X; 2];
@@ -529,8 +529,18 @@ impl<K: Kernel> Evaluate<K> for DerivedPartDef {
             ));
         }
         let label = format!("{} ({})", source.label(), source.id);
-        let state = configured(source, self.config.as_deref(), &values)
-            .map_err(|e| format!("{label}: {e}"))?;
+        let configured =
+            crate::part_options::configure(source, self.config.as_deref(), &values, &pinned)
+                .map_err(|e| format!("{label}: {e}"))?;
+        // The source's rules (mitcad#801): a constant moved is a warning,
+        // a bound value that breaks a rule fails the part.
+        if let Some(broken) = configured.broken {
+            return Err(format!("{label}: {}", broken.text));
+        }
+        for moved in &configured.moves {
+            ctx.warn(format!("{label}: {}", moved.text));
+        }
+        let state = configured.state;
         let length = match &length_name {
             Some(name) => {
                 let id = state.parameters.find(name).ok_or_else(|| {

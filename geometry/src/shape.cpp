@@ -130,6 +130,26 @@ Shape::Shape(TopoDS_Shape shape, const std::vector<NamedFace>& faces) : m_shape(
   if (m_shape.IsNull()) {
     return;
   }
+  map_faces(faces);
+  derive_edge_names();
+  derive_vertex_names();
+  register_check();
+}
+
+Shape::Shape(TopoDS_Shape shape, const std::vector<NamedFace>& faces, DerivedNames derived)
+    : m_shape(std::move(shape)) {
+  if (m_shape.IsNull()) {
+    return;
+  }
+  map_faces(faces);
+  if (!take_derived(derived)) {
+    derive_edge_names();
+    derive_vertex_names();
+  }
+  register_check();
+}
+
+void Shape::map_faces(const std::vector<NamedFace>& faces) {
   store_curves_on_planes(m_shape);
   TopExp::MapShapes(m_shape, TopAbs_FACE, m_faces);
   TopExp::MapShapes(m_shape, TopAbs_EDGE, m_edges);
@@ -146,12 +166,43 @@ Shape::Shape(TopoDS_Shape shape, const std::vector<NamedFace>& faces) : m_shape(
     std::sort(names.begin(), names.end());
     names.erase(std::unique(names.begin(), names.end()), names.end());
   }
-  derive_edge_names();
-  derive_vertex_names();
+}
+
+void Shape::register_check() {
   if (detail::input_checks.load(std::memory_order_relaxed)) {
     detail::shape_made(*this, m_shape);
     m_checked = true;
   }
+}
+
+// Takes names derived for this B-rep when they fit its edges, vertices and
+// faces (a face index out of range would be read past the face names).
+bool Shape::take_derived(DerivedNames& derived) {
+  const auto edges = static_cast<std::size_t>(m_edges.Extent());
+  const auto vertices = static_cast<std::size_t>(m_vertices.Extent());
+  const int faces = m_faces.Extent();
+  const auto face_ok = [faces](int f) { return f >= -1 && f < faces; };
+  if (derived.edge_faces.size() != edges || derived.edge_names.size() != edges ||
+      derived.vertex_faces.size() != vertices || derived.vertex_names.size() != vertices) {
+    return false;
+  }
+  for (const std::array<int, 2>& pair : derived.edge_faces) {
+    if (!face_ok(pair[0]) || !face_ok(pair[1])) {
+      return false;
+    }
+  }
+  for (const std::vector<int>& at : derived.vertex_faces) {
+    for (int f : at) {
+      if (f < 0 || f >= faces) {
+        return false;
+      }
+    }
+  }
+  m_edgeFaces = std::move(derived.edge_faces);
+  m_edgeNames = std::move(derived.edge_names);
+  m_vertexFaces = std::move(derived.vertex_faces);
+  m_vertexNames = std::move(derived.vertex_names);
+  return true;
 }
 
 Shape::~Shape() {

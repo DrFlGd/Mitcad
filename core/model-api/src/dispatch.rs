@@ -91,11 +91,11 @@ pub(super) trait DispatchOps<K: Kernel> {
     /// The families of commands besides the document's own (`Command`,
     /// which takes every other name, so that its error lists its commands
     /// for an unknown one). A new family is one row here.
-    fn command_families() -> [CommandFamily<K>; 19];
+    fn command_families() -> [CommandFamily<K>; 21];
 }
 
 impl<K: Kernel> DispatchOps<K> for Document<K> {
-    fn command_families() -> [CommandFamily<K>; 19] {
+    fn command_families() -> [CommandFamily<K>; 21] {
         [
             // Gears: the motion link of a mesh (mitcad#472, `gears.rs`),
             // run as the `add_motion_link` worked out from the gears. It has
@@ -256,6 +256,23 @@ impl<K: Kernel> DispatchOps<K> for Document<K> {
                 prefix: None,
                 run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
                     doc.run_image_reference_command(parse(value, "command")?)
+                },
+            },
+            // Tables of data that expressions look values up in (mitcad#667,
+            // `tables.rs`).
+            CommandFamily {
+                names: super::tables::TableCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_table_command(parse(value, "command")?)
+                },
+            },
+            // A table as CSV (mitcad#804, `tables_csv.rs`).
+            CommandFamily {
+                names: super::tables_csv::TableCsvCommand::NAMES,
+                prefix: None,
+                run: |doc: &mut Self, value: Value| -> Result<Value, ApiError> {
+                    doc.run_table_csv_command(parse(value, "command")?)
                 },
             },
         ]

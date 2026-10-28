@@ -17,33 +17,39 @@ class QTreeWidgetItem;
 namespace mitcad {
 
 // Presets of an installed slicer (mitcad#830): the user presets of a
-// Bambu-family slicer (`slicer_presets`' `slicers`) to tick for an import,
-// in a modal window titled Import Presets.
+// Bambu-family slicer (`slicer_presets`' `slicers`) and the slicer's own
+// presets the user enabled there (`system`, mitcad#871) to tick for an
+// import, in a modal window titled Import Presets.
 //
 // At the top the slicer, a box when several were found ("Bambu Studio",
-// "OrcaSlicer (Flatpak)"). The list groups the presets under Printers,
-// Processes and Filaments, each group's box ticking all or none of it,
-// each preset a box by its name. A preset whose name the target already
-// has (`same`) is in the warning colour with a tooltip naming what it
-// meets ("My library has a process of this name"), unticked at first,
+// "OrcaSlicer (Flatpak)"). The list groups the user's presets under
+// Printers, Processes and Filaments, then the slicer's own under Printers
+// of Bambu Studio, Processes of Bambu Studio and Filaments of Bambu
+// Studio (collapsed at first, their presets unticked: a user preset
+// mostly inherits from them already), each group's box ticking all or
+// none of it, each preset a box by its name. A preset whose name the
+// target already has (`same`) is in the warning colour with a tooltip
+// naming what it meets ("My library has a process of this name"),
+// unticked at first,
 // and has its own choice beside it ("<name>: same name"): Copy (the
 // default: a new item, "<name> 2") or Override (the existing item takes
 // its values); choosing in it ticks the row. "All same names:" above the
 // list sets every such row's choice at once (the ticks stay); it shows
 // the rows' choice when they agree and no value when they differ, and
-// only when there are such rows. New presets are ticked at first. The
-// name column is as wide as the names, each choice beside its name.
+// only when there are such rows. New user presets are ticked at first.
+// The name column is as wide as the names, each choice beside its name.
 // Import (disabled with nothing ticked) and Cancel.
 //
-// Keyboard: the list has it at first, its first preset the current row,
-// framed while the keyboard is in the row or its choice; the arrows move
-// the row, Space ticks or unticks it (a group: all of it), Tab goes to
+// Keyboard: the list has it at first, its first user preset the current
+// row (else its first group), framed while the keyboard is in the row or
+// its choice; the arrows move the row (Right opens a closed group), Space
+// ticks or unticks it (a group: all of it), Tab goes to
 // the row's choice and on to Import, Shift+Tab from the choice back to
 // the row.
 //
 // Logs "Slicer presets opened: <slicer>, <n> presets", each row as
-// "Slicer presets row: <kind> <name>, ticked|unticked[, same name: <tooltip>,
-// copy|override]", "Slicer presets ticked: <n>" when that changes,
+// "Slicer presets row: <kind> <name>, ticked|unticked[, system][, same name:
+// <tooltip>, copy|override]", "Slicer presets ticked: <n>" when that changes,
 // "Slicer presets tick: <name> ticked|unticked" for a row's change,
 // "Slicer presets choice: <name> copy|override", "Slicer presets same
 // name: copy|override" (All same names chosen), "Slicer presets all same

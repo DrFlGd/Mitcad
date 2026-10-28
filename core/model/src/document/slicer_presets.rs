@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-//! The user presets of an installed Bambu-family slicer, listed and
-//! imported (mitcad#830; [`crate::print_files::installed`] finds and reads
-//! them): each preset with the item of the same kind and name its target
+//! The user presets of an installed Bambu-family slicer, and the slicer's
+//! own presets the user enabled there (mitcad#871), listed and imported
+//! (mitcad#830; [`crate::print_files::installed`] finds and reads them):
+//! each preset with the item of the same kind and name its target
 //! has (the design's own, or a library's), and the import of the ticked
 //! ones in one go, each with the values it inherits from the slicer's
 //! system presets. A ticked preset whose name the target has either
@@ -157,8 +158,9 @@ impl<K: Kernel> Document<K> {
     }
 
     /// The `slicer_presets` query: the user presets of each slicer data
-    /// folder in `folders`, each with the item of its kind and name the
-    /// target has (`same`: `into` None is the design).
+    /// folder in `folders`, then the system presets the user enabled there
+    /// (`system`, with their `vendor`), each with the item of its kind and
+    /// name the target has (`same`: `into` None is the design).
     pub fn slicer_presets_json(
         &self,
         folders: &[SlicerFolder],
@@ -169,19 +171,26 @@ impl<K: Kernel> Document<K> {
         let slicers: Vec<Value> = folders
             .iter()
             .map(|slicer| {
+                // The user's, then the slicer's own the user enabled
+                // (mitcad#871).
                 let presets: Vec<Value> = installed::user_presets(&slicer.folder)
                     .into_iter()
+                    .chain(installed::system_presets(&slicer.folder, slicer.dialect))
                     .map(|preset| {
                         let kind = item_kind(preset.set);
                         let same = self
                             .same_named(&libraries, into, kind, &preset.name)
                             .map(|e| json!({"id": e.id, "name": e.name, "place": e.place}));
+                        let system = preset.vendor.is_some();
+                        let account = (!system).then_some(preset.account);
                         json!({
                             "kind": kind.id(),
                             "name": preset.name,
                             "path": preset.path.to_string_lossy(),
-                            "account": preset.account,
+                            "account": account,
                             "inherits": preset.inherits,
+                            "system": system,
+                            "vendor": preset.vendor,
                             "same": same,
                         })
                     })
@@ -198,9 +207,9 @@ impl<K: Kernel> Document<K> {
         json!({"slicers": slicers})
     }
 
-    /// Imports the user presets `presets` of the slicer `dialect` whose
-    /// data folder is `folder` (whose system presets fill in what they
-    /// inherit) into the design (`into` None: one undo step) or the user's
+    /// Imports the presets `presets` (user or system ones) of the slicer
+    /// `dialect` whose data folder is `folder` (whose system presets fill
+    /// in what they inherit) into the design (`into` None: one undo step) or the user's
     /// or the project's library. A preset whose name the target has
     /// follows its choice ([`SameName`]); two of one name in one import
     /// make the second a copy. The answer lists what came in and what was

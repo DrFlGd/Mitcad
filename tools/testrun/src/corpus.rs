@@ -24,6 +24,10 @@ pub const MEMORY: &str = "MITCAD_CORPUS_MEMORY";
 pub const FILES: &str = "MITCAD_CORPUS_FILES";
 /// The table the test appends each child's time and peak to.
 pub const RECORD: &str = "MITCAD_CORPUS_RECORD";
+/// With the free budget (mitcad#872): the memory a test's children leave
+/// to the rest of the machine; a child beside others starts only while
+/// the memory available exceeds it by the child's expected peak.
+pub const RESERVE: &str = "MITCAD_CORPUS_RESERVE";
 
 /// A file not run for this long leaves its test's profile (60 days).
 pub const FILE_AGE: u64 = 60 * 86_400;
@@ -63,12 +67,29 @@ pub fn parse_record(text: &str, when: u64) -> Vec<(String, FileRun)> {
 }
 
 /// Adds a run's rows to a test's files (each file's newest run replaces
-/// its last) and drops the files not run for `FILE_AGE`.
+/// its last) and drops the files not run for `FILE_AGE`. No rows at all
+/// (`one_process`) drops every file.
 pub fn merge(files: &mut BTreeMap<String, FileRun>, rows: &[(String, FileRun)], now: u64) {
+    if rows.is_empty() {
+        files.clear();
+        return;
+    }
     for (key, run) in rows {
         files.insert(key.clone(), *run);
     }
     files.retain(|_, run| now.saturating_sub(run.when) <= FILE_AGE);
+}
+
+/// Whether a corpus test's run shows that it no longer imports its files
+/// in children: it passed and its children recorded nothing, although it
+/// has files from runs before (f3d.corpus_designs, which checks its
+/// designs one after another again since 0.32.0). Its files then go from
+/// its profile (an empty `merge`), so that the next run plans it by its
+/// own history (its whole time in one process) rather than by children it
+/// does not start (it was planned at its longest design's 314 s and took
+/// 498 s, with two children's memory, 7 GiB, held for it in the budget).
+pub fn one_process(passed: bool, recorded: usize, known_files: usize) -> bool {
+    passed && recorded == 0 && known_files > 0
 }
 
 /// The table handed to the test (`FILES`): key, seconds and peak bytes,
@@ -231,6 +252,14 @@ mod tests {
         assert_eq!(files["a.f3d"].wall, 12.5);
         assert!(!files.contains_key("old"));
         assert_eq!(table(&files), "a.f3d\t12.50\t1048576\nc/d e.ipt\t3.00\t2\n");
+        // A test that passed without its children recording anything runs
+        // in one process now: its files go.
+        assert!(one_process(true, 0, 2));
+        assert!(!one_process(false, 0, 2));
+        assert!(!one_process(true, 1, 2));
+        assert!(!one_process(true, 0, 0));
+        merge(&mut files, &[], 2000);
+        assert!(files.is_empty());
     }
 
     #[test]

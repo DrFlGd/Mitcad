@@ -136,6 +136,25 @@ int self_test(const std::string& self) {
     CHECK(read.size() == 2 && read.count("x/one.f3d") == 1 && read.at("x/one.f3d") == 12.5);
     CHECK(read.count("three") == 1 && read.at("three") == 3.0);
     CHECK(mitcad::runs::read_file_times(table + ".missing").empty());
+    // The peaks of the same table (the third field) for the memory gate.
+    const std::map<std::string, std::uint64_t> peaks = mitcad::runs::read_file_peaks(table);
+    CHECK(peaks.count("x/one.f3d") == 1 && peaks.at("x/one.f3d") == 1000);
+    CHECK(peaks.count("three") == 0 && peaks.count("malformed") == 0);
+  }
+
+  // The memory gate of the budget from the free memory (mitcad#872): a
+  // child beside others starts only while the memory available exceeds the
+  // reserve by its expected peak; alone, or without a reserve or a reading,
+  // it always starts.
+  {
+    const std::uint64_t gib = 1ull << 30;
+    CHECK(mitcad::runs::may_start(2, 20 * gib, 6 * gib, 3 * gib));
+    // An agent's build took the memory: 8 GiB available, 6 reserved.
+    CHECK(!mitcad::runs::may_start(2, 8 * gib, 6 * gib, 3 * gib));
+    CHECK(!mitcad::runs::may_start(1, 5 * gib, 6 * gib, 1));
+    CHECK(mitcad::runs::may_start(0, 1 * gib, 6 * gib, 3 * gib));
+    CHECK(mitcad::runs::may_start(2, 8 * gib, 0, 3 * gib));
+    CHECK(mitcad::runs::may_start(2, 0, 6 * gib, 3 * gib));
   }
 
   // In the commands' order whatever order they end in, the heaviest
@@ -170,6 +189,29 @@ int self_test(const std::string& self) {
   CHECK((order == std::vector<std::size_t>{0, 1, 2, 3, 4, 5}));
   CHECK(sum == 15.0);
   CHECK(largest == 5.0);
+
+  // A reserve larger than any machine's memory holds every child beside
+  // another back: they run one at a time, and all of them (mitcad#872).
+#ifdef _WIN32
+  _putenv_s("MITCAD_CORPUS_RESERVE", "1000000G");
+#else
+  setenv("MITCAD_CORPUS_RESERVE", "1000000G", 1);
+#endif
+  std::size_t gated = 0;
+  mitcad::runs::run_all(
+      commands, settings,
+      [&](std::size_t, const mitcad::runs::Outcome& outcome) {
+        if (outcome.exit_code == 0) {
+          ++gated;
+        }
+      },
+      weights);
+#ifdef _WIN32
+  _putenv_s("MITCAD_CORPUS_RESERVE", "");
+#else
+  unsetenv("MITCAD_CORPUS_RESERVE");
+#endif
+  CHECK(gated == commands.size());
 
 #ifdef __linux__
   // Never dumped (no_core_dumps), as the runner itself.

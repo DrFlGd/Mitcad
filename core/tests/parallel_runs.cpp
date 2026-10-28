@@ -85,8 +85,25 @@ double parse_number(const std::string& text, const char* what) {
 }
 
 #ifdef __linux__
+// The page cache a cgroup holds (memory.stat's active_file and
+// inactive_file), which the kernel reclaims under its limit.
+std::uint64_t cgroup_page_cache(const fs::path& dir) {
+  std::ifstream stat(dir / "memory.stat");
+  std::string key;
+  std::uint64_t value = 0;
+  std::uint64_t cache = 0;
+  while (stat >> key >> value) {
+    if (key == "active_file" || key == "inactive_file") {
+      cache += value;
+    }
+  }
+  return cache;
+}
+
 // The memory a cgroup v2 hierarchy still allows this process: the smallest
-// memory.max - memory.current of its cgroup and the cgroups above it.
+// memory.max - its working set (memory.current less the page cache, as
+// the test runner counts it, mitcad#872) of its cgroup and the cgroups
+// above it.
 std::uint64_t cgroup_available() {
   std::ifstream groups("/proc/self/cgroup");
   std::string line;
@@ -104,7 +121,9 @@ std::uint64_t cgroup_available() {
       std::ifstream(dir / "memory.current") >> current;
       if (!max.empty() && max != "max") {
         const std::uint64_t limit = std::strtoull(max.c_str(), nullptr, 10);
-        const std::uint64_t left = limit > current ? limit - current : 0;
+        const std::uint64_t cache = cgroup_page_cache(dir);
+        const std::uint64_t used = current > cache ? current - cache : 0;
+        const std::uint64_t left = limit > used ? limit - used : 0;
         out = out == 0 ? left : std::min(out, left);
       }
       if (group == group.root_path() || group.empty()) {
@@ -616,6 +635,36 @@ std::map<std::string, double> read_file_times(const std::string& path) {
   return times;
 }
 
+std::map<std::string, std::uint64_t> read_file_peaks(const std::string& path) {
+  std::map<std::string, std::uint64_t> peaks;
+  std::ifstream table(path);
+  std::string line;
+  while (std::getline(table, line)) {
+    if (!line.empty() && line.back() == '\r') {
+      line.pop_back();
+    }
+    const std::size_t first = line.find('\t');
+    const std::size_t second = first == std::string::npos ? std::string::npos : line.find('\t', first + 1);
+    if (first == 0 || second == std::string::npos) {
+      continue;
+    }
+    const std::string field = line.substr(second + 1, line.find('\t', second + 1) - second - 1);
+    char* rest = nullptr;
+    const unsigned long long value = std::strtoull(field.c_str(), &rest, 10);
+    if (!field.empty() && rest != field.c_str() && *rest == '\0') {
+      peaks[line.substr(0, first)] = static_cast<std::uint64_t>(value);
+    }
+  }
+  return peaks;
+}
+
+bool may_start(int running, std::uint64_t available, std::uint64_t reserve, std::uint64_t expected) {
+  if (running <= 0 || reserve == 0 || available == 0) {
+    return true;
+  }
+  return available >= reserve && available - reserve >= expected;
+}
+
 std::vector<double> start_order(const std::vector<std::string>& keys, const std::vector<double>& weights,
                                 const std::map<std::string, double>& known) {
   if (keys.empty() || known.empty()) {
@@ -676,6 +725,18 @@ void run_all(const std::vector<Command>& commands, const Settings& settings,
   // Each child's time and peak, for the test runner's profiles of the files.
   const std::string record_path = keyed ? env("MITCAD_CORPUS_RECORD") : std::string();
   std::string records;
+  // The reserve of the runner's budget from the free memory (mitcad#872):
+  // a child beside others starts only while the memory available exceeds
+  // it by the child's expected peak (its file's last, else the limit).
+  const std::string reserve_text = env("MITCAD_CORPUS_RESERVE");
+  const std::uint64_t reserve = reserve_text.empty() ? 0 : parse_size(reserve_text);
+  const std::map<std::string, std::uint64_t> peaks =
+      reserve > 0 && keyed && !profile.empty() ? read_file_peaks(profile) : std::map<std::string, std::uint64_t>();
+  const auto expected = [&](std::size_t index) {
+    const auto found = keyed ? peaks.find(keys[index]) : peaks.end();
+    return found != peaks.end() && found->second > 0 ? found->second : settings.memory;
+  };
+  std::size_t held_back = 0;
   std::vector<std::unique_ptr<Child>> children(commands.size());
   std::size_t next = 0;
   std::size_t reported = 0;
@@ -684,6 +745,10 @@ void run_all(const std::vector<Command>& commands, const Settings& settings,
   std::unique_lock<std::mutex> lock(runner.mutex);
   while (reported < commands.size()) {
     while (runner.running < jobs && next < commands.size()) {
+      if (reserve > 0 && !may_start(runner.running, available_memory(), reserve, expected(order[next]))) {
+        ++held_back;
+        break;
+      }
       const std::size_t index = order[next++];
       children[index] = std::make_unique<Child>();
       Child& child = *children[index];
@@ -725,6 +790,10 @@ void run_all(const std::vector<Command>& commands, const Settings& settings,
                    "memory %s, the longest %.1f s\n",
                    commands.size(), jobs, format_size(settings.memory).c_str(),
                    peak > 0 ? format_size(peak).c_str() : "unknown", longest);
+      if (held_back > 0) {
+        std::fprintf(stderr, "parallel run: a start waited for memory %zu times (reserve %s)\n", held_back,
+                     format_size(reserve).c_str());
+      }
       if (!record_path.empty() && !records.empty()) {
         std::ofstream table(record_path, std::ios::app | std::ios::binary);
         table << records;

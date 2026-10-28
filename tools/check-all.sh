@@ -25,7 +25,7 @@
 # Usage: tools/check-all.sh [--full] [--ui-jobs N] [--ui auto|all]
 #          [--ctest auto|all] [--ctest-jobs N] [--testrun auto|off]
 #          [--corpus auto|always|never] [--corpus-tests N] [--corpus-jobs N]
-#          [--memory SIZE] [--fresh] [--only STEP,...]
+#          [--memory SIZE|auto] [--overlap auto|off] [--fresh] [--only STEP,...]
 #   --full          the full check, before a release build: --ctest all,
 #                   --corpus always, --ui all (--release is the same).
 #   --ui-jobs N     UI tests at once (default $MITCAD_UI_JOBS, else 4). The
@@ -116,11 +116,35 @@
 #                   only with --corpus-tests). A child runs at most
 #                   CORPUS_TIMEOUT (300 s, MITCAD_CORPUS_TIMEOUT).
 #   --memory SIZE   the memory the whole run may use (default
-#                   $MITCAD_CHECK_MEMORY, else 12G; "none": no limit), in a
-#                   systemd slice of its own (MemoryMax, no swap) beneath
+#                   $MITCAD_CHECK_MEMORY, else "auto"; "none": no limit), in
+#                   a systemd slice of its own (MemoryMax, no swap) beneath
 #                   the caller's slice, the test runner's per-test scopes
 #                   in it too: what needs more is killed, not the
 #                   machine's other work (without busctl: a scope).
+#                   "auto" (mitcad#872): on bare metal a budget from the
+#                   free memory: the test runner (--memory-budget free) and
+#                   the corpus tests' children (MITCAD_CORPUS_RESERVE) start
+#                   a test or a child only while the memory available
+#                   (MemAvailable, or less where a slice above is nearer
+#                   its limit, the jobs slice among them) exceeds a reserve
+#                   for the desktop and the other jobs by what it is
+#                   predicted to take, read again before each start, so
+#                   that the check backs off while another job (an agent's
+#                   build) runs and takes the room when it ends; the slice's
+#                   limit is then the machine's memory less the reserve.
+#                   The reserve: $MITCAD_CHECK_RESERVE, else the larger of
+#                   4G and a tenth of the memory. In a virtual machine
+#                   (systemd-detect-virt --vm, WSL, the hypervisor flag in
+#                   /proc/cpuinfo), whose free memory can read low (dynamic
+#                   memory, ballooning), "auto" is the fixed 12G as before.
+#                   The run's first lines say which applied.
+#   --overlap MODE  "auto" (default, $MITCAD_CHECK_OVERLAP) or "off": with
+#                   "auto" the lint steps (fmt, clippy, deps) run beside the
+#                   ctest step and the corpus step beside the UI tests (the
+#                   UI tests run alone again only after the corpus step),
+#                   each group in the background with its output printed
+#                   when it ends (check-logs/<group>.out), when the test
+#                   runner runs the tests; "off": one step after another.
 #   --fresh         configure from scratch (cmake --fresh), as after
 #                   changes of CMake files.
 #   --only STEPS    only these steps: configure, build, fmt, clippy, deps,
@@ -233,7 +257,8 @@ TESTRUN_JOBS=""
 CORPUS=auto
 CORPUS_TESTS_AT_ONCE=""
 CORPUS_JOBS=""
-MEMORY=${MITCAD_CHECK_MEMORY:-12G}
+MEMORY=${MITCAD_CHECK_MEMORY:-auto}
+OVERLAP=${MITCAD_CHECK_OVERLAP:-auto}
 FULL=0
 DRY=0
 FRESH=()
@@ -251,6 +276,7 @@ while [ $# -gt 0 ]; do
     --corpus-tests) CORPUS_TESTS_AT_ONCE=$2; shift 2 ;;
     --corpus-jobs) CORPUS_JOBS=$2; shift 2 ;;
     --memory) MEMORY=$2; shift 2 ;;
+    --overlap) OVERLAP=$2; shift 2 ;;
     --fresh) FRESH=(--fresh); shift ;;
     --only) ONLY=$2; shift 2 ;;
     --dry-run) DRY=1; shift ;;
@@ -262,12 +288,15 @@ case $CORPUS in auto | always | never) ;; *) echo "--corpus auto, always or neve
 case $UI in auto | all) ;; *) echo "--ui auto or all" >&2; exit 2 ;; esac
 case $CTEST in auto | all) ;; *) echo "--ctest auto or all" >&2; exit 2 ;; esac
 case $TESTRUN in auto | off) ;; *) echo "--testrun auto or off" >&2; exit 2 ;; esac
+case $OVERLAP in auto | off) ;; *) echo "--overlap auto or off" >&2; exit 2 ;; esac
 if [ "$FULL" = 1 ]; then
   CTEST=all
   CORPUS=always
   UI=all
 fi
-# A dry run keeps no history, holds no memory scope and takes no slot.
+# A dry run keeps no history, holds no memory scope and takes no slot
+# (it still says which memory mode a run would take).
+MEMORY_ASKED=$MEMORY
 if [ "$DRY" = 1 ]; then
   TIMINGS=$LOGS/dry-run.tsv
   HISTORY=/dev/null
@@ -309,6 +338,66 @@ check_slice() {
     Description s "tools/check-all.sh in $ROOT" 0 > /dev/null 2>&1
 }
 
+# virtual_machine: why this machine is a virtual one, nothing on bare
+# metal: systemd-detect-virt --vm, WSL (a container to systemd, a Hyper-V
+# guest underneath), or the hypervisor flag in /proc/cpuinfo (seen in a
+# chroot or build root too, where systemd-detect-virt may not answer).
+virtual_machine() {
+  local kind
+  kind=$(systemd-detect-virt --vm 2> /dev/null) && [ -n "$kind" ] && [ "$kind" != none ] &&
+    { echo "a virtual machine ($kind, systemd-detect-virt)"; return; }
+  grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2> /dev/null &&
+    { echo "WSL (/proc/sys/kernel/osrelease)"; return; }
+  grep -qw hypervisor /proc/cpuinfo 2> /dev/null &&
+    { echo "a virtual machine (the hypervisor flag in /proc/cpuinfo)"; return; }
+  return 0
+}
+
+# meminfo_mib key: a /proc/meminfo value in MiB (0 when unknown).
+meminfo_mib() {
+  local kib
+  kib=$(sed -n "s/^$1: *\([0-9]*\) kB/\1/p" /proc/meminfo 2> /dev/null)
+  echo $((${kib:-0} / 1024))
+}
+
+# The memory mode (mitcad#872): a fixed limit (--memory SIZE,
+# MITCAD_CHECK_MEMORY, or "auto" in a virtual machine: 12G), or on bare
+# metal with "auto" the budget from the free memory (DYNAMIC): the slice's
+# limit is the machine's memory less the reserve, and the test runner and
+# the corpus tests' children start only while the memory available
+# exceeds the reserve by what they are predicted to take. MEMORY_MODE is
+# the line the run's first lines print.
+DYNAMIC=""
+RESERVE_MIB=""
+MEMORY_MODE=""
+if [ "$MEMORY_ASKED" = auto ]; then
+  vm=$(virtual_machine)
+  if [ -n "$vm" ]; then
+    [ "$DRY" = 1 ] || MEMORY=12G
+    MEMORY_MODE="memory: a fixed 12G, the machine is $vm (the budget from the free memory is for bare metal; --memory or MITCAD_CHECK_MEMORY sets the size)"
+  else
+    total=$(meminfo_mib MemTotal)
+    RESERVE_MIB=$((total / 10))
+    [ "$RESERVE_MIB" -ge 4096 ] || RESERVE_MIB=4096
+    [ -z "${MITCAD_CHECK_RESERVE:-}" ] || RESERVE_MIB=$(mib "$MITCAD_CHECK_RESERVE")
+    DYNAMIC=1
+    hard=$((total - RESERVE_MIB))
+    [ "$hard" -ge 4096 ] || hard=4096
+    [ "$DRY" = 1 ] || MEMORY=${hard}M
+    MEMORY_MODE="memory: the budget from the free memory (bare metal): tests and corpus children start while the memory available exceeds a reserve of ${RESERVE_MIB}M by what they take, read again before each start (available now $(meminfo_mib MemAvailable)M of ${total}M); the slice's limit ${hard}M"
+  fi
+elif [ "$MEMORY_ASKED" = none ]; then
+  MEMORY_MODE="memory: no limit (--memory none)"
+else
+  MEMORY_MODE="memory: a fixed $MEMORY_ASKED (--memory or MITCAD_CHECK_MEMORY)"
+fi
+# The test runner's and the corpus children's side of the budget.
+RUNNER_MEMORY=()
+if [ -n "$DYNAMIC" ]; then
+  RUNNER_MEMORY=(--memory-budget free --memory-reserve "${RESERVE_MIB}M")
+  export MITCAD_CORPUS_RESERVE=${RESERVE_MIB}M
+fi
+
 # The whole run under the memory limit (the script again, inside it), when
 # the user's systemd can do it: in a slice of its own with the limit,
 # beneath the slice the caller runs in (so that a job slice's ceiling holds
@@ -342,6 +431,7 @@ if [ -n "${MITCAD_CHECK_SLICE:-}" ]; then
 elif [ -n "${MITCAD_CHECK_SCOPE:-}" ]; then
   echo "== memory limit $MITCAD_CHECK_SCOPE (systemd scope)"
 fi
+echo "== $MEMORY_MODE"
 export CMAKE_BUILD_PARALLEL_LEVEL=${CMAKE_BUILD_PARALLEL_LEVEL:-$(($(nproc) / 2))}
 # At most 8 cargo jobs: ctest runs the debug and the release cargo builds
 # at once, and at 16 jobs each a fresh build peaked at 12.7G, past the
@@ -469,7 +559,11 @@ take_lock() {
 # the binaries, and within the cores of a test slot.
 corpus_plan() {
   local budget children cores
-  if [ -n "${MITCAD_CHECK_SCOPE:-}" ]; then
+  if [ -n "$DYNAMIC" ]; then
+    # The budget from the free memory: what is available now less the
+    # reserve (the children wait for memory as they start, too).
+    budget=$(($(meminfo_mib MemAvailable) - RESERVE_MIB))
+  elif [ -n "${MITCAD_CHECK_SCOPE:-}" ]; then
     budget=$(mib "$MITCAD_CHECK_SCOPE")
   else
     budget=$(($(sed -n 's/^MemAvailable: *\([0-9]*\) kB/\1/p' /proc/meminfo) / 1024))
@@ -673,7 +767,7 @@ test_step() {
       changed=(--changed "$out/changed.txt")
     fi
     "$TESTRUN_BIN" --build "$BUILD" --schedule --out "$out" ${TESTRUN_JOBS:+-j "$TESTRUN_JOBS"} \
-      ${TESTRUN_CORPUS:+--corpus-children} "${changed[@]}" "$@" \
+      ${TESTRUN_CORPUS:+--corpus-children} ${RUNNER_MEMORY[@]+"${RUNNER_MEMORY[@]}"} "${changed[@]}" "$@" \
       > "$LOGS/$name.log" 2>&1 9>&- || status=$?
     if grep -q '^finished' "$out/status.txt" && [ -f "$out/results.tsv" ]; then
       testrun_lines "$out/results.tsv" "$out/logs" >> "$LOGS/$name.log"
@@ -693,6 +787,59 @@ test_step() {
   fi
   take_lock
   step "$name" ctest --preset dev -j "$jobs" "$@"
+}
+
+# Groups of steps in the background beside the next ones (--overlap auto,
+# mitcad#872): the lint steps beside the ctest step, the corpus step
+# beside the UI tests, so that the machine is loaded from the start rather
+# than one step at a time. A group's table rows and history go into files
+# of its own and its output into check-logs/<group>.out, its status (0
+# when every step passed) into check-logs/<group>.status; bg_join waits
+# for it and adds them to the run's. Only with the test runner, which fits
+# its tests into the memory what runs beside leaves (without it the
+# corpus holds a test slot of its own).
+declare -A BG_PIDS
+overlapping() { [ "$OVERLAP" = auto ] && [ "$DRY" = 0 ] && [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ]; }
+# bg_start group function: runs the function in the background.
+bg_start() {
+  local group=$1
+  shift
+  : > "$LOGS/$group.rows"
+  : > "$LOGS/$group.history"
+  : > "$LOGS/$group.status"
+  echo "== $group: in the background beside the next steps (check-logs/$group.out)"
+  (
+    TIMINGS=$LOGS/$group.rows
+    HISTORY=$LOGS/$group.history
+    FAILED=0
+    LOCKED=0
+    "$@"
+    echo "$FAILED" > "$LOGS/$group.status"
+  ) > "$LOGS/$group.out" 2>&1 9>&- &
+  BG_PIDS[$group]=$!
+}
+# bg_join group: waits for the group (if it runs) and adds its output,
+# rows and result. Its exit status is in the status file: a `wait -n` of
+# the UI step may have reaped the process already.
+bg_join() {
+  local group=$1 status start pid
+  [ -n "${BG_PIDS[$group]:-}" ] || return 0
+  start=$(now_us)
+  pid=${BG_PIDS[$group]}
+  # A `wait -n` of the UI step may have reaped it: then its status file is
+  # written and it is gone.
+  while kill -0 "$pid" 2> /dev/null; do
+    wait "$pid" 2> /dev/null || true
+  done
+  unset "BG_PIDS[$group]"
+  echo "== $group (ran in the background):"
+  cat "$LOGS/$group.out"
+  cat "$LOGS/$group.rows" >> "$TIMINGS"
+  [ "$HISTORY" = /dev/null ] || cat "$LOGS/$group.history" >> "$HISTORY"
+  # The time the run waited for it after its own steps (not a step).
+  record "wait for $group" "$(seconds_since "$start")" -
+  status=$(cat "$LOGS/$group.status" 2> /dev/null)
+  [ "$status" = 0 ] || FAILED=1
 }
 
 # --- Build and lint
@@ -716,17 +863,34 @@ if wanted build; then
     record "build warnings" - "FAIL($warnings)"
   fi
 fi
-if wanted fmt; then
-  step fmt cargo fmt --manifest-path core/Cargo.toml --all --check
+# clippy's own target directory, kept with the build (the sync scripts
+# remove anything else that is not in the working tree); where the build
+# keeps cargo's builds in a persistent folder (MITCAD_CARGO_TARGET_DIR:
+# build/dev/cargo links into it, as in the release builds, whose build
+# folder starts fresh), beside them there, so that clippy does not check
+# every crate from nothing in each release (52 s in 0.33.0's).
+CLIPPY_DIR=$BUILD/clippy
+if [ -L "$BUILD/cargo" ] && cargo_link=$(readlink -f "$BUILD/cargo"); then
+  CLIPPY_DIR=$(dirname "$cargo_link")/clippy
 fi
-if wanted clippy; then
-  # Its own target directory, kept with the build (the sync scripts remove
-  # anything else that is not in the working tree).
-  step clippy env CARGO_TARGET_DIR="$BUILD/clippy" \
-    cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
-fi
-if wanted deps; then
-  step deps tools/check-dependencies.sh
+lint() {
+  if wanted fmt; then
+    step fmt cargo fmt --manifest-path core/Cargo.toml --all --check
+  fi
+  if wanted clippy; then
+    step clippy env CARGO_TARGET_DIR="$CLIPPY_DIR" \
+      cargo clippy --manifest-path core/Cargo.toml --all-targets -- -D warnings
+  fi
+  if wanted deps; then
+    step deps tools/check-dependencies.sh
+  fi
+}
+# Beside the ctest step when it runs (--overlap auto), else before it.
+if overlapping && { wanted ctest || [ -n "$(ctest_named)" ]; } &&
+  { wanted fmt || wanted clippy || wanted deps; }; then
+  bg_start lint lint
+else
+  lint
 fi
 
 # --- Tests, under the test lock
@@ -760,6 +924,42 @@ if wanted ctest || [ -n "$(ctest_named)" ]; then
   done
 fi
 
+# corpus_run: the corpus group's tests (the fingerprint of their sources
+# in `fingerprint`, kept when they pass in a run that built).
+corpus_run() {
+  local tests_given jobs_given corpus_runner corpus_at_once
+  [ -n "$fingerprint" ] || fingerprint=$(corpus_fingerprint)
+  tests_given=$CORPUS_TESTS_AT_ONCE
+  jobs_given=$CORPUS_JOBS
+  corpus_plan
+  # With the test runner and no --corpus-jobs, the runner plans each
+  # corpus test's children from its files' history (mitcad#832,
+  # tools/testrun/README.md "Corpus tests"): within the machine's cores
+  # and the run's memory budget, a long test more, a short one fewer,
+  # each child's memory limit from its test's largest file. The fixed
+  # plan above is for the tests without that history, and for ctest -j.
+  corpus_runner=""
+  corpus_at_once=$CORPUS_TESTS_AT_ONCE
+  if [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ] && [ -z "$jobs_given" ]; then
+    corpus_runner=1
+    corpus_at_once=$tests_given
+    echo "== corpus: children per test from the files' history (mitcad-testrun --corpus-children);" \
+      "without one $CORPUS_JOBS files each at once, $CORPUS_MEMORY each${tests_given:+, $tests_given tests at once}"
+  else
+    echo "== corpus: $CORPUS_TESTS_AT_ONCE tests at once, $CORPUS_JOBS files each at once, $CORPUS_MEMORY each"
+  fi
+  # The runner takes the tests at once as its most when they are fixed
+  # (a test's children are within its own scope's limit).
+  if MITCAD_CORPUS_JOBS=$CORPUS_JOBS MITCAD_CORPUS_MEMORY=$CORPUS_MEMORY MITCAD_CORPUS_TIMEOUT=$CORPUS_TIMEOUT \
+    TESTRUN_JOBS=$corpus_at_once TESTRUN_CORPUS=$corpus_runner \
+    test_step corpus "$CORPUS_TESTS_AT_ONCE" -R "$CORPUS_TESTS" &&
+    [ "$BUILT" = 1 ]; then
+    mkdir -p "$(dirname "$CORPUS_PASSED")"
+    echo "$fingerprint" >> "$CORPUS_PASSED"
+  fi
+  ctest_rows "$LOGS/corpus.log" 0
+}
+
 if wanted corpus; then
   fingerprint=""
   if [ "$CORPUS" = never ]; then
@@ -770,39 +970,17 @@ if wanted corpus; then
     record corpus 0 skipped
   elif [ "$DRY" = 1 ]; then
     echo "== corpus: would run"
+  elif overlapping; then
+    # Beside the UI tests (--overlap auto); joined before they run alone.
+    bg_start corpus corpus_run
   else
-    [ -n "$fingerprint" ] || fingerprint=$(corpus_fingerprint)
-    tests_given=$CORPUS_TESTS_AT_ONCE
-    jobs_given=$CORPUS_JOBS
-    corpus_plan
-    # With the test runner and no --corpus-jobs, the runner plans each
-    # corpus test's children from its files' history (mitcad#832,
-    # tools/testrun/README.md "Corpus tests"): within the machine's cores
-    # and the run's memory budget, a long test more, a short one fewer,
-    # each child's memory limit from its test's largest file. The fixed
-    # plan above is for the tests without that history, and for ctest -j.
-    corpus_runner=""
-    corpus_at_once=$CORPUS_TESTS_AT_ONCE
-    if [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ] && [ -z "$jobs_given" ]; then
-      corpus_runner=1
-      corpus_at_once=$tests_given
-      echo "== corpus: children per test from the files' history (mitcad-testrun --corpus-children);" \
-        "without one $CORPUS_JOBS files each at once, $CORPUS_MEMORY each${tests_given:+, $tests_given tests at once}"
-    else
-      echo "== corpus: $CORPUS_TESTS_AT_ONCE tests at once, $CORPUS_JOBS files each at once, $CORPUS_MEMORY each"
-    fi
-    # The runner takes the tests at once as its most when they are fixed
-    # (a test's children are within its own scope's limit).
-    if MITCAD_CORPUS_JOBS=$CORPUS_JOBS MITCAD_CORPUS_MEMORY=$CORPUS_MEMORY MITCAD_CORPUS_TIMEOUT=$CORPUS_TIMEOUT \
-      TESTRUN_JOBS=$corpus_at_once TESTRUN_CORPUS=$corpus_runner \
-      test_step corpus "$CORPUS_TESTS_AT_ONCE" -R "$CORPUS_TESTS" &&
-      [ "$BUILT" = 1 ]; then
-      mkdir -p "$(dirname "$CORPUS_PASSED")"
-      echo "$fingerprint" >> "$CORPUS_PASSED"
-    fi
-    ctest_rows "$LOGS/corpus.log" 0
+    corpus_run
   fi
 fi
+
+# lint's group ends before the corpus and the UI tests: its output and
+# rows follow the ctest step's.
+bg_join lint
 
 # run_ui name: one UI test, with its exit status and time in <log>.status.
 # The logs of a run that failed (the test's, and the application's that a
@@ -843,6 +1021,21 @@ ui_started() {
   for other in "${UI_PIDS[@]}"; do
     [ "${UI_BESIDE[$other]:-0}" -ge $((UI_RUNNING - 1)) ] || UI_BESIDE[$other]=$((UI_RUNNING - 1))
   done
+}
+# Each UI test's room, from the test runner's profiles (--ui-rooms,
+# mitcad#872): the most other UI tests it may have beside it.
+declare -A UI_ROOM
+# ui_admits name: neither the test nor a running one would have more UI
+# tests beside it than its room (the runner's concurrency::admits).
+ui_admits() {
+  local room other
+  room=${UI_ROOM[$1]:-}
+  [ -z "$room" ] || [ "$UI_RUNNING" -le "$room" ] || return 1
+  for other in ${UI_PIDS[@]+"${UI_PIDS[@]}"}; do
+    room=${UI_ROOM[$other]:-}
+    [ -z "$room" ] || [ "$UI_RUNNING" -le "$room" ] || return 1
+  done
+  return 0
 }
 # ui_run_line name status seconds: one run for the test runner's --record-ui.
 ui_run_line() {
@@ -949,31 +1142,60 @@ elif [ ${#UI_TESTS[@]} -gt 0 ]; then
   take_lock
   # The cap the test runner learnt for this machine, within UI_JOBS
   # (mitcad#790 step 5), unless --ui-jobs set the number.
+  rooms=""
   if [ "$UI_JOBS_GIVEN" = 0 ] && [ "$TESTRUN" != off ] && [ -x "$TESTRUN_BIN" ]; then
     UI_JOBS=$("$TESTRUN_BIN" --ui-cap --ui-max "$UI_JOBS" 2> /dev/null || echo "$UI_JOBS")
+    # And each test's room, as the runner's scheduler keeps them
+    # (mitcad#872): a test that failed beside others waits until few
+    # enough run, instead of the machine's cap dropping for all of them.
+    while IFS=$'\t' read -r test room; do
+      if [[ $test == ui-* ]] && [[ $room =~ ^[0-9]+$ ]]; then
+        UI_ROOM[${test#ui-}]=$room
+        rooms+=" ${test#ui-} $room,"
+      fi
+    done < <("$TESTRUN_BIN" --ui-rooms 2> /dev/null)
   fi
   : > "$LOGS/ui-runs.tsv"
-  echo "== UI tests, $UI_JOBS at once"
+  echo "== UI tests, $UI_JOBS at once${rooms:+; rooms (the most other UI tests beside):${rooms%,}}"
   start=$(now_us)
   # Longest first (unknown ones count as long); the compute test at the end.
-  mapfile -t ORDER < <(for name in "${UI_TESTS[@]}"; do
+  mapfile -t PENDING < <(for name in "${UI_TESTS[@]}"; do
     [ "$name" = compute ] || echo "${LAST[ui-$name]:-9999} $name"
   done | sort -rn | cut -d' ' -f2)
-  for name in "${ORDER[@]}"; do
-    while [ "$UI_RUNNING" -ge "$UI_JOBS" ]; do reap_ui; done
+  # The first waiting test that the cap and the rooms admit starts; while
+  # none does, the next to end makes room.
+  while [ ${#PENDING[@]} -gt 0 ]; do
+    picked=""
+    if [ "$UI_RUNNING" -lt "$UI_JOBS" ]; then
+      for i in "${!PENDING[@]}"; do
+        if ui_admits "${PENDING[$i]}"; then
+          picked=$i
+          break
+        fi
+      done
+    fi
+    if [ -z "$picked" ]; then
+      reap_ui
+      continue
+    fi
+    name=${PENDING[$picked]}
+    unset "PENDING[$picked]"
+    PENDING=(${PENDING[@]+"${PENDING[@]}"})
     run_ui "$name" &
     UI_PIDS[$!]=$name
     UI_RUNNING=$((UI_RUNNING + 1))
     ui_started "$name"
   done
   while [ "$UI_RUNNING" -gt 0 ]; do reap_ui; done
+  # Alone means alone: the corpus group ends first.
+  bg_join corpus
   if [[ " ${UI_TESTS[*]} " == *" compute "* ]]; then
     echo "== ui-compute alone (mitcad#8)"
     run_ui compute &
     UI_PIDS[$!]=compute
     UI_RUNNING=1
     UI_BESIDE[compute]=0
-    reap_ui
+    while [ "$UI_RUNNING" -gt 0 ]; do reap_ui; done
   fi
   if [ ${#UI_AGAIN[@]} -gt 0 ]; then
     echo "== UI tests failed among the others, again, alone: ${UI_AGAIN[*]} (mitcad#657)"
@@ -993,6 +1215,8 @@ elif [ ${#UI_TESTS[@]} -gt 0 ]; then
   fi
 fi
 
+# The corpus group when no UI test ran beside it.
+bg_join corpus
 record total "$(seconds_since "$RUN_START")" -
 echo
 column -t -s $'\t' "$TIMINGS" 2> /dev/null || cat "$TIMINGS"

@@ -3255,7 +3255,12 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   click; Printers and Processes has the same. Presets of… opens **Import
   Presets** (`print/SlicerPresetsDialog.*`, modal): the slicer at the top
   (a box when several were found), the user's presets under
-  **Printers**, **Processes** and **Filaments**, a box each, each group's
+  **Printers**, **Processes** and **Filaments**, then the slicer's own
+  presets the user enabled there (mitcad#871: the printers chosen in its
+  setup, their processes and the filaments chosen there; `system` in
+  `slicer_presets`) under **Printers of Bambu Studio**, **Processes of
+  Bambu Studio** and **Filaments of Bambu Studio**, collapsed at first
+  (Right or the arrow opens one) and unticked, a box each, each group's
   box ticking all or none of it. A preset whose name the target (the
   library shown; the design in Printers and Processes) has already is in
   the warning colour with the tooltip "My library has a process of this
@@ -3264,9 +3269,10 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   name `Fine: same name`); choosing in it ticks the row. **All same
   names:** above the list sets every such row's choice (the ticks stay),
   shows their choice when they agree and no value when they differ, and
-  shows only with such rows. New presets are ticked. The name column is
-  as wide as the names, each choice beside its name. Keyboard: the list
-  has it at first on its first preset, the current row framed; the
+  shows only with such rows. New user presets are ticked. The name column
+  is as wide as the names, each choice beside its name. Keyboard: the list
+  has it at first on its first user preset (else its first group), the
+  current row framed; the
   arrows move it, Space ticks or unticks it (a group: all of it), Tab
   goes to the row's choice (Shift+Tab back) and on to Import. **Import**
   (Alt+I; disabled with nothing ticked) runs `import_slicer_presets` with
@@ -3280,8 +3286,8 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   (`My Library tab: processes`, `Profile selected: process Fine (user)`,
   `Material selected: …`). Cancel imports nothing (`Slicer presets
   cancelled`). Logs `Slicer presets opened: <slicer>, <n> presets`,
-  `Slicer presets row: <kind> <name>, ticked|unticked[, same name:
-  <tooltip>, copy|override]`, `Slicer presets ticked: <n>`, `Slicer
+  `Slicer presets row: <kind> <name>, ticked|unticked[, system][, same
+  name: <tooltip>, copy|override]`, `Slicer presets ticked: <n>`, `Slicer
   presets tick: <name> ticked|unticked`, `Slicer presets choice: <name>
   copy|override`, `Slicer presets same name: copy|override`, `Slicer
   presets all same names: copy|override|none`, `Slicer presets current:
@@ -5436,7 +5442,7 @@ UI thread.
 | `print/MyLibraryDialog.*`, `print/PrintItemsHost.*` | My Library (Tools › My Library…, mitcad#704) and what the panels work through: the open design's model (`DesignItemsHost`) or a model of My Library's own (`LibraryItemsHost`) |
 | `print/PrintImportSummary.*`, `print/ImportDetailsDialog.*` | an import's line under Import from slicer… and Details…, each distinct problem once with the number of profiles that had it (mitcad#654, mitcad#655) |
 | `print/SlicerImport.*` | Import from Slicer… (mitcad#829): the one import of 3D Print, Printers and Processes and My Library (file dialog, `import_print_profile`, log) and the windows' row with its line and Details… (`SlicerImportBar`), with the menu of an installed slicer's presets (mitcad#830) |
-| `print/SlicerPresetsDialog.*` | Import Presets (mitcad#830): an installed Bambu-family slicer's user presets to tick, same names marked with Copy or Override |
+| `print/SlicerPresetsDialog.*` | Import Presets (mitcad#830): an installed Bambu-family slicer's user presets, and its own presets the user enabled there (mitcad#871), to tick, same names marked with Copy or Override |
 | `framework/NoteRow.*`, `view/BuildVolume.cpp` | the panel's note row (mitcad#655); Show Build Volume (mitcad#640) |
 | `update/` | automatic updates ([docs/updates.md](../docs/updates.md)); the download in a private, random-named temp folder on Windows and macOS; on Windows, `mitcad-updater.exe` hashes the installer again through a handle without write or delete sharing and runs it only when it matches `--sha256` from the verified manifest (mitcad#603, `UpdaterChecks.hpp`); on macOS, verified disk image, read-only mount, signature-preserving copy, atomic bundle exchange after quit, rollback and Launch Services relaunch |
 | `report/` | feedback and error reports ([below](#feedback-and-error-reports)): `ReportCenter` (Help › Send Feedback, the offers, the delivery), `ReportDialogs` (the form, the screenshot's crop, the preview), `ReportText` (masking, crash files, duplicate keys, the issue form's address; Qt Core, `app.unit`), `CrashHandler` (the signal and exception handlers, plain C++, also in `mitcad-render`) |

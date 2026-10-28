@@ -219,24 +219,24 @@ QString compact(const QString& value) {
 } // namespace
 
 BindingItem BindingEntry::target() const {
-  BindingItem item;
-  item.uid = uid;
+  BindingItem result;
+  result.uid = uid;
   switch (kind) {
   case Kind::Appearance:
   case Kind::Material:
   case Kind::Shown:
   case Kind::FaceAppearance:
-    item.kind = BindingItem::Kind::Body;
+    result.kind = BindingItem::Kind::Body;
     break;
   case Kind::Suppressed:
-    item.kind = BindingItem::Kind::Feature;
+    result.kind = BindingItem::Kind::Feature;
     break;
   case Kind::OccurrenceShown:
-    item.kind = BindingItem::Kind::Occurrence;
-    item.path = path;
+    result.kind = BindingItem::Kind::Occurrence;
+    result.path = path;
     break;
   }
-  return item;
+  return result;
 }
 
 QString BindingEntry::property() const {

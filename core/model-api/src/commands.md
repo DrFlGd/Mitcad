@@ -14456,9 +14456,19 @@ macOS, `$XDG_CONFIG_HOME/<key>` (else `~/.config/<key>`) on Linux and a
 Flatpak's `~/.var/app/<id>/config/<key>`, `<key>` `BambuStudio`,
 `OrcaSlicer` or `QIDIStudio`; a slicer is installed when its folder has
 `user/`. Its presets are `user/<account>/{machine,process,filament}/*.json`
-(`default` without an account). A preset's `inherits` is filled in from
-the user's own presets of its account and the slicer's `system/` presets,
-up the chain, the nearer value winning; a base that is missing stays
+(`default` without an account). After them come the slicer's own
+presets the user enabled there (mitcad#871, `system`), read from
+`system/<vendor>/{machine,process,filament}/` as the slicer's app config
+`<key>.conf` says: the printers whose model and nozzle are in its
+`models` (`{vendor, model, nozzle_diameter}`), the processes for one of
+them (`compatible_printers`), and the filaments named in its `filaments`
+(with a printer model's `default_materials` when none listed suits one
+of its printers) that suit one of them; only presets meant to be chosen
+(`instantiation` not `false`), never the bases, and none without an app
+config. A preset's `inherits` is filled in from
+the user's own presets of its account and the slicer's `system/` presets
+(those of its vendor folder first), up the chain, the nearer value
+winning; a base that is missing stays
 named and the report says so (as for a preset file). A ticked preset
 whose kind and name the target has (`same`) either overrides that item
 (`same_name: override`: into a library its next version, as
@@ -14476,7 +14486,7 @@ nothing.
 
 | Query | Fields | Result |
 |---|---|---|
-| `slicer_presets` | `into` (`design` the default, `user`, `project`), `project`, `folders` (`[{dialect, path}]`: data folders to read instead of the installed slicers', for tests) | `slicers`: `dialect`, `name` (`Bambu Studio`), `folder`, `flatpak`, `presets`: `kind` (`printer`, `process`, `material` for a filament), `name`, `path`, `account`, `inherits`, `same` (the target's item of its kind and name: `id`, `name`, `place` `design`, `user` or `project`; null when it has none) |
+| `slicer_presets` | `into` (`design` the default, `user`, `project`), `project`, `folders` (`[{dialect, path}]`: data folders to read instead of the installed slicers', for tests) | `slicers`: `dialect`, `name` (`Bambu Studio`), `folder`, `flatpak`, `presets` (the user's, then the enabled system ones): `kind` (`printer`, `process`, `material` for a filament), `name`, `path`, `account` (null for a system preset), `inherits`, `system`, `vendor` (a system preset's vendor folder, else null), `same` (the target's item of its kind and name: `id`, `name`, `place` `design`, `user` or `project`; null when it has none) |
 
 **Export.** `export` of a 3MF with `dialect` (`bambu_studio`,
 `orcaslicer`, `qidi_studio`, `prusaslicer`, `cura`; [3MF](#3mf)) writes

@@ -305,3 +305,143 @@ fn installed_presets_import_into_the_design_in_one_undo_step() {
     );
     assert!(!names(&doc).contains(&"My X 2".to_owned()), "and the copy");
 }
+
+/// The slicer's own presets the user enabled (mitcad#871): the synthetic
+/// folder's system presets get bases and presets meant to be chosen, a
+/// printer not enabled with its process and filament, and an app config
+/// naming the enabled printer model and filaments (a base among them).
+#[test]
+fn enabled_system_presets_are_listed_after_the_user_s_and_import_resolved() {
+    let (dir, slicer) = slicer_folder("system");
+    let project = dir.join("project");
+    let system = slicer.join("system").join("Acme");
+    write(
+        &system.join("machine").join("fdm_machine_common.json"),
+        &json!({"type": "machine", "name": "fdm_machine_common", "instantiation": "false",
+                "printer_variant": "0.4", "nozzle_diameter": ["0.4"],
+                "printable_height": "250"}),
+    );
+    write(
+        &system.join("machine").join("Acme X 0.4 nozzle.json"),
+        &json!({"type": "machine", "name": "Acme X 0.4 nozzle", "instantiation": "true",
+                "inherits": "fdm_machine_common", "printer_model": "Acme X",
+                "printable_area": ["0x0", "256x0", "256x256", "0x256"]}),
+    );
+    write(
+        &system.join("machine").join("Acme Y 0.4 nozzle.json"),
+        &json!({"type": "machine", "name": "Acme Y 0.4 nozzle", "instantiation": "true",
+                "inherits": "fdm_machine_common", "printer_model": "Acme Y"}),
+    );
+    write(
+        &system.join("process").join("fdm_process_common.json"),
+        &json!({"type": "process", "name": "fdm_process_common", "instantiation": "false",
+                "layer_height": "0.2", "wall_loops": "2"}),
+    );
+    write(
+        &system.join("process").join("0.12mm Fine @Acme X.json"),
+        &json!({"type": "process", "name": "0.12mm Fine @Acme X", "instantiation": "true",
+                "inherits": "fdm_process_common", "compatible_printers": ["Acme X 0.4 nozzle"],
+                "layer_height": "0.12"}),
+    );
+    write(
+        &system.join("process").join("0.20mm Standard @Acme Y.json"),
+        &json!({"type": "process", "name": "0.20mm Standard @Acme Y", "instantiation": "true",
+                "inherits": "fdm_process_common", "compatible_printers": ["Acme Y 0.4 nozzle"]}),
+    );
+    write(
+        &system.join("filament").join("fdm_filament_common.json"),
+        &json!({"type": "filament", "name": "fdm_filament_common", "instantiation": "false",
+                "filament_density": ["1.24"]}),
+    );
+    write(
+        &system.join("filament").join("Acme PETG @Y.json"),
+        &json!({"type": "filament", "name": "Acme PETG @Y", "instantiation": "true",
+                "inherits": "fdm_filament_common", "filament_type": ["PETG"],
+                "compatible_printers": ["Acme Y 0.4 nozzle"]}),
+    );
+    std::fs::write(
+        slicer.join("BambuStudio.conf"),
+        r#"{
+    "models": [{"vendor": "Acme", "model": "Acme X", "nozzle_diameter": "0.4"}],
+    "filaments": ["Acme PLA", "Acme PETG @Y", "fdm_filament_common"]
+}
+# MD5 checksum 0123456789ABCDEF0123456789ABCDEF
+"#,
+    )
+    .unwrap();
+
+    let mut doc = Document::new(MockKernel::default());
+    let found = presets(&doc, &slicer, "design", &project);
+    let listed: Vec<(&str, &str, bool)> = found
+        .iter()
+        .map(|p| {
+            (
+                p["kind"].as_str().unwrap(),
+                p["name"].as_str().unwrap(),
+                p["system"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        listed,
+        vec![
+            ("printer", "My X", false),
+            ("process", "Fine", false),
+            ("material", "My PLA", false),
+            ("printer", "Acme X 0.4 nozzle", true),
+            ("process", "0.12mm Fine @Acme X", true),
+            ("material", "Acme PLA", true),
+        ],
+        "the user's, then exactly the enabled system ones"
+    );
+    assert_eq!(found[0]["account"], "default");
+    assert!(found[0]["vendor"].is_null());
+    assert!(found[4]["account"].is_null());
+    assert_eq!(found[4]["vendor"], "Acme");
+    assert_eq!(found[4]["inherits"], "fdm_process_common");
+    assert!(found[4]["same"].is_null());
+
+    // A system process imported: its values and its base's, its name kept.
+    let result = import(
+        &mut doc,
+        &slicer,
+        "design",
+        &project,
+        json!([{"path": found[4]["path"]}]),
+    );
+    assert_eq!(result["processes"][0]["name"], "0.12mm Fine @Acme X");
+    let id = result["processes"][0]["id"].as_str().unwrap().to_owned();
+    let process = doc.print_profile(&id).unwrap();
+    assert_eq!(process.values["layer_height"], 0.12, "its own value");
+    assert_eq!(process.values["perimeters"], 2, "from its base");
+    // A system printer: the variant's base filled in.
+    let result = import(
+        &mut doc,
+        &slicer,
+        "design",
+        &project,
+        json!([{"path": found[3]["path"]}]),
+    );
+    let printer = result["printers"][0]["id"].as_str().unwrap().to_owned();
+    assert_eq!(
+        doc.print_profile(&printer).unwrap().values["max_print_height"],
+        250.0
+    );
+
+    // Now the design's: marked, and the name rule applies.
+    let found = presets(&doc, &slicer, "design", &project);
+    assert_eq!(found[4]["same"]["id"], id.as_str());
+    command(
+        &mut doc,
+        json!({"cmd": "edit_print_profile", "id": id, "values": {"layer_height": 0.3}}),
+    );
+    let result = import(
+        &mut doc,
+        &slicer,
+        "design",
+        &project,
+        json!([{"path": found[4]["path"], "same_name": "override"}]),
+    );
+    assert_eq!(result["overridden"][0]["id"], id.as_str());
+    assert_eq!(doc.print_profile(&id).unwrap().values["layer_height"], 0.12);
+}

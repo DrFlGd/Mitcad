@@ -26,8 +26,35 @@
 //!   `.info`.
 //! - System presets are in `<data>/system/` (`PRESET_SYSTEM_DIR`), a
 //!   folder per vendor; a preset names the one it inherits from by its
-//!   `name` (`inherits`), which may inherit further.
+//!   `name` (`inherits`), which may inherit further. Vendors reuse the
+//!   names of their bases (`fdm_machine_common`), so a base is looked for
+//!   in its preset's vendor folder first.
+//!
+//! The slicer's own presets the user enabled (mitcad#871; read in the
+//! sources and checked against installed slicers on 28.10.2026):
+//!
+//! - `<data>/system/` holds the vendors of the printers the user enabled,
+//!   each whole; the slicer loads its presets from there
+//!   (`load_system_presets_from_json`), the install folder's
+//!   `resources/profiles/` only gives the setup wizard's printer models.
+//! - A preset file says whether it is meant to be chosen: `instantiation`
+//!   `"false"` on the bases (`fdm_process_common`, `… @base`), else it is
+//!   (`is_visible = instantiation != "false"`); `type` `machine_model`
+//!   files are printer models and files without `type` no presets.
+//! - The app config `<data>/<key>.conf` (JSON, then a `# MD5 checksum`
+//!   line) records what the user enabled: `models`, `[{vendor, model,
+//!   nozzle_diameter: "0.2;0.4"}]`, the printers and nozzles, a system
+//!   printer shown when its (inherited) `printer_model` and
+//!   `printer_variant` are among them for its vendor folder
+//!   (`Preset::set_visible_from_appconfig`, `AppConfig::get_variant`);
+//!   `filaments`, the names of the filaments shown, to which
+//!   `PresetBundle::load_installed_filaments` adds a printer model's
+//!   `default_materials` when none listed suits one of its printers.
+//!   Processes have no list: those for a shown printer
+//!   (`compatible_printers`) are shown, and a filament only for the
+//!   printers it is compatible with.
 
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
@@ -172,7 +199,8 @@ pub fn slicer_folders(env: &PresetEnv) -> Vec<SlicerFolder> {
         .collect()
 }
 
-/// A user preset found in a slicer's data folder.
+/// A preset found in a slicer's data folder: a user preset, or a system
+/// preset the user enabled (`vendor`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct FoundPreset {
     /// Printer (a `machine` preset), process or filament.
@@ -180,10 +208,13 @@ pub struct FoundPreset {
     /// Its `name`, else its file's name.
     pub name: String,
     pub path: PathBuf,
-    /// The account folder it is in (`default` without one).
+    /// The account folder it is in (`default` without one); empty for a
+    /// system preset.
     pub account: String,
     /// The preset it inherits from, by name.
     pub inherits: Option<String>,
+    /// A system preset's vendor folder (`BBL`); None for a user preset.
+    pub vendor: Option<String>,
 }
 
 /// The sorted entries of a folder.
@@ -258,6 +289,7 @@ pub fn user_presets(folder: &Path) -> Vec<FoundPreset> {
                     path: path.clone(),
                     account: account_name.clone(),
                     inherits: text_of(&map, "inherits"),
+                    vendor: None,
                 });
             }
         }
@@ -265,14 +297,353 @@ pub fn user_presets(folder: &Path) -> Vec<FoundPreset> {
     out
 }
 
-/// The kind of preset a file under an account's folder is, by its folder.
+/// The folder name of a slicer's data folder and app config (`<key>.conf`).
+fn app_key(dialect: Dialect) -> Option<&'static str> {
+    SLICERS
+        .iter()
+        .find(|(d, _, _)| *d == dialect)
+        .map(|(_, key, _)| *key)
+}
+
+/// A slicer's app config `<data>/<key>.conf`: JSON, its `#` lines (the
+/// checksum after it) left out. None when it is missing or unreadable.
+fn app_config(folder: &Path, dialect: Dialect) -> Option<Map<String, Value>> {
+    let key = app_key(dialect)?;
+    let text = std::fs::read_to_string(folder.join(format!("{key}.conf"))).ok()?;
+    let json: String = text
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    serde_json::from_str(&json).ok()
+}
+
+/// The fields of a system preset that say whether the user enabled it.
+const SYSTEM_FIELDS: [&str; 6] = [
+    "inherits",
+    "printer_model",
+    "printer_variant",
+    "compatible_printers",
+    "compatible_printers_condition",
+    "default_materials",
+];
+
+/// A system preset file: its name, vendor folder, `type`, whether it is
+/// meant to be chosen, and the [`SYSTEM_FIELDS`] it sets itself.
+struct SystemPreset {
+    name: String,
+    path: PathBuf,
+    vendor: String,
+    kind: String,
+    instantiable: bool,
+    fields: Map<String, Value>,
+}
+
+/// The system presets of a data folder, by name.
+struct SystemIndex {
+    presets: Vec<SystemPreset>,
+    by_name: HashMap<String, Vec<usize>>,
+}
+
+impl SystemIndex {
+    fn of(folder: &Path) -> SystemIndex {
+        let mut presets = Vec::new();
+        for vendor in entries(&folder.join(SYSTEM_DIR)) {
+            if !vendor.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let vendor_name = vendor.file_name().to_string_lossy().into_owned();
+            let mut files = Vec::new();
+            json_files(&vendor.path(), 3, &mut files);
+            for path in files {
+                let Some(map) = read_preset_file(&path) else {
+                    continue;
+                };
+                let Some(name) = text_of(&map, "name") else {
+                    continue;
+                };
+                // The slicer's rule: chosen unless `instantiation` is false.
+                let instantiable = !matches!(map.get("instantiation"), Some(Value::Bool(false)))
+                    && !map
+                        .get("instantiation")
+                        .and_then(Value::as_str)
+                        .is_some_and(|t| t.trim().eq_ignore_ascii_case("false"));
+                let fields = SYSTEM_FIELDS
+                    .iter()
+                    .filter_map(|key| map.get(*key).map(|v| ((*key).to_owned(), v.clone())))
+                    .collect();
+                presets.push(SystemPreset {
+                    name,
+                    path,
+                    vendor: vendor_name.clone(),
+                    kind: text_of(&map, "type").unwrap_or_default(),
+                    instantiable,
+                    fields,
+                });
+            }
+        }
+        let mut by_name: HashMap<String, Vec<usize>> = HashMap::new();
+        for (i, preset) in presets.iter().enumerate() {
+            by_name.entry(preset.name.clone()).or_default().push(i);
+        }
+        SystemIndex { presets, by_name }
+    }
+
+    /// The preset of `name`, the one of `vendor` first.
+    fn find(&self, name: &str, vendor: &str) -> Option<usize> {
+        let found = self.by_name.get(name)?;
+        found
+            .iter()
+            .copied()
+            .find(|&i| self.presets[i].vendor == vendor)
+            .or_else(|| found.first().copied())
+    }
+
+    /// A field of preset `i`, its own or the nearest it inherits.
+    fn field(&self, mut i: usize, key: &str) -> Option<&Value> {
+        for _ in 0..=MAX_INHERITS {
+            let preset = &self.presets[i];
+            if let Some(value) = preset.fields.get(key) {
+                return Some(value);
+            }
+            let base = preset.fields.get("inherits").and_then(Value::as_str)?;
+            i = self.find(base.trim(), &preset.vendor)?;
+        }
+        None
+    }
+
+    /// A text field of preset `i` (a list's first entry), when not empty.
+    fn text(&self, i: usize, key: &str) -> Option<String> {
+        let text = match self.field(i, key)? {
+            Value::String(text) => Some(text.trim().to_owned()),
+            Value::Array(items) => items
+                .first()
+                .and_then(Value::as_str)
+                .map(|t| t.trim().to_owned()),
+            _ => None,
+        };
+        text.filter(|t| !t.is_empty())
+    }
+
+    /// The printers a preset is for: none named is every printer.
+    fn compatible(&self, i: usize) -> Vec<String> {
+        match self.field(i, "compatible_printers") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(|t| t.trim().to_owned())
+                .filter(|t| !t.is_empty())
+                .collect(),
+            Some(Value::String(text)) => text
+                .split(';')
+                .map(|t| t.trim().trim_matches('"').to_owned())
+                .filter(|t| !t.is_empty())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Whether preset `i` is for one of `printers`.
+    fn suits_any(&self, i: usize, printers: &BTreeSet<String>) -> bool {
+        let compatible = self.compatible(i);
+        if compatible.is_empty() {
+            return !printers.is_empty();
+        }
+        compatible.iter().any(|p| printers.contains(p))
+    }
+}
+
+/// The filament names an app config's `filaments` lists: an array of
+/// names, or an object whose names have a value.
+fn listed_filaments(config: &Map<String, Value>) -> Vec<String> {
+    match config.get("filaments") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|t| t.trim().to_owned())
+            .collect(),
+        Some(Value::Object(map)) => map
+            .iter()
+            .filter(|(_, v)| match v {
+                Value::String(t) => !t.trim().is_empty() && t.trim() != "false",
+                Value::Bool(b) => *b,
+                Value::Null => false,
+                _ => true,
+            })
+            .map(|(name, _)| name.trim().to_owned())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The system presets the user enabled in the slicer `dialect` whose data
+/// folder is `folder` (see the module documentation): the printers of the
+/// app config's `models`, the processes for one of them, and the
+/// filaments of its `filaments` (with the printer models' default
+/// materials where none listed suits a printer) that suit one of them;
+/// only presets meant to be chosen, never the bases. By kind, then name.
+/// None without an app config.
+pub fn system_presets(folder: &Path, dialect: Dialect) -> Vec<FoundPreset> {
+    let Some(config) = app_config(folder, dialect) else {
+        return Vec::new();
+    };
+    let index = SystemIndex::of(folder);
+    let chosen = |kind: &str| -> Vec<usize> {
+        (0..index.presets.len())
+            .filter(|&i| index.presets[i].kind == kind && index.presets[i].instantiable)
+            .collect()
+    };
+    // The printers: their model and nozzle among the vendor's models.
+    let models: Vec<(String, String, Vec<String>)> = config
+        .get("models")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let text = |key: &str| {
+                m.get(key)
+                    .and_then(Value::as_str)
+                    .map(|t| t.trim().to_owned())
+            };
+            let nozzles = text("nozzle_diameter")
+                .unwrap_or_default()
+                .split(';')
+                .map(|n| n.trim().to_owned())
+                .filter(|n| !n.is_empty())
+                .collect();
+            Some((text("vendor")?, text("model")?, nozzles))
+        })
+        .collect();
+    let printers: Vec<usize> = chosen("machine")
+        .into_iter()
+        .filter(|&i| {
+            let (Some(model), Some(variant)) = (
+                index.text(i, "printer_model"),
+                index.text(i, "printer_variant"),
+            ) else {
+                return false;
+            };
+            models.iter().any(|(vendor, m, nozzles)| {
+                *vendor == index.presets[i].vendor
+                    && *m == model
+                    && nozzles.iter().any(|n| same_nozzle(n, &variant))
+            })
+        })
+        .collect();
+    let printer_names: BTreeSet<String> = printers
+        .iter()
+        .map(|&i| index.presets[i].name.clone())
+        .collect();
+    let processes: Vec<usize> = chosen("process")
+        .into_iter()
+        .filter(|&i| index.suits_any(i, &printer_names))
+        .collect();
+    // The filaments listed, and a printer's default materials when none
+    // listed suits it.
+    let mut names: Vec<String> = listed_filaments(&config);
+    for &p in &printers {
+        let me = BTreeSet::from([index.presets[p].name.clone()]);
+        let suited = names.iter().any(|n| {
+            index.by_name.get(n).is_some_and(|found| {
+                found
+                    .iter()
+                    .any(|&f| index.presets[f].kind == "filament" && index.suits_any(f, &me))
+            })
+        });
+        if suited {
+            continue;
+        }
+        let vendor = &index.presets[p].vendor;
+        let model = index.text(p, "printer_model").unwrap_or_default();
+        let defaults = index
+            .by_name
+            .get(&model)
+            .into_iter()
+            .flatten()
+            .find(|&&m| {
+                index.presets[m].kind == "machine_model" && index.presets[m].vendor == *vendor
+            })
+            .and_then(|&m| index.presets[m].fields.get("default_materials"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        for name in defaults.split(';').map(str::trim).filter(|n| !n.is_empty()) {
+            if !names.iter().any(|n| n == name) {
+                names.push(name.to_owned());
+            }
+        }
+    }
+    let mut filaments: Vec<usize> = Vec::new();
+    for name in &names {
+        let found = index
+            .by_name
+            .get(name)
+            .into_iter()
+            .flatten()
+            .copied()
+            .find(|&i| {
+                let p = &index.presets[i];
+                p.kind == "filament" && p.instantiable && index.suits_any(i, &printer_names)
+            });
+        if let Some(i) = found
+            && !filaments.contains(&i)
+        {
+            filaments.push(i);
+        }
+    }
+    let mut out = Vec::new();
+    for (set, mut list) in [
+        (PrintSet::Printer, printers),
+        (PrintSet::Process, processes),
+        (PrintSet::Filament, filaments),
+    ] {
+        list.sort_by(|&a, &b| index.presets[a].name.cmp(&index.presets[b].name));
+        for i in list {
+            let preset = &index.presets[i];
+            out.push(FoundPreset {
+                set,
+                name: preset.name.clone(),
+                path: preset.path.clone(),
+                account: String::new(),
+                inherits: preset
+                    .fields
+                    .get("inherits")
+                    .and_then(Value::as_str)
+                    .map(|t| t.trim().to_owned())
+                    .filter(|t| !t.is_empty()),
+                vendor: Some(preset.vendor.clone()),
+            });
+        }
+    }
+    out
+}
+
+/// Whether two nozzle diameters (`0.4`, `0.40`) are the same.
+fn same_nozzle(a: &str, b: &str) -> bool {
+    match (a.parse::<f64>(), b.parse::<f64>()) {
+        (Ok(x), Ok(y)) => (x - y).abs() < 1e-6,
+        _ => a == b,
+    }
+}
+
+/// The kind of preset a file under an account's or a vendor's folder is,
+/// by its folder.
 fn set_of(folder: &Path, path: &Path) -> Option<PrintSet> {
-    let relative = path.strip_prefix(folder.join(USER_DIR)).ok()?;
+    let relative = path
+        .strip_prefix(folder.join(USER_DIR))
+        .or_else(|_| path.strip_prefix(folder.join(SYSTEM_DIR)))
+        .ok()?;
     let kind = relative.components().nth(1)?.as_os_str().to_str()?;
     KIND_DIRS
         .iter()
         .find(|(dir, _)| *dir == kind)
         .map(|(_, set)| *set)
+}
+
+/// The vendor folder a system preset's file is in.
+fn vendor_dir(folder: &Path, path: &Path) -> Option<PathBuf> {
+    let system = folder.join(SYSTEM_DIR);
+    let first = path.strip_prefix(&system).ok()?.components().next()?;
+    Some(system.join(first.as_os_str()))
 }
 
 /// The presets a preset may inherit from, by name: the user's own of the
@@ -298,10 +669,12 @@ impl Bases {
         Bases { presets }
     }
 
-    fn find(&self, name: &str) -> Option<&Path> {
-        self.presets
-            .iter()
-            .find(|(n, _)| n == name)
+    /// The preset of `name`, the one in the folder `prefer` first.
+    fn find(&self, name: &str, prefer: Option<&Path>) -> Option<&Path> {
+        let named = || self.presets.iter().filter(move |(n, _)| n == name);
+        prefer
+            .and_then(|dir| named().find(|(_, p)| p.starts_with(dir)))
+            .or_else(|| named().next())
             .map(|(_, p)| p.as_path())
     }
 }
@@ -309,9 +682,10 @@ impl Bases {
 /// The deepest chain of `inherits` followed.
 const MAX_INHERITS: usize = 16;
 
-/// A user preset of a slicer's data folder `folder` with the values it
-/// inherits filled in: from the preset it names in `inherits` (the user's
-/// own of its account, else a system preset), and so on up the chain, the
+/// A user or system preset of a slicer's data folder `folder` with the
+/// values it inherits filled in: from the preset it names in `inherits`
+/// (the user's own of its account, else a system preset, one of the
+/// vendor folder the chain is in first), and so on up the chain, the
 /// nearer preset's value winning. The result is named as the preset and
 /// says its kind (`type` and the slicer's id key of its kind), and has no
 /// `inherits` when the whole chain was found; a base that is missing
@@ -334,6 +708,8 @@ pub fn resolved_preset(folder: &Path, path: &Path) -> Result<Map<String, Value>,
     let mut chain = vec![own];
     let mut bases: Option<Bases> = None;
     let mut missing = None;
+    // A system preset's bases in its own vendor's folder first.
+    let mut vendor = vendor_dir(folder, path);
     while let Some(base) = chain.last().and_then(|m| text_of(m, "inherits")) {
         if chain.len() > MAX_INHERITS {
             return Err(format!(
@@ -341,8 +717,14 @@ pub fn resolved_preset(folder: &Path, path: &Path) -> Result<Map<String, Value>,
             ));
         }
         let index = bases.get_or_insert_with(|| Bases::of(folder, account.as_deref()));
-        match index.find(&base).and_then(read_preset_file) {
-            Some(map) => chain.push(map),
+        let found = index.find(&base, vendor.as_deref()).map(Path::to_path_buf);
+        match found.as_deref().and_then(read_preset_file) {
+            Some(map) => {
+                if let Some(dir) = found.as_deref().and_then(|p| vendor_dir(folder, p)) {
+                    vendor = Some(dir);
+                }
+                chain.push(map);
+            }
             None => {
                 missing = Some(base);
                 break;
@@ -582,5 +964,185 @@ mod tests {
             "a missing base stays named"
         );
         assert_eq!(lost["type"], "process");
+    }
+
+    /// A synthetic data folder with two vendors, Acme and Able, each with a
+    /// base of the same name (`fdm_machine_common`), and an app config.
+    fn system_folder(name: &str, config: Option<&str>) -> PathBuf {
+        let folder = scratch(name).join("QIDIStudio");
+        let acme = folder.join("system/Acme");
+        let able = folder.join("system/Able");
+        // Vendor indexes beside the folders are no presets.
+        write(
+            &folder.join("system/Acme.json"),
+            &json!({"name": "Acme", "machine_list": []}),
+        );
+        // Acme: a model with two nozzles, the 0.4 printer's variant
+        // inherited from its base; a printer of another model.
+        write(
+            &acme.join("machine/Acme X.json"),
+            &json!({"type": "machine_model", "name": "Acme X", "nozzle_diameter": "0.4;0.6",
+                    "default_materials": "Acme PLA @X;Acme PETG @X"}),
+        );
+        write(
+            &acme.join("machine/fdm_machine_common.json"),
+            &json!({"type": "machine", "name": "fdm_machine_common", "instantiation": "false",
+                    "printer_variant": "0.4", "printable_height": "250"}),
+        );
+        write(
+            &acme.join("machine/Acme X 0.4 nozzle.json"),
+            &json!({"type": "machine", "name": "Acme X 0.4 nozzle", "instantiation": "true",
+                    "inherits": "fdm_machine_common", "printer_model": "Acme X"}),
+        );
+        write(
+            &acme.join("machine/Acme X 0.6 nozzle.json"),
+            &json!({"type": "machine", "name": "Acme X 0.6 nozzle", "instantiation": "true",
+                    "inherits": "fdm_machine_common", "printer_model": "Acme X",
+                    "printer_variant": "0.6"}),
+        );
+        write(
+            &acme.join("machine/Acme Y 0.4 nozzle.json"),
+            &json!({"type": "machine", "name": "Acme Y 0.4 nozzle", "instantiation": "true",
+                    "inherits": "fdm_machine_common", "printer_model": "Acme Y"}),
+        );
+        // A template file without a type is no preset.
+        write(
+            &acme.join("machine/Acme X 0.4 nozzle template start_gcode.json"),
+            &json!({"name": "Acme X 0.4 nozzle template start_gcode", "printer_model": "Acme X",
+                    "printer_variant": "0.4"}),
+        );
+        // Processes: a base, one for X 0.4, one for Y only.
+        write(
+            &acme.join("process/fdm_process_common.json"),
+            &json!({"type": "process", "name": "fdm_process_common", "instantiation": "false",
+                    "layer_height": "0.2", "wall_loops": "2"}),
+        );
+        write(
+            &acme.join("process/0.20mm Standard @Acme X.json"),
+            &json!({"type": "process", "name": "0.20mm Standard @Acme X", "instantiation": "true",
+                    "inherits": "fdm_process_common",
+                    "compatible_printers": ["Acme X 0.4 nozzle"], "wall_loops": "3"}),
+        );
+        write(
+            &acme.join("process/0.20mm Standard @Acme Y.json"),
+            &json!({"type": "process", "name": "0.20mm Standard @Acme Y", "instantiation": "true",
+                    "inherits": "fdm_process_common",
+                    "compatible_printers": ["Acme Y 0.4 nozzle"]}),
+        );
+        // Filaments, in a subfolder too: a base, the defaults of X, one
+        // listed for X and one listed only for Y.
+        write(
+            &acme.join("filament/base/Acme PLA @base.json"),
+            &json!({"type": "filament", "name": "Acme PLA @base", "instantiation": "false",
+                    "filament_type": ["PLA"]}),
+        );
+        for (name, printer) in [
+            ("Acme PLA @X", "Acme X 0.4 nozzle"),
+            ("Acme PETG @X", "Acme X 0.6 nozzle"),
+            ("Acme TPU @X", "Acme X 0.4 nozzle"),
+            ("Acme PLA @Y", "Acme Y 0.4 nozzle"),
+        ] {
+            write(
+                &acme.join(format!("filament/{name}.json")),
+                &json!({"type": "filament", "name": name, "instantiation": "true",
+                        "inherits": "Acme PLA @base", "compatible_printers": [printer]}),
+            );
+        }
+        // Able: a base of the same name as Acme's, found first by name
+        // (its folder sorts first), and a printer of its own model.
+        write(
+            &able.join("machine/fdm_machine_common.json"),
+            &json!({"type": "machine", "name": "fdm_machine_common", "instantiation": "false",
+                    "printer_variant": "0.8", "printable_height": "999"}),
+        );
+        write(
+            &able.join("machine/Able Z 0.8 nozzle.json"),
+            &json!({"type": "machine", "name": "Able Z 0.8 nozzle", "instantiation": "true",
+                    "inherits": "fdm_machine_common", "printer_model": "Able Z"}),
+        );
+        if let Some(config) = config {
+            std::fs::write(folder.join("QIDIStudio.conf"), config).unwrap();
+        }
+        std::fs::create_dir_all(folder.join("user/default")).unwrap();
+        folder
+    }
+
+    fn listed(found: &[FoundPreset]) -> Vec<(PrintSet, &str)> {
+        found.iter().map(|p| (p.set, p.name.as_str())).collect()
+    }
+
+    #[test]
+    fn the_enabled_system_presets_are_listed_and_the_bases_never() {
+        // Acme X with both nozzles enabled; TPU listed, which suits the
+        // 0.4 printer but not the 0.6 one, so X's default materials come
+        // in too (all of them, as the slicer adds them); Y's PLA listed
+        // but Y not enabled.
+        let config = r#"{
+            "models": [{"vendor": "Acme", "model": "Acme X", "nozzle_diameter": "0.4;0.6"}],
+            "filaments": ["Acme TPU @X", "Acme PLA @Y", "No such filament"],
+            "presets": {"machine": "Acme X 0.4 nozzle"}
+        }
+# MD5 checksum 0123456789ABCDEF
+"#;
+        let folder = system_folder("system", Some(config));
+        let found = system_presets(&folder, Dialect::QidiStudio);
+        assert_eq!(
+            listed(&found),
+            vec![
+                (PrintSet::Printer, "Acme X 0.4 nozzle"),
+                (PrintSet::Printer, "Acme X 0.6 nozzle"),
+                (PrintSet::Process, "0.20mm Standard @Acme X"),
+                (PrintSet::Filament, "Acme PETG @X"),
+                (PrintSet::Filament, "Acme PLA @X"),
+                (PrintSet::Filament, "Acme TPU @X"),
+            ]
+        );
+        assert!(found.iter().all(|p| p.vendor.as_deref() == Some("Acme")));
+        assert_eq!(found[2].inherits.as_deref(), Some("fdm_process_common"));
+        // The user's presets are not among them, nor they among the user's.
+        assert!(user_presets(&folder).is_empty());
+
+        // A system process resolved: its own value over its base's.
+        let process = resolved_preset(&folder, &found[2].path).unwrap();
+        assert_eq!(process["name"], "0.20mm Standard @Acme X");
+        assert_eq!(process["type"], "process");
+        assert_eq!(process["print_settings_id"], "0.20mm Standard @Acme X");
+        assert_eq!(process["wall_loops"], "3");
+        assert_eq!(process["layer_height"], "0.2");
+        assert!(!process.contains_key("inherits"));
+        // A printer's base from its own vendor, though Able has one of the
+        // same name (and Acme X 0.4 is listed only with Acme's variant).
+        let printer = resolved_preset(&folder, &found[0].path).unwrap();
+        assert_eq!(printer["printable_height"], "250");
+        assert_eq!(printer["type"], "machine");
+
+        // Without an app config nothing of the system's.
+        let bare = system_folder("system-bare", None);
+        assert!(system_presets(&bare, Dialect::QidiStudio).is_empty());
+        // A model of another vendor's name is not enabled: Able Z needs
+        // Able's model.
+        let able = system_folder(
+            "system-able",
+            Some(
+                r#"{"models": [{"vendor": "Acme", "model": "Able Z", "nozzle_diameter": "0.8"}]}"#,
+            ),
+        );
+        assert!(system_presets(&able, Dialect::QidiStudio).is_empty());
+        // Filaments as an object of names (the older form), Y enabled.
+        let older = system_folder(
+            "system-object",
+            Some(
+                r#"{"models": [{"vendor": "Acme", "model": "Acme Y", "nozzle_diameter": "0.4"}],
+                    "filaments": {"Acme PLA @Y": "true", "Acme TPU @X": ""}}"#,
+            ),
+        );
+        assert_eq!(
+            listed(&system_presets(&older, Dialect::QidiStudio)),
+            vec![
+                (PrintSet::Printer, "Acme Y 0.4 nozzle"),
+                (PrintSet::Process, "0.20mm Standard @Acme Y"),
+                (PrintSet::Filament, "Acme PLA @Y"),
+            ]
+        );
     }
 }

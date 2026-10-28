@@ -3352,8 +3352,14 @@ QIDI Studio is installed, the button is **Import from Slicer ▾**: choose
 processes and filaments you made in that slicer, without exporting them
 first. The **Import Presets** window lists them under **Printers**,
 **Processes** and **Filaments**; tick the ones to import (a group's box
-ticks all of it or none). If several slicers are installed, choose one
-at the top. A preset whose name the library already has is shown in
+ticks all of it or none). Below them come the slicer's own presets that
+you enabled in it, the printers chosen in its setup with their
+processes and the filaments chosen there, under **Printers of Bambu
+Studio**, **Processes of Bambu Studio** and **Filaments of Bambu
+Studio**; these groups are closed at first (open one with its arrow or
+the Right key) and their presets are not ticked, since your own presets
+usually build on them already. If several slicers are installed, choose
+one at the top. A preset whose name the library already has is shown in
 another colour; point at it to see what it meets, for example "My
 library has a process of this name". These are not ticked at first.
 Beside each one, choose **Copy** to import it as a new item ("Fine 2"),

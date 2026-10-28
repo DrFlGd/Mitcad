@@ -388,12 +388,41 @@ ui_poll_pause() {
   if [ "$1" -le 20 ]; then sleep 0.05; else sleep 0.2; fi
 }
 
+# ui_busy: the app computes now: a job logged "Computing <label> started"
+# and not yet its end (ui_wait_idle's test).
+ui_busy() {
+  local started ended
+  started=$(grep -c 'Computing .* started$' "$UI_LOG")
+  ended=$(grep -cE 'Computing .* (done in|cancelled after) [0-9]+ ms' "$UI_LOG")
+  [ "$started" -gt "$ended" ]
+}
+
+# ui_wait_busy pauses: while the app computes, one pause of 0.2 s that does
+# not count towards a wait's time (mitcad#872): a wait for a line that
+# follows a computation (a preview, an OK that adds a feature) waits for
+# the computation first, up to 60 s in all (`pauses`, the pauses so far, as
+# ui_wait_idle), then its own time. Under a full check's load a debug
+# build's preview took 6 s and the line came just after a fixed 6 s wait
+# (ui-pick's chamfer preview, ui-sweep's coil), and each such failure
+# lowered the machine's cap of UI tests at once. Status 1 when the app is
+# idle or the 60 s are spent.
+ui_wait_busy() {
+  [ "$1" -lt 300 ] && ui_busy || return 1
+  sleep 0.2
+}
+
 # ui_expect_log "text" "description": waits for a line in the application log
-# (a single ellipsis and three dots match each other, mitcad#645), up to 6 s.
+# (a single ellipsis and three dots match each other, mitcad#645), up to 6 s
+# while the app is idle (the time it computes is not counted, ui_wait_busy).
 ui_expect_log() {
-  local i
-  for i in $(seq 1 45); do
+  local i=0 busy=0
+  while [ "$i" -lt 45 ]; do
     sed "s/…/.../g" "$UI_LOG" | grep -qF -- "${1//…/...}" && { echo "ok   $2"; return; }
+    if ui_wait_busy "$busy"; then
+      busy=$((busy + 1))
+      continue
+    fi
+    i=$((i + 1))
     ui_poll_pause "$i"
   done
   ui_fail "$2: '$1' not in the log"
@@ -833,9 +862,14 @@ ui_type_path() {
 # ellipsis and three dots match each other (mitcad#645).
 ui_mark() { UI_MARK=$(wc -l < "$UI_LOG"); }
 ui_expect_new() {
-  local i
-  for i in $(seq 1 $((${3:-6} * 5 + 15))); do
+  local i=0 busy=0 looks=$((${3:-6} * 5 + 15))
+  while [ "$i" -lt "$looks" ]; do
     tail -n +$((${UI_MARK:-0} + 1)) "$UI_LOG" | sed "s/…/.../g" | grep -qF -- "${1//…/...}" && { echo "ok   $2"; return; }
+    if ui_wait_busy "$busy"; then
+      busy=$((busy + 1))
+      continue
+    fi
+    i=$((i + 1))
     ui_poll_pause "$i"
   done
   ui_fail "$2: '$1' not in the log since the mark"

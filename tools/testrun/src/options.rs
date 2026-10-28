@@ -7,6 +7,7 @@ use std::str::FromStr;
 pub const USAGE: &str = "\
 Usage: mitcad-testrun --build DIR [--measure | --schedule] [options]
        mitcad-testrun --ui-cap [--ui-max N] [--profiles FILE]
+       mitcad-testrun --ui-rooms [--profiles FILE]
        mitcad-testrun --record-ui FILE [--ui-max N] [--profiles FILE]
 
 Runs the build tree's ctests, each as its own `ctest -R ^name$`, measures
@@ -24,6 +25,9 @@ Modes:
   --ui-cap              prints the UI entries this machine runs at once (the
                         cap learnt from its runs, within --ui-max); runs
                         nothing
+  --ui-rooms            prints each UI entry's learnt room (name, the other
+                        UI entries it may have beside it; tab-separated, a
+                        line each); runs nothing
   --record-ui FILE      adds UI runs that tools/check-all.sh ran itself (a
                         line each: name, exit status, seconds, other UI
                         entries beside it, tab-separated) to the profiles
@@ -46,6 +50,12 @@ Options:
                         else of the larger of the physical memory and (on
                         Windows) the commit limit. A VM with dynamic memory
                         should give a size here or in MITCAD_TEST_MEMORY.
+                        free (bare metal): what the machine has available
+                        less --memory-reserve, read again before each test
+                        starts, at most 0.85 of the memory as above
+  --memory-reserve SIZE with --memory-budget free: the memory left to the
+                        desktop and other jobs (default the larger of 4G
+                        and a tenth of the machine's memory)
   --memory-floor SIZE   schedule: no test starts while the machine has less
                         memory available (default 1.5G)
   --cpu-gate F          no test starts above this load (default 0.9)
@@ -89,20 +99,45 @@ pub enum Mode {
     Schedule,
 }
 
-/// The memory budget: a share of the machine's memory, or bytes.
+/// The memory budget: a share of the machine's memory, or bytes, or what
+/// the machine has free (mitcad#872).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Budget {
     Share(f64),
     Bytes(u64),
+    /// Bare metal: the memory available now less a reserve, read again
+    /// before each test starts (`schedule::free_budget`); `bytes` is its
+    /// cap, `FREE_CAP` of the memory.
+    Free,
 }
+
+/// The share of the memory the free budget never goes above.
+pub const FREE_CAP: f64 = 0.85;
 
 impl Budget {
     pub fn bytes(self, memory: u64) -> u64 {
         match self {
             Budget::Share(share) => (memory as f64 * share) as u64,
             Budget::Bytes(bytes) => bytes,
+            Budget::Free => (memory as f64 * FREE_CAP) as u64,
         }
     }
+
+    /// The share of the memory it is, where it follows the memory (a
+    /// share, or the free budget's cap).
+    pub fn share(self) -> Option<f64> {
+        match self {
+            Budget::Share(share) => Some(share),
+            Budget::Free => Some(FREE_CAP),
+            Budget::Bytes(_) => None,
+        }
+    }
+}
+
+/// The reserve the free budget leaves when none is given: the larger of
+/// 4 GiB and a tenth of the machine's memory.
+pub fn default_reserve(machine: u64) -> u64 {
+    (machine / 10).max(4 << 30)
 }
 
 /// The memory a share budget is taken of: `MITCAD_TEST_MEMORY` when set,
@@ -160,6 +195,9 @@ pub struct Options {
     pub out: Option<PathBuf>,
     pub record: bool,
     pub memory_budget: Budget,
+    /// With `Budget::Free`: the memory left to the rest of the machine
+    /// (None: `default_reserve`).
+    pub memory_reserve: Option<u64>,
     pub memory_floor: u64,
     pub cpu_gate: f64,
     pub sensitive_load: f64,
@@ -175,6 +213,8 @@ pub struct Options {
     pub ui_max: Option<usize>,
     /// Prints the learnt UI entries at once and runs nothing.
     pub ui_cap: bool,
+    /// Prints the UI entries' learnt rooms and runs nothing.
+    pub ui_rooms: bool,
     /// UI runs of check-all to record and learn from; runs nothing.
     pub record_ui: Option<PathBuf>,
     pub margin: f64,
@@ -200,6 +240,7 @@ impl Default for Options {
             out: None,
             record: true,
             memory_budget: Budget::Share(0.85),
+            memory_reserve: None,
             memory_floor: 3 << 29,
             cpu_gate: 0.9,
             sensitive_load: 0.7,
@@ -211,6 +252,7 @@ impl Default for Options {
             corpus_children: false,
             ui_max: None,
             ui_cap: false,
+            ui_rooms: false,
             record_ui: None,
             margin: 1.25,
             limit_factor: 2.0,
@@ -245,9 +287,12 @@ pub fn parse_size(text: &str) -> Result<u64, String> {
     Ok((value * (1u64 << shift) as f64) as u64)
 }
 
-/// The budget: a share (0.85 or 85%) or a size (24G).
+/// The budget: a share (0.85 or 85%), a size (24G) or "free".
 pub fn parse_budget(text: &str) -> Result<Budget, String> {
     let text = text.trim();
+    if text.eq_ignore_ascii_case("free") {
+        return Ok(Budget::Free);
+    }
     if let Some(percent) = text.strip_suffix('%') {
         let share: f64 = percent
             .parse()
@@ -295,6 +340,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             "--out" => o.out = Some(PathBuf::from(value()?)),
             "--no-record" => o.record = false,
             "--memory-budget" => o.memory_budget = parse_budget(value()?)?,
+            "--memory-reserve" => o.memory_reserve = Some(parse_size(value()?)?),
             "--memory-floor" => o.memory_floor = parse_size(value()?)?,
             "--cpu-gate" => o.cpu_gate = number(value()?, name)?,
             "--sensitive-load" => o.sensitive_load = number(value()?, name)?,
@@ -306,6 +352,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
             "--corpus-children" => o.corpus_children = true,
             "--ui-max" => o.ui_max = Some(number(value()?, name)?),
             "--ui-cap" => o.ui_cap = true,
+            "--ui-rooms" => o.ui_rooms = true,
             "--record-ui" => o.record_ui = Some(PathBuf::from(value()?)),
             "--margin" => o.margin = number(value()?, name)?,
             "--limit-factor" => o.limit_factor = number(value()?, name)?,
@@ -318,7 +365,7 @@ pub fn parse(args: &[String]) -> Result<Options, String> {
         }
     }
     // --ui-cap and --record-ui read and write only the profiles.
-    let profiles_only = o.ui_cap || o.record_ui.is_some();
+    let profiles_only = o.ui_cap || o.ui_rooms || o.record_ui.is_some();
     o.build = match build {
         Some(build) => build,
         None if profiles_only => PathBuf::new(),
@@ -359,6 +406,27 @@ mod tests {
         assert_eq!(parse_budget("24G"), Ok(Budget::Bytes(24 << 30)));
         assert_eq!(Budget::Share(0.5).bytes(1000), 500);
         assert_eq!(Budget::Bytes(7).bytes(1000), 7);
+        assert_eq!(parse_budget("free"), Ok(Budget::Free));
+        assert_eq!(parse_budget(" Free "), Ok(Budget::Free));
+        // The free budget's cap is a share of the memory.
+        assert_eq!(Budget::Free.bytes(1000), 850);
+        assert_eq!(Budget::Free.share(), Some(FREE_CAP));
+        assert_eq!(Budget::Bytes(7).share(), None);
+    }
+
+    #[test]
+    fn the_free_budget_keeps_a_reserve() {
+        let gib = |n: u64| n << 30;
+        // At least 4 GiB, a tenth of a large machine.
+        assert_eq!(default_reserve(gib(16)), gib(4));
+        assert_eq!(default_reserve(gib(60)), gib(6));
+        let o = parse(&args(
+            "--build b --schedule --memory-budget free --memory-reserve 8G",
+        ))
+        .unwrap();
+        assert_eq!(o.memory_budget, Budget::Free);
+        assert_eq!(o.memory_reserve, Some(gib(8)));
+        assert_eq!(parse(&args("--build b")).unwrap().memory_reserve, None);
     }
 
     #[test]
@@ -422,6 +490,8 @@ mod tests {
         assert_eq!(o.ui_max, Some(12));
         assert!(!o.ui_cap && o.record_ui.is_none());
         // The profile commands need no build tree.
+        let o = parse(&args("--ui-rooms")).unwrap();
+        assert!(o.ui_rooms && !o.ui_cap);
         let o = parse(&args("--ui-cap --ui-max 6")).unwrap();
         assert!(o.ui_cap);
         assert_eq!(o.build, PathBuf::new());

@@ -25,6 +25,8 @@ pub struct Process {
     unit: Option<String>,
     cgroup: Option<PathBuf>,
     peak: u64,
+    /// The working set at the last sample (Linux scopes).
+    current: Option<u64>,
     oom: bool,
     rusage: Option<(f64, u64)>,
     exit: Option<Exit>,
@@ -70,6 +72,7 @@ pub fn spawn(spec: &Spec) -> io::Result<Process> {
         unit,
         cgroup: None,
         peak: 0,
+        current: None,
         oom: false,
         rusage: None,
         exit: None,
@@ -121,7 +124,9 @@ impl Process {
         // predictions (a fresh cargo test build: 16 GiB peak, mostly cache).
         if let Some(current) = read_u64(&dir.join("memory.current")) {
             let stat = fs::read_to_string(dir.join("memory.stat")).unwrap_or_default();
-            self.peak = self.peak.max(super::working_set(current, &stat));
+            let working_set = super::working_set(current, &stat);
+            self.peak = self.peak.max(working_set);
+            self.current = Some(working_set);
         }
         let events = fs::read_to_string(dir.join("memory.events"));
         let events = events.unwrap_or_default();
@@ -150,6 +155,12 @@ impl Process {
             });
         }
         self.exit
+    }
+
+    /// The test's working set now (its scope's, at the last poll); None
+    /// without a scope or before its first sample.
+    pub fn current(&self) -> Option<u64> {
+        self.current
     }
 
     /// Kills the process group (and the scope).

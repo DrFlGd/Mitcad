@@ -63,6 +63,8 @@ pub struct Summary<'a> {
     pub profiles: Option<&'a Path>,
     /// What the run taught of the UI entries at once (`concurrency`).
     pub ui: Option<&'a str>,
+    /// The free budget over the run (`--memory-budget free`, mitcad#872).
+    pub free: Option<&'a str>,
 }
 
 /// A duration as "41 min 12 s".
@@ -182,6 +184,9 @@ pub fn render(s: &Summary) -> String {
         size(s.memory)
     );
     let _ = writeln!(out, "Measured with {}.", s.method);
+    if let Some(free) = s.free {
+        let _ = writeln!(out, "{free}");
+    }
     let _ = writeln!(out, "Results: {}", counts(outcomes));
     if let Some(stop) = s.stop {
         let _ = writeln!(out, "Stopped early: {stop}");

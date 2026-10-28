@@ -97,7 +97,10 @@ std::string executable_path(const char* argv0);
 // bytes, tab-separated; the test runner writes it from its profiles), and
 // the longest files start first (start_order). Each child's time and peak
 // are appended to the table MITCAD_CORPUS_RECORD names (key, seconds, peak
-// bytes, "ok" or "failed"), which the runner adds to its profiles.
+// bytes, "ok" or "failed"), which the runner adds to its profiles. With
+// MITCAD_CORPUS_RESERVE (bytes or a size) a child beside others starts
+// only when may_start allows it, its expected peak the table's (else the
+// limit per child).
 void run_all(const std::vector<Command>& commands, const Settings& settings,
              const std::function<void(std::size_t, const Outcome&)>& done, const std::vector<double>& weights = {},
              const std::vector<std::string>& keys = {});
@@ -105,6 +108,18 @@ void run_all(const std::vector<Command>& commands, const Settings& settings,
 // A table of MITCAD_CORPUS_FILES: each key's seconds (empty when the file
 // cannot be read; malformed lines are left out).
 std::map<std::string, double> read_file_times(const std::string& path);
+// The same table's peak bytes (the third field) per key.
+std::map<std::string, std::uint64_t> read_file_peaks(const std::string& path);
+
+// Whether a child may start now under the reserve MITCAD_CORPUS_RESERVE
+// (mitcad#872, set by the test runner's budget from the free memory): with
+// none running it always may (so that the run goes on); otherwise the
+// memory available now must exceed the reserve by the child's expected
+// peak. A reserve of 0 or an unknown available memory (0) holds nothing
+// back. run_all asks it before each start beside others and waits for a
+// child to end or the memory to come free (another job, an agent's build,
+// may take it during the run).
+bool may_start(int running, std::uint64_t available, std::uint64_t reserve, std::uint64_t expected);
 
 // What orders the start of the commands, the largest first: a command's
 // file's own seconds where `known` has its key; else its weight times the

@@ -841,10 +841,10 @@ void AssignmentPanel::optionChosen(int index) {
   if (m_building || m_targets.isEmpty()) {
     return;
   }
-  const QString data = m_varies->itemData(index).toString();
+  const QString chosen = m_varies->itemData(index).toString();
   const Target& first = m_targets.first();
   m_message->clear();
-  if (data == QLatin1String(kAddEntry)) {
+  if (chosen == QLatin1String(kAddEntry)) {
     // No option yet: the Configurations window makes one.
     fillCombo();
     qDebug().noquote() << QStringLiteral("%1: Add Option…").arg(m_log);
@@ -853,10 +853,10 @@ void AssignmentPanel::optionChosen(int index) {
     }
     return;
   }
-  if (data == QLatin1String(kCustomEntry)) {
+  if (chosen == QLatin1String(kCustomEntry)) {
     return;
   }
-  if (data.isEmpty()) {
+  if (chosen.isEmpty()) {
     const bool bound = std::any_of(m_targets.begin(), m_targets.end(),
                                    [](const Target& target) { return !target.expression.isEmpty(); });
     if (bound) {
@@ -870,9 +870,9 @@ void AssignmentPanel::optionChosen(int index) {
     return;
   }
   OptionMapping mapping;
-  m_option = data;
+  m_option = chosen;
   m_custom.clear();
-  if (!first.expression.isEmpty() && OptionMapping::parse(first.expression, &mapping) && mapping.option == data) {
+  if (!first.expression.isEmpty() && OptionMapping::parse(first.expression, &mapping) && mapping.option == chosen) {
     // The option the first target follows: its table.
     m_pending = false;
     buildRows(&mapping);
@@ -887,7 +887,7 @@ void AssignmentPanel::optionChosen(int index) {
   fillCombo();
   showState();
   qDebug().noquote() << QStringLiteral("%1 varies with %2: %3 rows%4")
-                            .arg(m_log, data)
+                            .arg(m_log, chosen)
                             .arg(m_rows.size())
                             .arg(m_pending ? QStringLiteral(", not written yet") : QString());
 }

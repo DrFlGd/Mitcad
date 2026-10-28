@@ -831,9 +831,11 @@ it into use on its machine.
   learnt from the same runs, without a measuring run: each UI entry's run
   records how many other UI entries ran beside it. A failure beside others
   that passes alone is a contention failure (+2 to the failure score, not
-  +10): it halves that test's room (the UI entries it may have beside it)
-  and lowers the machine's cap (per platform, in the profile file) by
-  one; two clean runs that reached the cap raise it by one. A machine
+  +10): it halves that test's room (the UI entries it may have beside it);
+  a run in which two or more UI entries fail so lowers the machine's cap
+  (per platform, in the profile file) by one (mitcad#872: one test that
+  is sensitive to load holds back only itself); two clean runs that
+  reached the cap raise it by one. A machine
   opts in by giving the bound, `--ui-max` or `MITCAD_UI_JOBS`: then the
   scheduler holds UI entries to the cap (which starts at the bound
   and never goes above it) and to their rooms, and reruns a UI entry that
@@ -841,8 +843,10 @@ it into use on its machine.
   ceiling, no longer the number at once. Without a bound the runs only
   record and learn (within 4); UI entries are scheduled as before. For
   the Linux UI tests that `tools/check-all.sh` runs itself,
-  `mitcad-testrun --ui-cap` prints the cap to run at and `--record-ui FILE`
-  takes the runs back (name, exit status, seconds, UI entries beside it).
+  `mitcad-testrun --ui-cap` prints the cap to run at, `--ui-rooms` the
+  tests' rooms, which it keeps as the scheduler does, and `--record-ui
+  FILE` takes the runs back (name, exit status, seconds, UI entries beside
+  it).
 - `--dry-run` lists the tests in their starting order with predictions.
 
 The budget's basis is `MITCAD_TEST_MEMORY` when set, else the larger of
@@ -851,6 +855,12 @@ cgroup path where lower) and, on Windows, the commit limit. **A VM with
 dynamic memory** (the Hyper-V Windows VM) reports only its current
 assignment as physical memory: run it with `--memory-budget 24G` (a size
 is used as given) or `MITCAD_TEST_MEMORY` set to the VM's maximum memory.
+**On bare metal** `--memory-budget free` (mitcad#872; `tools/check-all.sh`
+gives it there) follows the free memory instead: a test starts while the
+memory available exceeds a reserve (`--memory-reserve`, default the larger
+of 4G and a tenth of the memory) by its prediction and the running tests'
+growth still to come, read again before each start, at most 85 % of the
+basis above; the end report gives the budget's range over the run.
 
 macOS merge checks and the release gate use `tools/test-macos.sh`:
 
@@ -1234,7 +1244,7 @@ Linux, and warning-free builds with `ctest` in the Windows VM (with
 
 ### The check script
 
-`tools/check-all.sh [--full] [--ui-jobs N] [--ui auto|all] [--ctest auto|all] [--ctest-jobs N] [--testrun auto|off] [--corpus auto|always|never] [--corpus-tests N] [--corpus-jobs N] [--memory SIZE] [--fresh] [--only STEP,...]`
+`tools/check-all.sh [--full] [--ui-jobs N] [--ui auto|all] [--ctest auto|all] [--ctest-jobs N] [--testrun auto|off] [--corpus auto|always|never] [--corpus-tests N] [--corpus-jobs N] [--memory SIZE|auto] [--overlap auto|off] [--fresh] [--only STEP,...]`
 
 It checks at two depths:
 
@@ -1253,10 +1263,10 @@ It checks at two depths:
 | Step | |
 |---|---|
 | configure, build | Compiler warnings fail the check (an incremental build only shows those of what it compiled). |
-| fmt, clippy, deps | clippy's target dir is `build/dev/clippy`, kept across syncs. |
+| fmt, clippy, deps | Beside the ctest step (`--overlap auto`, below). clippy's target dir is `build/dev/clippy`, kept across syncs, or, where `build/dev/cargo` links into a persistent cargo folder (`MITCAD_CARGO_TARGET_DIR`, as in the release builds, whose build folder starts fresh), `clippy/` beside it there, so that a release does not check every crate from nothing. |
 | ctest | The tests whose sources changed (below), without the corpus group, through the test runner (below); `cli.perf_*` run serially. The Linux UI ctests (`app.ui-linux-*`, each on a hidden X server of its own) run beside the others, within the runner's UI entries at once (mitcad#832). The geometry suite runs as one ctest per part (`geometry.suite.<part>`). |
-| corpus | `f3d.corpus*`, `f3d.models_loft`, `freecad.corpus`, `ipt.corpus`, several at once (`--corpus-tests`), each importing several files at once (`--corpus-jobs`, `MITCAD_CORPUS_JOBS`). By default the test runner gives each corpus test its files at once from its profile (`mitcad-testrun --corpus-children`, mitcad#832; [tools/testrun/README.md](../tools/testrun/README.md#corpus-tests)): every run records each file's time and peak, and the next starts the longest files first and shares the machine's cores and the run's memory budget among the corpus tests by their work, a long test more children and a short one fewer, each child's memory limit twice its test's largest file's peak, never below `MITCAD_CORPUS_MEMORY` (1536M). A test without that history yet, every test with `--corpus-jobs`, and ctest -j without the runner take the fixed plan: all their children together fit the run's memory limit less 1G at `MITCAD_CORPUS_MEMORY` each, and the cores of a test slot; about the square root of that many tests run at once (12G, 32 cores and three slots: two tests, three files each). Each child runs within 300 s (`MITCAD_CORPUS_TIMEOUT`); `f3d.corpus_designs` checks its designs at once, each in a child of its own, at least 4G each and without the time limit (the designs have their own), and a debug build's imports try an item from its own start, the route tried first, three times as long (`--own-start-time-scale`, mitcad#847), so that an item's outcome does not hang on the load beside it. Every corpus test is a row of the table. `auto` runs them only when `CORPUS_SOURCES` or the corpus files differ from every passing run on the machine (`~/.cache/mitcad/corpus-passed`). `CORPUS_SOURCES`: the readers and the import, the bridge's kernel and import files (`core/ffi/src/kernel`, `*_import.rs`, `ipt_history.rs`, `exchange.rs`, `memory.rs`, `core/cpp`; not `lib.rs` or other families' files), the geometry, `mitcad-cli`'s imports (`tools/cli/import.cpp`, not `main.cpp`), the build files, the OCCT port, and the resolved dependencies of the import's crates (`cargo tree` of `CORPUS_CRATES`, instead of `Cargo.toml` and `Cargo.lock`, so a crate added for something else does not count). Changes in `core/model` alone don't trigger it: use `--corpus always` when they may affect imports. |
-| `ui-<name>` | The `tools/ui-*-test.sh` whose sources changed (below), four at a time, longest first, 30 min limit each (`UI_TIMEOUT`); `ui-compute` runs alone at the end (flaky under load). A test that fails among the others without crashing runs once more alone after them: a pass shows as `ok-again` and counts, so load flakiness stays visible without failing the check; a second failure, or a crash, fails it (mitcad#657). |
+| corpus | `f3d.corpus*`, `f3d.models_loft`, `freecad.corpus`, `ipt.corpus`, several at once (`--corpus-tests`), each importing several files at once (`--corpus-jobs`, `MITCAD_CORPUS_JOBS`). By default the test runner gives each corpus test its files at once from its profile (`mitcad-testrun --corpus-children`, mitcad#832; [tools/testrun/README.md](../tools/testrun/README.md#corpus-tests)): every run records each file's time and peak, and the next starts the longest files first and shares the machine's cores and the run's memory budget among the corpus tests by their work, a long test more children and a short one fewer, each child's memory limit twice its test's largest file's peak, never below `MITCAD_CORPUS_MEMORY` (1536M). A test without that history yet, every test with `--corpus-jobs`, and ctest -j without the runner take the fixed plan: all their children together fit the run's memory limit less 1G at `MITCAD_CORPUS_MEMORY` each, and the cores of a test slot; about the square root of that many tests run at once (12G, 32 cores and three slots: two tests, three files each). Each child runs within 300 s (`MITCAD_CORPUS_TIMEOUT`); `f3d.corpus_designs` checks its designs one after another in one process since 0.32.0 (at once, under the full check's load in the Linux release's build root, an item ran out of its item time), and a debug build's imports try an item from its own start, the route tried first, three times as long (`--own-start-time-scale`, mitcad#847); the runner then plans it by its own history, not by children (mitcad#872). With the budget from the free memory (`--memory auto` on bare metal, below) a child beside others starts only while the memory available exceeds the reserve by the child's file's last peak (`MITCAD_CORPUS_RESERVE`). The corpus step runs beside the UI tests (`--overlap auto`). Every corpus test is a row of the table. `auto` runs them only when `CORPUS_SOURCES` or the corpus files differ from every passing run on the machine (`~/.cache/mitcad/corpus-passed`). `CORPUS_SOURCES`: the readers and the import, the bridge's kernel and import files (`core/ffi/src/kernel`, `*_import.rs`, `ipt_history.rs`, `exchange.rs`, `memory.rs`, `core/cpp`; not `lib.rs` or other families' files), the geometry, `mitcad-cli`'s imports (`tools/cli/import.cpp`, not `main.cpp`), the build files, the OCCT port, and the resolved dependencies of the import's crates (`cargo tree` of `CORPUS_CRATES`, instead of `Cargo.toml` and `Cargo.lock`, so a crate added for something else does not count). Changes in `core/model` alone don't trigger it: use `--corpus always` when they may affect imports. |
+| `ui-<name>` | The `tools/ui-*-test.sh` whose sources changed (below), `--ui-jobs` at a time (below), longest first, 30 min limit each (`UI_TIMEOUT`); with the test runner the machine's learnt cap within `MITCAD_UI_JOBS`, and each test's learnt room (`mitcad-testrun --ui-rooms`: the most other UI tests it may have beside it after it failed beside more and passed alone) is kept: such a test waits until few enough run, while the others go on (mitcad#872). The tests' waits for a log line (`ui_expect_log`, `ui_expect_new`) do not count the time the application computes (a job logged `Computing ... started` and not its end), up to 60 s more, so that a preview that takes longer under load is not a failure. `ui-compute` runs alone at the end (flaky under load), after the corpus step that ran beside the others. A test that fails among the others without crashing runs once more alone after them: a pass shows as `ok-again` and counts, so load flakiness stays visible without failing the check; a second failure, or a crash, fails it (mitcad#657). |
 
 ctests by what changed (`--ctest auto`, the default; mitcad#134): each
 ctest has a fingerprint of what it depends on, and is skipped (an
@@ -1377,7 +1387,8 @@ test first renames its logs to `ui-<name>.failed.log` and
 UI test that crashed runs once more under gdb (`UI_GDB=1`), its log
 `ui-<name>.gdb.log` and the app's in `ui-<name>.gdb/`; the test stays
 failed whatever that run gives. UI tests run `--ui-jobs` at once, by
-default `MITCAD_UI_JOBS`, else 4 (each takes about 0.5 G without gdb).
+default the test runner's learnt cap within `MITCAD_UI_JOBS`, else 4
+(each takes about 0.5 G without gdb), each within its learnt room.
 
 The ctest and corpus steps run through the test runner
 ([mitcad-testrun](#the-test-runner-mitcad-testrun), `--schedule`) when it
@@ -1403,14 +1414,47 @@ of two machine-wide slots (`flock` on `MITCAD_TEST_LOCK`, default
 `~/.mitcad-test.lock` and `.2`; `MITCAD_TEST_SLOTS`), so at most two checks
 test concurrently; the runner needs none, as it starts a test only within
 the memory left. Each run has a memory limit (`--memory`,
-`MITCAD_CHECK_MEMORY`, default 12G, `none` to disable): the run goes into
+`MITCAD_CHECK_MEMORY`, `none` to disable): the run goes into
 a systemd slice of its own with that limit (no swap), made beneath the
 slice the check was started in, so that a job slice's ceiling above it
 holds too, and the runner's test scopes go into the same slice, so that
 the limit covers the tests as well and the runner's budget is a share of
 it (85 %). The slice goes when the run ends or is stopped. Without
 `busctl` the run is a scope with the limit in the caller's slice, as
-before. Build and lint use half the cores unless
+before.
+
+The memory, by default (`--memory auto`, mitcad#872), depends on where
+the check runs, and the run's first lines say which applied:
+
+- **On bare metal** the budget follows the free memory: the runner runs
+  with `--memory-budget free`, and starts a test only while the memory
+  available (`MemAvailable`, or less where a slice above it, the job slice
+  among them, is nearer its limit) exceeds a reserve for the desktop and
+  the other jobs by what the test is predicted to take and the running
+  tests are still predicted to grow into, read again before each start;
+  the corpus tests' children do the same (`MITCAD_CORPUS_RESERVE`). So a
+  check backs off while another job (an agent's build) takes memory and
+  uses the room when it ends; the tests' own hard limits stay as the
+  safety net. The reserve is `MITCAD_CHECK_RESERVE`, else the larger of
+  4G and a tenth of the memory; the run's slice is limited to the memory
+  less the reserve.
+- **In a virtual machine** (`systemd-detect-virt --vm`, WSL, or the
+  hypervisor flag in `/proc/cpuinfo`), whose free memory can read low
+  until it asks for more (dynamic memory, ballooning), it is a fixed 12G
+  as before.
+- A size given with `--memory` or `MITCAD_CHECK_MEMORY` is used as given
+  anywhere (the old behaviour).
+
+The steps overlap (`--overlap auto`, `MITCAD_CHECK_OVERLAP`; mitcad#872)
+when the test runner runs the tests: the lint steps run beside the ctest
+step, and the corpus step beside the UI tests (before `ui-compute` and the
+UI tests that run again alone, the run waits for it; a `wait for <group>`
+row gives that wait). Each group runs in the background, its output
+printed when it ends (`check-logs/<group>.out`) and its rows added to the
+table. In 0.33.0's Linux release check the corpus step (8 min, 1.6 tests
+at once, 18 % of the CPU) and the UI tests (10.5 min) ran one after the
+other; beside each other they take the longer of the two. `--overlap off`
+runs one step after another. Build and lint use half the cores unless
 `CMAKE_BUILD_PARALLEL_LEVEL` / `CARGO_BUILD_JOBS` are set.
 
 ### Faster builds

@@ -21,7 +21,7 @@ fn main() -> ExitCode {
         }
     };
     // The learnt UI entries at once, or check-all's UI runs to learn from.
-    if options.ui_cap || options.record_ui.is_some() {
+    if options.ui_cap || options.ui_rooms || options.record_ui.is_some() {
         return match concurrency::command(&options) {
             Ok(text) => {
                 println!("{text}");

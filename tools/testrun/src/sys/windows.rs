@@ -337,6 +337,13 @@ impl Process {
         self.exit
     }
 
+    /// The tree's working set now: not sampled here (the free budget,
+    /// `--memory-budget free`, is for bare-metal Linux), so its whole
+    /// prediction counts as still to come.
+    pub fn current(&self) -> Option<u64> {
+        None
+    }
+
     /// Kills the whole tree.
     pub fn kill(&mut self) {
         unsafe {

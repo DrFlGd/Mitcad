@@ -292,6 +292,47 @@ fn plan_corpus(tests: &mut [Test], room: Room, margin: f64, factor: f64, floor: 
     }
 }
 
+/// The free budget (`--memory-budget free`, mitcad#872): its cap and
+/// reserve, and what it was over the run, for the report.
+#[derive(Clone, Copy, Debug)]
+struct Free {
+    /// The most it is: `options::FREE_CAP` of the memory (the lowest
+    /// cgroup limit above the runner where lower).
+    cap: u64,
+    /// The memory left to the rest of the machine.
+    reserve: u64,
+    /// At the start, the lowest and the highest at a decision.
+    first: u64,
+    lowest: u64,
+    highest: u64,
+}
+
+impl Free {
+    fn note(&mut self, budget: u64) {
+        self.lowest = self.lowest.min(budget);
+        self.highest = self.highest.max(budget);
+    }
+
+    /// The line of the report and of the run's first lines.
+    fn line(&self, mean: Option<u64>) -> String {
+        let mut line = format!(
+            "Memory budget from the free memory: the memory available less a reserve of {}, read again before each test starts, at most {}; {} at the start",
+            report::size(self.reserve),
+            report::size(self.cap),
+            report::size(self.first)
+        );
+        if let Some(mean) = mean {
+            line.push_str(&format!(
+                ", {} - {} over the run (mean {})",
+                report::size(self.lowest),
+                report::size(self.highest),
+                report::size(mean)
+            ));
+        }
+        line
+    }
+}
+
 /// The machine over the run, weighted by the time between samples.
 #[derive(Default)]
 struct Samples {
@@ -300,6 +341,9 @@ struct Samples {
     load: f64,
     memory_time: f64,
     memory_used: f64,
+    /// The free budget times the time (`Free`).
+    budget_time: f64,
+    budget_sum: f64,
 }
 
 pub struct Runner<'o> {
@@ -316,6 +360,9 @@ pub struct Runner<'o> {
     ceiling: u64,
     /// The budget's basis came from MITCAD_TEST_MEMORY (not re-read).
     fixed_basis: bool,
+    /// The free budget, read again at each decision (`--memory-budget
+    /// free`); None: `limits.budget` stays as given.
+    free: Option<Free>,
     cgroup: bool,
     machine: Machine,
     out: PathBuf,
@@ -473,7 +520,25 @@ impl<'o> Runner<'o> {
                 tests[i].lane = scheduling;
             }
         }
-        let budget = o.memory_budget.bytes(memory);
+        let mut budget = o.memory_budget.bytes(memory);
+        // The free budget starts at what the machine has free now; the
+        // corpus tests' children are planned within it.
+        let free = (o.memory_budget == Budget::Free).then(|| {
+            let reserve = o
+                .memory_reserve
+                .unwrap_or_else(|| options::default_reserve(memory));
+            let first = schedule::free_budget(budget, 0, 0, sys::available_memory(), reserve);
+            Free {
+                cap: budget,
+                reserve,
+                first,
+                lowest: first,
+                highest: first,
+            }
+        });
+        if let Some(free) = &free {
+            budget = free.first;
+        }
         let ceiling = (memory as f64 * 0.95) as u64;
         // The corpus tests' children at once from their files' history.
         if o.corpus_children {
@@ -530,6 +595,7 @@ impl<'o> Runner<'o> {
             ui_learnt,
             ceiling,
             fixed_basis,
+            free,
             cgroup: o.cgroups && sys::cgroups_available(),
             machine,
             status: out.join("status.txt"),
@@ -579,6 +645,10 @@ impl<'o> Runner<'o> {
             self.jobs,
             self.ui_line()
         );
+        if let Some(free) = &self.free {
+            out.push_str(&free.line(None));
+            out.push('\n');
+        }
         out.push_str("  rank_s  wall_s  cores    memory  score  name  [flags]\n");
         for t in order {
             let p = &t.prediction;
@@ -667,6 +737,9 @@ impl<'o> Runner<'o> {
             report::size(self.limits.budget),
             sys::method(self.cgroup)
         );
+        if let Some(free) = &self.free {
+            println!("{}", free.line(None));
+        }
         let lane: Vec<String> = self
             .tests
             .iter()
@@ -767,13 +840,20 @@ impl<'o> Runner<'o> {
             s.load += load * dt;
         }
         let physical = sys::physical_memory();
-        if let Some(available) = sys::available_memory() {
+        let available = sys::available_memory();
+        if let Some(available) = available {
             // Of the physical memory assigned now (the budget's basis may
             // be larger).
             let total = physical.unwrap_or(self.machine.memory).max(1) as f64;
             let used = (1.0 - available as f64 / total).clamp(0.0, 1.0);
             s.memory_time += dt;
             s.memory_used += used * dt;
+        }
+        if self.free.is_some() {
+            let budget = self.free_budget_now(available);
+            let s = &mut self.samples;
+            s.budget_time += dt;
+            s.budget_sum += budget as f64 * dt;
         }
         let load = self.load;
         for t in &mut self.tests {
@@ -789,7 +869,7 @@ impl<'o> Runner<'o> {
     /// share budget is read again and only ever grows. An absolute
     /// `--memory-budget` or MITCAD_TEST_MEMORY stays as given.
     fn refresh_budget(&mut self, physical: Option<u64>) {
-        let Budget::Share(share) = self.o.memory_budget else {
+        let Some(share) = self.o.memory_budget.share() else {
             return;
         };
         if self.fixed_basis {
@@ -798,9 +878,32 @@ impl<'o> Runner<'o> {
         let basis = options::budget_basis(None, physical, sys::commit_limit());
         if basis > self.machine.memory {
             self.machine.memory = basis;
-            self.limits.budget = Budget::Share(share).bytes(basis);
+            let budget = Budget::Share(share).bytes(basis);
+            match &mut self.free {
+                Some(free) => free.cap = budget,
+                None => self.limits.budget = budget,
+            }
             self.ceiling = (basis as f64 * 0.95) as u64;
         }
+    }
+
+    /// The free budget now (`schedule::free_budget`): the running tests'
+    /// predictions, their growth still to come (their predictions less
+    /// their working sets now) and the available memory read now.
+    fn free_budget_now(&self, available: Option<u64>) -> u64 {
+        let Some(free) = &self.free else {
+            return self.limits.budget;
+        };
+        let mut memory = 0_u64;
+        let mut pending = 0_u64;
+        for t in &self.tests {
+            if let State::Running(active) = &t.state {
+                memory = memory.saturating_add(t.prediction.memory);
+                let grows = schedule::pending(t.prediction.memory, active.process.current());
+                pending = pending.saturating_add(grows);
+            }
+        }
+        schedule::free_budget(free.cap, memory, pending, available, free.reserve)
     }
 
     /// Whether a waiting test's dependencies are done.
@@ -883,9 +986,17 @@ impl<'o> Runner<'o> {
                     schedule::admit_fixed(&c, &running, self.jobs).is_ok()
                 }),
                 Mode::Schedule => {
+                    let available = sys::available_memory();
+                    if self.free.is_some() {
+                        let budget = self.free_budget_now(available);
+                        self.limits.budget = budget;
+                        if let Some(free) = &mut self.free {
+                            free.note(budget);
+                        }
+                    }
                     let now = Now {
                         load: self.load,
-                        available: sys::available_memory(),
+                        available,
                         lane_waiting: self.lane_waiting(),
                     };
                     let admissible: Vec<usize> = ready
@@ -1013,6 +1124,13 @@ impl<'o> Runner<'o> {
         if !t.corpus {
             return env;
         }
+        // The free budget's reserve holds the children too, each checked
+        // against the available memory before it starts (unless the caller
+        // set one).
+        let caller_reserve = std::env::var_os(corpus::RESERVE).is_some();
+        if let Some(free) = self.free.as_ref().filter(|_| !caller_reserve) {
+            env.push((corpus::RESERVE.to_owned(), free.reserve.to_string()));
+        }
         let (files, runs) = self.corpus_tables(i);
         if let Some(dir) = files.parent() {
             let _ = fs::create_dir_all(dir);
@@ -1027,15 +1145,18 @@ impl<'o> Runner<'o> {
         env
     }
 
-    /// The runs a corpus test's children recorded, kept for the profiles.
-    fn take_file_runs(&mut self, i: usize) {
+    /// The runs a corpus test's children recorded, kept for the profiles;
+    /// when it passed without any although it has files, it imports in one
+    /// process now and its files go (`corpus::one_process`).
+    fn take_file_runs(&mut self, i: usize, passed: bool) {
         if !self.tests[i].corpus || !self.records_files() {
             return;
         }
         let (_, runs) = self.corpus_tables(i);
         let text = fs::read_to_string(&runs).unwrap_or_default();
         let rows = corpus::parse_record(&text, unix_now());
-        if !rows.is_empty() {
+        let known = self.tests[i].files.len();
+        if !rows.is_empty() || corpus::one_process(passed, rows.len(), known) {
             let name = self.tests[i].def.name.clone();
             self.file_records.push((name, rows));
         }
@@ -1043,7 +1164,6 @@ impl<'o> Runner<'o> {
 
     /// Measures, classifies and records a test that ended.
     fn finish(&mut self, i: usize, mut active: Active, exit: sys::Exit) {
-        self.take_file_runs(i);
         let usage = active.process.usage();
         let wall = active.start.elapsed().as_secs_f64();
         let end = self.started.elapsed().as_secs_f64();
@@ -1057,6 +1177,7 @@ impl<'o> Runner<'o> {
             disk_full: self.disk_low() || ctest::says_disk_full(&output),
         };
         let kind = schedule::classify(&seen);
+        self.take_file_runs(i, kind == ResultKind::Passed);
         let load = if active.samples > 0 {
             active.load_sum / f64::from(active.samples)
         } else {
@@ -1261,13 +1382,20 @@ impl<'o> Runner<'o> {
         let per = |sum: f64, time: f64| if time > 0.0 { sum / time } else { 0.0 };
         let used = per(s.memory_used, s.memory_time);
         let mean_memory_used = (s.memory_time > 0.0).then_some(used);
+        // The free budget: the report's budget is its cap, its line tells
+        // what it was over the run.
+        let free = self.free.map(|free| {
+            let mean = (s.budget_time > 0.0).then(|| per(s.budget_sum, s.budget_time) as u64);
+            free.line(mean)
+        });
+        let budget = self.free.map_or(self.limits.budget, |free| free.cap);
         let summary = Summary {
             mode: self.mode_name(),
             method: sys::method(self.cgroup),
             elapsed: self.started.elapsed().as_secs_f64(),
             cores: self.machine.cores,
             memory: self.machine.memory,
-            budget: self.limits.budget,
+            budget,
             mean_load: per(s.load, s.time),
             mean_memory_used,
             outcomes: &outcomes,
@@ -1275,6 +1403,7 @@ impl<'o> Runner<'o> {
             stop: self.stop.as_deref(),
             profiles: self.profiles.as_deref().filter(|_| self.o.record),
             ui,
+            free: free.as_deref(),
         };
         let text = report::render(&summary);
         println!("\n{text}");

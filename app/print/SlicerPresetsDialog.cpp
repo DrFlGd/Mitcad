@@ -39,6 +39,7 @@ namespace {
 constexpr int kPathRole = Qt::UserRole;       // a preset row's file; empty on a group
 constexpr int kKindRole = Qt::UserRole + 1;   // printer, process, material
 constexpr int kChoiceRole = Qt::UserRole + 2; // a same-name row's copy or override; empty else
+constexpr int kSystemRole = Qt::UserRole + 3; // a row of the slicer's own presets (mitcad#871)
 
 QString text(const QJsonObject& object, const char* field) {
   return object.value(QLatin1String(field)).toString();
@@ -283,40 +284,63 @@ void SlicerPresetsDialog::showSlicer(int index) {
   m_loggedTicks.clear();
   m_list->clear();
   const QJsonArray presets = slicer.value(QStringLiteral("presets")).toArray();
-  const std::pair<QString, QString> groups[] = {{QStringLiteral("printer"), tr("Printers")},
-                                                {QStringLiteral("process"), tr("Processes")},
-                                                {QStringLiteral("material"), tr("Filaments")}};
+  // The user's presets, then the slicer's own the user enabled there
+  // (mitcad#871), in groups of their own, collapsed at first.
+  const QString slicerShown = text(slicer, "name");
+  struct Group {
+    QString kind;
+    QString title;
+    bool system;
+  };
+  const Group groups[] = {{QStringLiteral("printer"), tr("Printers"), false},
+                          {QStringLiteral("process"), tr("Processes"), false},
+                          {QStringLiteral("material"), tr("Filaments"), false},
+                          {QStringLiteral("printer"), tr("Printers of %1").arg(slicerShown), true},
+                          {QStringLiteral("process"), tr("Processes of %1").arg(slicerShown), true},
+                          {QStringLiteral("material"), tr("Filaments of %1").arg(slicerShown), true}};
   bool anySame = false;
-  QTreeWidgetItem* first = nullptr; // the current row at first
-  for (const auto& [kind, title] : groups) {
+  QTreeWidgetItem* first = nullptr;      // the current row at first
+  QTreeWidgetItem* firstGroup = nullptr; // else the first group
+  QVector<QTreeWidgetItem*> userGroups;
+  for (const Group& kindGroup : groups) {
+    const QString& kind = kindGroup.kind;
     QTreeWidgetItem* group = nullptr;
     for (const QJsonValue& value : presets) {
       const QJsonObject preset = value.toObject();
-      if (text(preset, "kind") != kind) {
+      const bool system = preset.value(QStringLiteral("system")).toBool();
+      if (text(preset, "kind") != kind || system != kindGroup.system) {
         continue;
       }
       if (group == nullptr) {
         // The group's box ticks all or none of it.
-        group = new QTreeWidgetItem(m_list, {title});
+        group = new QTreeWidgetItem(m_list, {kindGroup.title});
         group->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsAutoTristate);
         group->setCheckState(0, Qt::Unchecked);
         group->setFirstColumnSpanned(true);
         QFont bold = group->font(0);
         bold.setBold(true);
         group->setFont(0, bold);
+        if (!kindGroup.system) {
+          userGroups.append(group);
+        }
+        if (firstGroup == nullptr) {
+          firstGroup = group;
+        }
       }
       auto* row = new QTreeWidgetItem(group, {text(preset, "name")});
       row->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
       row->setData(0, kPathRole, text(preset, "path"));
       row->setData(0, kKindRole, kind);
+      row->setData(0, kSystemRole, system);
       const QJsonObject same = preset.value(QStringLiteral("same")).toObject();
-      if (first == nullptr) {
+      if (first == nullptr && !system) {
         first = row;
       }
       if (same.isEmpty()) {
-        // New ones are ticked at first.
-        row->setCheckState(0, Qt::Checked);
-        m_loggedTicks.insert(row, true);
+        // New ones of the user's are ticked at first; the slicer's own
+        // not (a user preset mostly inherits from them already).
+        row->setCheckState(0, system ? Qt::Unchecked : Qt::Checked);
+        m_loggedTicks.insert(row, !system);
         continue;
       }
       // A name the target has: the warning colour, what it meets as the
@@ -347,12 +371,17 @@ void SlicerPresetsDialog::showSlicer(int index) {
       });
     }
   }
-  m_list->expandAll();
+  // The user's groups open, the slicer's own closed: they can be long.
+  for (QTreeWidgetItem* group : std::as_const(userGroups)) {
+    group->setExpanded(true);
+  }
   m_sameLabel->setVisible(anySame);
   m_sameAll->setVisible(anySame);
   m_loggedSameAll.clear();
   if (first != nullptr) {
     m_list->setCurrentItem(first);
+  } else if (firstGroup != nullptr) {
+    m_list->setCurrentItem(firstGroup);
   }
   m_building = false;
   qDebug().noquote() << QStringLiteral("Slicer presets opened: %1, %2 presets")
@@ -451,10 +480,11 @@ QJsonObject SlicerPresetsDialog::command() const {
 void SlicerPresetsDialog::logRows() {
   for (QTreeWidgetItem* row : presetRows(m_list)) {
     const QString choice = row->data(0, kChoiceRole).toString();
-    qDebug().noquote() << QStringLiteral("Slicer presets row: %1 %2, %3%4")
-                              .arg(row->data(0, kKindRole).toString(), row->text(0),
-                                   row->checkState(0) == Qt::Checked ? QStringLiteral("ticked")
-                                                                     : QStringLiteral("unticked"),
+    const QString ticked =
+        row->checkState(0) == Qt::Checked ? QStringLiteral("ticked") : QStringLiteral("unticked");
+    const QString system = row->data(0, kSystemRole).toBool() ? QStringLiteral(", system") : QString();
+    qDebug().noquote() << QStringLiteral("Slicer presets row: %1 %2, %3%4%5")
+                              .arg(row->data(0, kKindRole).toString(), row->text(0), ticked, system,
                                    choice.isEmpty() ? QString()
                                                     : QStringLiteral(", same name: %1, %2").arg(row->toolTip(0), choice));
   }

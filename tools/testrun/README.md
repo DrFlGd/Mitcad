@@ -35,6 +35,9 @@ build/dev/core/mitcad-testrun --build build/dev --measure -j 3
 # Scheduling by memory and CPU:
 build/dev/core/mitcad-testrun --build build/dev --schedule
 
+# On bare metal, by the memory the machine has free (less a reserve):
+build/dev/core/mitcad-testrun --build build/dev --schedule --memory-budget free --memory-reserve 6G
+
 # What would run, in which order, with what predictions (runs nothing):
 build/dev/core/mitcad-testrun --build build/dev --schedule --dry-run
 
@@ -183,6 +186,22 @@ Whenever a test ends, and every 0.5 s:
    assignment as physical memory (6 or 18 GiB on different runs of the
    same VM): give it `--memory-budget` as a size (e.g. `24G`) or set
    `MITCAD_TEST_MEMORY` to its maximum memory.
+   **On bare metal**, `--memory-budget free` (mitcad#872;
+   `tools/check-all.sh` gives it there, not in a VM) is a budget from the
+   free memory: at each decision it is the running tests' predicted
+   memory plus the memory available less a reserve (`--memory-reserve`,
+   default the larger of 4G and a tenth of the basis) less what the
+   running tests are still predicted to grow into (each one's prediction
+   less its scope's working set now: a test just started has not yet
+   taken its memory, which the available memory does not show), at most
+   85 % of the basis (`schedule::free_budget`). So a candidate starts only
+   while the memory available exceeds the reserve by its prediction and
+   that growth: when another job (an agent's build) takes memory, fewer
+   tests start, and more when it ends. The corpus tests get the reserve
+   as `MITCAD_CORPUS_RESERVE` for their children ([below](#corpus-tests)).
+   The run's first lines and the end report give it (`Memory budget from
+   the free memory: ...`, at the start and its range over the run); the
+   report's `budget` is its cap.
 2. **CPU is the soft limit:** no test starts at or above `--cpu-gate`
    (0.9) of the load; the load is the measured one or the running tests'
    predicted cores where higher (a test just started has not yet loaded
@@ -276,7 +295,11 @@ itself and hands over (`--record-ui`, below).
   UI entries at once. Bounded by `--ui-max`, else `MITCAD_UI_JOBS` (4 for
   the learning when neither is given), it starts at the bound (Linux
   with `MITCAD_UI_JOBS=12`: 12, as before), drops
-  by one (at least 1) after a run with a contention failure, and grows by
+  by one (at least 1) after a run with contention failures of two or more
+  UI entries (`CAP_DROP_TESTS`, mitcad#872: one test's contention failure
+  lowers only its room, which the scheduler and check-all keep; ui-pick
+  and ui-sweep alone held Linux's 196 UI tests at 7 or 8 at once of the
+  bound 12, since check-all did not keep the rooms), and grows by
   one after 2 clean runs that reached it (no UI entry failed beside
   others), never above the bound. A run with fewer UI entries at once, or
   with a UI failure that failed alone too, leaves it. The end report gives
@@ -303,6 +326,10 @@ not as ctests. For such a caller:
 ```sh
 # The cap to run at (within the bound; MITCAD_UI_JOBS when --ui-max is not given):
 build/dev/core/mitcad-testrun --ui-cap --ui-max "$MITCAD_UI_JOBS"
+# Each UI entry's learnt room, a line each: name, the most other UI entries
+# beside it (check-all starts such a test only while few enough run, and
+# no other while it runs with its room full, as the scheduler does):
+build/dev/core/mitcad-testrun --ui-rooms
 # Its UI runs, a line each in the order they ended (both attempts of a
 # test rerun alone): name, exit status, seconds, other UI entries beside it.
 printf 'ui-pick\t1\t40\t11\nui-pick\t0\t38\t0\n' > ui-runs.tsv
@@ -355,6 +382,22 @@ mitcad#832:
   process) keep the caller's variables, and their predictions are kept
   out of the room the others share. The run's first lines name each
   planned test's children; `--dry-run` shows the variables.
+- **A test that no longer imports in children** (mitcad#872): a corpus
+  test that passes while its children recorded nothing, although its
+  profile has files, imports in one process now, and its files go from
+  the profile (`corpus::one_process`), so that the next run predicts it
+  by its own history. `f3d.corpus_designs` checks its designs one after
+  another again since 0.32.0; planned by its files it was predicted at
+  its longest design's 314 s with two children's 7 GiB held for it, and
+  took 498 s.
+- **Children wait for memory** (mitcad#872): with the budget from the
+  free memory the runner gives each corpus test `MITCAD_CORPUS_RESERVE`
+  (the reserve, unless the caller set it); a child beside others then
+  starts only while the memory available (`MemAvailable`, or less where
+  a cgroup above is nearer its limit, its working set without the page
+  cache) exceeds the reserve by the child's expected peak (its file's
+  last, from `MITCAD_CORPUS_FILES`, else the limit per child), checked
+  again every 0.5 s (`parallel_runs.hpp`, `may_start`).
 
 ## Tests related to a change
 

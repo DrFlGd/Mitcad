@@ -143,6 +143,35 @@ pub fn effective_load(running: &Running, now: &Now, limits: &Limits) -> f64 {
     now.load.max(running.cores / limits.cores.max(1.0))
 }
 
+/// The free budget (`--memory-budget free`, mitcad#872), at a decision:
+/// the running tests' predicted memory plus what the machine has
+/// available beyond the reserve, less what the running tests are still
+/// predicted to grow into (`pending`: a test just started has not yet
+/// taken its memory, which `available` does not show), never above `cap`.
+/// So a candidate fits when its prediction is within the available memory
+/// less the reserve and the running tests' pending growth: when another
+/// job (an agent's build) takes memory, fewer tests start; when it ends,
+/// more. Without a reading of the available memory: the cap.
+pub fn free_budget(
+    cap: u64,
+    running_memory: u64,
+    pending: u64,
+    available: Option<u64>,
+    reserve: u64,
+) -> u64 {
+    let Some(available) = available else {
+        return cap;
+    };
+    let room = available.saturating_sub(reserve).saturating_sub(pending);
+    running_memory.saturating_add(room).min(cap)
+}
+
+/// What a running test may still grow into: its predicted memory less
+/// the working set it has now (all of it where that is not known).
+pub fn pending(predicted: u64, current: Option<u64>) -> u64 {
+    predicted.saturating_sub(current.unwrap_or(0))
+}
+
 /// The rules every mode keeps: tests that run alone, resource locks.
 fn admit_common(c: &Candidate, running: &Running) -> Result<(), Refusal> {
     if running.count == 0 {
@@ -597,6 +626,88 @@ mod tests {
         // The budget still holds: the predicted sum is the hard limit.
         let t13 = test(1.0, 1.0, 13.0);
         assert_eq!(admit(&t13, &busy, &assigned, &LIMITS), Err(Refusal::Memory));
+    }
+
+    /// How many tests of `each` GiB start one after another with the free
+    /// budget (`free_budget`) while the machine reads `available` GiB
+    /// (unchanged as they start: a test just started has not yet taken
+    /// its memory, its whole prediction is pending), with `others` GiB of
+    /// tests running already that use `using` GiB of it now.
+    fn free_starts(available: f64, others: f64, using: f64, each: f64) -> usize {
+        let cap = gib(28.0);
+        let reserve = gib(6.0);
+        let limits = Limits {
+            max_parallel: 64,
+            cores: 64.0,
+            ..LIMITS
+        };
+        let mut started = vec![test(100.0, 0.1, others)];
+        let mut pending_sum = pending(gib(others), Some(gib(using)));
+        loop {
+            let now = Now {
+                available: Some(gib(available)),
+                ..Now::default()
+            };
+            let r = running(&started);
+            let budget = free_budget(cap, r.memory, pending_sum, now.available, reserve);
+            let limits = Limits { budget, ..limits };
+            let c = test(100.0, 0.1, each);
+            if admit(&c, &r, &now, &limits).is_err() {
+                return started.len() - 1;
+            }
+            pending_sum += pending(c.prediction.memory, None);
+            started.push(c);
+        }
+    }
+
+    #[test]
+    fn the_free_budget_follows_the_available_memory() {
+        let g = gib;
+        // 30 GiB available, 6 reserved: 24 GiB for the tests, at most the
+        // 28 GiB cap with what runs.
+        assert_eq!(
+            free_budget(g(28.0), g(2.0), 0, Some(g(30.0)), g(6.0)),
+            g(26.0)
+        );
+        assert_eq!(
+            free_budget(g(28.0), g(10.0), 0, Some(g(30.0)), g(6.0)),
+            g(28.0)
+        );
+        // A running test's growth still to come is not yet in the reading.
+        assert_eq!(
+            free_budget(g(28.0), g(2.0), g(2.0), Some(g(30.0)), g(6.0)),
+            g(24.0)
+        );
+        // Below the reserve only what runs keeps its place: nothing starts.
+        assert_eq!(
+            free_budget(g(28.0), g(4.0), 0, Some(g(5.0)), g(6.0)),
+            g(4.0)
+        );
+        // Without a reading, the cap.
+        assert_eq!(free_budget(g(28.0), g(4.0), 0, None, g(6.0)), g(28.0));
+        assert_eq!(pending(g(3.0), Some(g(1.0))), g(2.0));
+        assert_eq!(pending(g(3.0), Some(g(5.0))), 0);
+        assert_eq!(pending(g(3.0), None), g(3.0));
+    }
+
+    #[test]
+    fn a_build_beside_the_check_holds_its_tests_back() {
+        // The machine free: 30 GiB available, 6 reserved; a 2 GiB test
+        // already at its peak. Twelve more of 2 GiB fit in the 24 GiB.
+        assert_eq!(free_starts(30.0, 2.0, 2.0, 2.0), 12);
+        // An agent's build starts and takes 18 GiB: 12 GiB available, so
+        // only three more start (6 GiB beyond the reserve), not twelve
+        // that the build would have the machine kill.
+        assert_eq!(free_starts(12.0, 2.0, 2.0, 2.0), 3);
+        // The build ends: the room comes back.
+        assert_eq!(free_starts(30.0, 2.0, 2.0, 2.0), 12);
+        // The running test has taken only half of its 2 GiB yet: its other
+        // half is kept for it.
+        assert_eq!(free_starts(12.0, 2.0, 1.0, 2.0), 2);
+        // Below the reserve nothing more starts beside what runs.
+        assert_eq!(free_starts(5.0, 2.0, 2.0, 2.0), 0);
+        // The cap holds on an idle machine (28 GiB with the running 2).
+        assert_eq!(free_starts(60.0, 2.0, 2.0, 2.0), 13);
     }
 
     #[test]

@@ -43,6 +43,8 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
+#include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -52,6 +54,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepMesh_DelabellaMeshAlgoFactory.hxx>
 #include <BRepMesh_MeshAlgoFactory.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <IMeshTools_MeshAlgo.hxx>
@@ -290,8 +293,8 @@ int compare(bool holes, int samples) {
   const double degree = 3.14159265358979323846 / 180.0;
   const std::size_t bound = mitcad::kViewFaceTriangles;
   const Candidate candidates[] = {
-      {"final: 0.01 mm, 5 deg", mitcad::viewMeshOptions()},
-      {"checked planes (mitcad#644)", mitcad::checkedPlaneMeshOptions()},
+      {"default planes: 0.01 mm, 5 deg", mitcad::defaultPlaneMeshOptions()},
+      {"final, checked planes (mitcad#644)", mitcad::viewMeshOptions()},
       {"fast planes: 0.01 mm, 5 deg", mitcad::io::MeshOptions{0.01, 5 * degree, false, bound, true, false}},
       {"0.02 mm, 10 deg", mitcad::io::MeshOptions{0.02, 10 * degree, false, bound, false, false}},
       {"0.05 mm, 20 deg", mitcad::io::MeshOptions{0.05, 20 * degree, false, bound, false, false}},
@@ -647,7 +650,10 @@ void testCancelFailureDestruction() {
 // A stand-in for a face whose triangulation does not end (mitcad#846, io::
 // use_face_algorithms_for_tests): a cylinder's face loops until released,
 // never testing the stop, then leaves a triangulation in the face it was
-// given; other faces are triangulated by the default insertion and counted.
+// given; other faces are triangulated by the inner factory's algorithm and
+// counted. Installed for Delabella's planes too
+// (use_fast_plane_algorithms_for_tests), as the final tier's planes go
+// through them.
 struct Endless {
   std::atomic<bool> entered{false};
   std::atomic<bool> release{false};
@@ -683,16 +689,17 @@ private:
 
 class EndlessCylinders : public IMeshTools_MeshAlgoFactory {
 public:
-  explicit EndlessCylinders(Endless& state) : m_state(state) {}
+  EndlessCylinders(Endless& state, occ::handle<IMeshTools_MeshAlgoFactory> inner)
+      : m_state(state), m_inner(std::move(inner)) {}
 
   occ::handle<IMeshTools_MeshAlgo> GetAlgo(const GeomAbs_SurfaceType type,
                                            const IMeshTools_Parameters& parameters) const override {
-    return new EndlessFace(m_state, BRepMesh_MeshAlgoFactory().GetAlgo(type, parameters),
-                           type == GeomAbs_Cylinder);
+    return new EndlessFace(m_state, m_inner->GetAlgo(type, parameters), type == GeomAbs_Cylinder);
   }
 
 private:
   Endless& m_state;
+  occ::handle<IMeshTools_MeshAlgoFactory> m_inner;
 };
 
 // A display meshing (the final tier, as opening a design meshes it)
@@ -703,7 +710,9 @@ private:
 // it ends, writes nothing into the body.
 void testCancelEndlessFace() {
   Endless state;
-  mitcad::io::use_face_algorithms_for_tests(new EndlessCylinders(state));
+  mitcad::io::use_face_algorithms_for_tests(new EndlessCylinders(state, new BRepMesh_MeshAlgoFactory()));
+  mitcad::io::use_fast_plane_algorithms_for_tests(
+      new EndlessCylinders(state, new BRepMesh_DelabellaMeshAlgoFactory()));
   const auto body = std::make_shared<mitcad::geometry::Shape>(BRepPrimAPI_MakeCylinder(10.0, 30.0).Shape());
   mitcad::ModelJob job;
   // Cancel as the window's Cancel does, once the endless face is under way
@@ -719,6 +728,7 @@ void testCancelEndlessFace() {
   const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
   cancel.join();
   mitcad::io::use_face_algorithms_for_tests(occ::handle<IMeshTools_MeshAlgoFactory>());
+  mitcad::io::use_fast_plane_algorithms_for_tests(occ::handle<IMeshTools_MeshAlgoFactory>());
   mitcad::logDisplayMeshing(meshing, QStringLiteral("endless face"));
   std::printf("display meshing with an endless face cancelled: %.2f s; %s\n", seconds,
               meshing.report.line().c_str());
@@ -831,6 +841,10 @@ void testWarmOpen() {
   for (const ShapePtr& body : shown) {
     CHECK(finalTier(body));
     CHECK(mitcad::viewMeshes(*body));
+    // Meshed to the end, as one meshed on the open: the view's drawers
+    // keep its triangulations without running the mesher (mitcad#878).
+    CHECK(body->display_meshed());
+    CHECK(!mitcad::drawerMeshes(*body));
     const std::size_t before = mitcad::io::presentation_faces_meshed();
     CHECK(StdPrs_ToolTriangulatedShape::IsTessellated(body->occt(), drawer));
     StdPrs_ToolTriangulatedShape::Tessellate(body->occt(), drawer);
@@ -860,6 +874,306 @@ void testWarmOpen() {
   QDir(dir).removeRecursively();
 }
 
+// The display mesh files (.mms) in the store's folder.
+int storedMeshFiles(const QString& dir) {
+  int files = 0;
+  QDirIterator it(dir, QStringList{QStringLiteral("*.mms")}, QDir::Files | QDir::Hidden, QDirIterator::Subdirectories);
+  while (it.hasNext()) {
+    it.next();
+    ++files;
+  }
+  return files;
+}
+
+// The display meshes stored after the open (mitcad#880), by a writer made
+// stopped so that the open and what follows it run before it writes:
+// - the open only queues the body (nothing stored in it, no file yet);
+// - the design changed (another hole) and closed before the writer starts
+//   changes nothing: the file written is of the body as opened, and the
+//   next open of the file takes every face from it, meshing none;
+// - the design opened again while its meshes are still queued waits for
+//   them and finds them;
+// - drop() (the store cleared, the program quitting) writes nothing, and
+//   the next open meshes the body and stores it again; a file cut short
+//   (written by no one, as a whole file is renamed into place) is not
+//   used, and the body is meshed and stored again.
+void testDeferredWrite() {
+  const QString dir =
+      QDir::temp().filePath(QStringLiteral("mitcad-deferred-write-%1").arg(QCoreApplication::applicationPid()));
+  QDir(dir).removeRecursively();
+  const QByteArray store = dir.toUtf8();
+  const QString label = QStringLiteral("deferred.mitcad");
+  rust::Box<Document> design = mitcad::new_document();
+  makeFixture(*design, true);
+  const std::string json = std::string(design->to_json());
+  const auto open = [&store, &json]() {
+    rust::Box<Document> document = mitcad::load_document(rust::Str(json));
+    document->set_result_store(rustStr(store), rustStr(QByteArrayLiteral("deferred write test")),
+                               rustStr(QByteArrayLiteral("deferred.mitcad")));
+    run(*document, QJsonObject{{"cmd", "recompute"}});
+    document->persist_results(0.0);
+    return document;
+  };
+
+  std::size_t triangles = 0;
+  {
+    mitcad::DisplayMeshWrites writes(false);
+    {
+      rust::Box<Document> cold = open();
+      mitcad::ModelJob first;
+      const mitcad::DisplayMeshing made = mitcad::meshOpenedForDisplay(*cold, first, true, &writes, label);
+      mitcad::logDisplayMeshing(made, QStringLiteral("deferred cold open"));
+      CHECK(made.bodies == 1 && made.report.meshed > 0);
+      CHECK(made.stored == 0 && made.deferred == 1 && made.storeErrors.isEmpty());
+      CHECK(writes.pending() == 1);
+      CHECK(storedMeshFiles(dir) == 0);
+      triangles = shownTriangles(*cold);
+      CHECK(triangles > 0);
+      // Changed: another hole through the block, the body's shape another.
+      const QString drill = run(*cold, QJsonObject{{"cmd", "sketch.create"}}).value("uid").toString();
+      const QJsonObject circle = run(*cold, QJsonObject{{"cmd", "sketch.add_circle"},
+                                                        {"sketch", drill},
+                                                        {"center", QJsonArray{60, 50}},
+                                                        {"diameter", 6}});
+      run(*cold, QJsonObject{{"cmd", "add_feature"},
+                             {"def", QJsonObject{{"type", "extrude"},
+                                                 {"profiles", QJsonArray{profile(drill, circle.value("region").toString())}},
+                                                 {"start", QJsonObject{{"type", "offset"}, {"offset", -5}}},
+                                                 {"extent", QJsonObject{{"type", "distance"}, {"distance", 30}}},
+                                                 {"operation", "cut"}}}});
+      CHECK(mitcad::shownBodyShapes(*cold).size() == 1);
+      // ... and closed, still before the writer starts.
+    }
+    CHECK(writes.pending() == 1);
+    writes.wait(label);
+    CHECK(writes.pending() == 0);
+    CHECK(storedMeshFiles(dir) == 1);
+  }
+  {
+    rust::Box<Document> warm = open();
+    mitcad::ModelJob second;
+    const mitcad::DisplayMeshing taken = mitcad::meshOpenedForDisplay(*warm, second, true);
+    mitcad::logDisplayMeshing(taken, QStringLiteral("deferred warm open"));
+    CHECK(taken.restored == 1 && taken.restoredFaces == 89);
+    CHECK(taken.bodies == 0 && taken.report.meshed == 0);
+    CHECK(shownTriangles(*warm) == triangles);
+  }
+
+  // Opened again while its meshes are still queued: the open waits for them.
+  QDir(dir).removeRecursively();
+  {
+    mitcad::DisplayMeshWrites writes(false);
+    rust::Box<Document> cold = open();
+    mitcad::ModelJob first;
+    const mitcad::DisplayMeshing made = mitcad::meshOpenedForDisplay(*cold, first, true, &writes, label);
+    CHECK(made.deferred == 1 && storedMeshFiles(dir) == 0);
+    rust::Box<Document> again = open();
+    mitcad::ModelJob second;
+    const mitcad::DisplayMeshing taken = mitcad::meshOpenedForDisplay(*again, second, true, &writes, label);
+    mitcad::logDisplayMeshing(taken, QStringLiteral("deferred open again"));
+    CHECK(taken.restored == 1 && taken.report.meshed == 0 && taken.deferred == 0);
+    CHECK(writes.pending() == 0 && storedMeshFiles(dir) == 1);
+  }
+
+  // Dropped: nothing written; the next open meshes and stores the body.
+  QDir(dir).removeRecursively();
+  {
+    mitcad::DisplayMeshWrites writes(false);
+    rust::Box<Document> cold = open();
+    mitcad::ModelJob first;
+    const mitcad::DisplayMeshing made = mitcad::meshOpenedForDisplay(*cold, first, true, &writes, label);
+    CHECK(made.deferred == 1);
+    CHECK(writes.drop() == 1);
+    CHECK(writes.pending() == 0 && storedMeshFiles(dir) == 0);
+  }
+  QString written;
+  {
+    rust::Box<Document> next = open();
+    mitcad::ModelJob job;
+    const mitcad::DisplayMeshing meshed = mitcad::meshOpenedForDisplay(*next, job, true);
+    CHECK(meshed.restored == 0 && meshed.bodies == 1 && meshed.stored == 1);
+    QDirIterator it(dir, QStringList{QStringLiteral("*.mms")}, QDir::Files, QDirIterator::Subdirectories);
+    if (it.hasNext()) {
+      written = it.next();
+    }
+  }
+  // A file cut short: not used, the body meshed and stored again.
+  QFile file(written);
+  CHECK(!written.isEmpty() && file.open(QIODevice::ReadWrite) && file.resize(file.size() / 2));
+  file.close();
+  {
+    rust::Box<Document> next = open();
+    mitcad::ModelJob job;
+    const mitcad::DisplayMeshing meshed = mitcad::meshOpenedForDisplay(*next, job, true);
+    CHECK(meshed.restored == 0 && meshed.bodies == 1 && meshed.stored == 1);
+  }
+  QDir(dir).removeRecursively();
+}
+
+// Two bodies (mitcad#881): a 120 x 100 x 20 mm block, final after its own
+// extrusion at the start, and a 50 x 50 x 20 mm block beside it that a
+// later cut (by name) holes, final only after the last feature.
+std::string twoBodies() {
+  rust::Box<Document> design = mitcad::new_document();
+  const QString first = run(*design, QJsonObject{{"cmd", "sketch.create"}}).value("uid").toString();
+  run(*design, rectangle(first, 0, 0, 120, 100));
+  const QString block = run(*design, QJsonObject{{"cmd", "add_feature"},
+                                                 {"def", QJsonObject{{"type", "extrude"},
+                                                                     {"profiles", QJsonArray{profile(first, kRectangle)}},
+                                                                     {"extent", QJsonObject{{"type", "distance"},
+                                                                                            {"distance", 20}}},
+                                                                     {"operation", "new_body"}}}})
+                            .value("uid")
+                            .toString();
+  CHECK(!block.isEmpty());
+  const QString second = run(*design, QJsonObject{{"cmd", "sketch.create"}}).value("uid").toString();
+  run(*design, rectangle(second, 200, 0, 50, 50));
+  const QString other = run(*design, QJsonObject{{"cmd", "add_feature"},
+                                                 {"def", QJsonObject{{"type", "extrude"},
+                                                                     {"profiles", QJsonArray{profile(second, kRectangle)}},
+                                                                     {"extent", QJsonObject{{"type", "distance"},
+                                                                                            {"distance", 20}}},
+                                                                     {"operation", "new_body"}}}})
+                            .value("uid")
+                            .toString();
+  const QString drill = run(*design, QJsonObject{{"cmd", "sketch.create"}}).value("uid").toString();
+  const QJsonObject circle = run(*design, QJsonObject{{"cmd", "sketch.add_circle"},
+                                                      {"sketch", drill},
+                                                      {"center", QJsonArray{225, 25}},
+                                                      {"diameter", 6}});
+  run(*design, QJsonObject{{"cmd", "add_feature"},
+                           {"def", QJsonObject{{"type", "extrude"},
+                                               {"profiles", QJsonArray{profile(drill, circle.value("region").toString())}},
+                                               {"start", QJsonObject{{"type", "offset"}, {"offset", -5}}},
+                                               {"extent", QJsonObject{{"type", "distance"}, {"distance", 30}}},
+                                               {"operation", "cut"},
+                                               {"participants", QJsonArray{other + QStringLiteral(".b0")}}}}});
+  CHECK(mitcad::shownBodyShapes(*design).size() == 2);
+  return std::string(design->to_json());
+}
+
+// Waits until the meshing beside the recompute is done with every body the
+// recompute put in (or 60 s went by).
+bool waitDone(const mitcad::RecomputeMeshing& during) {
+  const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+  while (during.doneSoFar() + during.leftToStore() < during.given()) {
+    if (std::chrono::steady_clock::now() > until) {
+      return false;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return true;
+}
+
+// The bodies of a batch line of RecomputeMeshing::trace, summed.
+std::size_t tracedBodies(const QStringList& trace) {
+  std::size_t bodies = 0;
+  for (const QString& line : trace) {
+    bodies += static_cast<std::size_t>(line.section(QLatin1Char(' '), 2, 2).toULongLong());
+  }
+  return bodies;
+}
+
+// Display meshes made while the recompute goes on (mitcad#881), as the
+// window's open makes them:
+// - each body goes in once, at its last version (the block after its
+//   extrusion, the other after the cut that names it), is meshed once
+//   beside the recompute, and takes those meshes: nothing is meshed after
+//   the recompute, and the triangles are those of an open without it;
+// - a body changed after it was meshed (as a feature the classification
+//   missed would) is meshed again after the recompute, its stale meshes
+//   left;
+// - the job cancelled: nothing is meshed beside it, the open meshes
+//   nothing either (as a cancelled open), and the meshing stops at once;
+// - the meshing gone before the recompute (the design closed) and the
+//   recompute then run: nothing breaks, the feed is closed.
+void testMeshDuringRecompute() {
+  const std::string json = twoBodies();
+  std::size_t triangles = 0;
+  {
+    rust::Box<Document> plain = mitcad::load_document(rust::Str(json));
+    run(*plain, QJsonObject{{"cmd", "recompute"}});
+    mitcad::ModelJob job;
+    const mitcad::DisplayMeshing meshing = mitcad::meshOpenedForDisplay(*plain, job, false);
+    CHECK(meshing.bodies == 2 && meshing.during == 0);
+    triangles = shownTriangles(*plain);
+    CHECK(triangles > 0);
+  }
+  {
+    rust::Box<Document> document = mitcad::load_document(rust::Str(json));
+    mitcad::ModelJob job;
+    const std::unique_ptr<mitcad::RecomputeMeshing> during = mitcad::RecomputeMeshing::start(*document, job);
+    CHECK(during != nullptr);
+    {
+      const mitcad::AttachedJob attached(*document, job);
+      run(*document, QJsonObject{{"cmd", "recompute"}});
+    }
+    CHECK(waitDone(*during));
+    const mitcad::DisplayMeshing meshing =
+        mitcad::meshOpenedForDisplay(*document, job, false, nullptr, QStringLiteral("during.mitcad"), during.get());
+    mitcad::logDisplayMeshing(meshing, QStringLiteral("during.mitcad"));
+    CHECK(during->given() == 2 && during->changedLater() == 0);
+    CHECK(tracedBodies(meshing.duringTrace) == 2);
+    CHECK(meshing.during == 2 && meshing.duringStale == 0 && meshing.duringLeft == 0);
+    CHECK(meshing.bodies == 0 && meshing.incomplete == 0);
+    CHECK(meshing.shown == 2);
+    CHECK(shownTriangles(*document) == triangles);
+    for (const ShapePtr& body : mitcad::shownBodyShapes(*document)) {
+      CHECK(body->display_meshed());
+      CHECK(finalTier(body));
+      CHECK(edgesWithoutPolygons(body->occt()) == 0);
+    }
+  }
+  {
+    rust::Box<Document> document = mitcad::load_document(rust::Str(json));
+    mitcad::ModelJob job;
+    const std::unique_ptr<mitcad::RecomputeMeshing> during = mitcad::RecomputeMeshing::start(*document, job);
+    run(*document, QJsonObject{{"cmd", "recompute"}});
+    CHECK(waitDone(*during));
+    // The block changed after it was meshed: another hole through it.
+    const QString drill = run(*document, QJsonObject{{"cmd", "sketch.create"}}).value("uid").toString();
+    const QJsonObject circle = run(*document, QJsonObject{{"cmd", "sketch.add_circle"},
+                                                          {"sketch", drill},
+                                                          {"center", QJsonArray{60, 50}},
+                                                          {"diameter", 6}});
+    run(*document, QJsonObject{{"cmd", "add_feature"},
+                               {"def", QJsonObject{{"type", "extrude"},
+                                                   {"profiles", QJsonArray{profile(drill, circle.value("region").toString())}},
+                                                   {"start", QJsonObject{{"type", "offset"}, {"offset", -5}}},
+                                                   {"extent", QJsonObject{{"type", "distance"}, {"distance", 30}}},
+                                                   {"operation", "cut"},
+                                                   {"participants", QJsonArray{QStringLiteral("F2.b0")}}}}});
+    const mitcad::DisplayMeshing meshing =
+        mitcad::meshOpenedForDisplay(*document, job, false, nullptr, QStringLiteral("changed.mitcad"), during.get());
+    mitcad::logDisplayMeshing(meshing, QStringLiteral("changed.mitcad"));
+    CHECK(meshing.during == 1 && meshing.duringStale == 1);
+    CHECK(meshing.bodies == 1);
+    for (const ShapePtr& body : mitcad::shownBodyShapes(*document)) {
+      CHECK(body->display_meshed() && mitcad::io::has_triangulation(body->occt()));
+    }
+  }
+  {
+    rust::Box<Document> document = mitcad::load_document(rust::Str(json));
+    mitcad::ModelJob job;
+    const std::unique_ptr<mitcad::RecomputeMeshing> during = mitcad::RecomputeMeshing::start(*document, job);
+    job.control().cancel();
+    run(*document, QJsonObject{{"cmd", "recompute"}});
+    const auto started = std::chrono::steady_clock::now();
+    const mitcad::DisplayMeshing meshing =
+        mitcad::meshOpenedForDisplay(*document, job, false, nullptr, QStringLiteral("cancelled.mitcad"), during.get());
+    const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    CHECK(seconds < mitcad::io::kMeshAbandonSeconds + 5.0);
+    CHECK(meshing.during == 0 && meshing.bodies == 0);
+    CHECK(meshing.duringLeft == during->given());
+  }
+  {
+    rust::Box<Document> document = mitcad::load_document(rust::Str(json));
+    mitcad::ModelJob job;
+    mitcad::RecomputeMeshing::start(*document, job).reset();
+    run(*document, QJsonObject{{"cmd", "recompute"}});
+    CHECK(mitcad::shownBodyShapes(*document).size() == 2);
+  }
+}
 } // namespace
 
 int main(int argc, char** argv) {
@@ -900,6 +1214,8 @@ int main(int argc, char** argv) {
   testCancelFailureDestruction();
   testCancelEndlessFace();
   testWarmOpen();
+  testDeferredWrite();
+  testMeshDuringRecompute();
   if (failures > 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;

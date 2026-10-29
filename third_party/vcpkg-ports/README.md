@@ -56,7 +56,7 @@ reports and tests last. The [index](#index) below lists every patch.
 | [fillet-replay-0930-0942.md](docs/fillet-replay-0930-0942.md) | 0930–0933, 0940–0942 | mitcad#343, mitcad#495 | a ring's rims, roundings ending on a rod, a key, a chamfer that hung |
 | [fillet-replay-0950-0980.md](docs/fillet-replay-0950-0980.md) | 0950, 0951, 0961, 0962, 0970, 0980 | mitcad#343 | sills, a micrometre step, tangent vertices, a tight corner, slight creases |
 | [fillet-replay-0990-1020.md](docs/fillet-replay-0990-1020.md) | 0990, 1000, 1001, 1010, 1011, 1020 | mitcad#343 | a rolled end, chamfers over creases, a bore's rim, a drafted peg |
-| [meshing.md](docs/meshing.md) | 1070 | mitcad#846 | Delabella's plane triangulation on nearly cocircular boundaries |
+| [meshing.md](docs/meshing.md) | 1070, 1080, 1081 | mitcad#846, mitcad#884 | Delabella's plane triangulation on nearly cocircular boundaries; the time of planes with many holes |
 
 ## Adding a patch
 
@@ -319,3 +319,5 @@ mitcad#77 and mitcad#79; their column names each one's report.
 | [1050](docs/repeated-work.md#1050-shapefix-self-intersecting-wire-edges-read-once) | mitcad#642 | ShapeFix: a wire's edges read once |
 | [1060](docs/fillet-replay-0700-0772.md#1060-chfi3d-under-anothers-ball-not-past-its-other-face) | mitcad#840 | 0700's stripes under another's ball: not past the blend's other face |
 | [1070](docs/meshing.md#1070-brepmesh-delabella-exact-signs) | mitcad#846 | Delabella: exact in-circle and orientation signs; an inconsistent hull fails instead of crashing or looping |
+| [1080](docs/meshing.md#1080-brepmesh-delabella-exact-signs-in-place) | mitcad#884 | Delabella: 1070's exact signs without the heap, and from exact differences directly |
+| [1081](docs/meshing.md#1081-brepmesh-face-checker-wire-boxes) | mitcad#884 | the healer's wire check: wires whose boxes are apart not searched against each other |

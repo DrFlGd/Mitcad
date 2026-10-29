@@ -46,6 +46,7 @@
 #include "../framework/Appearances.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/IdleCall.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
 #include "../print/PrintLibrary.hpp"
@@ -682,7 +683,7 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
               // The value: Material opens Materials, Own settings the
               // level's own values, any other its editor.
               const QPersistentModelIndex row(first);
-              QTimer::singleShot(0, this, [this, row, name, owner] {
+              afterEventWhenIdle(m_host, this, [this, row, name, owner] {
                 if (name == QStringLiteral("material")) {
                   openPrintMaterial();
                 } else if (name == QStringLiteral("own_settings")) {
@@ -694,7 +695,7 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
               return;
             }
             qDebug().noquote() << QStringLiteral("Property sets print %1/%2 %3").arg(set, name, glyph);
-            QTimer::singleShot(0, this, [this, set, name, owner, kind, chosen, glyph] {
+            afterEventWhenIdle(m_host, this, [this, set, name, owner, kind, chosen, glyph] {
               if (glyph == QStringLiteral("clear")) {
                 setPrint(set, name, QJsonObject(), QString());
               } else if (name == QStringLiteral("own_settings")) {
@@ -1216,7 +1217,7 @@ void PropertySetsDialog::setPrint(const QString& set, const QString& key, const 
       text(m_answer.value(QStringLiteral("levels")).toArray().first().toObject(), "owner");
   const QString name = QStringLiteral("print %1/%2").arg(set, key);
   // The model command rebuilds the table and its editors: later.
-  QTimer::singleShot(0, this, [this, set, key, fields, shown, owner, name] {
+  afterEventWhenIdle(m_host, this, [this, set, key, fields, shown, owner, name] {
     QJsonObject command{{QStringLiteral("owner"), owner},
                         {QStringLiteral("set"), set},
                         {QStringLiteral("key"), key}};
@@ -1282,7 +1283,7 @@ void PropertySetsDialog::editChoice(QTreeWidgetItem* item, const QStringList& ch
   // it is still handling its change.
   connect(combo, &QComboBox::currentIndexChanged, this, [this, combo, name, owner, set, key](int) {
     const QString chosen = combo->currentText();
-    QTimer::singleShot(0, this, [this, name, owner, set, key, chosen] {
+    afterEventWhenIdle(m_host, this, [this, name, owner, set, key, chosen] {
       QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("set_property")},
                           {QStringLiteral("owner"), owner},
                           {QStringLiteral("set"), set},
@@ -1335,7 +1336,7 @@ void PropertySetsDialog::setValue(QTreeWidgetItem* item, const QString& typed) {
   const QString key = item->data(kKey, kNameRole).toString();
   // The model command refreshes the window, this table too: not while the
   // table is still handling its edit.
-  QTimer::singleShot(0, this, [this, name, key, typed, command] {
+  afterEventWhenIdle(m_host, this, [this, name, key, typed, command] {
     if (m_host.runModelCommand(command)) {
       m_message->clear();
       qDebug().noquote() << QStringLiteral("Property %1 set: %2").arg(name, typed);

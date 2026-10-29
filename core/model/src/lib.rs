@@ -86,6 +86,8 @@ pub use kernel::{
 pub use parameters::{ChangeSet, ParamId, Parameter, ParameterError, Parameters};
 pub use profile::{ProfileLoop, ProfileRegion, ProfileSegment, SegmentGeometry, SketchFrame};
 pub use recompute::FeatureStatus;
+// Bodies handed out as soon as no later feature changes them (mitcad#881).
+pub use recompute::{FinalBodies, FinalBody};
 pub use topo::{EdgeName, FaceName, RegionKey, SegmentEnd, SegmentKey, TopoName, VertexName};
 pub use transform::{Instance, PrimitiveShape, PrimitiveSpec, Transform};
 
@@ -266,9 +268,10 @@ pub mod print_purge;
 // Annotations kept in the design (mitcad#702), grown from the measurement
 // objects of mitcad#649, and the ISO 286 fit codes of their tolerances.
 pub use document::{
-    ANNOTATION_COLORS, Annotation, AnnotationFormat, AnnotationPlane, Characteristic, DatumNeed,
-    GeometricTolerance, MAX_DECIMALS, MEASUREMENT_COLORS, MaterialCondition, MeasureKind,
-    MeasurePick, Measurement, NewMeasurement, Tolerance, datum_letter,
+    AUTO_COLOR, Annotation, AnnotationFormat, AnnotationPlane, Characteristic, DatumNeed,
+    GeometricTolerance, MAX_DECIMALS, MaterialCondition, MeasureKind, MeasurePick, Measurement,
+    NewMeasurement, OLD_DEFAULT_COLORS, TEXT_HEIGHTS, Tolerance, automatic_text_height,
+    check_text_height, datum_letter,
 };
 pub use mitcad_model_base::iso286;
 // The parameters as CSV: Mitcad's table and the `.f3d` application's

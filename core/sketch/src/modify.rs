@@ -773,33 +773,63 @@ impl SketchEdit<'_> {
     }
 
     /// Mirrors entities about a line (Mirror): copies with
-    /// symmetric constraints; points on the axis are shared.
+    /// symmetric constraints; points on the axis are shared. The line
+    /// itself among the entities (a window over the sketch takes it too)
+    /// is left out: it mirrors onto itself (mitcad#876).
     pub fn mirror(&mut self, entities: &[Ref], axis: EntityUid) -> Result<Vec<Ref>, String> {
         let (a, b) = match self.curve(axis)?.kind {
             EntityKind::Line { start, end, .. } => (self.at(start)?, self.at(end)?),
             _ => return Err(format!("the mirror line c{} is not a line", axis.0)),
         };
-        if entities.iter().any(|r| r.uid() == axis) {
-            return Err("the mirror line cannot be mirrored".to_owned());
+        let entities: Vec<Ref> = entities
+            .iter()
+            .copied()
+            .filter(|r| r.uid() != axis)
+            .collect();
+        if entities.is_empty() {
+            return Err("the mirror line cannot be mirrored: give other entities".to_owned());
         }
         let map = Map2::mirror(a, b);
         let d = unit(sub(b, a));
         let size = dist(a, b).max(1.0);
         let mut keep = BTreeSet::new();
-        for p in self.points_of(entities)? {
+        for p in self.points_of(&entities)? {
             if cross(d, sub(self.at(p)?, a)).abs() <= 1e-9 * size {
                 keep.insert(p);
             }
         }
-        let copies = self.copy_entities(entities, &map, &keep, false)?;
+        // The points a mirrored line's, circle's or arc's symmetry holds
+        // already (its ends, its centre), and those of the other curves,
+        // which get a symmetry each below. A point picked as well, as a
+        // window gives a circle with its centre, gets no constraint of its
+        // own, which would only be redundant (mitcad#876).
+        let mut held = BTreeSet::new();
+        let mut of_others = BTreeSet::new();
+        for r in &entities {
+            let e = self.entity(r.uid())?;
+            match e.kind {
+                EntityKind::Point { .. } => {}
+                EntityKind::Line { .. } | EntityKind::Circle { .. } | EntityKind::Arc { .. } => {
+                    held.extend(e.kind.points());
+                }
+                _ => of_others.extend(e.kind.points()),
+            }
+        }
+        let copies = self.copy_entities(&entities, &map, &keep, false)?;
         let mut made = Vec::new();
-        for r in entities {
+        // The points of the other curves given a symmetry so far: one each,
+        // also where two of them share a point.
+        let mut symmetric = BTreeSet::new();
+        for r in &entities {
             let original = r.uid();
             let copy = copies[&original];
             let kind = self.entity(original)?.kind.clone();
             match kind {
                 EntityKind::Point { .. } => {
-                    if copy != original {
+                    if copy != original
+                        && !held.contains(&original)
+                        && !of_others.contains(&original)
+                    {
                         self.add_constraint(ConstraintKind::Symmetric {
                             a: Ref::Point(original),
                             b: Ref::Point(copy),
@@ -818,7 +848,7 @@ impl SketchEdit<'_> {
                 }
                 other => {
                     for p in other.points() {
-                        if copies[&p] != p {
+                        if copies[&p] != p && !held.contains(&p) && symmetric.insert(p) {
                             self.add_constraint(ConstraintKind::Symmetric {
                                 a: Ref::Point(p),
                                 b: Ref::Point(copies[&p]),

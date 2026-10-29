@@ -146,6 +146,30 @@ bool MainWindow::sketchClickable(const SelectionItem& item, bool expanded) const
                       [this](const SelectionItem& own) { return sketchRowOf(own); });
 }
 
+// The sketch's axes as picks of a command's input in the sketch
+// (InputDef::sketchAxes, mitcad#876: Mirror's line).
+bool MainWindow::sketchAxesPickable() const {
+  return m_session && m_commandInSketch && m_session->activeTakesSketchAxes();
+}
+
+QStringList MainWindow::sketchAxisPicks() const {
+  QStringList axes;
+  if (!m_session || !m_commandInSketch) {
+    return axes;
+  }
+  for (const InputDef& input : m_session->def().inputs) {
+    if (input.type != InputDef::Type::Selection || !input.sketchAxes) {
+      continue;
+    }
+    for (const SelectionItem& item : m_session->state().items(input.id)) {
+      if (item.owner == m_sketch->uid() && !m_sketch->model().axisOf(item.name).isEmpty()) {
+        axes << item.name;
+      }
+    }
+  }
+  return axes;
+}
+
 Selection MainWindow::sketchWindowItems(const Selection& items) const {
   Selection taken = items;
   if (m_sketchScope.state(FilterRow::Annotations) == FilterState::Window) {

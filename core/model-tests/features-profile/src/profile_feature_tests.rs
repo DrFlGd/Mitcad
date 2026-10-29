@@ -975,9 +975,9 @@ fn thread_def(face: &str, extra: Value) -> FeatureDef<mitcad_model::ValueInput> 
 }
 
 #[test]
-fn trapezoidal_threads_are_cosmetic_and_listed() {
+fn trapezoidal_threads_are_listed_and_modelled() {
     // A lead screw's thread (mitcad#449): Tr10x2 on the rod, listed by the
-    // threads query; it cannot be modelled.
+    // threads query.
     let mut doc = rod();
     let tr = json!({"standard": "trapezoidal", "designation": "TR10x2", "class": "7e"});
     let uid = doc
@@ -1003,6 +1003,8 @@ fn trapezoidal_threads_are_cosmetic_and_listed() {
     ] {
         assert_eq!(thread[key], wanted, "{key}: {thread}");
     }
+    // A single-start thread lists no starts.
+    assert!(thread.get("starts").is_none(), "{thread}");
     // A multi-start one by its lead and pitch.
     let multi = json!({"standard": "trapezoidal", "designation": "Tr10x4P2"});
     doc.edit_feature(uid, &thread_def("F2:side(c1)", json!({"thread": multi})))
@@ -1011,14 +1013,273 @@ fn trapezoidal_threads_are_cosmetic_and_listed() {
     let threads = query(&doc, json!({"query": "threads"}));
     assert_eq!(threads[0]["designation"], "Tr10x4(P2)");
     assert_eq!(threads[0]["pitch"], 2.0);
-    // Modelled, it fails: Mitcad cuts the 60-degree profile only.
+    assert_eq!(threads[0]["starts"], 2, "{threads}");
+    assert_eq!(threads[0]["lead"], 4.0, "{threads}");
+    // Modelled (mitcad#893): ISO 2901's 30-degree profile, flanks at 15
+    // degrees to the radius, the external thread's root d3 = d - 2 (H1 +
+    // ac) = 10 - 2 (1 + 0.25) = 7.5, the pitch diameter 9.
     let modeled = thread_def("F2:side(c1)", json!({"thread": tr, "modeled": true}));
-    assert!(
-        doc.edit_feature(uid, &modeled).is_err_and(|e| e
-            .to_string()
-            .contains("trapezoidal thread cannot be modelled"))
-            || status(&doc, uid) != FeatureStatus::Ok
+    doc.edit_feature(uid, &modeled).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&doc),
+        "thread F2:side(c1) pitch 2 diameters 10.0000/7.5000/9.0000 angle 0.000000 right true \
+         part None flanks 15.0000 deg"
     );
+    // Tr10x4(P2): the same profile on two starts, a lead of 4.
+    let lead_screw = thread_def("F2:side(c1)", json!({"thread": multi, "modeled": true}));
+    doc.edit_feature(uid, &lead_screw).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&doc),
+        "thread F2:side(c1) pitch 2 diameters 10.0000/7.5000/9.0000 angle 0.000000 right true \
+         part None starts 2 flanks 15.0000 deg"
+    );
+    // Its designation gives its starts: `starts` may repeat them, not
+    // change them.
+    let same = thread_def(
+        "F2:side(c1)",
+        json!({"thread": multi, "modeled": true, "starts": 2}),
+    );
+    doc.edit_feature(uid, &same).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let other = thread_def(
+        "F2:side(c1)",
+        json!({"thread": multi, "modeled": true, "starts": 3}),
+    );
+    let error = doc.edit_feature(uid, &other).unwrap_err().to_string();
+    assert!(error.contains("Tr10x4(P2) has 2 starts"), "{error}");
+    // A trapezoidal flank clearance is measured on the 15-degree flanks:
+    // the crest, 0.366 P = 0.732 wide, takes up to (0.732 - 0.04) cos 15 /
+    // 2 = 0.3342 per flank.
+    let loose = thread_def(
+        "F2:side(c1)",
+        json!({"thread": tr, "modeled": true, "flank_clearance": 0.3}),
+    );
+    doc.edit_feature(uid, &loose).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let too_loose = thread_def(
+        "F2:side(c1)",
+        json!({"thread": tr, "modeled": true, "flank_clearance": 0.34}),
+    );
+    doc.edit_feature(uid, &too_loose).unwrap();
+    let FeatureStatus::Failed(message) = status(&doc, uid) else {
+        panic!("no tooth left");
+    };
+    assert!(message.contains("at most 0.3342 mm"), "{message}");
+}
+
+#[test]
+fn custom_threads_take_their_own_diameter_and_pitch() {
+    // A custom thread (mitcad#893): 10 x 2.5, a pitch no ISO metric thread
+    // of 10 mm has, on the 60-degree profile: D1 = D - 5H/4 = 7.2937, D2 =
+    // D - 3H/4 = 8.3762.
+    let mut doc = rod();
+    let custom = json!({"standard": "custom"});
+    let uid = doc
+        .add_feature(
+            &thread_def(
+                "F2:side(c1)",
+                json!({"thread": custom, "custom": {"major": 10, "pitch": 2.5}}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    // Cosmetic: listed with its size.
+    assert_eq!(doc.kernel().count("thread"), 0);
+    let threads = query(&doc, json!({"query": "threads"}));
+    let thread = &threads[0];
+    for (key, wanted) in [
+        ("standard", json!("custom")),
+        ("designation", json!("10x2.5")),
+        ("modeled", json!(false)),
+        ("major_diameter", json!(10.0)),
+        ("pitch", json!(2.5)),
+        ("internal", json!(false)),
+    ] {
+        assert_eq!(thread[key], wanted, "{key}: {thread}");
+    }
+    assert!(
+        (thread["minor_diameter"].as_f64().unwrap() - 7.293_670_6).abs() < 1e-6,
+        "{thread}"
+    );
+    assert!(thread["class"].is_null(), "{thread}");
+
+    // Modelled, on two starts: the lead is 5.
+    let modeled = thread_def(
+        "F2:side(c1)",
+        json!({"thread": custom, "custom": {"major": 10, "pitch": 2.5}, "modeled": true,
+               "starts": 2}),
+    );
+    doc.edit_feature(uid, &modeled).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&doc),
+        "thread F2:side(c1) pitch 2.5 diameters 10.0000/7.2937/8.3762 angle 0.000000 right true \
+         part None starts 2"
+    );
+    let threads = query(&doc, json!({"query": "threads"}));
+    assert_eq!(threads[0]["starts"], 2, "{threads}");
+    assert_eq!(threads[0]["lead"], 5.0, "{threads}");
+
+    // Saved with the feature (no designation, its size and starts) and
+    // loaded again as it was.
+    let text = doc.to_json();
+    assert!(text.contains("\"custom\""), "{text}");
+    let FeatureDef::Thread(saved) = &doc.feature(uid).unwrap().def else {
+        panic!("a thread");
+    };
+    assert!(saved.thread.designation.is_empty());
+    assert!(saved.custom.is_some() && saved.starts.is_some());
+    let loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), text);
+    assert_eq!(
+        loaded.feature(uid).unwrap().def,
+        doc.feature(uid).unwrap().def
+    );
+
+    // Its size by parameters, left-handed: the thread follows them.
+    doc.add_parameter("thread_d", 10.0, "").unwrap();
+    doc.add_parameter("thread_p", 2.5, "").unwrap();
+    let by_name = thread_def(
+        "F2:side(c1)",
+        json!({"thread": {"standard": "custom", "right_handed": false},
+               "custom": {"major": "thread_d", "pitch": "thread_p"}, "modeled": true}),
+    );
+    doc.edit_feature(uid, &by_name).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&doc).starts_with(
+            "thread F2:side(c1) pitch 2.5 diameters 10.0000/7.2937/8.3762 angle 0.000000 right \
+             false part None"
+        ),
+        "{}",
+        last_spec(&doc)
+    );
+    doc.set_parameter("thread_p", 3.0).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&doc).starts_with(
+            "thread F2:side(c1) pitch 3 diameters 10.0000/6.7524/8.0514 angle 0.000000 right \
+             false"
+        ),
+        "{}",
+        last_spec(&doc)
+    );
+    let threads = query(&doc, json!({"query": "threads"}));
+    assert_eq!(threads[0]["designation"], "10x3", "{threads}");
+    // A pitch too coarse for the diameter fails the feature.
+    doc.set_parameter("thread_p", 11.0).unwrap();
+    let FeatureStatus::Failed(message) = status(&doc, uid) else {
+        panic!("too coarse");
+    };
+    assert!(message.contains("too coarse"), "{message}");
+    doc.set_parameter("thread_p", 2.5).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+
+    // A standard size may take starts too: M10x1.5 on two starts.
+    let two_start = thread_def("F2:side(c1)", json!({"modeled": true, "starts": 2}));
+    doc.edit_feature(uid, &two_start).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&doc),
+        "thread F2:side(c1) pitch 1.5 diameters 10.0000/8.3762/9.0257 angle 0.000000 right true \
+         part None starts 2"
+    );
+
+    // What a custom thread must and must not have.
+    for (extra, wanted) in [
+        (json!({"thread": custom}), "needs its size"),
+        (
+            json!({"thread": {"standard": "custom", "class": "6g"},
+                   "custom": {"major": 10, "pitch": 2.5}}),
+            "no tolerance class",
+        ),
+        (
+            json!({"custom": {"major": 10, "pitch": 2.5}}),
+            "only a custom thread",
+        ),
+        (
+            json!({"thread": custom, "custom": {"major": 10, "pitch": 9.5}}),
+            "too coarse",
+        ),
+        (
+            json!({"thread": custom, "custom": {"major": 10, "pitch": 0}}),
+            "pitch must be greater than zero",
+        ),
+        (json!({"modeled": true, "starts": 0}), "whole number"),
+        (json!({"modeled": true, "starts": 1.5}), "whole number"),
+    ] {
+        let error = doc
+            .edit_feature(uid, &thread_def("F2:side(c1)", extra.clone()))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(wanted), "{extra}: {error}");
+    }
+}
+
+#[test]
+fn tapped_holes_take_custom_and_trapezoidal_threads() {
+    // A hole tapped with a custom thread (mitcad#893), 8 x 2 on two starts:
+    // its bore the minor diameter 8 - 5H/4 = 5.8349, the thread cut into
+    // its wall.
+    let mut b = block();
+    let on_top = json!({"type": "face", "body": "F2.b0", "face": TOP, "points": [[10, 10, 20]]});
+    let uid = b
+        .doc
+        .add_feature(
+            &hole_def(
+                on_top.clone(),
+                json!({"thread": {"standard": "custom", "custom": {"major": 8, "pitch": 2},
+                                  "modeled": true, "starts": 2}}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(b.doc.kernel().count("thread"), 1);
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.starts_with(
+            "thread F3:hole0.wall pitch 2 diameters 8.0000/5.8349/6.7010 angle 0.000000 right true"
+        ),
+        "{spec}"
+    );
+    assert!(spec.ends_with(" starts 2"), "{spec}");
+    let threads = query(&b.doc, json!({"query": "threads"}));
+    assert_eq!(threads[0]["designation"], "8x2", "{threads}");
+    assert_eq!(threads[0]["standard"], "custom", "{threads}");
+    assert_eq!(threads[0]["internal"], true, "{threads}");
+    assert_eq!(threads[0]["starts"], 2, "{threads}");
+    // Saved and loaded as it was.
+    let text = b.doc.to_json();
+    let loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), text);
+    b.doc.undo();
+
+    // Tr10x2 in a hole: the bore D1 = 8, the internal design profile's root
+    // D4 = d + 2 ac = 10.5, the flanks at 15 degrees.
+    b.doc
+        .add_feature(
+            &hole_def(
+                on_top,
+                json!({"thread": {"standard": "trapezoidal", "designation": "Tr10x2",
+                                  "class": "7H", "modeled": true}}),
+            ),
+            None,
+        )
+        .unwrap();
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.starts_with(
+            "thread F3:hole0.wall pitch 2 diameters 10.5000/8.0000/9.0000 angle 0.000000 right true"
+        ),
+        "{spec}"
+    );
+    assert!(spec.ends_with(" flanks 15.0000 deg"), "{spec}");
 }
 
 #[test]

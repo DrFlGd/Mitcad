@@ -47,8 +47,10 @@ const char* const kUsage = R"(usage:
       mass, bounding box and face and edge counts. --timings adds how long
       the recompute took and its slowest features. --result-store takes
       computed results from the store in DIR and writes there those whose
-      evaluation took at least MS milliseconds (default 100), and prints
-      "restored from store: N, evaluated: M" (also for run --open).
+      evaluation took at least MS milliseconds (default 100), and quicker
+      ones whose shapes are small for their time, and prints
+      "restored from store: N, evaluated: M" with the recompute's time
+      (also for run --open).
       --diagnostics adds the caches' diagnostics (the cache query, JSON):
       memory and store sizes, hits, and where each result came from.
       --names adds the names of every body's faces and edges (the faces and
@@ -103,7 +105,8 @@ const char* const kUsage = R"(usage:
       not return for that long, the item it hung on taking the file's bodies.
       --own-start-time-scale multiplies the time an item is first tried
       from the state before the operations it made (30 s, half of its
-      time), e.g. by a debug build's slowdown in the tests.
+      time) and a thread's offset of the faces it sizes (2 s), e.g. by
+      a debug build's slowdown in the tests.
       --geometric-tolerance is how far (mm, default 0.01) the replay's
       geometry may be from the file's where it is not exact: the decoded
       edges, faces and vertices are looked for in the replay within it

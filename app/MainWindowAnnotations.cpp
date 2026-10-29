@@ -27,8 +27,10 @@
 
 #include "framework/Dialogs.hpp"
 #include "framework/Icons.hpp"
+#include "framework/IdleCall.hpp"
 #include "view/AnnotationDialogs.hpp"
 #include "view/AnnotationsWindow.hpp"
+#include "view/MeasurementDrawing.hpp"
 
 namespace mitcad {
 namespace {
@@ -72,12 +74,13 @@ void MainWindow::connectAnnotations() {
       window->selectNames({name});
     }
   };
-  // The dialogs and menus after the mouse event that asked for them.
+  // The dialogs and menus after the mouse event that asked for them, and
+  // never while a job computes the model (mitcad#888).
   actions.opened = [this](const QString& name) {
-    QTimer::singleShot(0, this, [this, name] { editAnnotationNamed(name); });
+    afterEventWhenIdle(*this, this, [this, name] { editAnnotationNamed(name); });
   };
   actions.menu = [this](const QString& name, const QPoint& global) {
-    QTimer::singleShot(0, this, [this, name, global] { annotationMenu(name, global); });
+    afterEventWhenIdle(*this, this, [this, name, global] { annotationMenu(name, global); });
   };
   actions.moved = [this](const QString& name, bool line, double alongX, double alongY) {
     annotationMoved(name, line, alongX, alongY);
@@ -118,7 +121,7 @@ void MainWindow::openAnnotations() {
     AnnotationsWindow::Actions actions;
     actions.selected = [this](const QStringList& names) { highlightAnnotations(names); };
     actions.edit = [this](const QString& name) {
-      QTimer::singleShot(0, this, [this, name] { editAnnotationNamed(name); });
+      afterEventWhenIdle(*this, this, [this, name] { editAnnotationNamed(name); });
     };
     actions.change = [this](const QStringList& names, const QJsonObject& change) {
       QJsonObject command = change;
@@ -133,7 +136,26 @@ void MainWindow::openAnnotations() {
                            tr("Delete Annotations"));
     };
     actions.frame = [this](const QString& dimension) {
-      QTimer::singleShot(0, this, [this, dimension] { addFrameUnder(dimension); });
+      afterEventWhenIdle(*this, this, [this, dimension] { addFrameUnder(dimension); });
+    };
+    // The height of the design's annotations' texts (mitcad#894).
+    actions.textHeight = [this] {
+      afterEventWhenIdle(*this, this, [this] {
+        QJsonObject current;
+        try {
+          current = query({{QStringLiteral("query"), QStringLiteral("annotation_text_height")}}).toObject();
+        } catch (const std::exception& error) {
+          qDebug().noquote() << QStringLiteral("Annotation command refused: %1").arg(QString::fromUtf8(error.what()));
+          return;
+        }
+        QWidget* parent = m_annotationsWindow && m_annotationsWindow->isVisible() ? m_annotationsWindow.data()
+                                                                                  : static_cast<QWidget*>(this);
+        if (const std::optional<QJsonValue> height = askAnnotationTextHeight(parent, current)) {
+          runAnnotationCommand({{QStringLiteral("cmd"), QStringLiteral("set_annotation_text_height")},
+                                {QStringLiteral("text_height"), *height}},
+                               tr("Annotation Text Height"));
+        }
+      });
     };
     window->setActions(std::move(actions));
     // Nothing highlighted once it closes.
@@ -394,9 +416,10 @@ void MainWindow::addAnnotationHighlights(std::vector<HighlightDisplay>& highligh
       // is only an anchor and may be stale).
       const QString under = annotation.value(QStringLiteral("on")).toString();
       const QJsonObject picked = under.isEmpty() ? annotation : annotationIn(m_snapshot.measurements, under);
+      // Auto (mitcad#894): the annotation colour of the background tone.
       QColor colour(annotation.value(QStringLiteral("color")).toString());
       if (!colour.isValid()) {
-        colour = QColor(0xd9, 0x48, 0x0f);
+        colour = measurementAutoColor(m_viewer->sketchHaloColor());
       }
       // Its picks and its plane's pick, in its colour; clicks go through.
       const QJsonValue planePick = picked.value(QStringLiteral("plane")).toObject().value(QStringLiteral("pick"));
@@ -547,7 +570,7 @@ bool MainWindow::annotationPicked(const Selection& items) {
   }
   m_annotationPick.reset();
   updateIdleView();
-  QTimer::singleShot(0, this, [this, name = waiting.name] { editAnnotationNamed(name); });
+  afterEventWhenIdle(*this, this, [this, name = waiting.name] { editAnnotationNamed(name); });
   return true;
 }
 
@@ -560,7 +583,7 @@ bool MainWindow::cancelAnnotationPick() {
   updateIdleView();
   showHint(tr("Pick cancelled."));
   qDebug().noquote() << QStringLiteral("Annotation pick cancelled: %1").arg(name);
-  QTimer::singleShot(0, this, [this, name] { editAnnotationNamed(name); });
+  afterEventWhenIdle(*this, this, [this, name] { editAnnotationNamed(name); });
   return true;
 }
 

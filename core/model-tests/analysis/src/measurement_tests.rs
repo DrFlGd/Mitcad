@@ -128,7 +128,7 @@ fn measurements_are_kept_with_a_default_kind_and_follow_the_model() {
     assert_eq!(added["kind"], "offset");
     assert_eq!(undo_label(&doc), "Add Offset1");
     let offset = measurement(&doc, "Offset1");
-    assert_eq!(offset["color"], mitcad_model::MEASUREMENT_COLORS[0]);
+    assert_eq!(offset["color"], mitcad_model::AUTO_COLOR);
     assert_eq!(offset["visible"], true);
     near(&offset["value"], 20.0);
     near(&offset["values"]["distance"], 20.0);
@@ -151,7 +151,7 @@ fn measurements_are_kept_with_a_default_kind_and_follow_the_model() {
     assert_eq!(added["name"], "Angle1");
     let angle = measurement(&doc, "Angle1");
     assert_eq!(angle["kind"], "angle");
-    assert_eq!(angle["color"], mitcad_model::MEASUREMENT_COLORS[1]);
+    assert_eq!(angle["color"], mitcad_model::AUTO_COLOR);
     near(&angle["value"], FRAC_PI_2);
     near(&angle["values"]["distance"], 0.0);
     let arc = &angle["arc"];
@@ -346,7 +346,7 @@ fn measurements_are_saved_and_read_back() {
     assert_eq!(
         file["measurements"],
         json!([
-            {"name": "Offset1", "kind": "offset", "color": mitcad_model::MEASUREMENT_COLORS[0],
+            {"name": "Offset1", "kind": "offset", "color": mitcad_model::AUTO_COLOR,
              "a": top(), "b": bottom()},
             {"name": "Distance1", "kind": "distance", "color": "#112233", "visible": false,
              "a": top(), "b": {"datum": "xy"}}

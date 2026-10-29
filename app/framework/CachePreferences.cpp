@@ -17,6 +17,7 @@
 #include <QUrl>
 #include <QtLogging>
 
+#include "DisplayMeshes.hpp"
 #include "Json.hpp"
 #include "mitcad_bridge/lib.h"
 
@@ -116,6 +117,11 @@ void CachePreferencesBox::clearDisk() {
   const QString folder = resultStoreLocation();
   if (folder.isEmpty()) {
     return;
+  }
+  // Display meshes still to be stored after an open would come back
+  // (mitcad#880): dropped first.
+  if (DisplayMeshWrites* writes = displayMeshWrites()) {
+    writes->drop();
   }
   const QJsonObject report = parseObject(result_store_clear(rustStr(folder.toUtf8())));
   const qint64 removed = report.value(QStringLiteral("removed")).toInteger();

@@ -705,13 +705,20 @@ impl<K: Kernel> WoodCrateOps<K> for Document<K> {
         let label = source.def.label();
         let junction = self.junction_of(&input.junction)?;
         for side in [&junction.a, &junction.b] {
-            if self
-                .part_info(side.component)
-                .is_some_and(|i| i.meta.system.is_some())
-            {
-                return Err(refuse(format!(
-                    "{label} is driven into timber: the junction has a slot profile"
-                )));
+            if let Some(info) = self.part_info(side.component) {
+                if info.meta.system.is_some() {
+                    return Err(refuse(format!(
+                        "{label} is driven into timber: the junction has a slot profile"
+                    )));
+                }
+                // A profile without slots that is no timber (a steel tube,
+                // mitcad#873).
+                if info.meta.role == BuildRole::Profile && !info.is_timber() {
+                    return Err(refuse(format!(
+                        "{label} is driven into timber: {} is no timber member",
+                        info.name
+                    )));
+                }
             }
         }
         let fastening = self
@@ -852,6 +859,14 @@ impl<K: Kernel> WoodCrateOps<K> for Document<K> {
                 if a.info.meta.system.is_some() || b.info.meta.system.is_some() {
                     return Err(refuse(format!(
                         "{label} goes on timber: the junction has a slot profile"
+                    )));
+                }
+                // A profile without slots that is no timber (a steel tube,
+                // mitcad#873).
+                if let Some(m) = [&a, &b].into_iter().find(|m| !m.info.is_timber()) {
+                    return Err(refuse(format!(
+                        "{label} goes on timber: {} is no timber member",
+                        m.info.name
                     )));
                 }
                 let host = inverse(&self.host_placement());

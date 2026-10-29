@@ -42,6 +42,15 @@
 #      Offset handle sits on that shaft, not at the root's origin; Check
 #      Belt with the root's pulley gives the belt for the pulleys 80 mm
 #      apart (2 x 80 + 20 x 2 = 200 mm); OK makes the pulley there.
+#   7. A value box closed while its preview computes (mitcad#888), in a
+#      design in inches, with the previews made slow
+#      (MITCAD_TEST_RECOMPUTE_DELAY_MS): Distance 1 typed in the view and
+#      Enter pressed while the preview of the typed value computes (in a
+#      busy machine's check, a key the test sent while the app was idle
+#      arrived after a preview's refinement had started). The box gives the
+#      value the design's unit without reading the document (the window's
+#      last snapshot has it), the value waits for the job's end (3 in), and
+#      its preview follows.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-pulley-test.sh [screenshot.png]
@@ -81,6 +90,12 @@ cat > "$WORK/motor.json" << 'JSON'
 ]
 JSON
 "$CLI" run "$WORK/motor.json" --save "$WORK/motor.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+cat > "$WORK/inch.json" << 'JSON'
+[
+  {"cmd": "set_units", "length": "in"}
+]
+JSON
+"$CLI" run "$WORK/inch.json" --save "$WORK/inch.mitcad" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
 ui_start_display
 ui_start_app
@@ -262,5 +277,42 @@ ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added pulley (Toothed), GT2 2 mm, 20 teeth" "the pulley on the motor's shaft added" 30
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+echo "--- 7. A value box closed while its preview computes (mitcad#888)"
+ui_stop_app
+# In a design in inches: the unit the box gives is the design's.
+MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=2500 ui_start_app --open "$WORK/inch.mitcad"
+ui_mark
+ui_step "Pulley"                           ui_command "Pulley"
+ui_expect_new "Command Pulley started" "the panel opened" 30
+ui_mark
+ui_step "Place On: the XY plane"           ui_click_logged "Datum xy"
+ui_expect_new "Place Pulley: face plane xy, " "placed on the XY plane" 30
+ui_step "Distance 1: 0"                    ui_type_in "Panel Pulley input at_offset1" "0"
+ui_step "Distance 2: 0"                    ui_type_in "Panel Pulley input at_offset2" "0"
+ui_expect_new "Pulley Distance 2: 0 = 0 in" "the distances typed, in inches" 30
+ui_expect_new "Preview Pulley: ok" "the slow preview at the origin" 30
+ui_expect_new "Value box Pulley at_offset1 at " "Distance 1 is a dimension in the view" 30
+ui_mark
+ui_step "Distance 1's value box"           ui_click_logged "Value box Pulley at_offset1"
+ui_expect_new "Value box Pulley at_offset1 opened: 0" "a field over the view edits it"
+ui_step "type 3"                           xdotool type --delay 40 "3"
+ui_expect_new "Computing preview started" "the typed value's preview computes" 30
+# Not through ui_step, which waits until the app is idle: the key goes
+# while the job runs, as a key typed at once after a value does.
+typed_at=$(wc -l < "$UI_LOG")
+ui_key Return
+ui_sync
+ui_crashed && ui_fail "crashed by Enter in the value box during the job"
+echo "ok   Enter while it computes"
+ui_expect_new "Value box Pulley at_offset1 closed: 3" "the box closed during the job" 30
+# The box closed before the job's end: Enter came while it computed.
+awk -v from="$typed_at" 'NR <= from { next } /Computing preview done/ { exit 1 }
+  /Value box Pulley at_offset1 closed: 3/ { exit 0 }' "$UI_LOG" ||
+  ui_fail "the preview ended before Enter: the box was not closed during the job"
+ui_expect_new "Pulley Distance 1: 3 in = 3 in" "the value kept with the design's unit once the job ended" 30
+ui_expect_new "Preview Pulley: ok" "the preview of 3 in follows" 30
+grep -q "The document was read while a job computes it" "$UI_LOG" && ui_fail "the document was read during a job"
+ui_step "Cancel (Escape)"                  ui_key Escape
 
 ui_finish "UI pulley test"

@@ -39,7 +39,7 @@ void OcctViewer::setMeasurements(const std::vector<MeasurementDisplay>& measurem
   // are, in the window's coordinates.
   QStringList drawn;
   for (const MeasurementDisplay& m : measurements) {
-    drawn << QStringLiteral("%1 = %2 (%3)").arg(m.name, m.label, m.color.name());
+    drawn << QStringLiteral("%1 = %2 (%3)").arg(m.name, m.label, m.autoColor ? QStringLiteral("auto") : m.color.name());
   }
   const QString logged =
       QStringLiteral("Annotations drawn: %1").arg(drawn.isEmpty() ? QStringLiteral("none") : drawn.join(QStringLiteral(" | ")));
@@ -60,7 +60,22 @@ void OcctViewer::logAnnotationPlaces() {
     if (!shape.valid) {
       continue;
     }
-    const QPoint at = mapTo(window(), shape.labelAt.toPoint());
+    // Where a click takes its text: the text's middle, or, where that is
+    // past the view's edge (a text in the model's height can reach past it,
+    // mitcad#894), the middle of the part of the text in the view.
+    QPointF label = shape.labelAt;
+    const QRectF inside = QRectF(rect()).adjusted(2.0, 2.0, -2.0, -2.0);
+    if (!inside.contains(label)) {
+      const QPolygonF seen = shape.textArea.intersected(QPolygonF(inside));
+      if (seen.size() >= 3) {
+        QPointF sum;
+        for (const QPointF& corner : seen) {
+          sum += corner;
+        }
+        label = sum / static_cast<double>(seen.size());
+      }
+    }
+    const QPoint at = mapTo(window(), label.toPoint());
     places << QStringLiteral("Annotation label %1 at %2,%3").arg(m.name).arg(at.x()).arg(at.y());
     if (!shape.grips.empty() && !shape.grips.front().isEmpty()) {
       const QPolygonF& grip = shape.grips.front();

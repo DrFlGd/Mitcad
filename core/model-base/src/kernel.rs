@@ -2473,11 +2473,17 @@ pub struct HoleSpec<'a, S> {
     pub taper: f64,
 }
 
-/// Input of [`Kernel::modeled_thread`]: the 60-degree profile (ISO 68-1,
-/// Unified) of `pitch`, half a pitch wide at `pitch_diameter`, with flat
-/// crests and roots at the `major` and `minor` diameters, built on each
-/// face: along the threaded part the material becomes the thread (removed
-/// beyond the profile, added where the face lies inside the crest).
+/// Input of [`Kernel::modeled_thread`]: the profile of `pitch` whose
+/// flanks lie at `flank_angle` to the radial direction (30 degrees: the
+/// 60-degree profile of ISO 68-1 and Unified; 15 degrees: the trapezoidal
+/// one of ISO 2901, mitcad#893), half a pitch wide at `pitch_diameter`,
+/// with flat crests and roots at the `major` and `minor` diameters, built
+/// on each face: along the threaded part the material becomes the thread
+/// (removed beyond the profile, added where the face lies inside the
+/// crest). A thread of `starts` starts (mitcad#893) has that many grooves
+/// evenly spaced round the axis, a pitch apart along it, each a helix of
+/// lead `starts * pitch`; its profile in every section through the axis is
+/// a single-start thread's of the same pitch.
 /// `angle` (radians) turns the thread about its axis from where its
 /// groove (an internal thread's tooth) spans the first half pitch from the
 /// face's low end at the reference direction (the X axis projected across
@@ -2490,7 +2496,8 @@ pub struct HoleSpec<'a, S> {
 /// thread's diameters grow by twice it, an external thread's shrink), then
 /// `flank_clearance` moves each flank that far perpendicular to itself
 /// into the tooth, keeping the flank angle, the pitch and the crest and
-/// root radii (`features::thread::check_clearance` gives the limits).
+/// root radii (`features::thread::check_clearance` gives the limits): each
+/// flank moves `flank_clearance / cos(flank_angle)` along the axis.
 /// `groove` false builds no profile, only the `chamfer` (a cosmetic
 /// thread's end chamfers, mitcad#304), or the `taper`'s cone.
 ///
@@ -2528,6 +2535,13 @@ pub struct ThreadSpec<'a> {
     pub groove: bool,
     pub chamfer: Option<ThreadChamfer>,
     pub taper: Option<ThreadTaper>,
+    /// The number of starts, 1 or more (mitcad#893): the helices' lead is
+    /// `starts * pitch`.
+    pub starts: u32,
+    /// The flanks' angle to the radial direction, radians: half the
+    /// profile's included angle (30 degrees for the 60-degree profile, 15
+    /// for the trapezoidal one; mitcad#893).
+    pub flank_angle: f64,
 }
 
 /// The taper of a taper pipe thread (see [`ThreadSpec`], mitcad#733).

@@ -44,6 +44,10 @@
 #      with QIDI Studio's print settings.
 #   6. A Bambu Studio project whose two filaments are slowed for cooling on
 #      overhangs from 95% (mitcad#654) imported: nothing left unread.
+#   7. 3D Print chosen and sent by Enter at once, with the exports made
+#      slow (mitcad#888): the panel's question about changed library
+#      profiles, due a moment after it opens, waits for the export's job
+#      instead of reading the document during it.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-print-settings-test.sh
@@ -688,5 +692,32 @@ ui_step "close the report (Esc)"           ui_key Escape
 ui_expect_new "Import details closed" "the report closed"
 ui_focus_main
 ui_step "Cancel the panel (Esc)"           ui_key Escape
+
+echo "--- 7. Send at once, while the panel's question waits (mitcad#888)"
+# The exports made slow; 3D Print chosen in the search and sent by Enter
+# in one go, before the panel's deferred question about changed library
+# profiles ran: the export's job runs it, and it waits for the job's end
+# instead of reading the document. Up to three tries, for keys that come
+# apart.
+ui_stop_app
+MITCAD_TEST_JOB_SLEEP_MS=export=1500 ui_start_app --open "$FILE" --no-native-dialogs
+deferred=0
+for attempt in 1 2 3; do
+  ui_focus_main
+  ui_mark
+  ui_step "3D Print search"                ui_key s
+  xdotool type --delay 40 "3D Print"
+  ui_sync
+  xdotool key --delay 1 Return Return
+  ui_expect_new "3D Print last line: " "try $attempt: sent" 60
+  grep -q "The document was read while a job computes it" "$UI_LOG" && ui_fail "the document was read during the export"
+  if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "3D Print: library changes asked after the job"; then
+    deferred=1
+    break
+  fi
+  echo "note: try $attempt: the question ran before the export"
+done
+[ "$deferred" = 1 ] || ui_fail "the export never met the panel's question in three tries"
+echo "ok   the question waited for the export's end"
 
 ui_finish "UI print settings"

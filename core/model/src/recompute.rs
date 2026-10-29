@@ -30,15 +30,18 @@
 //! A result read from the result store keeps the shapes of the bodies it
 //! sets packed (mitcad#858, [`Changes`]): the body states hold a stand-in
 //! ([`Kernel::shape_unpacker`]) under the stored version, and the shapes are
-//! unpacked once something may read them: before a feature is evaluated
-//! (unless it reads no body, `reads_no_bodies`) or a joint is applied,
-//! and at the end for the bodies that are left. A state a later restored
-//! result replaces before that is never unpacked; its result unpacks it if
-//! something reads it later (the timeline's history). Not where workers
-//! evaluate ahead, nor for a preview.
+//! unpacked once something reads them: an evaluation unpacks the results
+//! that set the bodies it reads as it reads them (mitcad#886: a sketch on a
+//! face the result that set the face's body, a join its participants'),
+//! and the walk's states hold those shapes after it; the others stay
+//! packed. A joint unpacks every body first, and the bodies left at the end
+//! are unpacked. A state a later restored result replaces before that is
+//! never unpacked; its result unpacks it if something reads it later (the
+//! timeline's history). Unpacking an evaluation does is not part of its
+//! time. Not where workers evaluate ahead, nor for a preview.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
@@ -58,6 +61,9 @@ use crate::transform::Transform;
 
 // Features of independent components evaluated in parallel (mitcad#842).
 mod ahead;
+// Bodies handed out as soon as no later feature changes them (mitcad#881).
+mod final_bodies;
+pub use final_bodies::{FinalBodies, FinalBody};
 
 /// Identity of a computed result, sketch output or body shape: a
 /// fingerprint of what made it (see the module comment).
@@ -188,6 +194,22 @@ impl<S> Changes<S> {
                 .take();
             packed.map_or_else(Vec::new, |packed| packed.unpack(&self.heads))
         })
+    }
+
+    /// Unpacks the shapes as [`Changes::unpacked`] does, each on a thread
+    /// of its own (mitcad#887).
+    pub(crate) fn unpack_in_parallel(&self)
+    where
+        S: Send,
+    {
+        self.unpacked.get_or_init(|| {
+            let packed = self
+                .packed
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .take();
+            packed.map_or_else(Vec::new, |packed| packed.unpack_in_parallel(&self.heads))
+        });
     }
 
     /// The bytes of the packed shapes; 0 once they are unpacked.
@@ -630,6 +652,11 @@ pub struct Cache<S> {
     /// evaluated on the recompute's own thread. Not forked: a fork's
     /// recomputes use none.
     pub(crate) workers: usize,
+    /// Where the next recompute that goes through the timeline from its
+    /// start puts the bodies no later feature changes (mitcad#881,
+    /// `recompute/final_bodies.rs`); taken by the next recompute, which
+    /// closes it. Not forked.
+    pub(crate) final_bodies: Option<FinalBodies<S>>,
 }
 
 /// Results kept per feature: enough for a few undo steps and value changes.
@@ -651,6 +678,7 @@ impl<S> Default for Cache<S> {
             written_from: Vec::new(),
             preview: None,
             workers: ahead::default_workers(),
+            final_bodies: None,
         }
     }
 }
@@ -722,6 +750,7 @@ impl<S> Cache<S> {
             written_from: Vec::new(),
             preview: None,
             workers: 1,
+            final_bodies: None,
         }
     }
 
@@ -837,21 +866,6 @@ impl<S: Clone> Recomputed<S> {
 fn never_cached(def: &FeatureDef) -> bool {
     matches!(def, FeatureDef::PatternAtPoints(p)
         if matches!(p.objects, crate::features::PatternObjects::Components { .. }))
-}
-
-/// Whether evaluating the definition reads no body (mitcad#858): a sketch
-/// on an origin or construction plane (of its own component or a linked
-/// one) without projected or intersected geometry. Bodies whose restored
-/// shapes are still packed stay so while such features are evaluated;
-/// before any other evaluation they are unpacked.
-fn reads_no_bodies(def: &FeatureDef) -> bool {
-    match def {
-        FeatureDef::Sketch(sketch) => {
-            sketch.projections.is_empty()
-                && !matches!(sketch.plane, crate::features::SketchPlane::Face { .. })
-        }
-        _ => false,
-    }
 }
 
 impl<S> Cache<S> {
@@ -1175,6 +1189,7 @@ pub(crate) fn recompute_after<K: Kernel>(
                 not_resumable: false,
                 unpacker: None,
                 pending: BTreeMap::new(),
+                planner: None,
             }
         }
         None => {
@@ -1198,6 +1213,7 @@ pub(crate) fn recompute_after<K: Kernel>(
                 not_resumable: false,
                 unpacker: None,
                 pending: BTreeMap::new(),
+                planner: None,
             }
         }
     };
@@ -1226,6 +1242,17 @@ pub(crate) fn recompute_after<K: Kernel>(
         && crate::store::lazy_restore()
     {
         walk.unpacker = kernel.shape_unpacker().ok();
+    }
+    // The bodies no later feature changes, into the feed the cache was
+    // given (mitcad#881): only a recompute through the whole timeline
+    // from its start, not a preview's. Closed when the walk goes, however
+    // the recompute ends.
+    if let Some(feed) = cache.final_bodies.take() {
+        if resumed.is_none() && cache.preview.is_none() {
+            walk.planner = Some(final_bodies::Planner::new(state, total, feed));
+        } else {
+            feed.close();
+        }
     }
     let count = state.features.len();
     let mut position = first;
@@ -1259,6 +1286,7 @@ pub(crate) fn recompute_after<K: Kernel>(
         not_resumable,
         unpacker: _,
         pending: _,
+        planner: _,
     } = walk;
     let all = match resumed {
         // The earlier result's bodies with those the features after it
@@ -1316,6 +1344,75 @@ pub(crate) fn recompute_after<K: Kernel>(
     Ok(done)
 }
 
+/// The bodies whose states hold a stand-in, with the restored results
+/// that set them (mitcad#858).
+pub(crate) type Pending<S> = BTreeMap<BodyUid, Arc<Output<S>>>;
+
+/// The version the result gives the body `uid` (its last change of it),
+/// read without unpacking it.
+fn set_version<S>(output: &Output<S>, uid: BodyUid) -> Option<Version> {
+    output
+        .changes
+        .heads()
+        .iter()
+        .rev()
+        .find_map(|head| match *head {
+            ChangeHead::Set(set, version) if set == uid => Some(version),
+            _ => None,
+        })
+}
+
+/// Unpacks the shapes of the bodies `read` (each with the version its
+/// state holds) whose states hold a stand-in: the restored results that
+/// set them, each once, on the machine's threads (mitcad#886; a result's
+/// several shapes too, mitcad#887). Whether any result was unpacked.
+pub(crate) fn unpack_read<S: Send + Sync>(
+    pending: &Pending<S>,
+    read: impl IntoIterator<Item = (BodyUid, Version)>,
+) -> bool {
+    let mut packed: Vec<&Changes<S>> = Vec::new();
+    let mut seen = HashSet::new();
+    for (uid, version) in read {
+        if let Some(output) = pending.get(&uid)
+            && !output.changes.is_unpacked()
+            && set_version(output, uid) == Some(version)
+            && seen.insert(Arc::as_ptr(output))
+        {
+            packed.push(&output.changes);
+        }
+    }
+    if packed.is_empty() {
+        return false;
+    }
+    crate::store::in_parallel(&packed, |changes| changes.unpack_in_parallel());
+    true
+}
+
+/// The shape of the body `uid` whose state holds `held`: where that is a
+/// restored result's stand-in, the shape unpacked from the result
+/// (mitcad#886; unpacked here if it was not yet).
+pub(crate) fn held_shape<'a, S>(
+    pending: &'a Pending<S>,
+    uid: BodyUid,
+    held: &'a Versioned<S>,
+) -> &'a Versioned<S> {
+    pending
+        .get(&uid)
+        .filter(|output| set_version(output, uid) == Some(held.version))
+        .and_then(|output| {
+            output
+                .changes
+                .unpacked()
+                .iter()
+                .rev()
+                .find_map(|change| match change {
+                    Change::Set(set, shape) if *set == uid => Some(shape),
+                    _ => None,
+                })
+        })
+        .unwrap_or(held)
+}
+
 /// What every feature of one recompute is evaluated with.
 struct Run<'a, K: Kernel> {
     kernel: &'a K,
@@ -1355,6 +1452,9 @@ struct Walk<'s, S> {
     /// The bodies whose states hold a stand-in, with the result that sets
     /// them.
     pending: BTreeMap<BodyUid, Arc<Output<S>>>,
+    /// Puts the bodies no later feature changes into the feed the cache
+    /// was given (mitcad#881); None without one, and on a worker's copy.
+    planner: Option<final_bodies::Planner<S>>,
 }
 
 /// Where a feature's result came from, for the recompute's lists.
@@ -1441,24 +1541,22 @@ fn step<K: Kernel>(
                     },
                 );
                 match restored {
-                    Some(output) => Ok((output, Came::Store(start.elapsed()))),
+                    Some(output) => {
+                        // A test's delay holds a restored result too, so a
+                        // design whose results all come from the store still
+                        // shows its progress (mitcad#887).
+                        if let Some(monitor) = monitor {
+                            monitor.test_pause();
+                        }
+                        Ok((output, Came::Store(start.elapsed())))
+                    }
                     None => Err(def_fp),
                 }
             }
         }
     };
-    // What an evaluation may read of the bodies is unpacked first, where
-    // results were restored with their shapes packed (mitcad#858).
-    let own = if found.is_err() && !walk.pending.is_empty() && !reads_no_bodies(&entry.def) {
-        drop(own);
-        walk.unpack_pending();
-        walk.components
-            .get(&entry.component)
-            .cloned()
-            .unwrap_or_default()
-    } else {
-        own
-    };
+    // (An evaluation unpacks what it reads of bodies whose restored shapes
+    // are still packed as it reads them, mitcad#886: `EvalContext::body`.)
     let env = walk.env(state, &own, run.written_from);
     let (output, came) = match found {
         Ok(found) => found,
@@ -1521,6 +1619,11 @@ fn step<K: Kernel>(
     if let Some(tool) = preview_tool {
         walk.done.preview_tool = tool;
     }
+    // The bodies whose shapes the evaluation unpacked hold them from here
+    // on (mitcad#886); the others stay packed.
+    if matches!(came, Came::Evaluated(_)) && !walk.pending.is_empty() {
+        walk.settle_unpacked();
+    }
     match came {
         Came::Cache => {}
         Came::Store(time) => {
@@ -1532,7 +1635,18 @@ fn step<K: Kernel>(
             walk.done.evaluated.push(entry.uid);
         }
     }
+    let applied = walk.planner.is_some().then(|| output.clone());
     walk.apply(kernel, state, entry, output);
+    // The bodies final from here on (mitcad#881).
+    if let (Some(planner), Some(output)) = (walk.planner.as_mut(), applied) {
+        planner.after(
+            position,
+            &output,
+            &walk.components,
+            &walk.done.owners,
+            &walk.pending,
+        );
+    }
     Ok(())
 }
 
@@ -1550,6 +1664,7 @@ impl<'s, S> Walk<'s, S> {
             sheet_rules: &self.done.sheet_rules,
             params: &self.params,
             bodies: own,
+            pending: &self.pending,
             owners: &self.done.owners,
             assembly: &state.assembly,
             sketches: &self.done.sketches,
@@ -1569,7 +1684,7 @@ impl<'s, S> Walk<'s, S> {
     }
 }
 
-impl<'s, S: Clone> Walk<'s, S> {
+impl<'s, S: Clone + Send + Sync> Walk<'s, S> {
     /// A copy to go on from on another thread (`recompute/ahead.rs`): what
     /// was made so far, shared, without what this walk did itself.
     fn snapshot(&self) -> Walk<'s, S> {
@@ -1582,13 +1697,43 @@ impl<'s, S: Clone> Walk<'s, S> {
             not_resumable: false,
             unpacker: None,
             pending: BTreeMap::new(),
+            planner: None,
         }
     }
 
     /// Gives the bodies whose states hold a stand-in their shapes, unpacked
     /// from the results that set them (mitcad#858).
     fn unpack_pending(&mut self) {
-        for (uid, output) in std::mem::take(&mut self.pending) {
+        // The results' shapes first, on the machine's threads (mitcad#887).
+        let read: Vec<(BodyUid, Version)> = self
+            .pending
+            .iter()
+            .filter_map(|(uid, output)| Some((*uid, set_version(output, *uid)?)))
+            .collect();
+        unpack_read(&self.pending, read);
+        self.settle(|_| true);
+    }
+
+    /// Gives the bodies whose results' shapes were unpacked meanwhile (an
+    /// evaluation read them, mitcad#886) their shapes; the others keep
+    /// their stand-ins.
+    fn settle_unpacked(&mut self) {
+        self.settle(|output| output.changes.is_unpacked());
+    }
+
+    /// Gives the bodies of the results `which` picks their shapes (those
+    /// still packed unpacked here), and no longer pending.
+    fn settle(&mut self, which: impl Fn(&Output<S>) -> bool) {
+        let settled: Vec<BodyUid> = self
+            .pending
+            .iter()
+            .filter(|(_, output)| which(output))
+            .map(|(uid, _)| *uid)
+            .collect();
+        for uid in settled {
+            let Some(output) = self.pending.remove(&uid) else {
+                continue;
+            };
             let shape = output
                 .changes
                 .unpacked()
@@ -1949,7 +2094,8 @@ fn evaluate<K: Kernel>(
         crate::sheet::adapt(&mut ctx, produced);
         crate::sheet::complete_changes(&ctx, produced);
     }
-    let time = start.elapsed();
+    // (Not the restored shapes it unpacked as it read them, mitcad#886.)
+    let time = start.elapsed().saturating_sub(ctx.unpack_time);
     // (Records the memory of pieces as read, mitcad#408.)
     let (split_pieces, changed_pieces) = ctx.finish_pieces();
     let reads = std::mem::take(&mut ctx.reads);

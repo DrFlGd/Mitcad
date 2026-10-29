@@ -15,6 +15,14 @@
 #      Profiles. Esc cancels.
 #   3. The cylinder's round face selected: Thread first.
 #   4. The selection cleared (Esc): "Selection card create: none".
+#   5. A custom thread (mitcad#893) on the round face: Thread Type Custom
+#      with a typed major diameter (20) and pitch (3, which no ISO metric
+#      thread of 20 mm has), Starts 2, modelled, without the printed-fit
+#      clearances a new thread starts with. Its profile is the basic
+#      M10x1.5's at twice the size, and two starts leave a single-start
+#      thread's volume: four times the modelled M10x1.5's per millimetre
+#      (tools/ui-create-test.sh, thread_modeled: 1302.830611500115 mm3 over
+#      20 mm), over 30 mm.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-selection-create-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -115,6 +123,41 @@ Ui-Mark
 Ui-Step 'clear the selection (Esc)'        { Ui-Key 'Escape' }
 Ui-ExpectNew 'Selected: nothing' 'nothing selected'
 Expect-Create 'none' 'the row: none'
+
+Write-Host '--- 5. A custom thread on two starts (mitcad#893)'
+Ui-Mark
+Ui-Step 'thread (F7)'                      { Ui-Key 'F7' }
+Ui-ExpectNew 'Command Thread started' 'Thread started'
+Ui-Step 'pick the round face'              { Ui-ClickPick "face F2.b0/$side" }
+Ui-ExpectNew "Thread Faces: 1 face [face $side of F2.b0" 'the round face picked'
+Ui-Mark
+# Thread Type's drop-down cannot open in session 0: eight wheel steps down
+# to Custom, the last.
+Ui-Step 'Thread Type: Custom (wheel)'      {
+  for ($i = 0; $i -lt 8; $i++) {
+    Ui-WheelLogged 'Panel Thread input standard' -1
+    Ui-Sync
+  }
+}
+Ui-ExpectNew 'Thread: Thread Type = Custom' 'a custom thread'
+Ui-Step 'major diameter 20'                { Ui-TypeIn 'Panel Thread input thread_major' '20' }
+Ui-Step 'pitch 3'                          { Ui-TypeIn 'Panel Thread input thread_pitch' '3' }
+Ui-Mark
+Ui-Step 'Modeled'                          { Ui-ClickLogged 'Panel Thread input modeled' }
+Ui-ExpectNew 'Thread: Modeled = on' 'modelled'
+Ui-Step 'Starts 2'                         { Ui-TypeIn 'Panel Thread input starts' '2' }
+# A new modelled thread starts with the printed-fit clearances; without
+# them it is the plain profile the volume below is of.
+Ui-Step 'radial clearance 0'               { Ui-TypeIn 'Panel Thread input radial_clearance' '0' }
+Ui-Step 'flank clearance 0'                { Ui-TypeIn 'Panel Thread input flank_clearance' '0' }
+Ui-ExpectNew 'Preview Thread: ok' 'the two-start thread previewed' 120
+if (Ui-NewLines | Where-Object { $_.Contains('Preview Thread: failed') }) { Ui-Fail 'the custom thread was refused' }
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'OK (Enter)'                       { Ui-Key 'Return' }
+Ui-ExpectNew 'Added modeled thread custom 20x3, 2 starts on 1 face(s)' 'custom 20 x 3 on two starts, modelled' 60
+Ui-ExpectVolume 'Body Body1 \(F2\.b0\): volume 9424\.778 -> ([0-9.]+) mm3' 7816.98366900069 `
+  'two starts of the 20 x 3 profile: four times the modelled M10x1.5 per millimetre' 1e-3
 
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
 Ui-Finish 'UI Windows selection create test'

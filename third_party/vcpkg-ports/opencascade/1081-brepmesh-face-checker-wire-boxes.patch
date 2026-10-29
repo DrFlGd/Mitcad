@@ -1,0 +1,47 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+BRepMesh_FaceChecker (the healer's search for crossing segments of a
+face's wires): wires whose boxes are apart are not searched against each
+other (mitcad#884).
+
+For each wire, perform() searched every one of its segments in the box
+tree of every later wire of the face. On a perforated plate (a plane face
+with 1,187 round holes) that is 1,187 x 593 x about 145 tree searches,
+nearly all of them rejected at the tree's root: 1.0 s of the plate's
+meshing, every time it is meshed. Now a wire's tree is searched only when
+the box of all its segments (the root of its own tree) meets the box of
+the other wire's segments. A segment's box lies in its wire's box and
+both have at least its gap, so a segment of a wire whose box is out of the
+other's would be rejected at that tree's root anyway: the crossings found
+are the same. The plate's check takes 0.1 s.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_FaceChecker.cxx b/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_FaceChecker.cxx
+--- a/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_FaceChecker.cxx
++++ b/src/ModelingAlgorithms/TKMesh/BRepMesh/BRepMesh_FaceChecker.cxx
+@@ -255,10 +255,23 @@
+ 
+   // TODO: Tolerance is set to twice value of face deflection in order to fit regressions.
+   BndBox2dTreeSelector aSelector(2 * myDFace->GetDeflection());
++  // The box of all this wire's segments (its tree's root): a wire whose
++  // segments' box is out of it has no segment whose box meets one of this
++  // wire's, so the search below would find nothing in it.
++  const Handle(IMeshData::BndBox2dTree)& aBndBoxTree1 = myWiresBndBoxTree->Value(theWireIndex);
++  if (aBndBoxTree1->IsEmpty())
++  {
++    return;
++  }
++  const Bnd_Box2d& aWireBox1 = aBndBoxTree1->Root().Bnd();
+   for (int aWireIt = theWireIndex; aWireIt < myDFace->WiresNb(); ++aWireIt)
+   {
+     const Handle(IMeshData::BndBox2dTree)& aBndBoxTree2 = myWiresBndBoxTree->Value(aWireIt);
+-    const occ::handle<Segments>&           aSegments2   = myWiresSegments->Value(aWireIt);
++    if (aBndBoxTree2->IsEmpty() || aWireBox1.IsOut(aBndBoxTree2->Root().Bnd()))
++    {
++      continue;
++    }
++    const occ::handle<Segments>& aSegments2 = myWiresSegments->Value(aWireIt);
+ 
+     aSelector.SetSegments(aSegments2);
+     for (int aSegmentIt = 0; aSegmentIt < aSegments1->Length(); ++aSegmentIt)

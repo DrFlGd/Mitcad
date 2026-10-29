@@ -3,7 +3,11 @@
 // query's entries to what is drawn (hidden and broken ones left out), the
 // values in words in the document's unit, a length's, a radius', a
 // diameter's and an angle's layout through a projection and at a larger
-// picture's scale, and the projection of a final render's camera.
+// picture's scale, and the projection of a final render's camera. The look
+// of a technical drawing (mitcad#894): texts readable from any side (ISO
+// 129-1), no card behind a value, closed 30-degree arrowheads sized by the
+// text's height, the model's text height with its pixel floor, Auto's
+// colour of the background tone.
 #include "view/MeasurementDrawing.hpp"
 
 #include <array>
@@ -11,6 +15,7 @@
 #include <cstdio>
 #include <initializer_list>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include <QImage>
@@ -48,6 +53,44 @@ QJsonArray oneSegment(const QJsonArray& p, const QJsonArray& q) {
 std::optional<QPointF> top(const gp_Pnt& p) { return QPointF(100.0 + 10.0 * p.X(), 100.0 - 10.0 * p.Y()); }
 
 double lengthOf(const QPointF& p) { return std::hypot(p.x(), p.y()); }
+
+// Whether a pixel of the picture is about `colour` (antialiased edges blend
+// into what is under them).
+bool paintedIn(const QImage& image, const QColor& colour, int tolerance = 40) {
+  for (int y = 0; y < image.height(); ++y) {
+    for (int x = 0; x < image.width(); ++x) {
+      const QColor at = image.pixelColor(x, y);
+      if (at.alpha() > 200 && std::abs(at.red() - colour.red()) <= tolerance &&
+          std::abs(at.green() - colour.green()) <= tolerance && std::abs(at.blue() - colour.blue()) <= tolerance) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool nearColour(const QColor& a, const QColor& b, int tolerance = 40) {
+  return std::abs(a.red() - b.red()) <= tolerance && std::abs(a.green() - b.green()) <= tolerance &&
+         std::abs(a.blue() - b.blue()) <= tolerance;
+}
+
+// A laid out text's axes on the picture: along it and down it, a picture
+// pixel per text pixel face on.
+struct TextAxes {
+  QPointF along;
+  QPointF down;
+  // Its frame (x right, y down) turned over on the picture: mirrored.
+  bool mirrored = false;
+};
+
+TextAxes textAxes(const mitcad::MeasurementShape& shape) {
+  const QPointF at = shape.textTransform.map(QPointF(0.0, 0.0));
+  TextAxes axes;
+  axes.along = shape.textTransform.map(QPointF(1.0, 0.0)) - at;
+  axes.down = shape.textTransform.map(QPointF(0.0, 1.0)) - at;
+  axes.mirrored = axes.along.x() * axes.down.y() - axes.along.y() * axes.down.x() <= 0.0;
+  return axes;
+}
 
 } // namespace
 
@@ -176,16 +219,7 @@ int measurementDrawingTests() {
     QPainter painter(&image);
     paintMeasurements(painter, {length, diameter, angle}, QColor(250, 250, 252), measurementFont(QFont()));
   }
-  bool coloured = false;
-  for (int y = 0; y < image.height() && !coloured; ++y) {
-    for (int x = 0; x < image.width(); ++x) {
-      if (image.pixelColor(x, y) == QColor(0xd9, 0x48, 0x0f)) {
-        coloured = true;
-        break;
-      }
-    }
-  }
-  CHECK(coloured);
+  CHECK(paintedIn(image, QColor(0xd9, 0x48, 0x0f)));
 
   // A final render's camera: from the front, 100 mm high (half_height 50)
   // in a 200 x 100 image, a pixel per mm.
@@ -241,7 +275,9 @@ int measurementDrawingTests() {
                        QJsonObject{{QStringLiteral("tip"), xyz(40, 10, 0)}, {QStringLiteral("direction"), xyz(1, 0, 0)}}}},
            {QStringLiteral("text"), QJsonObject{{QStringLiteral("at"), xyz(20, 10, 0)},
                                                 {QStringLiteral("direction"), xyz(1, 0, 0)},
-                                                {QStringLiteral("up"), xyz(0, 1, 0)}}}}}};
+                                                {QStringLiteral("up"), xyz(0, 1, 0)}}},
+           // 1.2 mm: 12 pixels at 10 pixels a millimetre (mitcad#894).
+           {QStringLiteral("text_height"), 1.2}}}};
   const QJsonObject note{
       {QStringLiteral("name"), QStringLiteral("Note1")},
       {QStringLiteral("kind"), QStringLiteral("note")},
@@ -273,6 +309,7 @@ int measurementDrawingTests() {
   CHECK(drawn[0].upper == QStringLiteral("+0.2") && drawn[0].lower == QStringLiteral("-0.1"));
   CHECK(drawn[0].extensionLines.size() == 2 && drawn[0].dimensionLines.size() == 1 && drawn[0].arrows.size() == 2);
   CHECK(near(drawn[0].lineOffset, 10.0));
+  CHECK(near(drawn[0].textHeight, 1.2) && !drawn[0].autoColor);
   CHECK(drawn[1].planar && drawn[1].lines.size() == 2);
 
   // Face on: drawn whole, the text along X, upright, a pixel per pixel.
@@ -367,16 +404,7 @@ int measurementDrawingTests() {
     QPainter painter(&planarImage);
     paintMeasurements(painter, {highlighted, noted, edgeOn}, QColor(250, 250, 252), measurementFont(QFont()));
   }
-  bool green = false;
-  for (int y = 0; y < planarImage.height() && !green; ++y) {
-    for (int x = 0; x < planarImage.width(); ++x) {
-      if (planarImage.pixelColor(x, y) == QColor(0x2f, 0x9e, 0x44)) {
-        green = true;
-        break;
-      }
-    }
-  }
-  CHECK(green);
+  CHECK(paintedIn(planarImage, QColor(0x2f, 0x9e, 0x44)));
 
   // A datum label and feature control frames (mitcad#702 phase 2): on the
   // note's leader, a letter in its square at the leader's end and a filled
@@ -457,7 +485,128 @@ int measurementDrawingTests() {
     // Beside the leader's end, inside the triangle's base, where an
     // arrowhead's point leaves the halo: the leader comes down to the left.
     const QPoint inside = foot->toPoint() + QPoint(2, 1);
-    CHECK(leaderImage.pixelColor(inside) == QColor(0x70, 0x48, 0xe8));
+    CHECK(nearColour(leaderImage.pixelColor(inside), QColor(0x70, 0x48, 0xe8)));
+  }
+
+  // mitcad#894: the model's text height in the plane, 12 pixels here; a
+  // tiny one stays at the floor of 9 pixels on screen.
+  CHECK(near(face.textPixels, 12.0, 1e-6));
+  MeasurementDisplay tiny = drawn[0];
+  tiny.textHeight = 0.1;
+  CHECK(near(layoutMeasurement(tiny, top).textPixels, 9.0, 1e-6));
+  CHECK(near(layoutMeasurement(tiny, twice, 2.0).textPixels, 18.0, 1e-6));
+
+  // Text direction (ISO 129-1): read from the bottom or from the right,
+  // never mirrored, from the front, from below and from behind:
+  // horizontal texts left to right, vertical ones and those half a degree
+  // off vertical (either way, pointing up or down the picture) bottom to
+  // top.
+  const double halfDegree = 0.5 * std::acos(-1.0) / 180.0;
+  const std::vector<std::pair<gp_Vec, bool>> directions = {
+      {gp_Vec(1.0, 0.0, 0.0), false},
+      {gp_Vec(-1.0, 0.0, 0.0), false},
+      {gp_Vec(0.0, 1.0, 0.0), true},
+      {gp_Vec(0.0, -1.0, 0.0), true},
+      {gp_Vec(std::sin(halfDegree), std::cos(halfDegree), 0.0), true},
+      {gp_Vec(-std::sin(halfDegree), std::cos(halfDegree), 0.0), true},
+      {gp_Vec(std::sin(halfDegree), -std::cos(halfDegree), 0.0), true},
+      {gp_Vec(-std::sin(halfDegree), -std::cos(halfDegree), 0.0), true}};
+  const std::vector<MeasurementProjection> sides = {MeasurementProjection(top), MeasurementProjection(below),
+                                                    MeasurementProjection(behind)};
+  for (const MeasurementProjection& seen : sides) {
+    for (const auto& [direction, upright] : directions) {
+      MeasurementDisplay turned = drawn[0];
+      turned.textDirection = direction;
+      turned.textUp = gp_Vec(0.0, 0.0, 1.0).Crossed(direction);
+      const MeasurementShape shape = layoutMeasurement(turned, seen);
+      CHECK(shape.valid && near(shape.opacity, 1.0));
+      const TextAxes axes = textAxes(shape);
+      CHECK(!axes.mirrored);
+      if (upright) {
+        CHECK(axes.along.y() < -0.99); // bottom to top
+      } else {
+        CHECK(axes.along.x() > 0.99 && axes.down.y() > 0.99); // left to right, upright
+      }
+    }
+  }
+
+  // No filled box behind a dimension's value: seen lower on the picture,
+  // painted on nothing, most of the text's place stays clear, its corner
+  // (where a card was) too.
+  const auto lowered = [](const gp_Pnt& p) -> std::optional<QPointF> {
+    return QPointF(100.0 + 10.0 * p.X(), 220.0 - 10.0 * p.Y());
+  };
+  const MeasurementShape valueShape = layoutMeasurement(drawn[0], lowered);
+  QImage bare(520, 260, QImage::Format_ARGB32_Premultiplied);
+  bare.fill(Qt::transparent);
+  {
+    QPainter painter(&bare);
+    paintMeasurements(painter, {valueShape}, QColor(250, 250, 252), measurementFont(QFont()));
+  }
+  const QRect area = valueShape.textArea.boundingRect().toAlignedRect().intersected(bare.rect());
+  CHECK(area.width() > 20 && area.height() > 8);
+  int covered = 0;
+  int pixels = 0;
+  for (int y = area.top(); y <= area.bottom(); ++y) {
+    for (int x = area.left(); x <= area.right(); ++x) {
+      ++pixels;
+      covered += qAlpha(bare.pixel(x, y)) > 0 ? 1 : 0;
+    }
+  }
+  CHECK(pixels > 0 && covered < pixels * 6 / 10);
+  CHECK(qAlpha(bare.pixel(area.topLeft() + QPoint(1, 1))) == 0);
+  // The value itself is painted, in its colour.
+  CHECK(paintedIn(bare, QColor(0x2f, 0x9e, 0x44)));
+
+  // Closed arrowheads of 30 degrees, 0.8 text heights long; at least 5
+  // pixels.
+  const QPolygonF head = measurementArrowHead(QPointF(0.0, 0.0), QPointF(1.0, 0.0), 20.0);
+  CHECK(head.size() == 3);
+  if (head.size() == 3) {
+    const QPointF one = head[1] - head[0];
+    const QPointF other = head[2] - head[0];
+    const double cosine = (one.x() * other.x() + one.y() * other.y()) / (lengthOf(one) * lengthOf(other));
+    CHECK(near(std::acos(cosine) * 180.0 / std::acos(-1.0), 30.0, 1e-6));
+    CHECK(near(lengthOf((head[1] + head[2]) / 2.0 - head[0]), 16.0, 1e-9));
+    CHECK(near(lengthOf((head[1] + head[2]) / 2.0 - head[0]) / 20.0, 0.8, 1e-9));
+  }
+  const QPolygonF least = measurementArrowHead(QPointF(0.0, 0.0), QPointF(0.0, 1.0), 2.0);
+  CHECK(least.size() == 3 && near(lengthOf((least[1] + least[2]) / 2.0 - least[0]), 5.0, 1e-9));
+  // A laid out dimension's arrowheads: its text's height on the picture.
+  if (face.arrows.size() == 2) {
+    const QPolygonF drawnHead = measurementArrowHead(face.arrows[0].first, face.arrows[0].second, face.textPixels);
+    CHECK(near(lengthOf((drawnHead[1] + drawnHead[2]) / 2.0 - drawnHead[0]), 0.8 * 12.0, 1e-6));
+  }
+
+  // Auto (mitcad#894): no colour of its own, drawn in the neutral colour of
+  // the background tone: near-black on a light one, light grey on a dark
+  // one.
+  QJsonObject automatic = planar;
+  automatic.insert(QStringLiteral("color"), QStringLiteral("auto"));
+  const std::vector<MeasurementDisplay> autos = measurementDisplays(QJsonArray{automatic}, words);
+  CHECK(autos.size() == 1 && autos[0].autoColor && !autos[0].color.isValid());
+  const QColor light(250, 250, 252);
+  const QColor dark(38, 41, 46);
+  CHECK(measurementAutoColor(light).lightnessF() < 0.2);
+  CHECK(measurementAutoColor(dark).lightnessF() > 0.8);
+  if (autos.size() == 1) {
+    const MeasurementShape autoShape = layoutMeasurement(autos[0], lowered);
+    CHECK(autoShape.autoColor);
+    QImage onLight(520, 260, QImage::Format_ARGB32);
+    onLight.fill(light);
+    QImage onDark(520, 260, QImage::Format_ARGB32);
+    onDark.fill(dark);
+    {
+      QPainter painter(&onLight);
+      paintMeasurements(painter, {autoShape}, light, measurementFont(QFont()));
+    }
+    {
+      QPainter painter(&onDark);
+      paintMeasurements(painter, {autoShape}, dark, measurementFont(QFont()));
+    }
+    CHECK(paintedIn(onLight, measurementAutoColor(light)));
+    CHECK(paintedIn(onDark, measurementAutoColor(dark)));
+    CHECK(!paintedIn(onLight, QColor(0x2f, 0x9e, 0x44), 20));
   }
   return failures;
 }

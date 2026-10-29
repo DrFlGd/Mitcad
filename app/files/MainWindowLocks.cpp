@@ -128,6 +128,19 @@ bool MainWindow::refuseReadOnly(const QString& what) {
 }
 
 void MainWindow::readOnlyChanged() {
+  // The lock's timers report while a job computes the model too: the
+  // panel cancelled and the actions' state, which read the document, wait
+  // for the job's end (mitcad#888), once for any number of changes.
+  if (modelBusy()) {
+    if (!m_readOnlyChangePending) {
+      m_readOnlyChangePending = true;
+      whenIdle(this, [this] {
+        m_readOnlyChangePending = false;
+        readOnlyChanged();
+      });
+    }
+    return;
+  }
   const bool on = windowReadOnly();
   qInfo().noquote() << QStringLiteral("Read-only: %1%2")
                            .arg(on ? QStringLiteral("on") : QStringLiteral("off"),

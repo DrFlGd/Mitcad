@@ -496,7 +496,8 @@ impl Parameters {
 /// or ends in `taper` (`extent.taper`, `side1.taper`) hold angles; counts,
 /// factors and ratios (`helix.revolutions`, `extent.fraction`,
 /// `start_condition.weight`, `tangency_weight`, `direction1.quantity`,
-/// `scale.factor`) are unitless; everything else lengths.
+/// `scale.factor`, a thread's `starts`) are unitless; everything else
+/// lengths.
 pub fn slot_unit(slot: &str) -> Unit {
     let field = slot.rsplit('.').next().unwrap_or(slot);
     // A sketch text's text (`texts[t5].text`, mitcad#664).
@@ -519,6 +520,8 @@ pub fn slot_unit(slot: &str) -> Unit {
         || slot == "set_screws.count"
         // A printable bearing's elements (mitcad#577).
         || slot == "element_count"
+        // A thread's or a tapped hole's starts (mitcad#893).
+        || matches!(slot, "starts" | "thread.starts")
         // Every count, factor and fraction (mitcad#662): pattern quantities,
         // a pattern's or mirror's scale factors and their runs, a scale's
         // factors, a boss's ribs (construction paths' fractions are

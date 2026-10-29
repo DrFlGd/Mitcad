@@ -576,7 +576,25 @@ millimetres, angles radians. Build sketches with the
     that a source moved before the solve (a linked projection that
     followed its face farther than the distance) keeps them on their side;
     a shared corner starts where the two offset curves cross, an arc's
-    free ends at the source's angles.
+    free ends at the source's angles, and each helper across an arc's gap
+    on its radius as it lay (mitcad#890).
+  - Where the source curves touch at a corner by their definition (fixed
+    curves, a linked projection's, that touch at their shared point;
+    curves tangent by a constraint; results of an offset whose corner is
+    held so), the solve also holds the results' shared corner where the
+    result line touches the result arc, or where the two result arcs
+    touch (mitcad#890, `offset::tangent_corners`). The corner was fixed
+    only to the second order before: it slid along the line by the square
+    root of the solve's rounding (2e-5 mm), the arc ended past the
+    touching point and the profile turned there by about 1e-6 rad, so
+    that a grid design's offset outlines lost the edges its chamfers name
+    and a sweep along them cut its chute into rings after a width change.
+    The sketch's `dof` and `fully_constrained` count such a corner as
+    fixed. Free curves that only happen to touch are not held. A sketch
+    that cannot be solved says what contradicts as it would without the
+    corners held: the held tangencies restate what the offsets' own
+    constraints imply, and counted in the failed solve's explanation they
+    named every constraint of the offsets.
   - A chain with an ellipse, an elliptical arc or a spline is `derived`:
     its curves are computed from the solved source after every solve
     (lines and arcs exactly, an ellipse or spline as a C1 cubic B-spline
@@ -1109,12 +1127,15 @@ their segments' names); a full turn has no caps.
   "offset": o}` (the cylinder ends where each axis first meets the
   object, the point beyond).
 - `thread` (a tapped hole): `standard` (`iso_metric` default, `unified`,
-  `whitworth`, `npt`, `tyre_valve`, `forming_screw`, `iso_taper`), `designation`, `class`, `right_handed` (default
-  true), `modeled` (ISO metric, Unified, tyre valve, forming screw and NPT only), and `length`, `offset`
+  `whitworth`, `npt`, `tyre_valve`, `forming_screw`, `trapezoidal`, `iso_taper`, `custom`), `designation`, `class`, `right_handed` (default
+  true), `modeled` (ISO metric, Unified, tyre valve, forming screw, trapezoidal, custom and NPT only), and `length`, `offset`
   from the hole's start (the whole wall when left out), and for a
-  modelled thread `radial_clearance` and `flank_clearance`; as for the
-  [thread](#thread) feature.
-  The bore is the size's basic minor diameter; `diameter` is then ignored.
+  modelled thread `radial_clearance` and `flank_clearance`; a custom
+  thread's `custom` size and a modelled thread's `starts` ([Custom and
+  multi-start threads](#custom-and-multi-start-threads-modelled-trapezoidal-threads));
+  as for the [thread](#thread) feature.
+  The bore is the size's basic minor diameter (a custom thread's D − 5H/4,
+  a trapezoidal thread's D1 = d − P); `diameter` is then ignored.
   A taper pipe thread (`npt`, `iso_taper` `Rc …`; mitcad#733) with
   `"taper": true` keeps `diameter`, the tap drill (the `thread_sizes`
   query's `tap_drill`, the Hole panel's default), and tapers the bore from
@@ -1152,7 +1173,9 @@ numbers the positions from 0.
 
 - `faces`: cylindrical faces, all internal (hole walls) or all external.
 - `thread`: `standard` (`iso_metric` default, `unified`, `whitworth`,
-  `npt`, `tyre_valve`, `forming_screw`, `trapezoidal`, `iso_taper`), `designation` (`M10x1.5`, `M10` for the coarse
+  `npt`, `tyre_valve`, `forming_screw`, `trapezoidal`, `iso_taper`,
+  `custom`: a size of one's own, see [Custom and multi-start
+  threads](#custom-and-multi-start-threads-modelled-trapezoidal-threads)), `designation` (`M10x1.5`, `M10` for the coarse
   pitch, `1/4-20 UNC`; Whitworth `1/4-20 BSW`, `1/4-26 BSF`, the parallel
   pipe threads `G 1/4`; NPT `1/4-18 NPT` (also `1/2 - 14 NPT`); the taper
   pipe threads of ISO 7-1 `R 1/2` on a shaft and `Rc 1/2` in a hole (the
@@ -1172,8 +1195,9 @@ numbers the positions from 0.
   `thread_sizes` query). An NPT size is listed at its pipe's outside
   diameter, an ISO 7-1 size at its gauge diameter.
 - `modeled`: build the 60° profile on the faces (ISO metric, Unified,
-  tyre valve, forming screw, and NPT with `taper`; the others, Whitworth,
-  ISO 7-1 and trapezoidal, are cosmetic only); otherwise cosmetic: no
+  tyre valve, forming screw, custom, and NPT with `taper`), or the
+  trapezoidal 30° one (trapezoidal, mitcad#893; the others, Whitworth and
+  ISO 7-1, are cosmetic only); otherwise cosmetic: no
   geometry, listed by the `threads` query (a cosmetic thread's end
   chamfers, below, and a tapering taper pipe thread's cone are cut into
   the geometry). The profile is ISO 68-1's: flanks at
@@ -1188,7 +1212,8 @@ numbers the positions from 0.
   the profile's diameters, e.g. a tolerance class's (the middles of its
   tolerances, as `.f3d` designs store them: M10x1.5 6g is 9.85, 8.141,
   8.928); the size's basic diameters (D, D1 = D − 5H/4, D2 = D − 3H/4)
-  when left out. A taper pipe thread's are those where it starts (below).
+  when left out, a trapezoidal thread's with its crest clearance (below).
+  A taper pipe thread's are those where it starts (below).
 - `taper` (`true`; taper pipe threads `npt` and `iso_taper` only,
   mitcad#733): the thread is tapered 1:16 on the diameter. Without it (a
   thread saved before) a taper pipe thread is straight, as it was:
@@ -1300,6 +1325,52 @@ thread take part, so a large body does not slow it down. Imported
 threads have no end chamfers: the thread properties the imports read
 (`core/import/SCHEMA.md`, `ThreadFeature`) include none; a chamfer in
 those designs is a feature of its own.
+
+#### Custom and multi-start threads, modelled trapezoidal threads
+
+(mitcad#893)
+
+```json
+{"type": "thread", "faces": [{"body": "F2.b0", "face": "F2:side(c1)"}],
+ "thread": {"standard": "custom", "right_handed": true},
+ "custom": {"major": "12 mm", "pitch": "3 mm"}, "starts": 2, "modeled": true}
+```
+
+- A custom thread (`"standard": "custom"`) takes its size from `custom`:
+  `major` (the major diameter D) and `pitch` (P), expressions, so it
+  follows parameter changes. It has no `designation` and no `class` (one
+  fails: "a custom thread has no tolerance class"), and is the 60-degree
+  profile of ISO 68-1 at that size: D1 = D − 5H/4, D2 = D − 3H/4, H =
+  0.866025 P. The pitch must leave a core (P < 0.9238 D; "too coarse"
+  otherwise). Cosmetic or modelled like a size of the table, with the
+  same `diameters`, clearances, `angle`, part and end chamfers (their
+  default diameter from its minor or major diameter). Without `custom`
+  the feature fails ("a custom thread needs its size"), and `custom` on a
+  standard size fails. The `threads` query lists it with `standard`
+  `custom` and `designation` `<D>x<P>` (`12x3`). A tapped hole takes the
+  same `custom` in its `thread` (its bore D1).
+- `starts` (an expression, a whole number from 1 to 64; 1 when left
+  out): a modelled thread's number of starts. Its grooves are evenly
+  spaced round the axis, a pitch apart along it, each on a helix of lead
+  `starts` × P: the first is placed as `angle` says, rising a lead a turn,
+  the others are it turned by 360°/`starts`. In every section through the
+  axis its profile is a single-start thread's of the same pitch. A
+  designation with a lead gives its own starts (`Tr10x4(P2)`: 2, lead 4);
+  `starts` may only repeat it ("Tr10x4(P2) has 2 starts …"). Any size
+  takes `starts`; the Thread and Hole panels offer it for Custom. The
+  `threads` query gives a multi-start thread's `starts` and `lead`.
+- A trapezoidal thread is modelled with the profile of ISO 2901: flanks
+  at 15° to the radius (a 30° included angle), half a pitch wide at the
+  pitch diameter d2 = d − P/2, flat crests and roots, and the standard's
+  crest clearance `ac` (0.15 mm for P 1.5, 0.25 mm for P 2 to 5, 0.5 mm
+  for P 6 to 12, 1 mm from P 14): an external thread's root d3 = d − 2
+  (P/2 + ac), an internal thread's D4 = d + 2 ac, its crest D1 = d − P
+  (Tr10x2: 10, 7.5, 9 outside; 10.5, 8, 9 inside). Extra flank clearance
+  moves the 15° flanks: `flank_clearance / cos 15°` along the axis, at
+  most (crest − P/50) cos 15° / 2 (0.3342 mm on an external Tr10x2, whose
+  crest is 0.366 P).
+- The kernel gets them as `ThreadSpec::starts` and
+  `ThreadSpec::flank_angle` (`geometry/include/mitcad/geometry/thread.hpp`).
 
 ### fillet
 
@@ -3646,9 +3717,9 @@ timeline marker.
 | `dependents` | `uid` | `dependents`: `uid`, `name` of the features that refer to it, directly or through others, in timeline order (what `delete_feature` with `dependents` deletes too) |
 | `can_reorder` | `uid`, `index` | `ok`, and `error` (the reason `reorder_feature` would give) when not |
 | `sketch` | `uid` | see [Sketch commands](#sketch-commands) |
-| `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder). A modelled thread whose crest lies on its face leaves pieces of the face between its grooves, and the face at the marker is measured. A modelled thread feature whose crest lies off its face (a class's diameters, a radial clearance) takes or covers all of the face along its part, leaving nothing of it (over the whole face) or only what lies outside the part, which does not show where the thread runs: it is listed with the face measured on the body before the feature, as long as the faces it made from it are on the body, and its end chamfers move `start` and `end` to where their cones meet the crest (mitcad#433, mitcad#628). A tapped hole's modelled thread whose crest lies off its wall (a radial clearance) is listed on the wall as the hole measured it before cutting the thread, as long as the thread's faces made from it are on the body (mitcad#436, mitcad#628); a result stored before mitcad#628 keeps only the walls left without any piece, and a part's wall in it is measured at the marker |
-| `thread_sizes` | `standard` (`iso_metric`, `unified`, `whitworth`, `npt`, `tyre_valve`, `forming_screw`, `trapezoidal` or `iso_taper`; all when left out) | `standards`, ISO metric first, then Unified, Whitworth (bolt sizes, then the pipe sizes `G 1/4`), NPT, tyre valve, forming screw and trapezoidal threads (`Tr8x1.5`, the preferred pitch first): `standard`, `title` (the thread type's name), `default` (true for ISO metric), `sizes` (smallest first: `size` as the table names it, `10`, `1/4`, `#10`; `major_diameter` mm; `designations`, the coarse pitch or UNC first, each one `thread` and `hole` accept), `classes_external`, `classes_internal`, `default_class_external` (6g, 2A, Medium, Standard, 7e), `default_class_internal` (6H, 2B, Medium, Standard, 7H); a taper pipe thread's size also `tap_drill` (mm: the minor diameter of the internal thread its effective length into it, NPT's L2 and ISO 7-1's gauge length, mitcad#733) |
-| `thread_chamfer` | `designation`, `standard` (`iso_metric` when left out), `internal` (false when left out) | the size's default end chamfer ([thread](#thread), mitcad#304): `diameter` (mm, from the size table), `angle` (45, degrees to the axis) |
+| `threads` | `cosmetic` (optional, false: only the cosmetic threads, the ones the view draws; a modelled thread is in the geometry, and measuring its face cost a design with modelled threads 0.3-0.6 s each time the window showed it, mitcad#878) | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, a multi-start thread's `starts` and `lead` (mitcad#893), and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder). A modelled thread whose crest lies on its face leaves pieces of the face between its grooves, and the face at the marker is measured. A modelled thread feature whose crest lies off its face (a class's diameters, a radial clearance) takes or covers all of the face along its part, leaving nothing of it (over the whole face) or only what lies outside the part, which does not show where the thread runs: it is listed with the face measured on the body before the feature, as long as the faces it made from it are on the body, and its end chamfers move `start` and `end` to where their cones meet the crest (mitcad#433, mitcad#628). A tapped hole's modelled thread whose crest lies off its wall (a radial clearance) is listed on the wall as the hole measured it before cutting the thread, as long as the thread's faces made from it are on the body (mitcad#436, mitcad#628); a result stored before mitcad#628 keeps only the walls left without any piece, and a part's wall in it is measured at the marker |
+| `thread_sizes` | `standard` (`iso_metric`, `unified`, `whitworth`, `npt`, `tyre_valve`, `forming_screw`, `trapezoidal`, `iso_taper` or `custom`; all when left out) | `standards`, ISO metric first, then Unified, Whitworth (bolt sizes, then the pipe sizes `G 1/4`), NPT, tyre valve, forming screw and trapezoidal threads (`Tr8x1.5`, the preferred pitch first), ISO 7-1, and last `custom` (mitcad#893: `"custom": true`, no sizes and no classes; its size is given): `standard`, `title` (the thread type's name), `default` (true for ISO metric), `sizes` (smallest first: `size` as the table names it, `10`, `1/4`, `#10`; `major_diameter` mm; `designations`, the coarse pitch or UNC first, each one `thread` and `hole` accept), `classes_external`, `classes_internal`, `default_class_external` (6g, 2A, Medium, Standard, 7e), `default_class_internal` (6H, 2B, Medium, Standard, 7H); a taper pipe thread's size also `tap_drill` (mm: the minor diameter of the internal thread its effective length into it, NPT's L2 and ISO 7-1's gauge length, mitcad#733) |
+| `thread_chamfer` | `designation`, `standard` (`iso_metric` when left out), `internal` (false when left out); for `custom` (mitcad#893) `major` and `pitch` instead of `designation` | the size's default end chamfer ([thread](#thread), mitcad#304): `diameter` (mm, from the size table), `angle` (45, degrees to the axis) |
 | `named_views` | | in the order added: `name`, `eye`, `target`, `up`, `perspective` (when true), `height` |
 | `recompute_times` | | the features the last recompute evaluated (cache hits left out), in timeline order: `uid`, `name`, `type`, `ms` (wall time of its evaluation); and `ms`, their sum |
 | `changes_since_saved` | | `known` (the state last marked saved is on the undo or redo stack, or is this one), `steps`: oldest first, the labels of the undo steps made since (`Change d3`), or `Undo <label>` for those undone since, leaving out those that changed only the display state; empty when nothing else changed or not known (never saved, a step dropped by a new command after undo) |
@@ -4002,7 +4073,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.chamfer` | `a`, `b`, `distance`, and `distance2` or `angle` (values) | a line and its distance (and distance or angle) dimensions from the kept corner |
 | `sketch.offset` | `curves` (a chain of joined curves, or one closed curve), `distance` (value) | to the right of the chain direction (a closed curve: positive is out); one parameter for the distance; an `offsets` record (derived with ellipses and splines); result `constraints` [the offset's id] and `warnings`; a curve the same as another counts once, see [Projected outlines and their offsets](#projected-outlines-and-their-offsets) |
 | `sketch.edit_offset` | `offset` (`k8`), `distance` (value), `flip` | the distance changes, `flip` moves it to the other side; the curves keep their ids |
-| `sketch.mirror` | `entities`, `axis` (a line) | copies with symmetric constraints (an ellipse copy also keeps an equal minor radius); points on the axis are shared |
+| `sketch.mirror` | `entities`, `axis` (a line `c4`, or the sketch's own axis `"x"` or `"y"`, made in the same undo step when the sketch has none, see [The sketch's axes and origin as entities](#the-sketchs-axes-and-origin-as-entities); mitcad#876) | copies with symmetric constraints (an ellipse copy also keeps an equal minor radius); points on the axis are shared; the axis line among `entities` is left out (refused only when nothing else is left), and a point whose curve is mirrored too (a circle's centre picked with the circle) gets no symmetry of its own, which would be redundant (mitcad#876) |
 | `sketch.circular_pattern` | `entities`, `center` (point input; a new point is fixed), `count` (originals included), `angle` (value, default a full turn) | a `patterns` record; result `constraints` [the pattern's id] |
 | `sketch.rectangular_pattern` | `entities`, `direction` (default [1, 0]), `count` [n1, n2], `spacing` [s1, s2] (values, signed: a negative spacing goes against its direction, mitcad#447; not zero), `symmetric` ([bool, bool], default none: per direction the originals are the middle instance, an odd count, and the copies lie on both sides) | as above |
 | `sketch.edit_pattern` | `pattern` (`k5`), and any of `count` (n, or [n1, n2]), `angle`, `spacing`, `direction`, `center`, `entities` (the originals) | the copies follow |
@@ -5249,7 +5320,7 @@ file's bodies built with OCCT.
 | `geometric_tolerance` | mm, greater than 0 (default 0.01; the application's Preferences, General, *Import tolerance*): how far the replay's geometry may be from the file's where no exact result is (mitcad#224). The decoded edges, faces and vertices are looked for in the replay within 0.001 mm first (a fillet's edge by its middle, ends, or circle centre, radius and plane), then within this tolerance; a match found so keeps the uniqueness rules, counts as `read` where the input was decoded and the match is unique, and the item's report gives its `geometric_deviation`. It is also the distance within which an item's new faces must lie on the file's in the history's geometric check (`core/import/docs/f3d-fallbacks.md`), and the distance a sketch's solved points may lie from the file's where the sketch's regions stay the file's (mitcad#396; else 1e-4 mm); volume and area checks keep their relative tolerances |
 | `retry_bodies` | `keep` (default), `replace` or `ask` (mitcad#283): what a retry of an item on the file's stored state before it does with the replayed bodies that match that state (exactly, or within `geometric_tolerance`). `keep`: they stay, parametric, and only the bodies that differ are brought to the state (nothing differs: no retry, and the item takes the file's bodies if it fails); `replace`: the stored bodies replace them too; `ask`: the user is asked through the document's job (`JobControl::question`, `answer`) the first time a retry would replace a body that matches, and the answer holds for the rest of the import, its tries and the documents it refers to (kept without a job). See *Retries on the file's exact state* in `core/import/docs/f3d-fallbacks.md` |
 | `time_limit` | seconds; after them the remaining items take the file's bodies without trying definitions |
-| `own_start_time_scale` | a factor above 0 (default 1; mitcad#847) on the time an item is first tried from its own start, the state before the operations no item names right before its own (half of the item's 60 s): the checks of a debug build give its slowdown (`mitcad-cli import-f3d --own-start-time-scale`), so that an item that gives its state that way does not hang on the build or the load beside it. The item's other routes keep their times. Passed on to the documents the design refers to |
+| `own_start_time_scale` | a factor above 0 (default 1; mitcad#847) on the time an item is first tried from its own start, the state before the operations no item names right before its own (half of the item's 60 s): the checks of a debug build give its slowdown (`mitcad-cli import-f3d --own-start-time-scale`), so that an item that gives its state that way does not hang on the build or the load beside it. It scales a thread's sizing offset's 2 s too (mitcad#874), the other short time of a route tried first. The item's other routes keep their times. Passed on to the documents the design refers to |
 | `hang_limit` | seconds without progress after which the import is taken to hang in the geometry kernel (a new document only; the import makes progress between kernel calls, also in its own long loops, so only a kernel call that does not return counts, mitcad#82): the import runs on a thread of its own and is run again with the item it hung on taking the file's bodies (hung comparing the final bodies: by volume only; elsewhere: the stored bodies without the timeline); the report warns. The try given up stops once its kernel call returns (before its next item or definition; a definition's long kernel operations stop inside) and its result is dropped (mitcad#71) |
 | `text` | `import_f3d_timeline` returns a readable report |
 | `report_path` | also write the JSON report to this file |
@@ -8268,21 +8339,38 @@ in every document and process. Store code and file format:
 |---|---|
 | `ResultStore::new(dir, build_id).with_label(name)` | a store folder; results stored by another `build_id` are not used. The label (the design's file name) is kept with the results written |
 | `Document::set_result_store(Some(store))` | recomputes take results from it when the memory cache has none; None (the default) for none |
-| `Document::persist_results(min_time)` | writes the results of the last recompute that are not in the store yet: features that succeeded, took at least `min_time`, and whose results the store takes; returns `PersistReport {results, shapes, bytes, failed, errors, time}`. A preview's results are not written |
+| `ResultStore::with_quick_results(memory_per_ms)` | quick results (below): stored when their shapes take at most `memory_per_ms` bytes per millisecond of evaluation; None for none. Default `store::QUICK_MEMORY_PER_MS` (128 KiB), None with `MITCAD_STORE_QUICK=0`; `worth_storing(time, memory)` tells |
+| `Document::persist_results(min_time)` | writes the results of the last recompute that are not in the store yet: features that succeeded, took at least `min_time` or are quick results worth storing, and whose results the store takes; returns `PersistReport {results, shapes, bytes, quick, failed, errors, time}` (`quick`: of the results, those quicker than `min_time`). A preview's results are not written |
 | `store::gc(dir, budget)`, `store::clear(dir)` | `gc` removes the files used longest ago until 80 % of `budget` bytes are used (when more is), and temporary files more than an hour old; `clear` removes all. `GcReport {files, bytes, removed, removed_bytes}` |
 | `RecomputeStats::restored`, `restore_times` | the features whose results came from the store in the last recompute, and how long reading each took |
 
 | C++ (`mitcad_bridge/lib.h`; `core/ffi/src/result_store.rs`) | Meaning |
 |---|---|
 | `Document::set_result_store(dir, build_id, label)` | as above; an empty `dir` for none. `build_id`: `mitcad::geometry::kernel_build_id()` (the shape format, OCCT's and MitCad's versions, the size and time of the running program's file) |
-| `Document::persist_results(min_ms)` | JSON `{"results", "shapes", "bytes", "failed", "errors", "ms"}` |
+| `Document::persist_results(min_ms)` | JSON `{"results", "shapes", "bytes", "quick", "failed", "errors", "ms"}` |
 | `result_store_gc(dir, budget_mb)`, `result_store_clear(dir)` | JSON `{"files", "bytes", "removed", "removed_bytes"}`; any thread may call them |
 
 - Not stored: sketches and construction features, features that move
-  occurrences, base features that only bring in bodies, failed features,
-  results evaluated with a parameter renamed since (their versions hold
-  the old name). A result read from the store is in the memory cache
-  afterwards and is not written again.
+  occurrences, failed features, results evaluated with a parameter
+  renamed since (their versions hold the old name). A result read from
+  the store is in the memory cache afterwards and is not written again.
+- Base features are stored too, also those that only bring in bodies
+  (mitcad#887): bringing a body in reads its B-rep data and derives its
+  edges' and vertices' names, which a stored body keeps (a body of
+  23 000 faces: 1.4 s to bring in, 0.45 s to restore). Restored results
+  whose shapes a recompute unpacks together are unpacked on the
+  machine's threads, a result's several bodies too.
+- Quick results (mitcad#882): a result that took less than `min_time` is
+  stored too when its shapes (the bodies it sets and its tool, as
+  `Kernel::shape_memory` estimates them) take at most 128 KiB per
+  millisecond of its evaluation. Restoring it reads its file and leaves
+  the state before it packed, so a run of restored features unpacks only
+  its last state, where evaluating the quick feature unpacks the state it
+  reads; quick results with large shapes (a move of a large body) are left
+  out. On three large designs the quick modelling features were within
+  the limit, and their warm recomputes evaluated 107, 75 and 288
+  features before and 68, 53 and 143 after (store.rs's module comment
+  has the times).
 - The store keeps up to four variants per feature uid and definition,
   for different inputs. A file that cannot be read (damaged, cut short, a
   shape the kernel cannot read) is removed and the feature evaluated; a
@@ -8295,8 +8383,9 @@ in every document and process. Store code and file format:
   `geometry::serialize_shape`).
 - `mitcad-cli info <file> --result-store DIR [--persist-min-ms MS]` (also
   `run --open`) opens the design with the store, writes the results
-  that took at least `MS` (default 100) and prints `Result store:
-  restored from store: N, evaluated: M; stored: K (B bytes)`.
+  that took at least `MS` (default 100) and the quick ones worth storing,
+  and prints `Result store: restored from store: N, evaluated: M; stored:
+  K (B bytes, Q quick); recompute T ms` (T: the recompute's wall time).
 - `Document::hand_off_results(&store)` (the bridge's
   `hand_off_results(dir, build_id, label)`) writes every result of the
   last recompute that a store takes to `store`, however quick, and marks
@@ -8317,9 +8406,12 @@ Opening a design whose results the store holds (mitcad#858).
 store keeps the shapes of the bodies it sets packed (`Output::changes`,
 `Changes::heads` without them) and the body states hold a stand-in under
 the stored version; its tool is read at once. The shapes are unpacked
-when something may read them: before any feature is evaluated, except a
-sketch on an origin or construction plane without projected geometry;
-before a joint is applied; at the end for the bodies left; and whenever
+when something reads them: an evaluation unpacks the results that set
+the bodies it reads as it reads them (mitcad#886: a sketch on a face the
+face's body, a join or a fillet its bodies; reading all of a component's
+bodies unpacks them all), and the other bodies stay packed (the time it
+takes is not the evaluation's); before a joint is applied every body;
+at the end the bodies left; and whenever
 anything reads the result's changes later (the timeline's history,
 `body_before`, a pattern of features). A state the next restored result
 replaces before that is never unpacked. Not with recompute workers nor
@@ -13417,9 +13509,15 @@ the first time something refers to them:
 - Sketches saved before have no `axis` flags and read and save as they
   were. Copies (move, mirror, patterns) do not copy the flag. The DXF
   export (`export_sketch`) leaves the axes' lines out.
+- **Mirror about an axis** (mitcad#876): `sketch.mirror` takes `"axis":
+  "x"` or `"y"` as well as a line; the axis is made (as `sketch.axis`
+  makes it) in the mirror's own undo step `Mirror in Sketch1`, and the
+  copies are symmetric about it. Its made line's `c` id works as any
+  line.
 
 Code: `core/sketch/src/axes.rs`. Tests:
-`core/model-tests/sketch/src/sketch_axes_tests.rs`.
+`core/model-tests/sketch/src/sketch_axes_tests.rs`, Mirror about an axis
+`core/model-tests/sketch/src/sketch_mirror_876_tests.rs`.
 
 ## Reorient Design
 
@@ -14455,7 +14553,9 @@ QIDI Studio), read straight from their data folders, never changed:
 macOS, `$XDG_CONFIG_HOME/<key>` (else `~/.config/<key>`) on Linux and a
 Flatpak's `~/.var/app/<id>/config/<key>`, `<key>` `BambuStudio`,
 `OrcaSlicer` or `QIDIStudio`; a slicer is installed when its folder has
-`user/`. Its presets are `user/<account>/{machine,process,filament}/*.json`
+`user/`, or `system/` and an app config (below) whose `models` enables a
+printer (mitcad#871). Its presets are
+`user/<account>/{machine,process,filament}/*.json`
 (`default` without an account). After them come the slicer's own
 presets the user enabled there (mitcad#871, `system`), read from
 `system/<vendor>/{machine,process,filament}/` as the slicer's app config
@@ -14463,7 +14563,8 @@ presets the user enabled there (mitcad#871, `system`), read from
 `models` (`{vendor, model, nozzle_diameter}`), the processes for one of
 them (`compatible_printers`), and the filaments named in its `filaments`
 (with a printer model's `default_materials` when none listed suits one
-of its printers) that suit one of them; only presets meant to be chosen
+of its printers) that suit one of them, each kind by name in any case;
+only presets meant to be chosen
 (`instantiation` not `false`), never the bases, and none without an app
 config. A preset's `inherits` is filled in from
 the user's own presets of its account and the slicer's `system/` presets
@@ -14994,7 +15095,7 @@ Measurements kept in the design (mitcad#649; since mitcad#702 they are
 [Annotations](#annotations), and these commands are their short forms;
 `core/model/src/document/annotations.rs`, `api/measurements.rs`): the
 application's Annotations window. Each has a `name` (`Distance1`, `Angle1`,
-…), a `color` (`#rrggbb`), a light bulb (`visible`), the `kind` of value
+…), a `color` (`#rrggbb`, or `auto`: [Annotations' look](#annotations-look-text-height-auto-colour-and-placement)), a light bulb (`visible`), the `kind` of value
 it shows and one or two picks `a` and `b`, given as the `measure` query's
 selections as fields (*Analysis queries*: `{"body", "face" | "edge" |
 "vertex", "occurrence"}` or `{"datum", "occurrence"}`). The picks refer to
@@ -15005,9 +15106,9 @@ design*, *Measure with axes*).
 
 | Command | Fields | Result |
 |---|---|---|
-| `add_measurement` | `a`, `b` (optional), `kind` (optional), `name` (the next free `<Kind><n>` when left out), `color` (the next of six default colours when left out) | `name`, `kind`; undo step `Add Distance1` |
+| `add_measurement` | `a`, `b` (optional), `kind` (optional), `name` (the next free `<Kind><n>` when left out), `color` (`auto` when left out) | `name`, `kind`; undo step `Add Distance1` |
 | `rename_measurement` | `name`, `new_name` | undo step `Rename Distance1` |
-| `set_measurement_color` | `name`, `color` (`#rrggbb`, any case; stored in lower case) | undo step `Colour of Distance1` unless nothing changes |
+| `set_measurement_color` | `name`, `color` (`#rrggbb` or `auto`, any case; stored in lower case) | undo step `Colour of Distance1` unless nothing changes |
 | `set_measurement_visible` | `name`, `visible` | undo step `Show Distance1` / `Hide Distance1` unless nothing changes |
 | `set_measurement_kind` | `name`, `kind` | undo step `Kind of Distance1` unless nothing changes |
 | `delete_measurement` | `name` | undo step `Delete Distance1` |
@@ -15129,8 +15230,8 @@ dimension (`kind` one of the measurement kinds) or a leader note (`kind`
 | Field | Meaning |
 |---|---|
 | `group` | a group's name (`Manufacturing`), trimmed; left out for none. The application shows and hides a group at once and snapshots one. |
-| `plane` | the plane it lies in: `{"normal": [x, y, z]}` (a direction in the first pick's own coordinates, so that it turns with the pick's occurrence; a length's plane is turned square to its ends), with `"x"` for a note (the direction its text runs along, likewise), or `{"pick": <pick>}`, a planar face or a datum plane it lies parallel to and follows. Left out: chosen from the picks — a length's plane is square to the coordinate axis least along it (Z, then Y, then X), a note's is its face's plane (else XY). A radius, a diameter and an angle lie in the plane of their circle or rays and take no `plane`. |
-| `line_offset` | a length's dimension line from its ends, mm, signed across the ends in the plane (a quarter of the length, at least 1 mm, when left out); an angle's arc radius, more than 0 (half the distance from the corner to the nearer pick's point, else 10 mm). None for a radius, a diameter or a note. |
+| `plane` | the plane it lies in: `{"normal": [x, y, z]}` (a direction in the first pick's own coordinates, so that it turns with the pick's occurrence; a length's plane is turned square to its ends), with `"x"` for a note (the direction its text runs along, likewise), or `{"pick": <pick>}`, a planar face or a datum plane it lies parallel to and follows. Left out: chosen from the picks — a length's plane is square to the coordinate axis least along it (Z, then Y, then X), or, where a planar face at a pick holds the length and is not parallel to that, the face's nearest it (mitcad#894); a note's is its face's plane (else XY). A radius, a diameter and an angle lie in the plane of their circle or rays and take no `plane`. |
+| `line_offset` | a length's dimension line from its ends, mm, signed across the ends in the plane; left out, outside its bodies' extent in the plane (mitcad#894, [Annotations' look](#annotations-look-text-height-auto-colour-and-placement): 1.5 text heights past the bodies, stacked outside parallel lines; without a body, a quarter of the length, at least 1 mm); an angle's arc radius, more than 0 (half the distance from the corner to the nearer pick's point, else 10 mm). None for a radius, a diameter or a note. |
 | `text_offset` | `[along, across]`, mm in the plane: a dimension's text from its default place (the dimension line's middle; a circle's one and a half radii out along `across` of its axis; an angle's arc's middle); a note's text from its arrow's point (`[10, 10]` when left out). |
 | `format` | a dimension's `{"decimals"` (0 to 6; up to three without trailing zeros when left out), `"prefix"` (in place of the kind's: `Ø` for a diameter, `R` for a radius; `""` for none), `"before"`, `"after"` (own text, e.g. `4 x`, `THRU`), `"replace"` (a text in place of the value and its tolerance)`}`; left out when all are defaults. |
 | `tolerance` | a dimension's `{"type": "symmetric", "value"}` (±), `{"type": "deviations", "upper", "lower"}` (signed, upper more than lower), `{"type": "limits", "upper", "lower"}` (the same deviations written as the largest and smallest size), or `{"type": "fit", "code", "deviations"}` (an ISO 286 code on a length, `H7` a hole's, `g6` a shaft's, of the size as written (its range by the value rounded as shown) — a radius' of its diameter's size, with half its deviations; `deviations: true` writes them in brackets); millimetres for lengths, degrees for angles. |
@@ -15148,13 +15249,18 @@ dimension (`kind` one of the measurement kinds) or a leader note (`kind`
 - **A view's suggestion.** `add_annotation`'s `view` is `{"direction"`
   (the way the view looks, from the eye), `"up"`, `"pixel"` (mm a pixel
   near the picks)`}`: what it leaves out is placed as it was seen — a
-  length's or a note's plane square to the view (a length's turned to hold
-  its ends; seen along them, closer than 1e-6, square to the view's up
-  instead; a note's text along the view's right), kept in the first pick's
-  own coordinates, a length's dimension line 22 pixels off on the view's
-  upper side, an angle's arc 42 pixels out, a circle's text 30 pixels past
-  its rim, a note's text 40 and 30 pixels off — and kept as `plane`,
-  `line_offset` and `text_offset`.
+  note's plane square to the view (its text along the view's right); a
+  length's plane a plane of its part (mitcad#894): of the planar faces at
+  its picks that hold it (a face picked and the faces it meets, the faces
+  of an edge or a vertex) and the coordinate planes turned to hold it, the
+  one most facing the view (seen along the length, closer than 1e-6, the
+  one most square to the view's up), its normal towards the eye; both kept
+  in the first pick's own coordinates; a length's dimension line outside
+  its bodies' extent as when left out (the view's upper side when both
+  sides are as clear; without a body 22 pixels off on the view's upper
+  side), stacked outside the parallel lines there; an angle's arc 42
+  pixels out, a circle's text 30 pixels past its rim, a note's text 40 and
+  30 pixels off — and kept as `plane`, `line_offset` and `text_offset`.
 - **Checked.** A note points at one pick, which gives it a point (a body
   picked without `at` gives none), and needs a text; it has no format or
   tolerance, a dimension no `text`; a note stays a note and a dimension a
@@ -15212,10 +15318,13 @@ where the annotation is not broken:
   point), `arcs` (`center`, `radius`, `from`, `to` unit rays, `normal`),
   `arrows` (`tip` and the unit `direction` it points along: outwards at a
   length's ends and on a rim, along an angle's arc, at a note's point),
-  `center` (a circle's, for its centre mark) and `text` (`at`: its middle
+  `center` (a circle's, for its centre mark), `text` (`at`: its middle
   on the line, or a note's start; `direction` and `up`, unit vectors in
-  the plane). The application keeps the text readable within its plane
-  and sizes arrows and text in pixels.
+  the plane) and `text_height` (mm, the design's, mitcad#894). A length's
+  extension line starts at its measured point, or at its bodies' outline
+  on the line's side where its pick is a plane. The application keeps the
+  text readable within its plane (ISO 129-1), sets it `text_height` high
+  in the plane (at least 9 pixels on screen) and sizes arrowheads by it.
 
 ### Datums and feature control frames
 
@@ -17575,3 +17684,67 @@ radius and position, all four arcs following the radius parameter; the
 centre variant; Sketch Fillet on a whole rectangle with length
 dimensions giving the same, undone in one step; a Center Rectangle with
 its diagonal; two corners by their points; the refusals).
+
+## Annotations' look: text height, Auto colour and placement
+
+mitcad#894 (`core/model/src/document/annotations.rs`,
+`core/model-api/src/annotations.rs`, `api/analysis.rs`): the
+[annotations](#annotations) of the model drawn as a technical drawing's
+dimensions (ISO 129-1, ISO 3098, ISO 1101).
+
+**Text height.** The annotations' texts are one height in model units
+(mm), in their planes, so that they grow and shrink with the model like
+their lines: the design's setting, or, left unset, the automatic one —
+of the ISO 3098 series 2.5, 3.5, 5, 7 and 10 mm the largest at most a
+fiftieth of the size of what is annotated (the diagonal of the box of the
+bodies the shown annotations' picks are on), at least 2.5 mm; 3.5 mm when
+no body is known (datums only). Each annotation's `drawing` has it as
+`text_height`. The application keeps a text at least about 9 pixels high
+on screen when zoomed out.
+
+| Command | Fields | Result |
+|---|---|---|
+| `set_annotation_text_height` | `text_height`: mm, 0.1 to 1000, or `null` for the automatic one | undo step `Annotation Text Height` (nothing to recompute), none when nothing changes; out of range refused (`an annotation text height is 0.1 to 1000 mm, got 0`) |
+
+`{"query": "annotation_text_height"}` gives `{"text_height"` (the one
+set, `null` for the automatic one)`, "in_use"` (mm), `"automatic"` (the
+one the size gives), `"series": [2.5, 3.5, 5.0, 7.0, 10.0]}`. The design
+file keeps a height set as `annotation_text_height`.
+
+**Auto colour.** A new annotation's `color` is `auto` when none is given
+(`add_annotation`, `add_measurement`): no colour of its own, the neutral
+annotation colour the application draws it in, which follows the view's
+background tone (near-black on a light background, light grey on a dark
+one). `color` takes `auto` in any case as it takes `#rrggbb`. The six
+colours new annotations took in turn before (`#d9480f`, `#1971c2`,
+`#2f9e44`, `#c2255c`, `#7048e8`, `#e67700`) were the program's, not the
+user's: an annotation stored in a design file with one of them is read as
+`auto` (and saved so). A colour given in a command, or any other stored
+one, stays the annotation's own.
+
+**Placement of a length.** Left out (`line_offset` not set: added
+without a view, or set back to the default with `null`, the editor's
+Automatic), a length's dimension line lies outside its bodies' extent in
+its plane: of the corners of the boxes of the bodies its picks are on,
+projected across the ends in the plane, on the side they reach less far
+past the ends (`y`'s, or the view's upper side when added in a view, when
+both are as clear), 1.5 text heights past the farthest corner there; a
+parallel line laid out before it (by the order of the annotations, a
+shown length in a parallel plane, along the same direction, overlapping
+it along the length) that it would come within 1.2 text heights of moves
+it 1.2 text heights past that line, on its side. A line set (by a view
+when added, or dragged) keeps its place. The places are worked out from
+what `measure_picks` keeps for the picks (`MeasuredPicks::extent`,
+`MeasuredPicks::faces`: the bodies' boxes placed by their occurrences, the
+planar faces at the picks), measured again only when the picks' bodies
+change (mitcad#716).
+
+Tests: `api::annotations::tests` (a length outside a box's extent and a
+second one stacked outside it, one elsewhere along it not, one set by hand
+kept; an offset of planes leaving the box at its outline; a view's plane
+of the part), `document::annotations::tests` (old default colours read
+as Auto, the ISO 3098 series by size, heights refused),
+`core/model-tests/analysis/src/annotation_tests.rs`
+(`lengths_are_placed_outside_the_body_and_stack_outside_each_other`,
+`old_default_colours_are_read_as_auto`,
+`the_text_height_is_automatic_or_set_for_the_design`).

@@ -34,17 +34,53 @@
 //! modification time, and [`gc`] removes the files used longest ago.
 //!
 //! Not stored: sketches and construction features (cheap, and their
-//! outputs have no stored form), features that move occurrences, base
-//! features that only bring in their bodies (reading those is what
-//! evaluating them does), failed evaluations of a cancelled job (never
-//! cached), and what [`Document::persist_results`] is told is too quick.
+//! outputs have no stored form), features that move occurrences, failed
+//! evaluations of a cancelled job (never cached), and what
+//! [`Document::persist_results`] is told is too quick, unless restoring it
+//! is cheaper than evaluating it again (below).
+//!
+//! **Base features** (mitcad#887) are stored like other features, also
+//! those that only bring in their bodies, although their definitions hold
+//! the bodies' B-rep data: evaluating one reads that data and then names
+//! the faces and derives the edges' and vertices' names from them, which
+//! a stored shape keeps. For a body of 23 000 faces, reading took
+//! 0.3-0.5 s and naming 0.9-1.0 s (the edges' and vertices' names 0.7 s of
+//! it), where restoring it takes 0.45 s (its file's shape mapped once,
+//! `geometry::deserialize_shape`); with lazy restore (below) a base
+//! feature's body that the next restored result replaces is not read at
+//! all.
+//!
+//! **Quick results** (mitcad#882): a result whose evaluation took less
+//! than `persist_results`'s `min_time` is stored too when its shapes are
+//! small for its time: their memory (`Kernel::shape_memory`, the bodies it
+//! sets and its tool) at most [`QUICK_MEMORY_PER_MS`] per millisecond the
+//! evaluation took. Reading a result costs its file (about 0.6 MB a
+//! millisecond) and, once something reads its bodies, unpacking them; but
+//! a restored result also leaves the state before it packed, so in a run
+//! of restored features only the last state is unpacked, where evaluating
+//! the quick feature unpacks the state it reads. Measured on three large
+//! imported designs (mitcad#882), the quick extrudes, fillets, chamfers,
+//! revolves and patterns took at most 48 KiB per millisecond; storing
+//! them took the warm recompute from 1.5 to 0.46 s, 3.5 to 3.2 s (its
+//! sketches left) and 3.2 to 1.55 s, the store growing by 7.8, 0.2 and
+//! 3.0 MB (30 %, 1 % and 111 %) and the first open's writing by under
+//! 0.1 s. The limit keeps out results that are quick and large: moves of
+//! a millisecond with 0.5-1 MB of shapes (their stored shapes take longer
+//! to unpack than the move to evaluate), and copies of bodies into a
+//! component, which would only grow the store.
+//! `MITCAD_STORE_QUICK=0` stores only what took `min_time`
+//! ([`ResultStore::with_quick_results`]).
 //!
 //! **Lazy restore** (mitcad#858): with a kernel that can unpack shapes
 //! later ([`Kernel::shape_unpacker`]), a result found keeps the shapes of
 //! the bodies it sets packed (`recompute::Changes`) until
 //! something reads them; a state the next restored result replaces is
 //! never unpacked (the recompute's module comment). The tool is read at
-//! once. `MITCAD_LAZY_RESTORE=0` reads every result whole.
+//! once. `MITCAD_LAZY_RESTORE=0` reads every result whole. The shapes a
+//! recompute unpacks together (those an evaluation reads, mitcad#886,
+//! before a joint, and the bodies left at its end) are unpacked on the machine's
+//! threads, a result's several shapes too (mitcad#887): a base feature's
+//! two large bodies take as long as the larger one.
 //!
 //! **Display meshes** (mitcad#858): the application keeps each shown
 //! body's display triangulations ([`Kernel::display_mesh_bytes`]) under
@@ -69,7 +105,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 use serde::{Deserialize, Serialize};
 
-use crate::features::{Env, FeatureDef, FeatureEntry, Operation};
+use crate::features::{Env, FeatureDef, FeatureEntry};
 use crate::fingerprint::Fingerprint;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::{Kernel, KernelError, ShapeUnpacker};
@@ -97,6 +133,10 @@ const LEVEL: u8 = 1;
 const GC_TARGET: f64 = 0.8;
 /// Temporary files older than this were left by a program that stopped.
 const STALE_TEMPORARY: Duration = Duration::from_secs(3600);
+/// A result quicker than `persist_results`'s minimum is stored when its
+/// shapes take at most this much memory per millisecond of its evaluation
+/// (mitcad#882; the module comment).
+pub const QUICK_MEMORY_PER_MS: u64 = 128 * 1024;
 
 /// A store folder, with the build results must have been stored by and the
 /// document they are stored for (shown by [`usage`]).
@@ -105,6 +145,9 @@ pub struct ResultStore {
     dir: PathBuf,
     build_id: String,
     label: String,
+    /// Quick results are stored with at most this much shape memory per
+    /// millisecond of evaluation; None: not (mitcad#882).
+    quick: Option<u64>,
 }
 
 /// What [`crate::Document::persist_results`] wrote.
@@ -113,6 +156,9 @@ pub struct PersistReport {
     /// Results written, and their shapes.
     pub results: usize,
     pub shapes: usize,
+    /// Of the results, those quicker than the minimum, stored as cheaper
+    /// to restore than to evaluate (mitcad#882).
+    pub quick: usize,
     /// Bytes of the files written.
     pub bytes: u64,
     /// Results that could not be written (a shape the kernel could not
@@ -152,9 +198,12 @@ pub struct StoreStats {
     pub write_ns: u64,
     pub write_errors: u64,
     /// Hits whose bodies' shapes stayed packed (mitcad#858), and of them
-    /// those unpacked since, with the time unpacking took.
+    /// those unpacked since, with their packed bytes and the time
+    /// unpacking took (results unpacked at once on several threads,
+    /// mitcad#887, each count their own).
     pub deferred: u64,
     pub unpacked: u64,
+    pub unpack_bytes: u64,
     pub unpack_ns: u64,
     /// Display meshes (mitcad#858): bodies looked up and found, the faces
     /// they gave triangulations, the bytes read and the time; meshes
@@ -194,6 +243,7 @@ counters!(
     write_errors,
     deferred,
     unpacked,
+    unpack_bytes,
     unpack_ns,
     mesh_lookups,
     mesh_hits,
@@ -428,9 +478,8 @@ pub(crate) fn storable(def: &FeatureDef) -> bool {
         FeatureDef::ConstraintSet(_) => false,
         // BUILD (mitcad#375): mount frames and measured lengths are not stored.
         FeatureDef::DerivedPart(_) | FeatureDef::BoundLength(_) => false,
-        FeatureDef::Base(base) => {
-            !matches!(base.operation, Operation::NewBody | Operation::NewComponent)
-        }
+        // Base features too, also those that only bring in bodies
+        // (mitcad#887): a stored body keeps the names evaluating derives.
         _ => true,
     }
 }
@@ -452,6 +501,42 @@ fn mesh_key(version: u128, options: &str) -> u128 {
         .finish()
 }
 
+/// The memory of the shapes a result would store, as the kernel estimates
+/// it: the bodies it sets and its tool (mitcad#882). Shapes still packed
+/// (a result read from the store) count as nothing.
+pub(crate) fn shape_memory<K: Kernel>(kernel: &K, output: &Output<K::Shape>) -> u64 {
+    let changes: u64 = if output.changes.is_unpacked() {
+        output
+            .changes
+            .unpacked()
+            .iter()
+            .map(|change| match change {
+                Change::Set(_, shape) => kernel.shape_memory(&shape.value),
+                Change::Remove(_) => 0,
+            })
+            .sum()
+    } else {
+        0
+    };
+    changes
+        + output
+            .tool
+            .as_ref()
+            .map_or(0, |tool| kernel.shape_memory(tool))
+}
+
+/// Whether quick results are stored when cheaper to restore than to
+/// evaluate (mitcad#882): unless `MITCAD_STORE_QUICK` is `0` or `off`.
+fn store_quick() -> bool {
+    static QUICK: OnceLock<bool> = OnceLock::new();
+    *QUICK.get_or_init(|| {
+        !matches!(
+            std::env::var("MITCAD_STORE_QUICK").as_deref(),
+            Ok("0" | "off")
+        )
+    })
+}
+
 /// Whether results are found with their bodies' shapes packed until
 /// something reads them (mitcad#858): unless `MITCAD_LAZY_RESTORE` is `0`
 /// or `off`.
@@ -469,6 +554,45 @@ pub(crate) fn lazy_restore() -> bool {
 fn inflate(data: &[u8]) -> Result<Vec<u8>, String> {
     miniz_oxide::inflate::decompress_to_vec_zlib(data)
         .map_err(|e| format!("a stored shape does not decompress: {:?}", e.status))
+}
+
+/// `work` done on each item, on as many threads as the machine has (at
+/// most one per item), the results in the items' order (mitcad#887:
+/// unpacking stored shapes). A panic in `work` goes on in the caller.
+pub(crate) fn in_parallel<T: Sync, R: Send>(items: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .min(items.len());
+    if threads <= 1 {
+        return items.iter().map(work).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut done: Vec<(usize, R)> = std::thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let at = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(at) else {
+                            break done;
+                        };
+                        done.push((at, work(item)));
+                    }
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|worker| {
+                worker
+                    .join()
+                    .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+            })
+            .collect()
+    });
+    done.sort_unstable_by_key(|(at, _)| *at);
+    done.into_iter().map(|(_, result)| result).collect()
 }
 
 /// The shapes of the bodies a found result sets, still packed (mitcad#858;
@@ -494,21 +618,58 @@ impl<S> Packed<S> {
     /// the next time it is not in memory.
     pub(crate) fn unpack(self, heads: &[ChangeHead]) -> Vec<Change<S>> {
         let start = Instant::now();
-        let mut failed = None;
         let changes = heads
             .iter()
             .zip(&self.shapes)
-            .map(|(head, data)| match *head {
-                ChangeHead::Set(body, version) => {
-                    let value = inflate(data)
-                        .and_then(|bytes| (self.unpack)(&bytes).map_err(|e| e.to_string()))
-                        .unwrap_or_else(|error| {
-                            failed = Some(error);
-                            (self.stand_in)()
-                        });
-                    Change::Set(body, Versioned { version, value })
+            .map(|(head, data)| self.unpack_one(head, data))
+            .collect();
+        self.unpacked(start, changes)
+    }
+
+    /// As [`Packed::unpack`], with the shapes unpacked on threads of their
+    /// own (mitcad#887).
+    pub(crate) fn unpack_in_parallel(self, heads: &[ChangeHead]) -> Vec<Change<S>>
+    where
+        S: Send,
+    {
+        let start = Instant::now();
+        let jobs: Vec<_> = heads.iter().zip(&self.shapes).collect();
+        let changes = in_parallel(&jobs, |(head, data)| self.unpack_one(head, data));
+        self.unpacked(start, changes)
+    }
+
+    /// A change with its shape, and why the shape did not unpack.
+    fn unpack_one(&self, head: &ChangeHead, data: &[u8]) -> (Change<S>, Option<String>) {
+        match *head {
+            ChangeHead::Set(body, version) => {
+                let (value, failed) = match inflate(data)
+                    .and_then(|bytes| (self.unpack)(&bytes).map_err(|e| e.to_string()))
+                {
+                    Ok(value) => (value, None),
+                    Err(error) => ((self.stand_in)(), Some(error)),
+                };
+                (Change::Set(body, Versioned { version, value }), failed)
+            }
+            ChangeHead::Remove(body) => (Change::Remove(body), None),
+        }
+    }
+
+    /// The changes unpacked since `start`, counted; the file removed when
+    /// a shape did not unpack.
+    fn unpacked(
+        &self,
+        start: Instant,
+        unpacked: Vec<(Change<S>, Option<String>)>,
+    ) -> Vec<Change<S>> {
+        let bytes = self.bytes();
+        let mut failed = None;
+        let changes = unpacked
+            .into_iter()
+            .map(|(change, error)| {
+                if error.is_some() {
+                    failed = error;
                 }
-                ChangeHead::Remove(body) => Change::Remove(body),
+                change
             })
             .collect();
         if let Some(error) = failed {
@@ -520,6 +681,7 @@ impl<S> Packed<S> {
             let _ = fs::remove_file(&self.path);
         }
         count(&COUNTERS.unpacked, 1);
+        count(&COUNTERS.unpack_bytes, bytes);
         count(&COUNTERS.unpack_ns, nanos(start.elapsed()));
         changes
     }
@@ -542,6 +704,7 @@ impl ResultStore {
             dir: dir.into(),
             build_id: build_id.to_owned(),
             label: String::new(),
+            quick: store_quick().then_some(QUICK_MEMORY_PER_MS),
         }
     }
 
@@ -549,6 +712,28 @@ impl ResultStore {
     pub fn with_label(mut self, label: &str) -> Self {
         self.label = label.to_owned();
         self
+    }
+
+    /// Results quicker than `persist_results`'s minimum are stored when
+    /// their shapes take at most `memory_per_ms` bytes per millisecond of
+    /// their evaluation; None stores none of them (mitcad#882). The
+    /// default is [`QUICK_MEMORY_PER_MS`], None with `MITCAD_STORE_QUICK=0`.
+    pub fn with_quick_results(mut self, memory_per_ms: Option<u64>) -> Self {
+        self.quick = memory_per_ms;
+        self
+    }
+
+    pub fn quick_results(&self) -> Option<u64> {
+        self.quick
+    }
+
+    /// Whether a quick result whose evaluation took `time` and whose
+    /// shapes take `memory` bytes is stored (the module comment).
+    pub fn worth_storing(&self, time: Duration, memory: u64) -> bool {
+        // memory <= rate * milliseconds, in nanoseconds.
+        self.quick.is_some_and(|rate| {
+            u128::from(memory) * 1_000_000 <= u128::from(rate) * time.as_nanos()
+        })
     }
 
     pub fn dir(&self) -> &Path {
@@ -752,6 +937,16 @@ impl ResultStore {
             .join(format!("{name}.{MESH_EXTENSION}"))
     }
 
+    /// Whether the store has a file of display triangulations for a body
+    /// shape of `version` meshed with `options`, without reading it
+    /// (mitcad#881: a body the open would take them for is not meshed
+    /// during its recompute). The file may still turn out to be of another
+    /// build or damaged when [`ResultStore::restore_display_mesh`] reads
+    /// it.
+    pub fn has_display_mesh(&self, version: u128, options: &str) -> bool {
+        self.mesh_path(mesh_key(version, options)).is_file()
+    }
+
     /// Gives `shape`, a body shape of `version`, the display triangulations
     /// stored for it with the meshing `options` (mitcad#858); how many
     /// faces took one. None when there are none: no file, another build's
@@ -809,6 +1004,33 @@ impl ResultStore {
         let mesh = kernel
             .display_mesh_bytes(shape)
             .map_err(|e| e.to_string())?;
+        self.write_display_mesh_bytes(version, options, &mesh, start)
+    }
+
+    /// Writes `mesh`, the display triangulations of a body shape of
+    /// `version` meshed with `options` as [`Kernel::display_mesh_bytes`]
+    /// gives them, over any stored before; returns the bytes of the file.
+    /// The application's writer after an open (mitcad#880) calls it on its
+    /// own thread, with triangulations it took in the open's job: any
+    /// thread may, while documents use the store. The file is written
+    /// whole or not at all (a temporary file renamed), so an open that
+    /// reads meanwhile finds the previous one or none.
+    pub fn write_display_mesh_data(
+        &self,
+        version: u128,
+        options: &str,
+        mesh: &[u8],
+    ) -> Result<u64, String> {
+        self.write_display_mesh_bytes(version, options, mesh, Instant::now())
+    }
+
+    fn write_display_mesh_bytes(
+        &self,
+        version: u128,
+        options: &str,
+        mesh: &[u8],
+        start: Instant,
+    ) -> Result<u64, String> {
         let meta = MeshMeta {
             version: Hex(version),
             options: options.to_owned(),
@@ -817,7 +1039,7 @@ impl ResultStore {
         let bytes = encode_mesh(
             &self.build_id,
             &meta,
-            &miniz_oxide::deflate::compress_to_vec_zlib(&mesh, LEVEL),
+            &miniz_oxide::deflate::compress_to_vec_zlib(mesh, LEVEL),
         );
         let path = self.mesh_path(mesh_key(version, options));
         let written = write_atomic(&path, &bytes).map_err(|e| {

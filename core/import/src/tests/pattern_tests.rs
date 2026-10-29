@@ -6,6 +6,7 @@ use mitcad_model_api::DocumentApi;
 
 #[test]
 fn pattern_provenance_marks_only_omitted_dressup_inputs() {
+    wall_clock();
     let mut doc = Document::new(MockKernel::default());
     let dump = timeline_dump(Vec::new());
     let options = Options::default();

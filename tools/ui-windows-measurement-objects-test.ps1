@@ -83,7 +83,7 @@ Ui-Mark
 Ui-Step 'Keep'                             { Ui-ClickLogged 'Measure Keep' }
 Ui-ExpectNew 'Measure Keep clicked' 'Keep clicked'
 Ui-ExpectNew 'Annotation kept: AxisDistance1' 'kept as the axes'' distance'
-Ui-ExpectNew 'Annotations drawn: AxisDistance1 = 50 (#d9480f)' 'drawn in the first colour'
+Ui-ExpectNew 'Annotations drawn: AxisDistance1 = 50 (auto)' 'drawn in Auto'
 Ui-Step 'close (Enter)'                    { Ui-Key 'Return' }
 Ui-ExpectNew 'Closed Measure' 'measure closed'
 Ui-ExpectLog 'Browser Root/Annotations at' 'the browser has the Annotations folder'
@@ -102,7 +102,7 @@ Ui-Mark
 Ui-Step 'Keep Row'                         { Ui-ClickLogged 'Measure history Keep' }
 Ui-ExpectNew 'Measure history Keep clicked: row 2' 'Keep Row clicked'
 Ui-ExpectNew 'Annotation kept: Diameter1' 'kept as the rim''s diameter'
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 (#d9480f) | Diameter1 = $([char]0x00D8)10 (#1971c2)" 'both drawn'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 (auto) | Diameter1 = $([char]0x00D8)10 (auto)" 'both drawn'
 Ui-Step 'close (Enter)'                    { Ui-Key 'Return' }
 Ui-ExpectNew 'Closed Measure' 'measure closed'
 
@@ -142,7 +142,7 @@ Ui-ExpectNew 'Saved ' 'saved'
 if (-not (Select-String -Path $design -Pattern '"annotations"' -Quiet)) { Ui-Fail 'the design file has no annotations' }
 Ui-StartApp 'measurement-objects-again' @('--open', $design)
 Ui-ExpectLog 'Annotations: AxisDistance1 axis_distance | Diameter1 diameter' 'both read back'
-Ui-ExpectLog "Annotations drawn: AxisDistance1 = 50 (#d9480f) | Diameter1 = $([char]0x00D8)10 (#1971c2)" 'and drawn'
+Ui-ExpectLog "Annotations drawn: AxisDistance1 = 50 (auto) | Diameter1 = $([char]0x00D8)10 (auto)" 'and drawn'
 
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
 Ui-Finish 'UI Windows measurement objects test'

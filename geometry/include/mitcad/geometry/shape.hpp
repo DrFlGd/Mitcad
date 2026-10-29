@@ -98,6 +98,14 @@ public:
   // working them out again; when their counts do not match the shape's
   // edges and vertices they are worked out.
   Shape(TopoDS_Shape shape, const std::vector<NamedFace>& faces, DerivedNames derived);
+  // The same with the shape's faces, edges and vertices mapped already
+  // (TopExp::MapShapes of `shape`; the maps are taken, left empty) and the
+  // faces' names by face index (`face_names[i]` the names of face(i)),
+  // which spares mapping the shape again and looking each face up
+  // (persist.cpp, mitcad#887); names of another count than the faces
+  // name none.
+  Shape(TopoDS_Shape shape, ShapeMap& faces, ShapeMap& edges, ShapeMap& vertices,
+        std::vector<NameList> face_names, DerivedNames derived);
   Shape(const Shape&) = default;
   Shape(Shape&&) = default;
   Shape& operator=(const Shape&) = default;
@@ -265,6 +273,7 @@ public:
 
 private:
   void map_faces(const std::vector<NamedFace>& faces);
+  void sort_face_names();
   void register_check();
   bool take_derived(DerivedNames& derived);
   void derive_edge_names();
@@ -301,6 +310,15 @@ private:
   // on a body of 23 000 faces scanned every face's names each time).
   using FaceIndex = std::unordered_map<std::string, std::vector<int>>;
   LazyValue<std::shared_ptr<const FaceIndex>> m_faceIndex;
+  // A large shape's edges of each face (from m_edgeFaces), made the first
+  // time an edge is looked for: find_edges goes through the edges of the
+  // faces its reference names instead of every edge (mitcad#878: a sketch
+  // projecting 5 000 edges of a large body took 3 s, each edge's name
+  // compared with every edge's faces).
+  using FaceEdges = std::vector<std::vector<int>>;
+  LazyValue<std::shared_ptr<const FaceEdges>> m_faceEdges;
+  // The faces whose names match a reference, in index order.
+  std::vector<int> matching_faces(const std::string& reference) const;
   bool m_unified = false;
   std::vector<std::string> m_notes;
   // Registered with the input check when made.

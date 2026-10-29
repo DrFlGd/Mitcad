@@ -837,6 +837,7 @@ mod tests {
                 wall: 120.5,
                 peak: 2 << 30,
                 when: 100,
+                ..FileRun::default()
             },
         )];
         let test = profiles.tests.get_mut("f3d.corpus_designs").unwrap();

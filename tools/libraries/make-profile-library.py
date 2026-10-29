@@ -29,8 +29,9 @@ made one of three ways:
 - model: no source; the design is built from `dimensions` (a plate, an
   angle, a rod with a cosmetic thread, a timber board (plain, or profiled: tongue and
   groove, shiplap, feather-edge, deck; mitcad#477), a wood screw or
-  nail, a joist hanger, a post base) for sheets, plates, shafts, screws
-  and the timber parts (mitcad#478) sold without a CAD file.
+  nail, a joist hanger, a post base, a round or square steel tube) for
+  sheets, plates, shafts, screws, the timber parts (mitcad#478) and the
+  steel tubes (mitcad#873) sold without a CAD file.
 
 Mount frames are joint origins named mount:<name>: found from a profile's
 section ({"auto": "profile"}) or listed. The supplier's files are read
@@ -1390,6 +1391,13 @@ def profiled_sketch(dimensions, env):
     the loop (and every arc's centre) dimensioned from it by signed
     horizontal and vertical distances, the parameters' expressions; each
     point joined to the one before it by a line or its arc."""
+    return points_sketch([board_loop(dimensions)], env)
+
+
+def points_sketch(loops, env):
+    """A sketch of loops of points and arcs (board_loop's items) as a
+    profiled board's: each point and arc centre dimensioned from a fixed
+    point at the origin by expressions, evaluated at the numbers `env`."""
     entities, dimensions_out = [], []
     counter = [0]
 
@@ -1411,15 +1419,15 @@ def profiled_sketch(dimensions, env):
                                    "value": expression})
         return uid
 
-    loop = board_loop(dimensions)
-    ids = [placed(item[-2], item[-1]) for item in loop]
-    for i, item in enumerate(loop):
-        start, end = ids[i - 1], ids[i]
-        if item[0] == "arc":
-            centre = placed(item[1], item[2])
-            entities.append({"id": new_id("c"), "type": "arc", "center": centre, "start": start, "end": end})
-        else:
-            entities.append({"id": new_id("c"), "type": "line", "start": start, "end": end})
+    for loop in loops:
+        ids = [placed(item[-2], item[-1]) for item in loop]
+        for i, item in enumerate(loop):
+            start, end = ids[i - 1], ids[i]
+            if item[0] == "arc":
+                centre = placed(item[1], item[2])
+                entities.append({"id": new_id("c"), "type": "arc", "center": centre, "start": start, "end": end})
+            else:
+                entities.append({"id": new_id("c"), "type": "line", "start": start, "end": end})
     return {"type": "sketch", "plane": "xy", "entities": entities, "dimensions": dimensions_out}
 
 
@@ -1448,6 +1456,168 @@ def profiled_frames(dimensions):
              "z": [1, 0, 0], "x": [0, 0, 1]},
         ]
     return frames
+
+
+# Steel tubes (mitcad#873): round and square hollow sections in the
+# standards' sizes, Mitcad's own parts. The section is exact (a square
+# tube's outer and inner corners rounded by the standard's radii), so that
+# a row's mass per metre is the standard's. It lies as a board's: centred
+# on the origin of XY, extruded by the length along +Z. The sizes each
+# shape names, as parameters of the design.
+TUBE_SHAPES = {
+    "round_tube": ("diameter", "thickness", "length"),
+    "square_tube": ("size", "thickness", "outer_radius", "inner_radius", "length"),
+    # A rectangular tube (mitcad#892): its width along X, its height along Y.
+    "rect_tube": ("width", "height", "thickness", "outer_radius", "inner_radius", "length"),
+}
+# An inner radius below this (mm) is a sharp corner.
+SHARP = 0.001
+
+
+def square_loop(low, high, radius, y_low=None, y_high=None):
+    """A square's loop (board_loop's items) from `low` to `high` on both
+    axes, or a rectangle's from `y_low` to `y_high` on Y,
+    counter-clockwise, its corners rounded by `radius`, or sharp when it
+    is None; each an expression."""
+    y_low, y_high = y_low or low, y_high or high
+    if radius is None:
+        return [("point", low, y_low), ("point", high, y_low), ("point", high, y_high), ("point", low, y_high)]
+    a, b = f"{low} + {radius}", f"{high} - {radius}"
+    c, d = f"{y_low} + {radius}", f"{y_high} - {radius}"
+    # From the bottom's left end, reached by the bottom left corner's arc
+    # from the left side's lower end (the loop's last point).
+    return [("arc", a, c, a, y_low), ("point", b, y_low), ("arc", b, c, high, c), ("point", high, d),
+            ("arc", b, d, b, y_high), ("point", a, y_high), ("arc", a, d, low, d), ("point", low, c)]
+
+
+def circle_sketch(diameter, env):
+    """A circle of the expression `diameter` on a fixed point at the origin
+    of XY, dimensioned by it."""
+    size = eval(diameter, dict(SAFE_MATH), dict(env))
+    return {"type": "sketch", "plane": "xy",
+            "entities": [{"id": "p1", "type": "point", "at": [0, 0], "fixed": True},
+                         {"id": "c2", "type": "circle", "center": "p1", "radius": size / 2}],
+            "dimensions": [{"id": "k3", "type": "diameter", "curve": "c2", "value": diameter}]}
+
+
+def tube_radii(rules, thickness, what):
+    """A square tube's corner radii (outer, inner) for a wall `thickness`
+    by the rules `[[up_to, outer, inner], …]` (each radius a factor of the
+    thickness): the first whose `up_to` is the thickness or more, or
+    null."""
+    for rule in rules or []:
+        if not isinstance(rule, list) or len(rule) != 3:
+            fail(f"{what}: sizes.radii is a list of [up_to, outer, inner]")
+        if rule[0] is None or thickness <= rule[0] + 1e-9:
+            return rule[1] * thickness, rule[2] * thickness
+    fail(f"{what}: no rule of sizes.radii takes the wall thickness {thickness:g}")
+
+
+def tube_area(shape, size, thickness, outer=0.0, inner=0.0, height=None):
+    """A tube's section area, mm²: a round tube's annulus; a square tube's
+    (a rectangular one's of the `height`) outer square less its inner
+    one, each corner rounded by its radius (r² (4 - π) less than the
+    square's)."""
+    if shape == "round_tube":
+        return math.pi / 4 * (size * size - (size - 2 * thickness) ** 2)
+    height = size if height is None else height
+    hole = (size - 2 * thickness) * (height - 2 * thickness)
+    return size * height - (4 - math.pi) * outer * outer - (hole - (4 - math.pi) * inner * inner)
+
+
+def check_tube(shape, size, thickness, outer, inner, what, height=None):
+    """Refuses a tube's sizes that make no section: a wall over half its
+    size (a rectangular tube's smaller side), a radius that leaves its
+    side no straight part."""
+    problems = []
+    size = min(size, size if height is None else height)
+    if not 0 < thickness < size / 2:
+        problems.append(f"the wall {thickness:g} is not between 0 and half the size {size:g}")
+    elif shape != "round_tube":
+        if not SHARP <= outer < size / 2:
+            problems.append(f"the outer radius {outer:g} is not between {SHARP:g} and half the size {size:g}")
+        if inner < 0 or 0 < inner < SHARP or inner >= size / 2 - thickness:
+            problems.append(f"the inner radius {inner:g} is neither sharp (0) nor between {SHARP:g} and half "
+                            f"the bore {size / 2 - thickness:g}")
+    if problems:
+        fail(f"{what}: {'; '.join(problems)}")
+
+
+def tube_start(entry, dimensions, parameters):
+    """A tube's parameters as its design is made: `parameters` with the
+    values of its default row; for a square tube whose rows have sharp and
+    rounded inner corners, of its first rounded row (a corner's arc is not
+    drawn at a radius of 0), the default row set after the table. And
+    whether its rows have sharp and rounded inner corners."""
+    shape = dimensions["shape"]
+    for key in TUBE_SHAPES[shape]:
+        name = dimensions[key]
+        if not isinstance(name, str) or not mitcad_name(name):
+            fail(f"{entry['id']}: dimensions.{key} of a tube names its parameter")
+    rows = entry.get("rows") or []
+    out = dict(parameters)
+    inner = dimensions.get("inner_radius", "").strip()
+
+    def radius(values):
+        return length_of(values.get(inner, 0), f"{entry['id']}: {inner}")
+
+    radii = [radius(row.get("values") or {}) for row in rows] if inner else []
+    if inner and not rows:
+        radii = [radius(out)]
+    sharp = any(r < SHARP for r in radii)
+    rounded = any(r >= SHARP for r in radii)
+    start = None
+    if rows:
+        default = entry.get("default") or rows[0]["name"]
+        start = next((row for row in rows if row["name"] == default), rows[0])
+        if sharp and rounded and radius(start.get("values") or {}) < SHARP:
+            start = next(row for row, r in zip(rows, radii) if r >= SHARP)
+        out.update(start.get("values") or {})
+    missing = [dimensions[key].strip() for key in TUBE_SHAPES[shape] if dimensions[key].strip() not in out]
+    if missing:
+        fail(f"{entry['id']}: the tube's parameters {', '.join(missing)} have no values")
+    return out, sharp, rounded
+
+
+def mitcad_name(text):
+    """Whether a text is a parameter's name (letters, digits and _, not
+    first a digit)."""
+    return bool(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", text.strip()))
+
+
+def tube_checked(mcp, document, entry, dimensions, parameters, sharp, rounded):
+    """The design's volume against the section's area times the length:
+    in its default row, and when its rows have sharp and rounded inner
+    corners, in a row of the other kind too (its bores switched by their
+    conditions); the default row again after."""
+    shape = dimensions["shape"]
+    names = {key: dimensions[key].strip() for key in TUBE_SHAPES[shape]}
+    rows = entry.get("rows") or []
+    default = (entry.get("default") or rows[0]["name"]) if rows else None
+
+    def numbers(values):
+        merged = dict(parameters)
+        merged.update(values)
+        return {key: length_of(merged.get(name, 0), f"{entry['id']}: {name}") for key, name in names.items()}
+
+    checks = [None]
+    if rows:
+        checks = [next(row for row in rows if row["name"] == default)]
+        if sharp and rounded:
+            corner = numbers(checks[0].get("values") or {}).get("inner_radius", 0) >= SHARP
+            checks.append(next(row for row in rows
+                               if (numbers(row.get("values") or {})["inner_radius"] >= SHARP) != corner))
+    for row in checks + ([checks[0]] if len(checks) > 1 else []):
+        if row is not None:
+            mcp.command(document, {"cmd": "apply_configuration", "name": row["name"]})
+        n = numbers((row or {}).get("values") or {})
+        area = tube_area(shape, n.get("diameter", n.get("size", n.get("width"))), n["thickness"],
+                         n.get("outer_radius", 0.0), n.get("inner_radius", 0.0), n.get("height"))
+        volume = (mcp.query(document, {"query": "properties"}).get("total") or {}).get("volume") or 0.0
+        expected = area * n["length"]
+        if abs(volume - expected) > 1e-6 * expected:
+            raise PartError(f"{(row or {}).get('name', 'the tube')}: the section's volume {volume:.3f} mm3 is not "
+                            f"its area {area:.3f} mm2 times its length {n['length']:g} mm")
 
 
 # The `mount` frame of a bracket, hanger or post base is the design's
@@ -1699,7 +1869,16 @@ def make_model(ctx, mcp, entry, build):
     `sheet` a box from the origin, `width` along X, `height` along Y,
     `thickness` along +Z; a `bracket`, `hanger` and `post_base` steel
     plates of fixed sizes built in their `mount` frame's coordinates, with
-    their screw holes cut and named as hole frames (timber_connector)."""
+    their screw holes cut and named as hole frames (timber_connector).
+
+    The steel tubes (mitcad#873): a `round_tube` (`diameter`,
+    `thickness`, `length`) and a `square_tube` (`size`, `thickness`,
+    `outer_radius`, `inner_radius`, `length`), and (mitcad#892) a
+    `rect_tube` (`width` along X, `height` along Y, and the square's
+    others), each size a parameter's name, centred on XY: the outside
+    extruded by the length along +Z, the bore cut along all of it
+    (TUBE_SHAPES, tube_start); a square or rectangular tube's ends and
+    four face frames, a round tube's ends and `axis`."""
     dimensions = entry.get("dimensions") or {}
     if not isinstance(dimensions, dict):
         fail(f"{entry['id']}: dimensions is no object")
@@ -1711,10 +1890,11 @@ def make_model(ctx, mcp, entry, build):
               "sheet": ("width", "height", "thickness"),
               "bracket": ("legs", "width", "thickness"),
               "hanger": ("width", "height", "hanger_height", "depth", "flange", "thickness"),
-              "post_base": ("width", "height", "plate", "plate_thickness", "side", "thickness")}.get(shape)
+              "post_base": ("width", "height", "plate", "plate_thickness", "side", "thickness"),
+              **TUBE_SHAPES}.get(shape)
     if needed is None:
         fail(f"{entry['id']}: dimensions.shape '{shape}' is none of plate, angle, rod, none, board, fastener, "
-             "sheet, bracket, hanger, post_base")
+             "sheet, bracket, hanger, post_base, round_tube, square_tube, rect_tube")
     missing = [n for n in needed if n not in dimensions]
     if missing:
         fail(f"{entry['id']}: the {shape} needs dimensions.{', dimensions.'.join(missing)}")
@@ -1730,6 +1910,10 @@ def make_model(ctx, mcp, entry, build):
     thread = dimensions.get("thread")
     if thread is not None and (shape != "rod" or not isinstance(thread, dict) or not thread.get("designation")):
         fail(f"{entry['id']}: dimensions.thread is a rod's thread size with a designation")
+    sharp = rounded = False
+    if shape in TUBE_SHAPES:
+        # Its parameters take a row's values (tube_start).
+        parameters, sharp, rounded = tube_start(entry, dimensions, parameters)
     document = mcp.create()
     dress = None
     try:
@@ -1851,6 +2035,58 @@ def make_model(ctx, mcp, entry, build):
                 "extent": {"type": "distance", "distance": length}, "operation": "new_body"}})
             caps = [f"{extrude}:start({region})", f"{extrude}:end({region})"]
             default_frames = board_frames(w, t)
+        elif shape in TUBE_SHAPES:
+            # A steel tube (mitcad#873): its outside extruded by the
+            # length, its bore cut along all of it. A square tube whose
+            # rows have sharp and rounded inner corners has both bores,
+            # each suppressed by a condition of the inner radius.
+            p = {key: dimensions[key].strip() for key in TUBE_SHAPES[shape]}
+            env = {name: length_of(value, f"{entry['id']}: {name}") for name, value in parameters.items()
+                   if not angle_value(value)}
+            length = p["length"]
+            if shape == "round_tube":
+                d, t = p["diameter"], p["thickness"]
+                outside = circle_sketch(d, env)
+                bores = [("Bore", circle_sketch(f"{d} - 2 * {t}", env), None)]
+                default_frames = [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+                                  {"name": "axis", "kind": "shaft", "origin": [0, 0, 0], "z": [0, 0, 1],
+                                   "x": [1, 0, 0]}]
+            else:
+                # A square tube's sides, or a rectangular one's width and
+                # height.
+                b, t, ro, ri = p.get("size", p.get("width")), p["thickness"], p["outer_radius"], p["inner_radius"]
+                h = p.get("height", b)
+                outside = points_sketch([square_loop(f"-{b} / 2", f"{b} / 2", ro, f"-{h} / 2", f"{h} / 2")], env)
+                inside = (f"{t} - {b} / 2", f"{b} / 2 - {t}", f"{t} - {h} / 2", f"{h} / 2 - {t}")
+                bores = []
+                if rounded or not sharp:
+                    bores.append(("Bore", points_sketch([square_loop(inside[0], inside[1], ri, *inside[2:])], env),
+                                  f"{ri} < {SHARP:g} mm" if sharp else None))
+                if sharp:
+                    bores.append(("Sharp bore", points_sketch([square_loop(inside[0], inside[1], None, *inside[2:])],
+                                                              env),
+                                  f"{ri} >= {SHARP:g} mm" if rounded else None))
+                default_frames = board_frames(b, h)
+
+            def one_region(sketch, what):
+                regions = mcp.query(document, {"query": "sketch", "uid": sketch}).get("regions") or []
+                if len(regions) != 1:
+                    raise PartError(f"the tube's {what} has {len(regions)} regions, not one")
+                return regions[0]["key"]
+
+            sketch = mcp.add(document, {"cmd": "add_feature", "name": "Section", "def": outside})
+            mcp.add(document, {"cmd": "add_feature", "name": "Tube", "def": {
+                "type": "extrude", "profiles": [{"sketch": sketch, "region": one_region(sketch, "outside")}],
+                "extent": {"type": "distance", "distance": length}, "operation": "new_body"}})
+            for name, definition, suppressed_when in bores:
+                sketch = mcp.add(document, {"cmd": "add_feature", "name": f"{name} section", "def": definition})
+                cut = mcp.add(document, {"cmd": "add_feature", "name": name, "def": {
+                    "type": "extrude", "profiles": [{"sketch": sketch, "region": one_region(sketch, name.lower())}],
+                    "extent": {"type": "distance", "distance": length}, "operation": "cut"}})
+                if suppressed_when:
+                    # The cut first: its sketch is suppressed after it.
+                    for uid in (cut, sketch):
+                        mcp.command(document, {"cmd": "suppress_feature", "uid": uid, "expression": suppressed_when})
         elif shape == "fastener":
             d = size(dimensions["diameter"], "D")
             length = size(dimensions["length"], "L")
@@ -1911,14 +2147,19 @@ def make_model(ctx, mcp, entry, build):
         if dress:
             wood_screw_dress(mcp, document, entry, *dress)
         set_appearance(mcp, document, entry, caps)
-        finish_design(mcp, document, entry)
+        # A tube's design was made at a row's values: the default row's set
+        # after the table, and its volume checked.
+        finish_design(mcp, document, entry, apply_default=shape in TUBE_SHAPES)
+        if shape in TUBE_SHAPES:
+            tube_checked(mcp, document, entry, dimensions, parameters, sharp, rounded)
         return save(ctx, mcp, document, entry), {"kind": "model"}
     finally:
         mcp.close(document)
 
 
-def finish_design(mcp, document, entry):
-    """The configuration table of the rows, and a recompute's check."""
+def finish_design(mcp, document, entry, apply_default=False):
+    """The configuration table of the rows (with `apply_default`, its
+    default row applied), and a recompute's check."""
     rows = entry.get("rows") or []
     if rows:
         selectors, parameters = [], []
@@ -1940,6 +2181,8 @@ def finish_design(mcp, document, entry):
         table = {"selectors": selectors, "parameters": parameters,
                  "default": entry.get("default", rows[0]["name"]), "rows": table_rows}
         mcp.command(document, {"cmd": "set_configurations", "configurations": table})
+        if apply_default:
+            mcp.command(document, {"cmd": "apply_configuration", "name": table["default"]})
     timeline = mcp.query(document, {"query": "timeline"})
     failed = [f"{f.get('name')}: {f.get('error')}" for f in timeline.get("features", []) if f.get("status") == "error"]
     if failed:
@@ -2184,12 +2427,82 @@ def design_bounds(mcp, ctx, design):
 # ---------------------------------------------------------------------
 # Group files and the library folder.
 
+def tube_rows(entry, dimensions, sizes, spec, what):
+    """A steel tube's rows of one outside size (mitcad#873): one for each
+    wall thickness of `thicknesses`, named `<D>x<T>` (round),
+    `<B>x<B>x<T>` (square) or `<W>x<H>x<T>` (rectangular, mitcad#892), its
+    options Diameter or Size (a rectangular tube's `<W>x<H>`) and
+    Thickness.
+    Its values are the sizes' parameters, a square tube's corner radii by
+    `sizes.radii`; its block the section, the mass per metre (the exact
+    area times the density), its `tube` sizes and its tolerance."""
+    shape = dimensions["shape"]
+    names = {key: dimensions.get(key) for key in TUBE_SHAPES[shape]}
+    if not all(isinstance(n, str) and mitcad_name(n) for n in names.values()):
+        fail(f"{what}: a tube's sizes in dimensions name its parameters")
+    density = density_of(entry)
+    if density is None:
+        fail(f"{what}: a tube's mass per metre needs a density (the part's or its group file's)")
+    round_tube = shape == "round_tube"
+    rect = shape == "rect_tube"
+    key = "diameter" if round_tube else "width" if rect else "size"
+    keys = (key, "height") if rect else (key,)
+    if not all(isinstance(spec.get(k), (int, float)) for k in keys) or not isinstance(spec.get("thicknesses"), list):
+        fail(f"{what}: a {shape}'s row of sizes has {' and '.join(keys)} and thicknesses")
+    size = float(spec[key])
+    height = float(spec["height"]) if rect else size
+    text = lambda v: f"{v:g}"
+
+    def tolerance(thickness):
+        """The wall's tolerance: the first rule [up_to, plus_minus, factor]
+        whose up_to is the thickness or more, or null; plus or minus the
+        smaller of plus_minus and factor times the thickness."""
+        for rule in (sizes.get("tolerance") or {}).get("thickness") or []:
+            if rule[0] is None or thickness <= rule[0] + 1e-9:
+                value = rule[1] if len(rule) < 3 else min(rule[1], rule[2] * thickness)
+                return [-round(value, 4), round(value, 4)]
+        return None
+
+    rows = []
+    for thickness in spec["thicknesses"]:
+        thickness = float(thickness)
+        outer, inner = (0.0, 0.0) if round_tube else tube_radii(sizes.get("radii"), thickness, what)
+        outer, inner = round(outer, 4), round(inner, 4)
+        name = f"{text(size)}x{text(thickness)}" if round_tube else f"{text(size)}x{text(height)}x{text(thickness)}"
+        check_tube(shape, size, thickness, outer, inner, f"{what} {name}", height)
+        area = tube_area(shape, size, thickness, outer, inner, height)
+        values = {names[key]: mm(size), names["thickness"]: mm(thickness)}
+        if rect:
+            values[names["height"]] = mm(height)
+        tube = {"shape": "round" if round_tube else "rectangular" if rect else "square", "thickness": mm(thickness)}
+        if not round_tube:
+            values.update({names["outer_radius"]: mm(outer), names["inner_radius"]: mm(inner)})
+            tube.update({"outer_radius": mm(outer), "inner_radius": mm(inner)})
+        tube["area"] = round(area, 3)
+        build = {"section": {"width": mm(size), "height": mm(height)},
+                 "mass_per_metre": f"{area * density * 1e-6:.3f} kg", "tube": tube}
+        limits = {}
+        if spec.get("tolerance") is not None:
+            for k in keys:
+                limits[k] = [-float(spec["tolerance"]), float(spec["tolerance"])]
+        if tolerance(thickness):
+            limits["thickness"] = tolerance(thickness)
+        if limits:
+            build["tolerance"] = limits
+        rows.append({"name": name,
+                     "select": {"Diameter" if round_tube else "Size": f"{text(size)}x{text(height)}" if rect else text(size),
+                                "Thickness": text(thickness)},
+                     "values": values, "build": build})
+    return rows
+
+
 def expand_sizes(entry, group):
     """A part's `sizes` made into its configuration `rows`, each with the
     build block of its own (`build`, the manifest's `build.rows`): a
     `board`'s sizes of timber (thickness x widths, nominal and actual,
     species, density, tolerance, availability), a `fastener`'s diameters x
-    lengths, a `sheet`'s thicknesses."""
+    lengths, a `sheet`'s thicknesses, a tube's outside sizes x wall
+    thicknesses (tube_rows)."""
     what = f"{group}: {entry['id']}"
     sizes = entry.pop("sizes")
     if entry.get("rows"):
@@ -2278,11 +2591,16 @@ def expand_sizes(entry, group):
             thickness = float(spec["thickness"])
             rows.append({"name": text(thickness), "select": {"Thickness": text(thickness)},
                          "values": {"T": mm(thickness)}, "build": {"availability": availability}})
+        elif shape in TUBE_SHAPES:
+            rows += tube_rows(entry, dimensions, sizes, spec, what)
         else:
-            fail(f"{what}: sizes are made for a board, fastener or sheet, not a {shape}")
+            fail(f"{what}: sizes are made for a board, fastener, sheet or tube, not a {shape}")
     if shape == "board":
         # Thickness by thickness, each by its widths (the pickers' order).
         rows.sort(key=lambda r: (float(r["select"]["Thickness"]), float(r["select"]["Width"])))
+    if shape in TUBE_SHAPES:
+        # Size by size, each by its wall thicknesses.
+        rows.sort(key=lambda r: tuple(float(n) for v in r["select"].values() for n in v.split("x")))
     entry["rows"] = rows
     names = [r["name"] for r in rows]
     if len(set(names)) != len(names):
@@ -2367,6 +2685,7 @@ MAIN_GROUPS = [
               "sheets", "wood-fasteners", "timber-connectors"]),
     ("Slot profile", ["profiles", "connectors", "plates", "panels", "caps", "covers", "tubes", "accessories",
                       "slot-nuts", "slot-screws"]),
+    ("Steel", ["steel-tubes"]),
     ("Motion", ["linear", "bearings", "motors"]),
     ("General fasteners", ["screws", "nuts", "washers"]),
     ("Hardware", ["handles", "feet", "castors"]),
@@ -2435,7 +2754,9 @@ def sources_text(components, entries, left_out=()):
              "nut or other part keeps the solids of the supplier's CAD file; sheets and",
              "plates sold without a CAD file are modelled from the dimensions the supplier",
              "gives. Each part names its supplier and part number, so that it can be",
-             "bought. Check critical dimensions against the supplier's data.", ""]
+             "bought. Check critical dimensions against the supplier's data. The timber",
+             "parts and the steel tubes name no supplier: their sizes come from the",
+             "standards and tables named below.", ""]
     for component in components:
         entry = by_id[component["id"]]
         where = entry.get("source") or "the supplier's dimensions"

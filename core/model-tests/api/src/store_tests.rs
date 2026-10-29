@@ -11,8 +11,8 @@ use std::time::{Duration, SystemTime};
 
 use serde_json::json;
 
-use mitcad_model::features::SketchPlane;
-use mitcad_model::ids::FeatureUid;
+use mitcad_model::features::{Brep, SketchPlane};
+use mitcad_model::ids::{BodyUid, FeatureUid};
 use mitcad_model::store::testing::{mesh_files, set_time, store_files};
 use mitcad_model::store::{self, ResultStore};
 use mitcad_model::test_support::{Block, block, corner, def, extrude, num};
@@ -250,7 +250,9 @@ fn a_shape_the_kernel_cannot_read_is_evaluated() {
 fn quick_failed_and_renamed_results_are_not_written() {
     let folder = Folder::new();
     let mut p = part();
-    p.b.doc.set_result_store(Some(folder.store()));
+    // Quick results only by the minimum (mitcad#882 aside).
+    p.b.doc
+        .set_result_store(Some(folder.store().with_quick_results(None)));
     // The mock evaluates at once: nothing takes an hour.
     assert_eq!(
         p.b.doc.persist_results(Duration::from_secs(3600)).results,
@@ -339,7 +341,8 @@ fn an_import_s_results_are_handed_over_however_quick() {
     assert_eq!((report.results, report.failed), (3, 0));
     assert_eq!(handed.files().len(), 3);
     assert!(p.b.doc.result_store().is_none());
-    p.b.doc.set_result_store(Some(own.store()));
+    p.b.doc
+        .set_result_store(Some(own.store().with_quick_results(None)));
     assert_eq!(
         p.b.doc.persist_results(Duration::from_secs(3600)).results,
         0,
@@ -350,6 +353,59 @@ fn an_import_s_results_are_handed_over_however_quick() {
     let opened = open(&p.b.doc.to_json(), Some(handed.store()));
     assert_eq!(opened.stats().restored, vec![p.b.extrude, p.boss, p.fillet]);
     assert_eq!(opened.kernel().count("extrude"), 0);
+    assert_eq!(histories(&opened), histories(&p.b.doc));
+    assert_eq!(opened.versions(), p.b.doc.versions());
+}
+
+#[test]
+fn quick_results_are_stored_when_small_for_their_time() {
+    // mitcad#882: a result quicker than the minimum is stored when its
+    // shapes' memory per millisecond of evaluation is within the store's
+    // limit, and the design opened again restores it instead of
+    // evaluating it.
+    let default = Folder::new().store();
+    if default.quick_results().is_some() {
+        assert_eq!(default.quick_results(), Some(store::QUICK_MEMORY_PER_MS));
+    }
+    let at = |ms: u64| Duration::from_millis(ms);
+    let limit = default.with_quick_results(Some(1000));
+    assert!(limit.worth_storing(at(2), 2000));
+    assert!(!limit.worth_storing(at(2), 2001));
+    assert!(!limit.worth_storing(Duration::ZERO, 1));
+    assert!(!limit.with_quick_results(None).worth_storing(at(2), 0));
+
+    // A limit no mock shape is within (a byte a millisecond: the mock's
+    // shapes take a kilobyte a face): nothing quick is stored.
+    let folder = Folder::new();
+    let mut p = part();
+    p.b.doc
+        .set_result_store(Some(folder.store().with_quick_results(Some(1))));
+    let report = p.b.doc.persist_results(Duration::from_secs(3600));
+    assert_eq!((report.results, report.quick), (0, 0));
+    assert!(folder.files().is_empty());
+    // A limit every shape is within: the three quick results are stored
+    // (the sketches still not), and marked so.
+    p.b.doc
+        .set_result_store(Some(folder.store().with_quick_results(Some(u64::MAX))));
+    let report = p.b.doc.persist_results(Duration::from_secs(3600));
+    assert_eq!((report.results, report.quick, report.failed), (3, 3, 0));
+    assert_eq!(folder.files().len(), 3);
+    assert_eq!(
+        p.b.doc.persist_results(Duration::from_secs(3600)).results,
+        0
+    );
+    // Results that took the minimum are not counted as quick.
+    let other = Folder::new();
+    let mut q = part();
+    q.b.doc
+        .set_result_store(Some(other.store().with_quick_results(Some(u64::MAX))));
+    assert_eq!(q.b.doc.persist_results(Duration::ZERO).quick, 0);
+
+    // Opened again, the design takes them from the store.
+    let opened = open(&p.b.doc.to_json(), Some(folder.store()));
+    assert_eq!(opened.stats().restored, vec![p.b.extrude, p.boss, p.fillet]);
+    assert_eq!(opened.kernel().count("extrude"), 0);
+    assert_eq!(opened.kernel().count("fillet"), 0);
     assert_eq!(histories(&opened), histories(&p.b.doc));
     assert_eq!(opened.versions(), p.b.doc.versions());
 }
@@ -541,4 +597,183 @@ fn display_meshes_are_kept_for_the_body_s_shape() {
     let report = store::gc(&folder.0, 1);
     assert_eq!(report.removed, 5);
     assert!(folder.files().is_empty());
+}
+
+/// A design whose first feature brings in two bodies (a base feature, as
+/// an import makes one) and a base feature that joins a third body to the
+/// first.
+fn imported() -> (Document<MockKernel>, FeatureUid, FeatureUid) {
+    let brep = |data: &str| serde_json::to_value(Brep::new(data.as_bytes().to_vec())).unwrap();
+    let mut doc = Document::new(MockKernel::default());
+    let bodies = def(json!({"type": "base", "bodies": [
+        {"name": "Plate", "brep": brep("6 plate")},
+        {"name": "Frame", "brep": brep("8 frame")},
+    ]}));
+    let base = doc.add_feature(&bodies, None).unwrap().uid;
+    let joined = def(json!({"type": "base", "bodies": [{"brep": brep("4 rib")}],
+                            "operation": "join", "participants": ["F1.b0"]}));
+    let join = doc.add_feature(&joined, None).unwrap().uid;
+    (doc, base, join)
+}
+
+#[test]
+fn base_features_that_bring_in_bodies_are_stored() {
+    // Bringing a body in reads its data and names its faces, edges and
+    // vertices, which a stored shape keeps (mitcad#887): base features are
+    // stored like the others, also those that only bring in bodies.
+    let folder = Folder::new();
+    let (mut doc, base, join) = imported();
+    doc.set_result_store(Some(folder.store()));
+    let report = doc.persist_results(Duration::ZERO);
+    assert_eq!((report.results, report.failed), (2, 0));
+    let json = doc.to_json();
+    for lazy in [false, true] {
+        let opened = if lazy {
+            open_lazy(&json, Some(folder.store()))
+        } else {
+            open(&json, Some(folder.store()))
+        };
+        assert_eq!(opened.stats().restored, vec![base, join], "lazy: {lazy}");
+        assert!(opened.stats().evaluated.is_empty());
+        assert_eq!(opened.kernel().count("import"), 0);
+        // The same bodies, with their faces' and edges' names, and the
+        // same versions; with the lazy kernel the base feature's two
+        // bodies, both final, are unpacked together at the end.
+        assert_eq!(opened.bodies().len(), 2);
+        for body in doc.bodies() {
+            assert_eq!(
+                opened.body_shape(body.uid),
+                Some(body.shape),
+                "{}",
+                body.uid
+            );
+        }
+        assert_eq!(opened.versions(), doc.versions());
+        assert!(!packed(&opened, base));
+    }
+}
+
+#[test]
+fn a_base_feature_s_state_replaced_before_anything_reads_it_is_not_unpacked() {
+    // A body brought in and then joined to by a restored base feature: its
+    // first state is never read (mitcad#858, mitcad#887).
+    let folder = Folder::new();
+    let brep = |data: &str| serde_json::to_value(Brep::new(data.as_bytes().to_vec())).unwrap();
+    let mut doc = Document::new(MockKernel::default());
+    let plate = def(json!({"type": "base", "bodies": [{"brep": brep("6 plate")}]}));
+    let base = doc.add_feature(&plate, None).unwrap().uid;
+    let rib = def(json!({"type": "base", "bodies": [{"brep": brep("4 rib")}],
+                         "operation": "join", "participants": ["F1.b0"]}));
+    let join = doc.add_feature(&rib, None).unwrap().uid;
+    doc.set_result_store(Some(folder.store()));
+    doc.persist_results(Duration::ZERO);
+    let opened = open_lazy(&doc.to_json(), Some(folder.store()));
+    assert_eq!(opened.stats().restored, vec![base, join]);
+    assert!(packed(&opened, base));
+    assert!(!packed(&opened, join));
+    assert_eq!(histories(&opened), histories(&doc));
+    assert_eq!(opened.versions(), doc.versions());
+}
+
+#[test]
+fn many_restored_results_unpack_together_in_their_order() {
+    // The bodies left at the end are unpacked on the machine's threads
+    // (mitcad#887), each result's shapes in their order.
+    let folder = Folder::new();
+    let brep = |data: String| serde_json::to_value(Brep::new(data.into_bytes())).unwrap();
+    let mut doc = Document::new(MockKernel::default());
+    let mut features = Vec::new();
+    for i in 0..12 {
+        let bodies: Vec<_> = (0..3)
+            .map(|k| json!({"brep": brep(format!("{} body{i}_{k}", 4 + k))}))
+            .collect();
+        let base = def(json!({"type": "base", "bodies": bodies}));
+        features.push(doc.add_feature(&base, None).unwrap().uid);
+    }
+    doc.set_result_store(Some(folder.store()));
+    assert_eq!(doc.persist_results(Duration::ZERO).results, 12);
+    let opened = open_lazy(&doc.to_json(), Some(folder.store()));
+    assert_eq!(opened.stats().restored, features);
+    assert_eq!(opened.bodies().len(), 36);
+    for &uid in &features {
+        assert!(!packed(&opened, uid), "{uid}");
+    }
+    assert_eq!(histories(&opened), histories(&doc));
+    assert_eq!(opened.versions(), doc.versions());
+}
+
+/// The block (F2, Body1) and a cylinder beside it (F4, F4.b0), each a
+/// body of its own.
+fn two_bodies() -> (Block, BodyUid) {
+    let mut b = block();
+    let cylinder = b.circle_extrude("new_body", &[]);
+    (b, BodyUid::new(cylinder, 0))
+}
+
+#[test]
+fn a_sketch_on_a_face_unpacks_only_the_face_s_body() {
+    // A sketch on the block's top face reads the block only: the
+    // cylinder's first state, replaced by a restored join before anything
+    // reads it, stays packed (mitcad#886).
+    let folder = Folder::new();
+    let (mut b, cylinder) = two_bodies();
+    let cylinder_feature = cylinder.feature;
+    let top = mitcad_model::topo::FaceName::end(b.extrude, b.region.clone());
+    let sketch = b
+        .doc
+        .add_sketch(SketchPlane::Face {
+            face: Box::new(top),
+            body: Some(b.body),
+        })
+        .unwrap()
+        .uid;
+    let region = b
+        .doc
+        .add_rectangle(sketch, [5.0, 5.0], &num(4.0), &num(4.0))
+        .unwrap()
+        .region;
+    let join = extrude(sketch, &[&region], 5.0, "join", &[cylinder]);
+    let join = b.doc.add_feature(&join, None).unwrap().uid;
+    b.doc.set_result_store(Some(folder.store()));
+    b.doc.persist_results(Duration::ZERO);
+    let opened = open_lazy(&b.doc.to_json(), Some(folder.store()));
+    assert_eq!(
+        opened.stats().restored,
+        vec![b.extrude, cylinder_feature, join]
+    );
+    assert!(opened.stats().evaluated.contains(&sketch));
+    assert!(!packed(&opened, b.extrude));
+    assert!(packed(&opened, cylinder_feature));
+    assert!(!packed(&opened, join));
+    assert_eq!(histories(&opened), histories(&b.doc));
+    assert_eq!(opened.versions(), b.doc.versions());
+    assert_eq!(
+        opened.sketch_output(sketch).unwrap().regions.len(),
+        b.doc.sketch_output(sketch).unwrap().regions.len()
+    );
+}
+
+#[test]
+fn an_evaluation_unpacks_only_the_bodies_it_reads() {
+    // A fillet of the block, evaluated anew, reads the block only: the
+    // cylinder's first state, replaced by a join before anything reads
+    // it, stays packed (mitcad#886).
+    let folder = Folder::new();
+    let (mut b, cylinder) = two_bodies();
+    let fillet = b.fillet(&[&corner(b.extrude, 1, 0)], 2.0);
+    let join = b.circle_extrude("join", &[cylinder]);
+    b.doc.set_result_store(Some(folder.store()));
+    b.doc.persist_results(Duration::ZERO);
+    let mut opened = open_lazy(&b.doc.to_json(), Some(folder.store()));
+    assert!(packed(&opened, b.extrude));
+    assert!(packed(&opened, cylinder.feature));
+    let radius = "d6";
+    opened.set_parameter(radius, 3.0).unwrap();
+    b.doc.set_parameter(radius, 3.0).unwrap();
+    assert_eq!(opened.stats().evaluated, vec![fillet]);
+    assert!(!packed(&opened, b.extrude));
+    assert!(packed(&opened, cylinder.feature));
+    assert!(!packed(&opened, join));
+    assert_eq!(histories(&opened), histories(&b.doc));
+    assert_eq!(opened.versions(), b.doc.versions());
 }

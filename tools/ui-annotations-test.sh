@@ -48,7 +48,8 @@
 # reaches the main window's places only).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
-# Usage: tools/ui-annotations-test.sh [screenshot.png]
+# Usage: tools/ui-annotations-test.sh [screenshot.png] (with it, also
+# <screenshot>-frames.png once the datum label and the frames are drawn)
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -125,7 +126,7 @@ ui_expect_new "Inspect Measure: length 31.416, radius 5, diameter 10" "the rim m
 wait_enabled "Measure Keep"
 ui_step "Keep"                             ui_click_logged "Measure Keep"
 ui_expect_new "Annotation kept: Diameter1" "kept as the rim's diameter"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50 (#1971c2) | Diameter1 = Ø10 (#2f9e44)" "both drawn"
+ui_expect_new "Annotations drawn: AxisDistance1 = 50 (auto) | Diameter1 = Ø10 (auto)" "both drawn, in Auto"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
 
@@ -139,7 +140,7 @@ ui_step "Tolerance: ± (Alt+T, Down)"       ui_key alt+t Down
 ui_step "OK (Enter)"                       ui_key Return
 ui_focus_main
 ui_expect_new 'Edit Annotation dialog: {"tolerance":{"type":"symmetric","value":0.1}}' "± 0.1 asked for"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50 ±0.1 (#1971c2) | Diameter1 = Ø10 (#2f9e44)" \
+ui_expect_new "Annotations drawn: AxisDistance1 = 50 ±0.1 (auto) | Diameter1 = Ø10 (auto)" \
   "drawn with its tolerance"
 
 echo "--- Its text dragged"
@@ -187,9 +188,9 @@ echo "--- The Annotations window: an H7 fit"
 ui_mark
 ui_step "Annotations (search)"             ui_command "Annotations"
 ui_expect_new "Annotations window opened: 3 annotation(s)" "the window opened"
-ui_expect_new "Annotations row Diameter1: diameter, Ø10, -, -, #2f9e44, shown" "Diameter1 listed"
-ui_expect_new "Annotations row AxisDistance1: axis_distance, 50 ±0.1, ±0.1, -, #1971c2, shown" "AxisDistance1 listed"
-ui_expect_new "Annotations row Gone: offset, Broken, -, -, #d9480f, broken: a pick is not there" "Gone marked broken"
+ui_expect_new "Annotations row Diameter1: diameter, Ø10, -, -, auto, shown" "Diameter1 listed"
+ui_expect_new "Annotations row AxisDistance1: axis_distance, 50 ±0.1, ±0.1, -, auto, shown" "AxisDistance1 listed"
+ui_expect_new "Annotations row Gone: offset, Broken, -, -, auto, broken: a pick is not there" "Gone marked broken"
 ui_expect_new "Annotations row Diameter1 at" "its rows laid out"
 ui_double_click_expect "Annotations row Diameter1" "Edit Annotation dialog opened: Diameter1 diameter" \
   "a double-click on a row opens its editor"
@@ -205,8 +206,8 @@ ui_focus_dialog '^Edit Annotation$'
 ui_step "Tolerance: fit (Alt+T, Down x4)"  ui_key alt+t Down Down Down Down
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new 'Edit Annotation dialog: {"tolerance":{"code":"H7","type":"fit"}}' "an H7 fit asked for"
-ui_expect_new "Diameter1 = Ø10 H7 (#2f9e44)" "drawn with its fit code"
-ui_expect_new "Annotations row Diameter1: diameter, Ø10 H7, H7, -, #2f9e44, shown" "the window lists its fit"
+ui_expect_new "Diameter1 = Ø10 H7 (auto)" "drawn with its fit code"
+ui_expect_new "Annotations row Diameter1: diameter, Ø10 H7, H7, -, auto, shown" "the window lists its fit"
 
 echo "--- The kind filter and the search"
 ui_mark
@@ -229,11 +230,11 @@ ui_expect_new "Annotations selected: AxisDistance1, Diameter1" "both rows select
 ui_expect_new "Annotations highlighted: AxisDistance1, Diameter1" "both highlighted in the view"
 ui_mark
 ui_step "Colour… (Alt+C)"                  ui_key alt+c
-ui_expect_new "Annotation Colour dialog opened: 2 annotation(s) #1971c2 (Orange | Blue | Green |" "the colours offered"
+ui_expect_new "Annotation Colour dialog opened: 2 annotation(s) auto (Auto | Orange | Blue | Green |" "the colours offered"
 ui_focus_dialog '^Annotation Colour$'
-ui_step "Violet (Down x3, Enter)"          ui_key Down Down Down Return
-ui_expect_new "Annotations drawn: AxisDistance1 = 50 ±0.1 (#7048e8) | Diameter1 = Ø10 H7 (#7048e8)" "both violet"
-ui_expect_new "Annotations row Diameter1: diameter, Ø10 H7, H7, -, #7048e8, shown" "the rows refreshed"
+ui_step "Violet (Down x5, Enter)"          ui_key Down Down Down Down Down Return
+ui_expect_new "Annotations drawn: AxisDistance1 = 50 ±0.1 (#5f3dc4) | Diameter1 = Ø10 H7 (#5f3dc4)" "both violet"
+ui_expect_new "Annotations row Diameter1: diameter, Ø10 H7, H7, -, #5f3dc4, shown" "the rows refreshed"
 # The refresh keeps both rows selected.
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Annotations selected: " | grep -vqF "Annotations selected: AxisDistance1, Diameter1" &&
   ui_fail "the selection changed with the refresh: $(grep "^Annotations selected: " "$UI_LOG" | tail -1)"
@@ -244,7 +245,7 @@ ui_step "Decimals… (Alt+D)"                ui_key alt+d
 ui_expect_new "Annotation Decimals dialog opened: 2 dimension(s) null" "the decimals offered"
 ui_focus_dialog '^Annotation Decimals$'
 ui_step "2 (Down x3, Enter)"               ui_key Down Down Down Return
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#7048e8) | Diameter1 = Ø10.00 H7 (#7048e8)" \
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#5f3dc4) | Diameter1 = Ø10.00 H7 (#5f3dc4)" \
   "both with two decimals"
 ui_mark
 focus_window
@@ -271,12 +272,12 @@ ui_step "Group filter: Shop (Alt+G, Down x3)" ui_key alt+g Down Down Down
 ui_expect_new "Annotations group filter: Shop" "the filter on Shop"
 ui_step "Hide Group (Alt+U)"               ui_key alt+u
 ui_expect_new "Annotations hide group Shop: AxisDistance1" "the group hidden"
-ui_expect_new "Annotations drawn: Diameter1 = Ø10.00 H7 (#7048e8)" "only Inspect's drawn"
+ui_expect_new "Annotations drawn: Diameter1 = Ø10.00 H7 (#5f3dc4)" "only Inspect's drawn"
 ui_mark
 focus_window
 ui_step "Show Group (Alt+W)"               ui_key alt+w
 ui_expect_new "Annotations show group Shop: AxisDistance1" "the group shown"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#7048e8) | Diameter1 = Ø10.00 H7 (#7048e8)" \
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#5f3dc4) | Diameter1 = Ø10.00 H7 (#5f3dc4)" \
   "both drawn again"
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
@@ -307,7 +308,7 @@ done
 ui_stop_app
 ui_start_app --open "$WORK/axes.mitcad"
 ui_expect_log "| AxisDistance1 axis_distance in Shop | Diameter1 diameter in Inspect" "read back in their groups"
-ui_expect_log "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#7048e8) | Diameter1 = Ø10.00 H7 (#7048e8)" \
+ui_expect_log "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#5f3dc4) | Diameter1 = Ø10.00 H7 (#5f3dc4)" \
   "drawn as they were"
 
 echo "--- Limits typed as sizes, and a colour alone"
@@ -323,15 +324,15 @@ ui_step "OK (Enter)"                       ui_key Return
 # 50.1 and 49.9 as typed, read back as deviations without rounding noise.
 ui_expect_new 'Edit Annotation dialog: {"tolerance":{"lower":-0.1,"type":"limits","upper":0.1}}' \
   "the limits as exact deviations"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#7048e8)" "drawn as the limit sizes"
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#5f3dc4)" "drawn as the limit sizes"
 ui_double_click_expect "Annotations row AxisDistance1" "Edit Annotation dialog opened: AxisDistance1 axis_distance" \
   "its editor opened again"
 ui_mark
 ui_focus_dialog '^Edit Annotation$'
 ui_step "Colour: Amber (Alt+C, Down)"      ui_key alt+c Down
 ui_step "OK (Enter)"                       ui_key Return
-ui_expect_new 'Edit Annotation dialog: {"color":"#e67700"}' "only the colour sent, the tolerance untouched"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#e67700)" "the limits as they were"
+ui_expect_new 'Edit Annotation dialog: {"color":"#f08c00"}' "only the colour sent, the tolerance untouched"
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#f08c00)" "the limits as they were"
 focus_window
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
@@ -350,7 +351,7 @@ ui_step "OK (Enter)"                       ui_key Return
 ui_focus_main
 ui_expect_new "Datum Label dialog: A" "A chosen"
 ui_expect_new "Annotation kept: DatumA" "the datum label added"
-ui_expect_new "| DatumA = A (#" "drawn with its letter"
+ui_expect_new "| DatumA = A (auto)" "drawn with its letter, in Auto"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
 ui_mark
@@ -371,15 +372,15 @@ ui_focus_main
 ui_expect_new 'Feature Control Frame dialog: {"characteristic":"perpendicularity","datums":["A"],"diameter":true,"modifier":"M","value":0.05}' \
   "perpendicularity, a cylindrical zone of 0.05 at maximum material, to A"
 ui_expect_new "Annotation kept: Frame1" "the frame added"
-ui_expect_new "| Frame1 = ⟂ | Ø0.05 Ⓜ | A (#" "drawn in its cells"
+ui_expect_new "| Frame1 = ⟂ | Ø0.05 Ⓜ | A (auto)" "drawn in its cells"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
 
 echo "--- Listed and filtered, its picks highlighted, a frame under a dimension, edited"
 ui_mark
 ui_step "Annotations (search)"             ui_command "Annotations"
-ui_expect_log "Annotations row DatumA: datum, A, -, -, #" "the datum label listed"
-ui_expect_log "Annotations row Frame1: frame, ⟂ | Ø0.05 Ⓜ | A, Ø0.05 Ⓜ, -, #" "the frame listed with its cells"
+ui_expect_log "Annotations row DatumA: datum, A, -, -, auto" "the datum label listed"
+ui_expect_log "Annotations row Frame1: frame, ⟂ | Ø0.05 Ⓜ | A, Ø0.05 Ⓜ, -, auto" "the frame listed with its cells"
 ui_expect_new "Annotations row Frame1 at" "its rows laid out"
 focus_window
 ui_step "Kind: Feature control frame (Alt+K, Down x5)" ui_key alt+k Down Down Down Down Down
@@ -404,9 +405,9 @@ ui_step "OK (Alt+M, Enter)"                ui_key alt+m Return
 ui_expect_new 'Feature Control Frame dialog: {"characteristic":"parallelism","datums":["A"],"value":0.05}' \
   "parallelism of 0.05 to A"
 ui_expect_new "Frame added under AxisDistance1" "the frame under the dimension"
-ui_expect_new "Annotations row Frame2: frame, ∥ | 0.05 | A, 0.05, Shop, #e67700, shown" \
+ui_expect_new "Annotations row Frame2: frame, ∥ | 0.05 | A, 0.05, Shop, #f08c00, shown" \
   "in the dimension's group and colour"
-ui_expect_new "| Frame2 = ∥ | 0.05 | A (#e67700)" "drawn under the dimension"
+ui_expect_new "| Frame2 = ∥ | 0.05 | A (#f08c00)" "drawn under the dimension"
 # The rows' places are logged when they change (with Frame2's row): the
 # last ones, once the window has settled, are the rows' now.
 ui_sync
@@ -418,10 +419,13 @@ ui_step "type 0.02"                        ui_type_text "0.02"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new 'Edit Annotation dialog: {"frame":{"characteristic":"perpendicularity","datums":["A"],"diameter":true,"modifier":"M","value":0.02}}' \
   "the narrower zone asked for"
-ui_expect_new "| Frame1 = ⟂ | Ø0.02 Ⓜ | A (#" "drawn with it"
+ui_expect_new "| Frame1 = ⟂ | Ø0.02 Ⓜ | A (auto)" "drawn with it"
 focus_window
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
+# The dimensions, the fitted diameter, the datum label and both frames
+# together, for a look at them (mitcad#894).
+[ -n "$SHOT" ] && ui_sync && ui_capture "${SHOT%.png}-frames.png"
 
 echo "--- A datum label's pick and a frame's plane picked again in the view"
 ui_wait_idle

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "SlicerPresetsDialog.hpp"
 
+#include <algorithm>
 #include <utility>
 
 #include <QComboBox>
@@ -12,6 +13,7 @@
 #include <QJsonValue>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QModelIndex>
 #include <QPainter>
 #include <QPen>
@@ -25,6 +27,7 @@
 #include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 #include <QVector>
+#include <QWidget>
 #include <QtLogging>
 
 #include "../framework/Icons.hpp"
@@ -73,6 +76,28 @@ public:
   using QTreeWidget::QTreeWidget;
 
 protected:
+  // The name column at least as wide as the group titles (mitcad#871
+  // review): they span both columns, so the tree's own hint leaves them
+  // out and a closed group's long title was cut off.
+  int sizeHintForColumn(int column) const override {
+    int width = QTreeWidget::sizeHintForColumn(column);
+    if (column != 0) {
+      return width;
+    }
+    QStyleOptionViewItem option;
+    initViewItemOption(&option);
+    const int indent = rootIsDecorated() ? indentation() : 0;
+    for (int i = 0; i < topLevelItemCount(); ++i) {
+      const QTreeWidgetItem* group = topLevelItem(i);
+      if (group->isHidden()) {
+        continue;
+      }
+      const QModelIndex index = indexFromItem(group, 0);
+      width = std::max(width, itemDelegateForIndex(index)->sizeHint(option, index).width() + indent);
+    }
+    return width;
+  }
+
   void drawRow(QPainter* painter, const QStyleOptionViewItem& options, const QModelIndex& index) const override {
     QTreeWidget::drawRow(painter, options, index);
     const QModelIndex current = currentIndex();
@@ -133,6 +158,16 @@ SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, c
   top->addWidget(m_sameAll);
   layout->addLayout(top);
 
+  // The filter (mitcad#871 review): the rows whose name has its text,
+  // before the list in the Tab order.
+  m_filter = new QLineEdit;
+  m_filter->setPlaceholderText(tr("Filter presets"));
+  m_filter->setAccessibleName(tr("Filter presets"));
+  m_filter->setClearButtonEnabled(true);
+  m_filter->installEventFilter(this);
+  mac::styleSearchField(m_filter, tr("Shows the presets whose name contains the text"));
+  layout->addWidget(m_filter);
+
   // The presets by kind, a box each. The name column as wide as its
   // names, so each row's choice sits beside its name.
   m_list = new PresetList;
@@ -180,6 +215,12 @@ SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, c
     // row too).
     if (!item->data(0, kPathRole).toString().isEmpty()) {
       const bool ticked = item->checkState(0) == Qt::Checked;
+      if (item->isHidden() && m_loggedTicks.contains(item) && m_loggedTicks.value(item) != ticked) {
+        // A group's box ticks only the rows the filter shows: a hidden
+        // row keeps its tick (its change comes back here, unlogged).
+        item->setCheckState(0, m_loggedTicks.value(item) ? Qt::Checked : Qt::Unchecked);
+        return;
+      }
       if (m_loggedTicks.value(item, !ticked) != ticked) {
         m_loggedTicks.insert(item, ticked);
         qDebug().noquote() << QStringLiteral("Slicer presets tick: %1 %2")
@@ -195,6 +236,7 @@ SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, c
       qDebug().noquote() << QStringLiteral("Slicer presets current: %1").arg(current->text(0));
     }
   });
+  connect(m_filter, &QLineEdit::textChanged, this, [this] { applyFilter(); });
   if (!slicers.isEmpty()) {
     showSlicer(index >= 0 && index < slicers.size() ? index : 0);
   }
@@ -209,6 +251,15 @@ bool SlicerPresetsDialog::eventFilter(QObject* watched, QEvent* event) {
   const bool backtab = plain && (key->key() == Qt::Key_Backtab ||
                                  (key->key() == Qt::Key_Tab && key->modifiers().testFlag(Qt::ShiftModifier)));
   const bool tab = plain && !backtab && key->key() == Qt::Key_Tab;
+  if (watched == m_filter) {
+    // Down or Enter in the filter goes to the rows it shows (Enter does
+    // not import).
+    if (plain && (key->key() == Qt::Key_Down || key->key() == Qt::Key_Return || key->key() == Qt::Key_Enter)) {
+      m_list->setFocus(Qt::TabFocusReason);
+      return true;
+    }
+    return QDialog::eventFilter(watched, event);
+  }
   if (watched == m_list) {
     if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
       m_list->viewport()->update();
@@ -282,26 +333,29 @@ void SlicerPresetsDialog::showSlicer(int index) {
   m_building = true;
   m_boxRows.clear();
   m_loggedTicks.clear();
+  m_openBeforeFilter.clear();
+  m_filtering = false;
   m_list->clear();
   const QJsonArray presets = slicer.value(QStringLiteral("presets")).toArray();
   // The user's presets, then the slicer's own the user enabled there
-  // (mitcad#871), in groups of their own, collapsed at first.
+  // (mitcad#871), in groups of their own, collapsed at first; each
+  // group named by whose presets it holds.
   const QString slicerShown = text(slicer, "name");
   struct Group {
     QString kind;
     QString title;
     bool system;
   };
-  const Group groups[] = {{QStringLiteral("printer"), tr("Printers"), false},
-                          {QStringLiteral("process"), tr("Processes"), false},
-                          {QStringLiteral("material"), tr("Filaments"), false},
-                          {QStringLiteral("printer"), tr("Printers of %1").arg(slicerShown), true},
-                          {QStringLiteral("process"), tr("Processes of %1").arg(slicerShown), true},
-                          {QStringLiteral("material"), tr("Filaments of %1").arg(slicerShown), true}};
+  const Group groups[] = {{QStringLiteral("printer"), tr("My printers"), false},
+                          {QStringLiteral("process"), tr("My processes"), false},
+                          {QStringLiteral("material"), tr("My filaments"), false},
+                          {QStringLiteral("printer"), tr("%1 printers").arg(slicerShown), true},
+                          {QStringLiteral("process"), tr("%1 processes").arg(slicerShown), true},
+                          {QStringLiteral("material"), tr("%1 filaments").arg(slicerShown), true}};
   bool anySame = false;
   QTreeWidgetItem* first = nullptr;      // the current row at first
   QTreeWidgetItem* firstGroup = nullptr; // else the first group
-  QVector<QTreeWidgetItem*> userGroups;
+  QVector<QTreeWidgetItem*> openGroups;
   for (const Group& kindGroup : groups) {
     const QString& kind = kindGroup.kind;
     QTreeWidgetItem* group = nullptr;
@@ -321,7 +375,7 @@ void SlicerPresetsDialog::showSlicer(int index) {
         bold.setBold(true);
         group->setFont(0, bold);
         if (!kindGroup.system) {
-          userGroups.append(group);
+          openGroups.append(group);
         }
         if (firstGroup == nullptr) {
           firstGroup = group;
@@ -344,21 +398,44 @@ void SlicerPresetsDialog::showSlicer(int index) {
         continue;
       }
       // A name the target has: the warning colour, what it meets as the
-      // tooltip, unticked, Copy at first (it loses nothing).
+      // tooltip, unticked, Copy at first (it loses nothing). Its group
+      // open, so that All same names acts on rows in sight (mitcad#871
+      // review).
       anySame = true;
+      if (!openGroups.contains(group)) {
+        openGroups.append(group);
+      }
       const QString tooltip = sameTooltip(kind, same);
+      const QString choices = tr("Copy imports it as a new item under the next free name; Override updates the "
+                                 "existing item with its values.");
       row->setForeground(0, warningColor(palette()));
       row->setToolTip(0, tooltip);
+      // Not by colour alone: what it meets and its choice told to a
+      // screen reader too.
+      row->setData(0, Qt::AccessibleDescriptionRole,
+                   tr("%1. Tab reaches its choice: %2").arg(tooltip, choices));
       row->setData(0, kChoiceRole, QStringLiteral("copy"));
       row->setCheckState(0, Qt::Unchecked);
       m_loggedTicks.insert(row, false);
+      // Its choice beside it, labelled "Same name:" (the cue without
+      // colour).
+      auto* cell = new QWidget;
+      auto* cellLayout = new QHBoxLayout(cell);
+      cellLayout->setContentsMargins(0, 0, 0, 0);
+      auto* sameLabel = new QLabel(tr("Same name:"));
+      sameLabel->setToolTip(tooltip);
       auto* choice = new QComboBox;
       choice->setAccessibleName(tr("%1: same name").arg(text(preset, "name")));
+      choice->setAccessibleDescription(tr("%1. %2").arg(tooltip, choices));
       choice->setToolTip(tooltip);
+      sameLabel->setBuddy(choice);
+      cellLayout->addWidget(sameLabel);
+      cellLayout->addWidget(choice);
       // Out of the window's Tab order: Tab from its row reaches it.
       choice->setFocusPolicy(Qt::ClickFocus);
+      cell->setFocusProxy(choice);
       addChoices(choice);
-      m_list->setItemWidget(row, 1, choice);
+      m_list->setItemWidget(row, 1, cell);
       choice->installEventFilter(this);
       m_boxRows.insert(choice, row);
       connect(choice, &QComboBox::activated, this, [this, row, choice] {
@@ -371,8 +448,9 @@ void SlicerPresetsDialog::showSlicer(int index) {
       });
     }
   }
-  // The user's groups open, the slicer's own closed: they can be long.
-  for (QTreeWidgetItem* group : std::as_const(userGroups)) {
+  // The user's groups open, the slicer's own closed (they can be long)
+  // unless they have a same-name row.
+  for (QTreeWidgetItem* group : std::as_const(openGroups)) {
     group->setExpanded(true);
   }
   m_sameLabel->setVisible(anySame);
@@ -391,6 +469,64 @@ void SlicerPresetsDialog::showSlicer(int index) {
   ticksChanged();
   logRows();
   sameChoicesChanged();
+  // A filter typed before another slicer was chosen applies to its rows.
+  if (!m_filter->text().trimmed().isEmpty()) {
+    applyFilter();
+  }
+  scheduleLogPlaces();
+}
+
+void SlicerPresetsDialog::applyFilter() {
+  const QString needle = m_filter->text().trimmed();
+  const bool filtering = !needle.isEmpty();
+  if (filtering && !m_filtering) {
+    // Which groups were open, for when the filter is cleared.
+    m_openBeforeFilter.clear();
+    for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+      QTreeWidgetItem* group = m_list->topLevelItem(i);
+      m_openBeforeFilter.insert(group, group->isExpanded());
+    }
+  }
+  // The rows whose name has the text; a group without one hidden, one
+  // with them open. Hidden rows keep their ticks.
+  int shown = 0;
+  for (int i = 0; i < m_list->topLevelItemCount(); ++i) {
+    QTreeWidgetItem* group = m_list->topLevelItem(i);
+    int matches = 0;
+    for (int j = 0; j < group->childCount(); ++j) {
+      QTreeWidgetItem* row = group->child(j);
+      const bool match = !filtering || row->text(0).contains(needle, Qt::CaseInsensitive);
+      row->setHidden(!match);
+      matches += match ? 1 : 0;
+    }
+    group->setHidden(matches == 0);
+    if (filtering && matches > 0) {
+      group->setExpanded(true);
+    } else if (!filtering && m_filtering) {
+      group->setExpanded(m_openBeforeFilter.value(group, group->isExpanded()));
+    }
+    shown += matches;
+  }
+  m_filtering = filtering;
+  // The current row one in sight: the first row shown when it was
+  // hidden, its group when that closed again.
+  QTreeWidgetItem* current = m_list->currentItem();
+  QTreeWidgetItem* owner = current != nullptr ? current->parent() : nullptr;
+  if (current == nullptr || current->isHidden() || (owner != nullptr && owner->isHidden())) {
+    for (QTreeWidgetItem* row : presetRows(m_list)) {
+      if (!row->isHidden()) {
+        m_list->setCurrentItem(row);
+        break;
+      }
+    }
+  } else if (owner != nullptr && !owner->isExpanded()) {
+    m_list->setCurrentItem(owner);
+  }
+  if (filtering) {
+    qDebug().noquote() << QStringLiteral("Slicer presets filter: %1, %2 shown").arg(needle).arg(shown);
+  } else {
+    qDebug().noquote() << QStringLiteral("Slicer presets filter cleared, %1 shown").arg(shown);
+  }
   scheduleLogPlaces();
 }
 
@@ -430,7 +566,8 @@ QStringList SlicerPresetsDialog::tickedNames() const {
 
 void SlicerPresetsDialog::setRowChoice(QTreeWidgetItem* row, const QString& choice) {
   row->setData(0, kChoiceRole, choice);
-  if (auto* box = qobject_cast<QComboBox*>(m_list->itemWidget(row, 1))) {
+  QWidget* cell = m_list->itemWidget(row, 1);
+  if (auto* box = cell != nullptr ? cell->findChild<QComboBox*>() : nullptr) {
     const int at = box->findData(choice);
     if (at >= 0 && at != box->currentIndex()) {
       box->setCurrentIndex(at);
@@ -451,9 +588,18 @@ int SlicerPresetsDialog::tickedCount() const {
 void SlicerPresetsDialog::ticksChanged() {
   const int ticked = tickedCount();
   m_import->setEnabled(ticked > 0);
+  // The button says how many come in, those in closed groups or hidden by
+  // the filter too (mitcad#871 review).
+  m_import->setText(ticked == 0   ? tr("&Import")
+                    : ticked == 1 ? tr("&Import 1 Preset")
+                                  : tr("&Import %1 Presets").arg(ticked));
   if (ticked != m_loggedTicked) {
     m_loggedTicked = ticked;
-    qDebug().noquote() << QStringLiteral("Slicer presets ticked: %1").arg(ticked);
+    QString button = m_import->text();
+    button.remove(QLatin1Char('&'));
+    qDebug().noquote() << QStringLiteral("Slicer presets ticked: %1, %2").arg(QString::number(ticked), button);
+    // The button's width changed with its text.
+    scheduleLogPlaces();
   }
 }
 

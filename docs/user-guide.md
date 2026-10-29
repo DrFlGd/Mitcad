@@ -879,6 +879,10 @@ thread is cosmetic. A hole saved by an earlier version stays as it was
 (not tapered, its bore the size's minor diameter) until you check
 *Tapered*.
 
+A tapped hole has a *Direction*, right hand or left hand, and can take a
+custom thread with a number of starts, as Thread does (below). Its bore
+is the thread's minor diameter.
+
 ### Thread
 
 **Thread** makes a thread that is cosmetic or modelled. The options
@@ -904,6 +908,27 @@ tapered NPT threads; ISO 7-1 threads are cosmetic only. Tapered threads
 have no end chamfers, so the panel does not offer *Chamfer Ends*. A
 thread saved by an earlier version stays as it was, straight, until you
 check *Tapered*.
+
+*Thread Type* **Custom** makes a thread of your own size, for example a
+longer pitch than any standard has for a 3D-printed part. Type its
+*Major Diameter* and *Pitch*; a shaft you pick fills in its diameter.
+Both can be expressions, so the thread follows your parameters. A
+custom thread has the 60-degree profile, no designation and no class.
+It is cosmetic or modelled like a standard size, with the same
+clearances and end chamfers. The pitch must leave the thread a core.
+
+A modelled custom thread can have several *Starts*, as threaded rods and
+jar lids do. The grooves are evenly spaced round the axis, a pitch
+apart, and each one rises by the lead, the starts times the pitch, in a
+turn. A two-start thread of pitch 1.5 mm advances 3 mm a turn. A
+trapezoidal size with a lead, such as `Tr10x4(P2)`, has its starts in
+its designation (2 here) and is modelled with them.
+
+Trapezoidal threads (ISO 2904, the lead screws of linear drives) can be
+modelled. MitCad cuts the 30-degree profile of ISO 2901 with its flat
+crests and roots, and the standard's clearance at the roots: the
+screw's root is a little deeper than the nut's crest, and the nut's root
+a little wider than the screw's crest, so the two clear each other.
 
 *Chamfer Ends* cuts a cone at the free ends through which the thread
 runs out. Examples are the tip of a shaft and the mouth of a hole. Thus
@@ -935,7 +960,9 @@ size, its class and its pitch stay. There are two clearances:
 
 A fine pitch has small teeth, so it takes less flank clearance. The
 crest must stay at least a fiftieth of the pitch wide. An internal M6x1
-takes at most 0.0996 mm, an external M6x1 at most 0.0455 mm. The panel's
+takes at most 0.0996 mm, an external M6x1 at most 0.0455 mm. A
+trapezoidal thread's steeper flanks leave wider crests: an external
+Tr10x2 takes up to 0.334 mm. The panel's
 default, the parameter `thread_flank_clearance` (0.1 mm), is a fit for
 your printer and serves threads of every size: where a thread's pitch is
 too fine for it, MitCad uses the largest flank clearance that the thread
@@ -1188,7 +1215,7 @@ design. A row whose geometry is gone is grey.
 the Measure panel, or click a row of the history and then *Keep Row*.
 The measurement becomes an *annotation*: a dimension drawn in the view
 as on a drawing
-(ISO 129 style, millimetres), in its own colour. MitCad names it after
+(ISO 129 style, millimetres). MitCad names it after
 what it shows (`Distance1`, `Angle1`, `Offset1`, `Diameter1`, …).
 Sketch curves and points cannot be kept: with them picked, *Keep* is
 greyed out and its tooltip says so; pick the body's corners or edges
@@ -1223,14 +1250,45 @@ letter, the frames that refer to it follow, in the model and in the
 drawings. A frame refers to single datum labels: common datums (A-B)
 are not supported yet.
 
-A dimension lies in a plane, not facing the screen: a length in the plane
-you looked at it in when you kept it, a radius or a diameter in its
-circle's plane, an angle in the plane of its sides. Its text turns to
-stay readable within that plane, and an annotation whose plane you see
-edge on fades away. Drag the text of an annotation to move it, or drag a
-length's dimension line (an angle's arc) to move it farther from or
-nearer the measured points. The places are kept relative to the picks,
-so the annotation follows the model when it changes.
+**How annotations look.** Annotations are drawn as a technical
+drawing's dimensions are (ISO 129-1, ISO 3098, ISO 1101), on a light and
+on a dark background alike: plain text with no box behind it, thin
+lines, closed filled arrowheads, extension lines that stop a little short
+of the measured point and run a little past the dimension line. Feature
+control frames and datum labels are outlined in the same thin lines; the
+datum label's leader ends in a filled triangle.
+
+- *Colour.* A new annotation is drawn in *Auto*: near-black on a light
+  background, light grey on a dark one. Choose another colour in its
+  editor or with *Colour…* in the Annotations window; *Auto* is the first
+  choice there. Designs saved by older versions, whose annotations took
+  orange, blue, green, magenta, violet and amber in turn, open with those
+  in *Auto*; other colours stay.
+- *Text height.* All texts of a design's annotations are one height in
+  millimetres, lying in the annotation's plane, so they grow and shrink
+  with the model as you zoom, like the lines. *Auto* takes 2.5, 3.5, 5, 7
+  or 10 mm by the size of what is annotated. Choose another with *Text
+  Height…* in the Annotations window. When you zoom far out, the texts
+  stay at least about 9 pixels high so that they stay readable.
+- *Reading direction.* A text reads from the bottom or from the right of
+  the screen from any side you look at it: never upside down or
+  mirrored; a vertical or nearly vertical dimension reads from bottom to
+  top.
+
+A dimension lies in a plane, not facing the screen: a length in a plane
+of the part that holds it — a flat face at a picked point, or else a
+coordinate plane through the points — the one most facing you when you
+kept it; a radius or a diameter in its circle's plane, an angle in the
+plane of its sides. A length's dimension line is placed outside the
+body, on the side away from it, one and a half text heights clear of its
+outline, so that its extension lines leave the body at its edge; a
+second dimension parallel to it on the same side goes a little further
+out. *Automatic* in the editor places it so again. An annotation whose
+plane you see edge on fades away. Drag the text of an annotation to move
+it, or drag a length's dimension line (an angle's arc) to move it
+farther from or nearer the measured points; a place you dragged it to is
+kept. The places are kept relative to the picks, so the annotation
+follows the model when it changes.
 
 Double-click an annotation in the view to edit it: its name, kind,
 prefix (Ø, R), decimals, your own text before or after the value or in
@@ -1265,15 +1323,17 @@ annotation: name, kind, value, tolerance, own text, colour, group and
 whether it is shown. Search it, filter it by kind or group, and sort it
 by any column. Select several rows to change their colour, group,
 decimals or tolerance together, to show or hide them, or to delete them;
-each change is one undo step. Choose a group in the filter and click
+each change is one undo step. *Text Height…* sets the height of all the
+design's annotation texts (*Auto*, 2.5 to 10 mm, or a height you type). Choose a group in the filter and click
 *Hide Group* or *Show Group* to hide or show all of its annotations. A
 row you select is highlighted in the view, and so are the faces, edges
 or datums it points at, in its colour; double-click it to edit it.
 When a pick of an annotation is gone, its row shows a warning and says
 why; the annotation comes back when the pick does.
 
-The design file saves the annotations. Designs saved with measurement
-objects open with them as annotations, with the same values. A design
+The design file saves the annotations and their text height. Designs
+saved with measurement objects open with them as annotations, with the
+same values. A design
 with dimensions kept from the view needs this version of MitCad: Keep
 stores the plane and the places you saw them in, which older versions do
 not read.
@@ -1577,6 +1637,18 @@ two points (a Coincident constraint joins them), or three curves that
 end at one point. If an open chain stops where another curve ends on a
 point of its own, the panel tells that too.
 
+**Mirror** (Create › Patterns) copies the curves and points of Objects
+to the other side of the Mirror Line. Each copy gets a Symmetry
+constraint, so it follows its original when you change the original.
+The copies share the points that lie on the line. The Mirror Line can
+be a line of the sketch, also a construction line, or the sketch's x
+or y axis: click the axis anywhere along the line drawn across the
+view. If an axis is not yet in the sketch, MitCad adds it in the same
+undo step. If Objects also contains the Mirror Line (for example after
+a window selection), MitCad leaves the line out. When you select
+objects before you click Mirror, Mirror Line is active at once.
+Otherwise, click Mirror Line in the panel after you select the objects.
+
 **Convert to Sketch Geometry** is in Modify and in the context menu of
 projected geometry. It makes the selected projected curves and points
 ordinary sketch geometry. They become free, and they no longer follow
@@ -1749,6 +1821,9 @@ Constraints use the axes and the origin in these ways:
   line.
 - Symmetry mirrors about an axis.
 - Horizontal/Vertical and Midpoint take the origin as a point.
+
+The Mirror Line of Mirror also takes the x and y axes (refer to
+[Sketch curve tools](#sketch-curve-tools)).
 
 The first time something refers to an axis or the origin, MitCad adds
 it to the sketch as fixed construction geometry. This occurs in the
@@ -3350,24 +3425,32 @@ whole report.
 QIDI Studio is installed, the button is **Import from Slicer ▾**: choose
 **From a file…**, or **Presets of Bambu Studio…** to take the printers,
 processes and filaments you made in that slicer, without exporting them
-first. The **Import Presets** window lists them under **Printers**,
-**Processes** and **Filaments**; tick the ones to import (a group's box
-ticks all of it or none). Below them come the slicer's own presets that
-you enabled in it, the printers chosen in its setup with their
-processes and the filaments chosen there, under **Printers of Bambu
-Studio**, **Processes of Bambu Studio** and **Filaments of Bambu
-Studio**; these groups are closed at first (open one with its arrow or
-the Right key) and their presets are not ticked, since your own presets
-usually build on them already. If several slicers are installed, choose
-one at the top. A preset whose name the library already has is shown in
-another colour; point at it to see what it meets, for example "My
-library has a process of this name". These are not ticked at first.
-Beside each one, choose **Copy** to import it as a new item ("Fine 2"),
-or **Override** to update the existing item; choosing one also ticks the
-preset. **All same names** above the list sets the choice of them all;
-it is empty while they differ. With the keyboard, the arrow keys move
-between the presets, Space ticks or unticks one, and Tab reaches its
-Copy or Override. **Import** brings in the ticked presets with the
+first. The **Import Presets** window lists them under **My printers**,
+**My processes** and **My filaments**; tick the ones to import (a
+group's box ticks all of it or none). Below them come the slicer's own
+presets that you enabled in it, the printers chosen in its setup with
+their processes and the filaments chosen there, under **Bambu Studio
+printers**, **Bambu Studio processes** and **Bambu Studio filaments**;
+these groups are closed at first (open one with its arrow or the Right
+key) and their presets are not ticked, since your own presets usually
+build on them already. A slicer you have set up but made no presets in
+yet is offered too, with its own presets only. If several slicers are
+installed, choose one at the top. Type in **Filter presets** above the
+list to show only the presets whose name contains the text, for example
+"X1" for the processes of that printer; presets you ticked stay ticked
+while they are hidden and are still imported, and clearing the field
+shows the groups as they were. A preset whose name the library already
+has is shown in another colour with **Same name:** beside it; point at
+it to see what it meets, for example "My library has a process of this
+name". These are not ticked at first, and a closed group with one of
+them opens. Beside each one, choose **Copy** to import it as a new item
+("Fine 2"), or **Override** to update the existing item; choosing one
+also ticks the preset. **All same names** above the list sets the
+choice of them all; it is empty while they differ. With the keyboard,
+the arrow keys move between the presets, Space ticks or unticks one,
+Tab reaches its Copy or Override, and Shift+Tab from the list reaches
+the filter. The button says how many presets are ticked, for example
+**Import 3 Presets**; it brings them in with the
 values they take from the slicer's own presets filled in; the line
 names a single preset ("Fine imported into My library as Fine 2"), and
 the library shows the first imported item on its tab. MitCad only

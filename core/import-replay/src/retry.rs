@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use mitcad_model::{BodyUid, ComponentUid, FeatureUid};
 use serde::{Deserialize, Serialize};
@@ -525,13 +525,13 @@ impl<K: ImportKernel> Importer<'_, K> {
             geometric::tolerance()
         );
         trace!("exact retry: asked at {name}");
-        let started = Instant::now();
+        let started = crate::now();
         let choice = choice.decide(name, &question, || {
             self.tick();
             !self.abandoned() && !self.stop_requested()
         });
         // The wait is not the item's time nor the import's.
-        let waited = started.elapsed();
+        let waited = crate::since(started);
         self.waited.fetch_add(
             u64::try_from(waited.as_nanos()).unwrap_or(u64::MAX),
             Ordering::Relaxed,

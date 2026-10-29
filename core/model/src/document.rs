@@ -126,11 +126,14 @@ pub use library_items::{library_kind, writable_library};
 mod annotations;
 pub use annotations::normalized_color;
 pub use annotations::{
-    ANNOTATION_COLORS, Annotation, AnnotationFormat, AnnotationPlane, Characteristic, DatumNeed,
-    GeometricTolerance, MAX_DECIMALS, MEASUREMENT_COLORS, MaterialCondition, MeasureKind,
-    MeasurePick, Measurement, NewMeasurement, Tolerance, datum_letter,
+    AUTO_COLOR, Annotation, AnnotationFormat, AnnotationPlane, Characteristic, DatumNeed,
+    GeometricTolerance, MAX_DECIMALS, MaterialCondition, MeasureKind, MeasurePick, Measurement,
+    NewMeasurement, OLD_DEFAULT_COLORS, TEXT_HEIGHTS, Tolerance, automatic_text_height,
+    check_text_height, datum_letter,
 };
-pub(crate) use annotations::{check_format, check_frame, check_tolerance, settle_frames};
+pub(crate) use annotations::{
+    check_format, check_frame, check_tolerance, read_old_defaults, settle_frames,
+};
 // The parameters exported to and imported from CSV (mitcad#666).
 mod parameters_csv;
 pub use parameters_csv::{CsvAction, CsvImport, CsvLimits, CsvRowOutcome};
@@ -209,7 +212,7 @@ use crate::monitor::RecomputeMonitor;
 use crate::parameters::{ParamId, ParameterError, Parameters, fits_slot, slot_unit, unit_for};
 use crate::profile::{ProfileRegion, SketchFrame};
 use crate::recompute::{
-    Cache, FeatureStatus, Recomputed, def_fingerprint, recompute, recompute_after,
+    Cache, FeatureStatus, FinalBodies, Recomputed, def_fingerprint, recompute, recompute_after,
 };
 use crate::render_settings::RenderSettings;
 use crate::sketch::edit::{EditReport, SketchEdit};
@@ -312,6 +315,9 @@ pub struct DocState {
     /// Annotations (mitcad#702; the measurement objects of mitcad#649), in
     /// the order they were added.
     pub annotations: Vec<Annotation>,
+    /// The height (mm) of the annotations' texts (mitcad#894); none for
+    /// the automatic one.
+    pub(crate) annotation_text_height: Option<f64>,
     /// Purge volumes set by hand for pairs of materials (mitcad#705), in
     /// the order they were set.
     pub(crate) purge_volumes: Vec<crate::print_purge::PurgeOverride>,
@@ -362,6 +368,7 @@ impl Default for DocState {
             component_materials: BTreeMap::new(),
             print_profiles: Vec::new(),
             annotations: Vec::new(),
+            annotation_text_height: None,
             purge_volumes: Vec::new(),
             drawings: Vec::new(),
             image_references: Vec::new(),
@@ -1573,6 +1580,19 @@ impl<K: Kernel> Document<K> {
         self.cache.workers
     }
 
+    /// The next recompute that goes through the timeline from its start
+    /// (opening a design) puts each shown body into `feed` as soon as no
+    /// later feature can change it, and closes the feed when it ends
+    /// (mitcad#881, `recompute/final_bodies.rs`): another thread meshes
+    /// them for display meanwhile. A recompute that goes on after earlier
+    /// results, or a preview's, closes it at once; a feed given before
+    /// replaces nothing but is closed.
+    pub fn feed_final_bodies(&mut self, feed: FinalBodies<K::Shape>) {
+        if let Some(earlier) = self.cache.final_bodies.replace(feed) {
+            earlier.close();
+        }
+    }
+
     /// The memory the cached results take, estimated in bytes.
     pub fn memory_cache_bytes(&self) -> u64 {
         self.cache.bytes()
@@ -1673,7 +1693,8 @@ impl<K: Kernel> Document<K> {
 
     /// Writes to the result store the results of the last recompute that
     /// are not there yet: the features that succeeded, whose evaluation
-    /// took at least `min_time` and whose results the store takes (see
+    /// took at least `min_time`, or less with shapes small for its time
+    /// (quick results, mitcad#882), and whose results the store takes (see
     /// `store.rs`). What a preview computed is not written.
     pub fn persist_results(&mut self, min_time: Duration) -> PersistReport {
         match self.cache.store.as_ref() {
@@ -1695,7 +1716,9 @@ impl<K: Kernel> Document<K> {
 
     /// Writes the results of the last recompute that succeeded and that
     /// the store takes: with `min_time`, those not written yet whose
-    /// evaluation took at least that long, marked written; without, all.
+    /// evaluation took at least that long or that are worth storing
+    /// although quicker ([`ResultStore::worth_storing`]), marked written;
+    /// without, all.
     fn write_results(&self, store: &ResultStore, min_time: Option<Duration>) -> PersistReport {
         let start = Instant::now();
         let mut report = PersistReport::default();
@@ -1707,9 +1730,7 @@ impl<K: Kernel> Document<K> {
             let Some(output) = &result.output else {
                 continue;
             };
-            if output.result.is_err()
-                || min_time.is_some_and(|min| output.persisted.get() || output.time < min)
-            {
+            if output.result.is_err() || (min_time.is_some() && output.persisted.get()) {
                 continue;
             }
             let Some(entry) = entries.get(&result.uid).copied() else {
@@ -1725,12 +1746,20 @@ impl<K: Kernel> Document<K> {
             {
                 continue;
             }
+            // A quick result, when restoring it is cheaper than evaluating
+            // it again (mitcad#882).
+            let quick = min_time.is_some_and(|min| output.time < min);
+            if quick && !store.worth_storing(output.time, store::shape_memory(&self.kernel, output))
+            {
+                continue;
+            }
             match store.write(&self.kernel, entry, output, params) {
                 Ok((bytes, shapes)) => {
                     if min_time.is_some() {
                         output.persisted.set(true);
                     }
                     report.results += 1;
+                    report.quick += usize::from(quick);
                     report.shapes += shapes;
                     report.bytes += bytes;
                 }

@@ -526,7 +526,17 @@ The translation (`ops.rs`, `commands.md` *From the dump IR*):
   `cylinder`s, one combined out of the other) is cut from or joined to
   the body, and the thread goes on the tube's side; then the thread alone
   is tried. The offset is given 2 s (mitcad#68: offsetting a face of a
-  large or stored body took 38 s where the tube then took 1.3 s). For a
+  large or stored body took 38 s where the tube then took 1.3 s) on the
+  import's clock, which leaves the machine's load out ([time
+  limits](f3d-performance.md#time-limit-stop-and-hangs), mitcad#874):
+  the two routes do not give the same faces, so the route must not hang
+  on the load. In a debug build a thread's offset took 0.9 s; beside
+  four other imports on a busy machine it ran past 2 s of the wall clock
+  (pinned to two processors: 2.65 s), the thread came in on the tube's
+  faces, and a rounding along the thread later failed on them and ran out
+  of its item's time. A debug build's checks scale the 2 s with the own
+  start's time (`own_start_time_scale`), as it is a release build's
+  time. For a
   cosmetic thread the volume the sizing adds ranks them against the
   history's change, so a thread whose state shows no sizing is tried
   alone first.
@@ -1113,10 +1123,35 @@ as well:
   follow when a parameter moved its edges by a grid cell ("its curves no
   longer match the source's"), so the ring on it kept its old size.
 
+- **Tangent corners of offsets are held where the curves touch**
+  (mitcad#890, mitcad#891; `sketch/offset.rs`, `tangent_corners`). The
+  frame's outlines are offsets of offsets of its projected edges (2 mm,
+  0.2 mm and 3 mm in), each corner a line going on tangentially into an
+  arc. A result line and arc held only by their own constraints (parallel
+  at the distance, about the source's centre) fixed their shared corner to
+  the second order: the solve left it 2e-5 mm along the line from where
+  the line touches the arc (the square root of its 1.6e-11 mm rounding), so
+  the extruded outlines turned by about 1.6e-6 rad at every corner. Three
+  cells wider, that lost the slot's projections (their source no longer
+  came back curve for curve), the two pieces of the frame's start face
+  swapped their `#0` and `#1` (pieces are numbered by their centres rounded
+  to a nanometre; both lie on the frame's middle in x, so the turns decided
+  their order) and the chamfers lost their edges; on a chute four cells deep and high, the
+  sweep cut along the turned corners (its path the extruded outline's
+  edges, its profile's inner part lying on the chute's inner wall) left
+  the material of that part as four rings of their own instead of
+  removing it. The solve now holds each such corner
+  where the curves touch, the sketch counts it as fixed (dof 44 → 8 for
+  the frame's slot sketch), and the outline is exact (turns of 1e-15 rad).
+
 With these, the design recomputes without an error with each of `BaseX`,
 `DepthY` and `BaseZ` raised by a cell and with all three: the frame and
 the catch one cell wider and deeper, the chute one cell taller with two
 rings more (the test `f3d.corpus_parameters`, `tools/cli/f3d-parameters.cmake`;
 the boxes are derived from the design's expressions, as no reference export
-of the change exists yet).
+of the change exists yet). Also `BaseX` three cells more, on the design as
+imported and on a square chute (`BaseZ` and `DepthY` 4), and back: the
+three bodies only, no warning the import did not give, and the volumes
+grow by the same amount for each cell (frame 9987.04 mm³, chute
+6044.70 mm³, catch 16599.52 mm³ from `BaseX` 4 to 8).
 

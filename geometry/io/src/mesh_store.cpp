@@ -379,7 +379,7 @@ occ::handle<Poly_Triangulation> copy_triangulation(const occ::handle<Poly_Triang
   return copy;
 }
 
-// A face's entry read back.
+// A face's entry read back, or taken from a shape (TriangulationCapture).
 struct StoredFace {
   Kind kind = kNone;
   std::uint32_t again = 0; // kAgain: the earlier face's index
@@ -391,18 +391,26 @@ struct StoredFace {
 
 } // namespace
 
-std::string triangulation_bytes(const TopoDS_Shape& shape) {
+// What triangulation_bytes writes of each face, taken from the shape
+// (capture_triangulations): the triangulations and polygons by their
+// handles, which keep them as they were.
+class TriangulationCapture {
+public:
+  using Face = StoredFace;
+  std::vector<Face> faces;
+};
+
+std::shared_ptr<const TriangulationCapture> capture_triangulations(const TopoDS_Shape& shape) {
   if (shape.IsNull()) {
     throw std::invalid_argument("display meshes of a null shape");
   }
   FaceMap faces;
   TopExp::MapShapes(shape, TopAbs_FACE, faces);
-  Writer out;
-  out.bytes(kMagic, sizeof kMagic);
-  out.u32(kFormat);
-  out.u32(static_cast<std::uint32_t>(faces.Extent()));
+  auto capture = std::make_shared<TriangulationCapture>();
+  capture->faces.resize(static_cast<std::size_t>(faces.Extent()));
   std::unordered_map<const TopoDS_TShape*, std::uint32_t> first;
   for (int i = 1; i <= faces.Extent(); ++i) {
+    TriangulationCapture::Face& entry = capture->faces[static_cast<std::size_t>(i - 1)];
     const TopoDS_Face& face = TopoDS::Face(faces(i));
     TopLoc_Location location;
     if (BRep_Tool::Surface(face, location).IsNull()) {
@@ -410,114 +418,101 @@ std::string triangulation_bytes(const TopoDS_Shape& shape) {
     }
     const auto found = first.emplace(face.TShape().get(), static_cast<std::uint32_t>(i - 1));
     const std::vector<TopoDS_Edge> edges = face_edges(face);
+    entry.signature = signature_of(face, edges);
     if (!found.second) {
-      out.u8(kAgain);
-      out.u32(found.first->second);
-      write_signature(out, signature_of(face, edges));
+      entry.kind = kAgain;
+      entry.again = found.first->second;
       continue;
     }
-    const occ::handle<Poly_Triangulation>& triangulation = BRep_Tool::Triangulation(face, location);
-    out.u8(triangulation.IsNull() ? kNone : kOwn);
-    write_signature(out, signature_of(face, edges));
-    if (triangulation.IsNull()) {
+    entry.triangulation = BRep_Tool::Triangulation(face, location);
+    if (entry.triangulation.IsNull()) {
+      entry.kind = kNone;
       continue;
     }
-    write_triangulation(out, triangulation);
-    for (const TopoDS_Edge& edge : edges) {
-      occ::handle<Poly_PolygonOnTriangulation> one;
-      occ::handle<Poly_PolygonOnTriangulation> two;
-      if (!polygons_of(edge, triangulation, location, one, two)) {
+    entry.kind = kOwn;
+    entry.edges.resize(edges.size());
+    for (std::size_t k = 0; k < edges.size(); ++k) {
+      auto& polygons = entry.edges[k];
+      if (!polygons_of(edges[k], entry.triangulation, location, polygons.first, polygons.second)) {
+        polygons.first.Nullify();
+        polygons.second.Nullify();
+      }
+    }
+  }
+  return capture;
+}
+
+std::string triangulation_bytes(const TriangulationCapture& capture) {
+  Writer out;
+  out.bytes(kMagic, sizeof kMagic);
+  out.u32(kFormat);
+  out.u32(static_cast<std::uint32_t>(capture.faces.size()));
+  for (const TriangulationCapture::Face& face : capture.faces) {
+    out.u8(face.kind);
+    if (face.kind == kAgain) {
+      out.u32(face.again);
+    }
+    write_signature(out, face.signature);
+    if (face.kind != kOwn) {
+      continue;
+    }
+    write_triangulation(out, face.triangulation);
+    for (const auto& polygons : face.edges) {
+      if (polygons.first.IsNull()) {
         out.u8(0);
         continue;
       }
-      out.u8(two.IsNull() ? 1 : 2);
-      write_polygon(out, one);
-      if (!two.IsNull()) {
-        write_polygon(out, two);
+      out.u8(polygons.second.IsNull() ? 1 : 2);
+      write_polygon(out, polygons.first);
+      if (!polygons.second.IsNull()) {
+        write_polygon(out, polygons.second);
       }
     }
   }
   return out.take();
 }
 
-std::size_t restore_triangulations(const TopoDS_Shape& shape, std::string_view data) {
-  if (shape.IsNull()) {
-    throw std::runtime_error("stored display meshes: the shape is empty");
-  }
-  Reader in(data);
-  if (in.bytes(sizeof kMagic) != std::string_view(kMagic, sizeof kMagic)) {
-    throw std::runtime_error("stored display meshes: not display meshes");
-  }
-  if (const std::uint32_t format = in.u32(); format != kFormat) {
-    throw std::runtime_error("stored display meshes: format " + std::to_string(format) + " is not " +
-                             std::to_string(kFormat));
-  }
-  FaceMap faces;
-  TopExp::MapShapes(shape, TopAbs_FACE, faces);
-  if (in.u32() != static_cast<std::uint32_t>(faces.Extent())) {
-    throw std::runtime_error("stored display meshes: another number of faces");
-  }
-  // Everything read and checked first: nothing is written into a shape the
-  // bytes are not of.
-  std::vector<StoredFace> stored(static_cast<std::size_t>(faces.Extent()));
-  std::vector<std::vector<TopoDS_Edge>> edges(stored.size());
-  for (int i = 1; i <= faces.Extent(); ++i) {
-    StoredFace& entry = stored[static_cast<std::size_t>(i - 1)];
-    const TopoDS_Face& face = TopoDS::Face(faces(i));
-    const std::uint8_t kind = in.u8();
-    if (kind == kAgain) {
-      // The same face as an earlier one, in another placement: the same
-      // TShape, or a copy of it (a copy of the shape need not share it
-      // between placements), whose edges and end points it is checked by.
-      entry.kind = kAgain;
-      entry.again = in.u32();
-      entry.signature = read_signature(in);
-      if (entry.again >= static_cast<std::uint32_t>(i - 1) || stored[entry.again].kind == kAgain) {
-        throw std::runtime_error("stored display meshes: a face repeats one that is not before it");
-      }
-      std::vector<TopoDS_Edge>& own = edges[static_cast<std::size_t>(i - 1)];
-      own = face_edges(face);
-      const StoredFace& source = stored[entry.again];
-      const bool shared = faces(static_cast<int>(entry.again) + 1).TShape().get() == face.TShape().get();
-      if (!same_face(entry.signature, signature_of(face, own)) ||
-          (!shared && source.kind == kOwn && source.edges.size() != own.size())) {
-        throw std::runtime_error("stored display meshes: face " + std::to_string(i) +
-                                 " is not the one it repeats");
-      }
-      continue;
+std::string triangulation_bytes(const TopoDS_Shape& shape) {
+  return triangulation_bytes(*capture_triangulations(shape));
+}
+
+
+namespace {
+
+// Checks the entry of the shape's face `i` (1-based) against the face:
+// a face's entry must be of a face like it (its kind of surface, edges and
+// end points), a repeated face's of one before it that is not a repeat
+// itself, and of a face like it. Throws std::runtime_error when not; else
+// the face's edges as face_edges gives them.
+std::vector<TopoDS_Edge> checked_edges(const FaceMap& faces, int i, const std::vector<StoredFace>& stored) {
+  const StoredFace& entry = stored[static_cast<std::size_t>(i - 1)];
+  const TopoDS_Face& face = TopoDS::Face(faces(i));
+  std::vector<TopoDS_Edge> own = face_edges(face);
+  if (entry.kind == kAgain) {
+    // The same face as an earlier one, in another placement: the same
+    // TShape, or a copy of it (a copy of the shape need not share it
+    // between placements), whose edges and end points it is checked by.
+    if (entry.again >= static_cast<std::uint32_t>(i - 1) || stored[entry.again].kind == kAgain) {
+      throw std::runtime_error("stored display meshes: a face repeats one that is not before it");
     }
-    if (kind != kNone && kind != kOwn) {
-      throw std::runtime_error("stored display meshes: a face of an unknown kind");
+    const StoredFace& source = stored[entry.again];
+    const bool shared = faces(static_cast<int>(entry.again) + 1).TShape().get() == face.TShape().get();
+    if (!same_face(entry.signature, signature_of(face, own)) ||
+        (!shared && source.kind == kOwn && source.edges.size() != own.size())) {
+      throw std::runtime_error("stored display meshes: face " + std::to_string(i) + " is not the one it repeats");
     }
-    entry.kind = static_cast<Kind>(kind);
-    entry.signature = read_signature(in);
-    std::vector<TopoDS_Edge>& own = edges[static_cast<std::size_t>(i - 1)];
-    own = face_edges(face);
-    if (!same_face(entry.signature, signature_of(face, own))) {
-      throw std::runtime_error("stored display meshes: face " + std::to_string(i) + " is another face");
-    }
-    if (entry.kind == kNone) {
-      continue;
-    }
-    entry.triangulation = read_triangulation(in);
-    const int nodes = entry.triangulation->NbNodes();
-    entry.edges.resize(own.size());
-    for (auto& polygons : entry.edges) {
-      const std::uint8_t count = in.u8();
-      if (count > 2) {
-        throw std::runtime_error("stored display meshes: an edge with more than two polygons");
-      }
-      if (count >= 1) {
-        polygons.first = read_polygon(in, nodes);
-      }
-      if (count == 2) {
-        polygons.second = read_polygon(in, nodes);
-      }
-    }
+    return own;
   }
-  if (!in.done()) {
-    throw std::runtime_error("stored display meshes: data after the faces");
+  if (!same_face(entry.signature, signature_of(face, own))) {
+    throw std::runtime_error("stored display meshes: face " + std::to_string(i) + " is another face");
   }
+  return own;
+}
+
+// Gives the shape's faces the checked entries' triangulations and their
+// edges' polygons (restore_triangulations).
+std::size_t write_faces(const FaceMap& faces, const std::vector<StoredFace>& stored,
+                        const std::vector<std::vector<TopoDS_Edge>>& edges) {
   BRep_Builder builder;
   std::size_t given = 0;
   std::vector<bool> written(stored.size(), false);
@@ -556,8 +551,7 @@ std::size_t restore_triangulations(const TopoDS_Shape& shape, std::string_view d
       if (polygons.second.IsNull()) {
         builder.UpdateEdge(own[k], first, triangulation, location);
       } else {
-        const occ::handle<Poly_PolygonOnTriangulation> second =
-            again ? polygons.second->Copy() : polygons.second;
+        const occ::handle<Poly_PolygonOnTriangulation> second = again ? polygons.second->Copy() : polygons.second;
         builder.UpdateEdge(own[k], first, second, triangulation, location);
       }
     }
@@ -565,6 +559,88 @@ std::size_t restore_triangulations(const TopoDS_Shape& shape, std::string_view d
     ++given;
   }
   return given;
+}
+
+} // namespace
+
+std::size_t restore_triangulations(const TopoDS_Shape& shape, std::string_view data) {
+  if (shape.IsNull()) {
+    throw std::runtime_error("stored display meshes: the shape is empty");
+  }
+  Reader in(data);
+  if (in.bytes(sizeof kMagic) != std::string_view(kMagic, sizeof kMagic)) {
+    throw std::runtime_error("stored display meshes: not display meshes");
+  }
+  if (const std::uint32_t format = in.u32(); format != kFormat) {
+    throw std::runtime_error("stored display meshes: format " + std::to_string(format) + " is not " +
+                             std::to_string(kFormat));
+  }
+  FaceMap faces;
+  TopExp::MapShapes(shape, TopAbs_FACE, faces);
+  if (in.u32() != static_cast<std::uint32_t>(faces.Extent())) {
+    throw std::runtime_error("stored display meshes: another number of faces");
+  }
+  // Everything read and checked first: nothing is written into a shape the
+  // bytes are not of.
+  std::vector<StoredFace> stored(static_cast<std::size_t>(faces.Extent()));
+  std::vector<std::vector<TopoDS_Edge>> edges(stored.size());
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    StoredFace& entry = stored[static_cast<std::size_t>(i - 1)];
+    const std::uint8_t kind = in.u8();
+    if (kind != kNone && kind != kOwn && kind != kAgain) {
+      throw std::runtime_error("stored display meshes: a face of an unknown kind");
+    }
+    entry.kind = static_cast<Kind>(kind);
+    if (entry.kind == kAgain) {
+      entry.again = in.u32();
+    }
+    entry.signature = read_signature(in);
+    std::vector<TopoDS_Edge>& own = edges[static_cast<std::size_t>(i - 1)];
+    own = checked_edges(faces, i, stored);
+    if (entry.kind != kOwn) {
+      continue;
+    }
+    entry.triangulation = read_triangulation(in);
+    const int nodes = entry.triangulation->NbNodes();
+    entry.edges.resize(own.size());
+    for (auto& polygons : entry.edges) {
+      const std::uint8_t count = in.u8();
+      if (count > 2) {
+        throw std::runtime_error("stored display meshes: an edge with more than two polygons");
+      }
+      if (count >= 1) {
+        polygons.first = read_polygon(in, nodes);
+      }
+      if (count == 2) {
+        polygons.second = read_polygon(in, nodes);
+      }
+    }
+  }
+  if (!in.done()) {
+    throw std::runtime_error("stored display meshes: data after the faces");
+  }
+  return write_faces(faces, stored, edges);
+}
+
+std::size_t restore_triangulations(const TopoDS_Shape& shape, const TriangulationCapture& capture) {
+  if (shape.IsNull()) {
+    throw std::runtime_error("display meshes: the shape is empty");
+  }
+  FaceMap faces;
+  TopExp::MapShapes(shape, TopAbs_FACE, faces);
+  if (capture.faces.size() != static_cast<std::size_t>(faces.Extent())) {
+    throw std::runtime_error("display meshes: another number of faces");
+  }
+  std::vector<std::vector<TopoDS_Edge>> edges(capture.faces.size());
+  for (int i = 1; i <= faces.Extent(); ++i) {
+    std::vector<TopoDS_Edge>& own = edges[static_cast<std::size_t>(i - 1)];
+    own = checked_edges(faces, i, capture.faces);
+    const StoredFace& entry = capture.faces[static_cast<std::size_t>(i - 1)];
+    if (entry.kind == kOwn && entry.edges.size() != own.size()) {
+      throw std::runtime_error("display meshes: face " + std::to_string(i) + " has other edges");
+    }
+  }
+  return write_faces(faces, capture.faces, edges);
 }
 
 } // namespace mitcad::io

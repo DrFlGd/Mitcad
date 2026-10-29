@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/commands/SketchCommands.cpp tools/cli
 # check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
+# check-all sources: app/OcctViewer.cpp app/OcctViewer.hpp
 # Input-driven Windows UI test of closed fitted splines and tangents at a
 # chosen end (mitcad#783) in the build VM (tools/ui-windows-lib.ps1 says how
 # the input is posted), as tools/ui-sketch-spline-test.sh does on Linux, on a
@@ -9,6 +10,10 @@
 # (-70, -60) to its start p2 and a line c7 from its end p4 to (50, -60), each
 # along the spline's end direction (the tangents hold as drawn, so the
 # spline keeps its shape), and two points that widen the fitted view.
+#   0. Points over highlights (mitcad#897): the view draws the sketch's
+#      points in a layer after the curves and their highlights, against
+#      the scene's depth; the spline selected has its curve highlighted,
+#      a fit point selected its ball, in that layer over the markers.
 #   1. Tangent: the spline picked near its start and the first line, then
 #      near its end and the second line: each tangent records the end it
 #      was picked at (p2, p4), so one spline is tangent at both ends.
@@ -59,6 +64,21 @@ Ui-Step 'edit Sketch1 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch
 Ui-ExpectNew 'Editing sketch F1 (Sketch1)' 'the sketch is edited' 30
 Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
 Start-Sleep -Milliseconds 800
+
+Write-Host '--- The points over the highlights of their curves'
+Ui-ExpectLog "Sketch layers: halos < curves and highlights < points and point highlights; points keep the scene's depth; point highlights over the markers" `
+  "the points are drawn after the curves' highlights, the model's depth still hides them"
+Ui-Mark
+Ui-Step 'select the spline'              { Ui-SketchClick -22 -24.32 }
+Ui-ExpectNew 'Selected: 1 sketch curve' 'the spline selected'
+Ui-ExpectNew 'Sketch highlights: 1 curve, 0 points' "its highlight in the curves' layer, under its fit points"
+Ui-Mark
+Ui-Step 'select its middle fit point'    { Ui-SketchClick -10 -20 }
+Ui-ExpectNew 'Selected: 1 sketch point' 'the fit point selected'
+Ui-ExpectNew 'Sketch highlights: 0 curves, 1 point' "its ball in the points' layer, over the marker"
+Ui-Mark
+Ui-Step 'click where nothing is'         { Ui-SketchClick 45 0 }
+Ui-ExpectNew 'Selected: nothing' 'the selection cleared'
 
 Write-Host '--- Tangent at each end of the spline'
 # The spline is the natural cubic through its points: x = -30 + 40 t,

@@ -945,6 +945,11 @@ bool CommandSession::activeTakes(SelectKind kind) const {
   return input != nullptr && activeKinds(input).testFlag(kind);
 }
 
+bool CommandSession::activeTakesSketchAxes() const {
+  const InputDef* input = activeInput();
+  return input != nullptr && !m_done && input->sketchAxes;
+}
+
 void CommandSession::activateFirstNeeded() {
   // The first selection that is still needed, else the first one.
   QString first;

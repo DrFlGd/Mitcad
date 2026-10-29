@@ -38,9 +38,16 @@ use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::topo::{EdgeName, FaceName, VertexName};
 
-/// The colours new annotations take in turn (sRGB), well apart from each
-/// other and from the bodies' default grey.
-pub const MEASUREMENT_COLORS: [&str; 6] = [
+/// The colour a new annotation takes (mitcad#894): no colour of its own,
+/// the neutral annotation colour that follows the view's background tone
+/// (near-black on a light background, light grey on a dark one), drawn as
+/// a technical drawing's dimensions are.
+pub const AUTO_COLOR: &str = "auto";
+
+/// The six colours new annotations took in turn before mitcad#894 (sRGB).
+/// The program chose them, not the user: an annotation stored in a design
+/// file with one of them is read as [`AUTO_COLOR`] ([`read_old_defaults`]).
+pub const OLD_DEFAULT_COLORS: [&str; 6] = [
     "#d9480f", // orange
     "#1971c2", // blue
     "#2f9e44", // green
@@ -49,8 +56,23 @@ pub const MEASUREMENT_COLORS: [&str; 6] = [
     "#e67700", // amber
 ];
 
-/// The colours new annotations take in turn.
-pub const ANNOTATION_COLORS: [&str; 6] = MEASUREMENT_COLORS;
+/// The ISO 3098 series of text heights (mm) that the automatic height of
+/// annotations' texts takes from (mitcad#894).
+pub const TEXT_HEIGHTS: [f64; 5] = [2.5, 3.5, 5.0, 7.0, 10.0];
+
+/// The heights (mm) a design's annotations' texts may be set to.
+pub const TEXT_HEIGHT_RANGE: (f64, f64) = (0.1, 1000.0);
+
+/// Annotations read from a design file whose colour is one of the
+/// [`OLD_DEFAULT_COLORS`] take [`AUTO_COLOR`] (mitcad#894): the rotating
+/// defaults are gone, and the program, not the user, chose those.
+pub(crate) fn read_old_defaults(annotations: &mut [Annotation]) {
+    for annotation in annotations {
+        if OLD_DEFAULT_COLORS.contains(&annotation.color.as_str()) {
+            AUTO_COLOR.clone_into(&mut annotation.color);
+        }
+    }
+}
 
 /// The most decimals a dimension shows.
 pub const MAX_DECIMALS: u8 = 6;
@@ -62,7 +84,7 @@ pub struct Annotation {
     pub name: String,
     /// The value it shows, or `note`.
     pub kind: MeasureKind,
-    /// `#rrggbb`, lower case.
+    /// `#rrggbb`, lower case, or [`AUTO_COLOR`].
     pub color: String,
     /// Drawn in the view; left out of files when true.
     #[serde(default = "shown", skip_serializing_if = "is_shown")]
@@ -667,15 +689,48 @@ pub(crate) fn check_frame(frame: &GeometricTolerance) -> Result<(), String> {
     frame.check()
 }
 
-/// A colour as `#rrggbb` in lower case, or why the text is not one.
+/// An annotation's colour as `#rrggbb` in lower case or `auto` (any case,
+/// [`AUTO_COLOR`]), or why the text is not one.
 pub fn normalized_color(text: &str) -> Result<String, String> {
     let text = text.trim();
+    if text.eq_ignore_ascii_case(AUTO_COLOR) {
+        return Ok(AUTO_COLOR.to_owned());
+    }
     let hex = text.strip_prefix('#').unwrap_or("");
     if hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit()) {
         Ok(format!("#{}", hex.to_ascii_lowercase()))
     } else {
-        Err(format!("a colour is \"#rrggbb\", got '{text}'"))
+        Err(format!("a colour is \"#rrggbb\" or \"auto\", got '{text}'"))
     }
+}
+
+/// Why a text height (mm) of a design's annotations cannot be set, if it
+/// cannot: a number from 0.1 to 1000.
+pub fn check_text_height(height: f64) -> Result<(), String> {
+    let (least, most) = TEXT_HEIGHT_RANGE;
+    if height.is_finite() && (least..=most).contains(&height) {
+        Ok(())
+    } else {
+        Err(format!(
+            "an annotation text height is {least} to {most} mm, got {height}"
+        ))
+    }
+}
+
+/// The automatic text height (mm) of a model of this size (the diagonal of
+/// what is annotated, mm; mitcad#894): of the ISO 3098 series
+/// ([`TEXT_HEIGHTS`]), the largest at most a fiftieth of the size, at least
+/// the smallest; 3.5 mm when the size is not known.
+pub fn automatic_text_height(size: Option<f64>) -> f64 {
+    let Some(size) = size.filter(|s| s.is_finite() && *s > 0.0) else {
+        return TEXT_HEIGHTS[1];
+    };
+    TEXT_HEIGHTS
+        .iter()
+        .rev()
+        .copied()
+        .find(|h| *h <= size / 50.0 + 1e-9)
+        .unwrap_or(TEXT_HEIGHTS[0])
 }
 
 /// A group's name trimmed, none when empty.
@@ -914,7 +969,7 @@ pub struct NewMeasurement {
     pub b: Option<MeasurePick>,
     /// The next free `<Kind><n>` when none.
     pub name: Option<String>,
-    /// The next of [`MEASUREMENT_COLORS`] when none.
+    /// [`AUTO_COLOR`] when none.
     pub color: Option<String>,
 }
 
@@ -963,14 +1018,33 @@ impl<K: Kernel> Document<K> {
         self.state.next_datum_letter(&[])
     }
 
-    /// The next of the default colours.
-    pub fn next_annotation_color(&self) -> &'static str {
-        ANNOTATION_COLORS[self.state.annotations.len() % ANNOTATION_COLORS.len()]
+    /// The height (mm) the design's annotations' texts are set to
+    /// (mitcad#894); none for the automatic one, which the API works out
+    /// from the size of what is annotated ([`automatic_text_height`]).
+    pub fn annotation_text_height(&self) -> Option<f64> {
+        self.state.annotation_text_height
+    }
+
+    /// Sets the height of the design's annotations' texts (mm, 0.1 to
+    /// 1000), or back to the automatic one with None; an undo step
+    /// `Annotation Text Height` that recomputes nothing, none when nothing
+    /// changes.
+    pub fn set_annotation_text_height(&mut self, height: Option<f64>) -> Result<(), ModelError> {
+        if let Some(height) = height {
+            check_text_height(height).map_err(invalid)?;
+        }
+        if self.state.annotation_text_height == height {
+            return Ok(());
+        }
+        self.apply_with(|state| {
+            state.annotation_text_height = height;
+            Ok(("Annotation Text Height".to_owned(), (), false))
+        })
     }
 
     /// Adds an annotation; an undo step `Add Distance1` that recomputes
     /// nothing. An empty name takes the next free `<Kind><n>`, an empty
-    /// colour the next default one; the group is trimmed. Returns its
+    /// colour [`AUTO_COLOR`]; the group is trimmed. Returns its
     /// name. Its picks are not checked against the model here: the API
     /// measures them first.
     pub fn add_annotation(&mut self, mut annotation: Annotation) -> Result<String, ModelError> {
@@ -1006,7 +1080,7 @@ impl<K: Kernel> Document<K> {
             )));
         }
         annotation.color = if annotation.color.trim().is_empty() {
-            self.next_annotation_color().to_owned()
+            AUTO_COLOR.to_owned()
         } else {
             normalized_color(&annotation.color).map_err(invalid)?
         };
@@ -1303,11 +1377,68 @@ mod tests {
     #[test]
     fn colors_are_six_hex_digits_in_lower_case() {
         assert_eq!(normalized_color(" #A1b2C3 ").unwrap(), "#a1b2c3");
-        for wrong in ["a1b2c3", "#a1b2c", "#a1b2c3d", "#g1b2c3", "red", ""] {
+        for wrong in [
+            "a1b2c3",
+            "#a1b2c",
+            "#a1b2c3d",
+            "#g1b2c3",
+            "red",
+            "",
+            "automatic",
+        ] {
             assert!(normalized_color(wrong).is_err(), "{wrong}");
         }
-        for color in MEASUREMENT_COLORS {
+        for color in OLD_DEFAULT_COLORS {
             assert_eq!(normalized_color(color).unwrap(), color);
+        }
+        // Auto (mitcad#894), in any case.
+        assert_eq!(normalized_color(" Auto ").unwrap(), AUTO_COLOR);
+        let mut auto = Annotation::new("Note1", MeasureKind::Note, AUTO_COLOR, body());
+        auto.text = Some("Deburr".to_owned());
+        auto.check().unwrap();
+    }
+
+    #[test]
+    fn old_default_colours_read_as_auto() {
+        // The six colours the program gave in turn: read as Auto; another
+        // colour, chosen by the user, stays.
+        let mut annotations: Vec<Annotation> = OLD_DEFAULT_COLORS
+            .iter()
+            .chain(["#112233", "#e8590c"].iter())
+            .enumerate()
+            .map(|(i, color)| {
+                let mut a =
+                    Annotation::new(&format!("Offset{i}"), MeasureKind::Offset, color, body());
+                a.b = Some(body());
+                a
+            })
+            .collect();
+        read_old_defaults(&mut annotations);
+        let colors: Vec<&str> = annotations.iter().map(|a| a.color.as_str()).collect();
+        assert_eq!(
+            colors,
+            [
+                "auto", "auto", "auto", "auto", "auto", "auto", "#112233", "#e8590c"
+            ]
+        );
+        for annotation in &annotations {
+            annotation.check().unwrap();
+        }
+    }
+
+    #[test]
+    fn text_heights_follow_the_iso_3098_series() {
+        assert_eq!(automatic_text_height(None), 3.5);
+        assert_eq!(automatic_text_height(Some(0.0)), 3.5);
+        assert_eq!(automatic_text_height(Some(30.0)), 2.5);
+        assert_eq!(automatic_text_height(Some(150.0)), 2.5);
+        assert_eq!(automatic_text_height(Some(175.0)), 3.5);
+        assert_eq!(automatic_text_height(Some(260.0)), 5.0);
+        assert_eq!(automatic_text_height(Some(350.0)), 7.0);
+        assert_eq!(automatic_text_height(Some(5000.0)), 10.0);
+        check_text_height(5.0).unwrap();
+        for wrong in [0.0, -1.0, 0.05, 2000.0, f64::NAN] {
+            assert!(check_text_height(wrong).is_err(), "{wrong}");
         }
     }
 

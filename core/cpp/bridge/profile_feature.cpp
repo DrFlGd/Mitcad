@@ -198,6 +198,8 @@ std::shared_ptr<geometry::Shape> modeled_thread(rust::Str feature, const geometr
   for (const double turned : input.angles) {
     spec.angles.push_back(turned);
   }
+  spec.starts = static_cast<int>(input.starts);
+  spec.flank_angle = input.flank_angle;
   return geometry::modeled_thread(body, spec);
 }
 

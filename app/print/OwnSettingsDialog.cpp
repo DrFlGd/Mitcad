@@ -16,6 +16,7 @@
 
 #include "../browser/DocumentHost.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/IdleCall.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
@@ -111,7 +112,7 @@ void OwnSettingsDialog::edit(const QString& key, const QJsonValue& value) {
   const QString owner = m_owner;
   // The model command rebuilds the form: not while the field handles its
   // signal.
-  TestSync::singleShot(0, this, [this, owner, key, value] {
+  afterEventWhenIdle(m_host, this, [this, owner, key, value] {
     if (!m_host.canChangePrintSettings()) {
       m_message->setText(m_host.changeBlockedReason());
       m_message->show();

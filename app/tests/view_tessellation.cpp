@@ -253,8 +253,32 @@ void checkUnmeshable() {
   const TopoDS_Shape box = BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape();
   CHECK(mitcad::io::mesh_all_in_place({box}, mitcad::viewMeshOptions()) == 1);
   const mitcad::geometry::Shape meshed(box);
+  CHECK(mitcad::drawerMeshes(meshed));
   meshed.set_display_meshed();
   CHECK(mitcad::viewMeshes(meshed));
+  // Its drawers do not mesh it again (mitcad#878), nor the one above.
+  CHECK(!mitcad::drawerMeshes(meshed));
+  CHECK(!mitcad::drawerMeshes(body));
+}
+
+// A body a job meshed for display to the end keeps its meshes in the
+// view's drawers (mitcad#878): the 9 m dome's sphere meshes within the face
+// bound, with a deviation coarser than the drawers' 0.01 mm, so a drawer
+// that may mesh finds it untessellated and runs the mesher over the whole
+// body again on the UI thread, only to keep every face (0.6-0.8 s for a
+// design's body of 6 700 faces). A body no job meshed is still meshed by
+// its drawers.
+void checkJobMeshesKept(const occ::handle<Prs3d_Drawer>& drawer) {
+  const TopoDS_Shape big = dome(1.0);
+  CHECK(mitcad::io::mesh_all_in_place({big}, mitcad::viewMeshOptions()) == 1);
+  CHECK(mitcad::io::has_triangulation(big));
+  CHECK(!StdPrs_ToolTriangulatedShape::IsTessellated(big, drawer));
+  const mitcad::geometry::Shape body(big);
+  CHECK(mitcad::drawerMeshes(body));
+  body.set_display_meshed();
+  CHECK(!mitcad::drawerMeshes(body));
+  const mitcad::geometry::Shape unmeshed(dome(1.0));
+  CHECK(mitcad::drawerMeshes(unmeshed));
 }
 } // namespace
 
@@ -277,6 +301,7 @@ int main(int argc, char** argv) {
     checkDome(drawer);
     checkTank(drawer);
     checkUnmeshable();
+    checkJobMeshesKept(drawer);
   } catch (const Standard_Failure& error) {
     std::fprintf(stderr, "OCCT: %s\n", error.what());
     return 1;

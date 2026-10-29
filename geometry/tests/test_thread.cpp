@@ -4,7 +4,8 @@
 // starts, ends at shoulders and partial lengths, end chamfers, taper pipe
 // threads, names, and the speed on a body of thousands of faces; the
 // tools of faces far apart built in parallel and applied together
-// (mitcad#843) with the result made face by face.
+// (mitcad#843) with the result made face by face; a pitch of one's own,
+// multi-start threads and the trapezoidal profile (mitcad#893).
 
 #include <algorithm>
 #include <chrono>
@@ -1137,6 +1138,213 @@ void test_taper_pipe_threads() {
   CHECK(!threaded->find_faces("F4:thread(F3:side(c5))").empty());
 }
 
+
+// The material of a thread per millimetre as teeth_per_mm, for flanks at
+// an angle to the radius whose tangent is `tan` (tan 15 degrees for the
+// trapezoidal profile, mitcad#893): the tooth P/2 wide at the pitch
+// diameter, narrowing outwards (an external thread) by 2 tan per unit of
+// radius.
+double flanked_teeth_per_mm(double pitch, const Diameters& d, bool internal, double tan) {
+  const double rp = d.pitch / 2.0;
+  const double a = d.minor / 2.0;
+  const double b = d.major / 2.0;
+  const double c1 = internal ? 2.0 * tan : -2.0 * tan;
+  const double c0 = pitch / 2.0 - c1 * rp;
+  const auto integral = [&](double r) { return c0 * r * r / 2.0 + c1 * r * r * r / 3.0; };
+  return 2.0 * kPi / pitch * (integral(b) - integral(a));
+}
+
+double flanked_bolt_per_mm(double pitch, const Diameters& d, double tan) {
+  return kPi * d.minor * d.minor / 4.0 + flanked_teeth_per_mm(pitch, d, false, tan);
+}
+
+double flanked_nut_hole_per_mm(double pitch, const Diameters& d, double tan) {
+  return kPi * d.major * d.major / 4.0 - flanked_teeth_per_mm(pitch, d, true, tan);
+}
+
+// A point at the radius `r`, at the angle `theta` about the Z axis from the
+// X axis, `z` up.
+gp_Pnt at_angle(double r, double theta, double z) { return gp_Pnt(r * std::cos(theta), r * std::sin(theta), z); }
+
+// A pitch of one's own (mitcad#893): 12 x 3, coarser than any ISO metric
+// thread of 12 mm, on the basic 60-degree profile. The volume against the
+// exact profile, and the groove where the helix puts it: at angle 0 over
+// the first half pitch, a quarter turn on risen a quarter pitch.
+void test_custom_pitch() {
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 6)}, 0, 18);
+  const Diameters d = basic(12, 3);
+  const ShapePtr bolt = modeled_thread(*rod, spec_of("F3", "F2:side(c1)", 3, d));
+  CHECK_NEAR_TOL(volume(*bolt), 18 * bolt_per_mm(3, d), 2e-5);
+  CHECK(BRepCheck_Analyzer(bolt->occt()).IsValid());
+  CHECK(!bolt->find_faces("F3:thread(F2:side(c1))").empty());
+  const double rp = d.pitch / 2.0;
+  for (const double turn : {3.0, 6.0, 9.0}) {
+    // The groove's middle and the tooth's at angle 0, then a quarter turn
+    // on.
+    CHECK(!inside(*bolt, gp_Pnt(rp, 0, turn + 0.75)));
+    CHECK(inside(*bolt, gp_Pnt(rp, 0, turn + 2.25)));
+    CHECK(!inside(*bolt, gp_Pnt(0, rp, turn + 1.5)));
+    CHECK(inside(*bolt, gp_Pnt(0, rp, turn + 3.0)));
+  }
+  // The root at the minor diameter, the crest at the major one.
+  CHECK(inside(*bolt, gp_Pnt(d.minor / 2.0 - 0.02, 0, 6.75)));
+  CHECK(!inside(*bolt, gp_Pnt(d.minor / 2.0 + 0.02, 0, 6.75)));
+  CHECK(inside(*bolt, gp_Pnt(5.98, 0, 8.25)));
+}
+
+// A two-start thread (mitcad#893): two grooves half a turn apart, each on
+// a helix of lead 2 P. Its profile in every section through the axis is
+// the single-start thread's of the same pitch, so it has the same volume;
+// its helices rise a lead, 3 mm, a turn: a quarter turn on the groove has
+// risen half a pitch, half a turn on a whole pitch (where a single-start
+// thread's has risen half a pitch). Left-handed, it falls instead.
+void test_multi_start_threads() {
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 5)}, 0, 12);
+  const Diameters d = basic(10, 1.5);
+  ThreadSpec two = spec_of("F3", "F2:side(c1)", 1.5, d);
+  two.starts = 2;
+  const ShapePtr bolt = modeled_thread(*rod, two);
+  CHECK_NEAR_TOL(volume(*bolt), 12 * bolt_per_mm(1.5, d), 2e-5);
+  CHECK(BRepCheck_Analyzer(bolt->occt()).IsValid());
+  CHECK(!bolt->find_faces("F3:thread(F2:side(c1))").empty());
+  const double rp = d.pitch / 2.0;
+  for (const double z : {3.0, 4.5, 6.0}) {
+    // At angle 0 a groove over [0, P/2] of every pitch.
+    CHECK(!inside(*bolt, at_angle(rp, 0.0, z + 0.375)));
+    CHECK(inside(*bolt, at_angle(rp, 0.0, z + 1.125)));
+    // A quarter turn on, risen a quarter lead: half a pitch.
+    CHECK(!inside(*bolt, at_angle(rp, kPi / 2.0, z + 1.125)));
+    CHECK(inside(*bolt, at_angle(rp, kPi / 2.0, z + 0.375)));
+    // Half a turn on, risen a whole pitch: where it was at angle 0 (a
+    // single-start thread's groove would be half a pitch higher).
+    CHECK(!inside(*bolt, at_angle(rp, kPi, z + 0.375)));
+    CHECK(inside(*bolt, at_angle(rp, kPi, z + 1.125)));
+    // An eighth of a turn on, risen a quarter pitch.
+    CHECK(!inside(*bolt, at_angle(rp, kPi / 4.0, z + 0.75)));
+    CHECK(inside(*bolt, at_angle(rp, kPi / 4.0, z)));
+  }
+  // The same thread single-start differs half a turn on.
+  const ShapePtr single = modeled_thread(*rod, spec_of("F3", "F2:side(c1)", 1.5, d));
+  CHECK_NEAR_TOL(volume(*single), volume(*bolt), 1e-6);
+  CHECK(inside(*single, at_angle(rp, kPi, 4.5 + 0.375)));
+  CHECK(!inside(*single, at_angle(rp, kPi, 4.5 + 1.125)));
+
+  // Left-handed: an eighth of a turn on the groove has fallen a quarter
+  // pitch.
+  ThreadSpec left = two;
+  left.right_handed = false;
+  const ShapePtr left_bolt = modeled_thread(*rod, left);
+  CHECK_NEAR_TOL(volume(*left_bolt), 12 * bolt_per_mm(1.5, d), 2e-5);
+  CHECK(!inside(*left_bolt, at_angle(rp, kPi / 4.0, 4.5)));
+  CHECK(inside(*left_bolt, at_angle(rp, kPi / 4.0, 4.5 + 0.75)));
+
+  // Three starts in a nut: the same hole as a single-start thread's, its
+  // tooth at angle 0 over the first half pitch, a third of a turn on risen
+  // a pitch (the next start's).
+  const ShapePtr plate = extrude("F2", {rectangle(1, -15, -15, 30, 30)}, 0, 12);
+  const ShapePtr drill = extrude("F3", {circle(5, 0, 0, 4.25)}, -1, 13);
+  const ShapePtr nut = boolean(BooleanOp::Cut, {plate.get()}, *drill).pieces.at(0).shape;
+  ThreadSpec three = spec_of("F4", "F3:side(c5)", 1.5, k6H);
+  three.starts = 3;
+  const ShapePtr threaded = modeled_thread(*nut, three);
+  CHECK_NEAR_TOL(volume(*threaded), 30 * 30 * 12 - 12 * nut_hole_per_mm(1.5, k6H), 2e-5);
+  const double hole_rp = k6H.pitch / 2.0;
+  CHECK(inside(*threaded, at_angle(hole_rp, 0.0, 4.5 + 0.375)));
+  CHECK(!inside(*threaded, at_angle(hole_rp, 0.0, 4.5 + 1.125)));
+  // A sixth of a turn on, risen half a pitch (a lead of 4.5 a turn).
+  CHECK(inside(*threaded, at_angle(hole_rp, kPi / 3.0, 4.5 + 1.125)));
+  CHECK(!inside(*threaded, at_angle(hole_rp, kPi / 3.0, 4.5 + 0.375)));
+
+  // Starts that are none.
+  ThreadSpec wrong = two;
+  wrong.starts = 0;
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "number of starts"));
+  wrong.starts = 65;
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "number of starts"));
+}
+
+// The trapezoidal profile of ISO 2901 (mitcad#893): flanks at 15 degrees
+// to the radius, flat crests and roots, Tr10x2's design profile (the
+// external thread's root d3 = 7.5 with the crest clearance 0.25, the
+// internal one's D4 = 10.5, both pitch diameters 9). The volumes against
+// the exact profile; the depth and the flank angle at points either side
+// of the root and of the flanks (a 60-degree flank 0.4 above the pitch
+// diameter lies 0.124 nearer the tooth's middle than a 15-degree one);
+// Tr10x4(P2), two starts.
+void test_trapezoidal_threads() {
+  const double flank = 15.0 * kPi / 180.0;
+  const double tan15 = std::tan(flank);
+  const Diameters outside{10.0, 7.5, 9.0};
+  const Diameters inside_thread{10.5, 8.0, 9.0};
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 5)}, 0, 12);
+  ThreadSpec tr = spec_of("F3", "F2:side(c1)", 2.0, outside);
+  tr.flank_angle = flank;
+  const ShapePtr screw = modeled_thread(*rod, tr);
+  CHECK_NEAR_TOL(volume(*screw), 12 * flanked_bolt_per_mm(2.0, outside, tan15), 2e-5);
+  CHECK(BRepCheck_Analyzer(screw->occt()).IsValid());
+  CHECK(!screw->find_faces("F3:thread(F2:side(c1))").empty());
+  // The 60-degree profile of the same diameters has less material.
+  CHECK(std::abs(flanked_bolt_per_mm(2.0, outside, tan15) - flanked_bolt_per_mm(2.0, outside, kTan30)) > 0.5);
+  for (const double z : {4.0, 6.0}) {
+    // At angle 0 the groove's middle at a quarter pitch, the tooth's at
+    // three quarters; the root at 3.75.
+    CHECK(inside(*screw, gp_Pnt(3.74, 0, z + 0.5)));
+    CHECK(!inside(*screw, gp_Pnt(3.76, 0, z + 0.5)));
+    // 0.4 above the pitch radius the tooth is 2 (0.5 - 0.4 tan 15) =
+    // 0.786 wide (a 60-degree one 0.538); 0.4 below it 1.214 (1.462).
+    const double above = 0.5 - 0.4 * tan15;
+    CHECK(inside(*screw, gp_Pnt(4.9, 0, z + 1.5 + above - 0.02)));
+    CHECK(!inside(*screw, gp_Pnt(4.9, 0, z + 1.5 + above + 0.02)));
+    CHECK(inside(*screw, gp_Pnt(4.9, 0, z + 1.5 - above + 0.02)));
+    CHECK(!inside(*screw, gp_Pnt(4.9, 0, z + 1.5 - above - 0.02)));
+    const double below = 0.5 + 0.4 * tan15;
+    CHECK(inside(*screw, gp_Pnt(4.1, 0, z + 1.5 + below - 0.02)));
+    CHECK(!inside(*screw, gp_Pnt(4.1, 0, z + 1.5 + below + 0.02)));
+    // The crest's flat, 0.366 P wide, on the major diameter.
+    CHECK(inside(*screw, gp_Pnt(4.98, 0, z + 1.5 + 0.3)));
+  }
+
+  // In a nut: an 8 mm bore (the minor diameter) through a plate 12 thick.
+  const ShapePtr plate = extrude("F2", {rectangle(1, -15, -15, 30, 30)}, 0, 12);
+  const ShapePtr drill = extrude("F3", {circle(5, 0, 0, 4.0)}, -1, 13);
+  const ShapePtr nut = boolean(BooleanOp::Cut, {plate.get()}, *drill).pieces.at(0).shape;
+  ThreadSpec tapped = spec_of("F4", "F3:side(c5)", 2.0, inside_thread);
+  tapped.flank_angle = flank;
+  const ShapePtr threaded = modeled_thread(*nut, tapped);
+  CHECK_NEAR_TOL(volume(*threaded), 30 * 30 * 12 - 12 * flanked_nut_hole_per_mm(2.0, inside_thread, tan15), 2e-5);
+  CHECK(BRepCheck_Analyzer(threaded->occt()).IsValid());
+  // Its tooth over the first half pitch at angle 0, its root at 5.25.
+  CHECK(inside(*threaded, gp_Pnt(4.5, 0, 6.5)));
+  CHECK(!inside(*threaded, gp_Pnt(4.5, 0, 7.5)));
+  CHECK(!inside(*threaded, gp_Pnt(5.24, 0, 7.5)));
+  CHECK(inside(*threaded, gp_Pnt(5.26, 0, 7.5)));
+
+  // Tr10x4(P2): two starts, the same profile and volume; half a turn on
+  // the groove has risen a whole pitch (a single-start one's half a
+  // pitch).
+  ThreadSpec two = tr;
+  two.starts = 2;
+  const ShapePtr lead_screw = modeled_thread(*rod, two);
+  CHECK_NEAR_TOL(volume(*lead_screw), 12 * flanked_bolt_per_mm(2.0, outside, tan15), 2e-5);
+  CHECK(BRepCheck_Analyzer(lead_screw->occt()).IsValid());
+  for (const double z : {4.0, 6.0}) {
+    CHECK(!inside(*lead_screw, at_angle(4.5, kPi, z + 0.5)));
+    CHECK(inside(*lead_screw, at_angle(4.5, kPi, z + 1.5)));
+    CHECK(!inside(*screw, at_angle(4.5, kPi, z + 1.5)));
+    CHECK(inside(*screw, at_angle(4.5, kPi, z + 0.5)));
+    // A quarter turn on, risen a quarter lead: half a pitch.
+    CHECK(!inside(*lead_screw, at_angle(4.5, kPi / 2.0, z + 1.5)));
+    CHECK(inside(*lead_screw, at_angle(4.5, kPi / 2.0, z + 0.5)));
+  }
+
+  // Flank angles that are none.
+  ThreadSpec wrong = tr;
+  wrong.flank_angle = 0.0;
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "flank angle"));
+  wrong.flank_angle = 50.0 * kPi / 180.0;
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "flank angle"));
+}
+
 namespace {
 
 // The faces' names of a shape: each face's sorted and joined, all of them
@@ -1325,6 +1533,7 @@ void thread_tests_1() {
   guarded("test_shoulder_and_partial", test_shoulder_and_partial);
   guarded("test_large_body", test_large_body);
   guarded("test_thread_pieces_join_smoothly", test_thread_pieces_join_smoothly);
+  guarded("test_custom_pitch", test_custom_pitch);
 }
 
 void thread_tests_2() {
@@ -1333,6 +1542,7 @@ void thread_tests_2() {
   guarded("test_sized_chamfered_end", test_sized_chamfered_end);
   guarded("test_rounding_along_a_thread_keeps_its_pieces", test_rounding_along_a_thread_keeps_its_pieces);
   guarded("test_thread_faces_close_together_in_order", test_thread_faces_close_together_in_order);
+  guarded("test_multi_start_threads", test_multi_start_threads);
 }
 
 void thread_tests_3() {
@@ -1341,6 +1551,7 @@ void thread_tests_3() {
   guarded("test_end_chamfers", test_end_chamfers);
   guarded("test_pieces_on_screw_surfaces_and_legacy_names", test_pieces_on_screw_surfaces_and_legacy_names);
   guarded("test_thread_tools_in_parallel", test_thread_tools_in_parallel);
+  guarded("test_trapezoidal_threads", test_trapezoidal_threads);
 }
 
 } // namespace test

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/commands/SketchCommands.cpp tools/cli
 # check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
+# check-all sources: app/OcctViewer.cpp app/OcctViewer.hpp
 # Closed fitted splines and tangents at a chosen end (mitcad#783), through
 # the real UI, on a design mitcad-cli makes: Sketch1 (F1) on XY with a
 # fitted spline c1 through p2 (-30, -30), p3 (-10, -20) and p4 (10, -30),
@@ -9,6 +10,10 @@
 # to (50, -60), each along the spline's end direction (slope 3/4: the
 # tangents hold as drawn, so the spline keeps its shape), and two points
 # that widen the fitted view.
+#   0. Points over highlights (mitcad#897): the view draws the sketch's
+#      points in a layer after the curves and their highlights, against
+#      the scene's depth; the spline selected has its curve highlighted,
+#      a fit point selected its ball, in that layer over the markers.
 #   1. Tangent: the spline picked near its start and the first line, then
 #      near its end and the second line: each tangent records the end it
 #      was picked at (p2, p4), so one spline is tangent at both ends.
@@ -17,10 +22,13 @@
 #   3. Extrude makes one body of it; saved, the file has the closed spline
 #      and both tangents' points.
 #
-# Runs headless on Xvfb (see ui-test-lib.sh).
-# Usage: tools/ui-sketch-spline-test.sh
+# Runs headless on Xvfb (see ui-test-lib.sh). With a file name, saves a
+# screenshot of the selected fitted spline with its points (step 0).
+# Usage: tools/ui-sketch-spline-test.sh [shot.png]
 
 source "$(dirname "$0")/ui-test-lib.sh"
+
+SHOT=${1:-}
 
 CLI=${UI_CLI:-$(cd "$(dirname "$UI_APP")/.." && pwd)/tools/cli/mitcad-cli}
 WORK=$(mktemp -d /tmp/mitcad-ui-sketch-spline.XXXXXX)
@@ -47,6 +55,26 @@ ui_step "edit Sketch1 (double-click)"    ui_double_click_logged "Timeline Sketch
 ui_expect_log "Editing sketch F1 (Sketch1)" "Sketch1 is edited"
 ui_step "fit (F6)"                       ui_key F6
 ui_sync
+
+echo "--- The points over the highlights of their curves"
+ui_expect_log "Sketch layers: halos < curves and highlights < points and point highlights; points keep the scene's depth; point highlights over the markers" \
+  "the points are drawn after the curves' highlights, the model's depth still hides them"
+ui_mark
+ui_step "select the spline"              ui_sketch_click -22 -24.32
+ui_expect_new "Selected: 1 sketch curve" "the spline selected"
+ui_expect_new "Sketch highlights: 1 curve, 0 points" "its highlight in the curves' layer, under its fit points"
+ui_sync
+if [ -n "$SHOT" ]; then
+  ui_capture "$SHOT"
+  echo "note: screenshot $SHOT"
+fi
+ui_mark
+ui_step "select its middle fit point"    ui_sketch_click -10 -20
+ui_expect_new "Selected: 1 sketch point" "the fit point selected"
+ui_expect_new "Sketch highlights: 0 curves, 1 point" "its ball in the points' layer, over the marker"
+ui_mark
+ui_step "click where nothing is"         ui_sketch_click 45 0
+ui_expect_new "Selected: nothing" "the selection cleared"
 
 echo "--- Tangent at each end of the spline"
 # The spline is the natural cubic through its points: x = -30 + 40 t,

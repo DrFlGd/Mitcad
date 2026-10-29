@@ -124,6 +124,10 @@ struct FileOut<'a> {
     measurements: &'a [Annotation],
     #[serde(skip_serializing_if = "<[Annotation]>::is_empty")]
     annotations: &'a [Annotation],
+    // The height of the annotations' texts set for the design (mitcad#894),
+    // when it is not the automatic one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    annotation_text_height: Option<f64>,
     // Purge volumes set by hand (mitcad#705), when there are any.
     #[serde(skip_serializing_if = "<[crate::print_purge::PurgeOverride]>::is_empty")]
     purge_volumes: &'a [crate::print_purge::PurgeOverride],
@@ -472,6 +476,7 @@ pub(super) fn save(state: &DocState) -> String {
         } else {
             state.annotations.as_slice()
         },
+        annotation_text_height: state.annotation_text_height,
         purge_volumes: &state.purge_volumes,
         // Only the components the design has.
         drawings: state
@@ -755,7 +760,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 37] = [
+const TOP_FIELDS: [&str; 38] = [
     "format",
     "version",
     "units",
@@ -810,6 +815,8 @@ const TOP_FIELDS: [&str; 37] = [
     "image_references",
     // Tables of data that expressions look values up in (mitcad#667).
     "tables",
+    // The height of the annotations' texts (mitcad#894).
+    "annotation_text_height",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -1258,6 +1265,20 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     // A frame under no dimension (one deleted or renamed by an older
     // version) stands on its leader.
     crate::document::settle_frames(&mut annotations);
+    // The six colours new annotations took in turn before mitcad#894 were
+    // the program's, not the user's: read as Auto.
+    crate::document::read_old_defaults(&mut annotations);
+    let annotation_text_height = match top.remove("annotation_text_height") {
+        None => None,
+        Some(value) => match value.as_f64() {
+            Some(h) if crate::document::check_text_height(h).is_ok() => Some(h),
+            _ => {
+                return Err(schema(
+                    "\"annotation_text_height\" must be a height from 0.1 to 1000 mm",
+                ));
+            }
+        },
+    };
     // Purge volumes set by hand (mitcad#705): each valid, each pair once. A
     // pair of a material the design no longer has is kept as it is.
     let purge_volumes = array(&mut top, "purge_volumes", false)?
@@ -1699,6 +1720,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     state.materials = materials;
     state.print_profiles = print_profiles;
     state.annotations = annotations;
+    state.annotation_text_height = annotation_text_height;
     state.purge_volumes = purge_volumes;
     for (i, drawing) in drawings.iter().enumerate() {
         if !state.assembly.exists(drawing.component) {

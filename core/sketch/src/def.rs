@@ -693,9 +693,16 @@ impl SketchDef {
         let inputs = self
             .dimension_inputs(value, name)
             .map_err(SolveError::new)?;
-        let bindings = self
+        let mut bindings = self
             .pattern_bindings(value, name)
             .map_err(SolveError::new)?;
+        let patterns = bindings.len();
+        // Offsets' tangent corners where their results touch (mitcad#890).
+        bindings.extend(offset::tangent_corners(
+            &self.offsets,
+            &self.entities,
+            &self.constraints,
+        ));
         let index = EntityIndex::new(&self.entities);
         let skip = derived_entities(&self.offsets, &index);
         self.check_derived(&skip).map_err(SolveError::new)?;
@@ -712,10 +719,30 @@ impl SketchDef {
             entities
         });
         let entities = seeded.as_deref().unwrap_or(&self.entities);
-        let mut solved = if goals.is_empty() {
-            solve_extra(entities, &self.constraints, &inputs, &extra)?
-        } else {
-            drag_extra(entities, &self.constraints, &inputs, &extra, goals)?
+        let run = |extra: &Extra<'_>| {
+            if goals.is_empty() {
+                solve_extra(entities, &self.constraints, &inputs, extra)
+            } else {
+                drag_extra(entities, &self.constraints, &inputs, extra, goals)
+            }
+        };
+        let mut solved = match run(&extra) {
+            Ok(solved) => solved,
+            // A sketch that fails says why as it did without the corners
+            // held (mitcad#890): their tangencies restate what the offsets'
+            // own constraints imply where the sources touch, and the
+            // explanation at the failed solve's least-squares point counted
+            // them, so that every constraint was named as contradicting.
+            // Should the sketch solve without them, the failure is theirs
+            // and its own explanation stands.
+            Err(error) if bindings.len() > patterns => {
+                let plain = Extra {
+                    bindings: &bindings[..patterns],
+                    skip: &skip,
+                };
+                return Err(run(&plain).err().unwrap_or(error));
+            }
+            Err(error) => return Err(error),
         };
         // What of the inactive constraints and dimensions the solution does
         // not meet (mitcad#721).

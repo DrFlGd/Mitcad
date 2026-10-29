@@ -290,7 +290,9 @@ impl<P> SketchPattern<P> {
     }
 }
 
-/// How a copy point is bound to its original, for the solver.
+/// What the solver takes besides the stored constraints: how a copy point is
+/// bound to its original, or the tangency of two results of an offset at
+/// the corner they share (`TangentAt`, [`crate::offset::tangent_corners`]).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum BindingKind {
     Translated {
@@ -312,9 +314,15 @@ pub enum BindingKind {
         angle: f64,
     },
     EqualSize(EntityUid, EntityUid),
+    /// Curves `a` and `b` touch at their shared point `at`.
+    TangentAt {
+        a: EntityUid,
+        b: EntityUid,
+        at: EntityUid,
+    },
 }
 
-/// A binding with the pattern it comes from.
+/// A binding with the pattern (or offset) it comes from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Binding {
     pub owner: ConstraintUid,

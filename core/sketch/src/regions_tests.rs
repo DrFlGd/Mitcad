@@ -146,3 +146,77 @@ fn regions_timings() {
         );
     }
 }
+
+/// `count` disjoint 4 × 4 rectangles in a row, each of four lines, the
+/// curves from c`first` on.
+fn rectangle_row(first: u32, count: u32) -> Vec<RegionCurve> {
+    (0..count)
+        .flat_map(|k| {
+            let x = 10.0 * f64::from(k);
+            rectangle(first + 4 * k, [x, 0.0], [x + 4.0, 4.0])
+        })
+        .collect()
+}
+
+/// The region keys and areas, sorted by key.
+fn keys_and_areas(regions: &[Region]) -> Vec<(String, i64)> {
+    let mut out: Vec<(String, i64)> = regions
+        .iter()
+        .map(|r| (r.profile.key.to_string(), (r.area * 1e6).round() as i64))
+        .collect();
+    out.sort();
+    out
+}
+
+/// A line drawn twice among many rectangles (mitcad#889: the repeats are
+/// found among the pieces with the same ends): the lower curve id stays,
+/// as when it is the only one.
+#[test]
+fn a_line_drawn_twice_among_many_rectangles_keeps_the_lower_id() {
+    let plain = rectangle_row(10, 60);
+    // Rectangle 7's bottom line again with a higher id: it is left out.
+    let mut higher = plain.clone();
+    let bottom = higher[4 * 7].curve.clone();
+    higher.push(RegionCurve::new(EntityUid(1000), bottom));
+    assert_eq!(
+        keys_and_areas(&regions(&higher)),
+        keys_and_areas(&regions(&plain))
+    );
+    // Rectangle 30's top line again with a lower id (the other way round):
+    // it stays and the higher one is left out.
+    let mut lower = plain.clone();
+    let top = lower[4 * 30 + 2].curve.clone();
+    let reversed = match top {
+        Curve2::Line { a, b } => Curve2::Line { a: b, b: a },
+        other => other,
+    };
+    lower.push(RegionCurve::new(EntityUid(1), reversed.clone()));
+    let mut expected = plain.clone();
+    expected[4 * 30 + 2] = RegionCurve::new(EntityUid(1), reversed);
+    let found = regions(&lower);
+    assert_eq!(found.len(), 60);
+    assert_eq!(keys_and_areas(&found), keys_and_areas(&regions(&expected)));
+}
+
+/// A line that ends inside many rectangles' region cuts a side in two
+/// pieces; the line dangles and is dropped, and the pieces of the side are
+/// one again (mitcad#889: each vertex looks only at its own edges).
+#[test]
+fn a_dangling_line_leaves_the_side_it_cut_whole() {
+    let plain = rectangle_row(10, 60);
+    for k in [0_u32, 41, 59] {
+        let x = 10.0 * f64::from(k);
+        let mut cut = plain.clone();
+        // From the middle of the bottom side up into the rectangle.
+        cut.push(RegionCurve::new(
+            EntityUid(1000),
+            Curve2::Line {
+                a: [x + 2.0, 0.0],
+                b: [x + 2.0, 1.5],
+            },
+        ));
+        let found = regions(&cut);
+        assert_eq!(found.len(), 60);
+        assert_eq!(keys_and_areas(&found), keys_and_areas(&regions(&plain)));
+    }
+}

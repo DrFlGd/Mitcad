@@ -664,7 +664,11 @@ named_enum! {
         "section" => Section(analysis::SectionQuery),
         "section_plane" => SectionPlane(mitcad_model::SectionAnalysis),
         "compare_step" => CompareStep(analysis::CompareStepQuery),
-        "threads" => Threads,
+        "threads" => Threads {
+            /// Only cosmetic threads, the ones a view draws (mitcad#878).
+            #[serde(default)]
+            cosmetic: bool,
+        },
         // The general sketch (S1, `sketch.rs`).
         "sketch" => Sketch {
             uid: FeatureUid,
@@ -909,6 +913,8 @@ named_enum! {
         "table_csv_preview" => TableCsvPreview(tables_csv::TableCsvPreviewQuery),
         // A cut sheet's parts and their outlines (mitcad#853, `cut_sheets.rs`).
         "cut_sheet" => CutSheet(cut_sheets::CutSheetQuery),
+        // The height of the annotations' texts (mitcad#894, `annotations.rs`).
+        "annotation_text_height" => AnnotationTextHeight,
     }
 }
 
@@ -1150,7 +1156,7 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
                 answer
             }
             Query::CompareStep(query) => self.compare_step_json(&query)?,
-            Query::Threads => self.threads_json(),
+            Query::Threads { cosmetic } => self.threads_json_of(cosmetic),
             // Answered as before while nothing it is made from changed
             // (mitcad#679).
             Query::Sketch { uid } => return self.sketch_answer(uid),
@@ -1345,6 +1351,8 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
             Query::TableCsvPreview(query) => self.table_csv_preview_json(&query)?,
             // Cut sheets (mitcad#853).
             Query::CutSheet(query) => self.cut_sheet_json(&query)?,
+            // The height of the annotations' texts (mitcad#894).
+            Query::AnnotationTextHeight => self.annotation_text_height_json(),
         };
         Ok(result.to_string())
     }

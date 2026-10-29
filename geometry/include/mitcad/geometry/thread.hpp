@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Modelled screw threads: the 60-degree profile (ISO metric, Unified) of
-// given diameters built on cylindrical faces.
+// Modelled screw threads: the 60-degree profile (ISO metric, Unified) or
+// the trapezoidal one (ISO 2901) of given diameters, of one start or
+// several, built on cylindrical faces.
 
 #include <string>
 #include <vector>
@@ -14,9 +15,10 @@ namespace mitcad::geometry {
 // Lengths in millimetres, angles in radians.
 //
 // The profile is the basic profile of ISO 68-1 (also Unified): flanks at 30
-// degrees to the radial direction, the thread exactly half a pitch wide at
-// the pitch diameter, cut off by flat crests and roots at the major and
-// minor diameters (no rounding). An external thread has its crests on the
+// degrees to the radial direction (`flank_angle`; 15 degrees for the
+// trapezoidal profile of ISO 2901, mitcad#893), the thread exactly half a
+// pitch wide at the pitch diameter, cut off by flat crests and roots at the
+// major and minor diameters (no rounding). An external thread has its crests on the
 // major diameter and its roots on the minor one, an internal thread the
 // other way round. The basic diameters (D, D1 = D - 5H/4, D2 = D - 3H/4,
 // H = 0.866025 P) give the basic profile; a tolerance class's diameters
@@ -40,11 +42,26 @@ namespace mitcad::geometry {
 // (right-hand rule), an external thread's groove spans the first half
 // pitch at the pitch diameter, an internal thread's tooth the same half
 // pitch (so that a bolt and a nut threaded from the same plane mate).
+//
+// A thread of several `starts` (mitcad#893) has that many grooves, evenly
+// spaced round the axis and a pitch apart along it, each on a helix of lead
+// starts x pitch: the first groove is placed as above (rising a lead a
+// turn), the others are it turned by 360 / starts degrees about the axis.
+// In every section through the axis its profile is a single-start thread's
+// of the same pitch.
 struct ThreadSpec {
   std::string feature;
   // Cylindrical faces of the body (references; all pieces of each).
   std::vector<std::string> faces;
+  // The axial distance from one tooth to the next.
   double pitch = 0.0;
+  // The number of starts, 1 to 64 (mitcad#893): the helices' lead is
+  // starts x pitch.
+  int starts = 1;
+  // The flanks' angle to the radial direction (half the profile's included
+  // angle), more than 0 and at most 45 degrees: 30 degrees for the
+  // 60-degree profile, 15 for the trapezoidal one (mitcad#893).
+  double flank_angle = 0.52359877559829887308;
   // Diameters: the major one, the minor one and the pitch diameter.
   double major = 0.0;
   double minor = 0.0;
@@ -69,8 +86,8 @@ struct ThreadSpec {
   // itself into the tooth (an external thread's tooth thinner, an internal
   // thread's groove wider): the flanks keep their angle and the pitch, and
   // the crests and roots their radii, so each flank moves
-  // flank_clearance / cos 30 along the axis and the crests narrow by twice
-  // that. A clearance that leaves too narrow a crest (under P/50) or no
+  // flank_clearance / cos(flank_angle) along the axis and the crests narrow
+  // by twice that. A clearance that leaves too narrow a crest (under P/50) or no
   // core is refused.
   double radial_clearance = 0.0;
   double flank_clearance = 0.0;

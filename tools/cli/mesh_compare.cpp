@@ -31,8 +31,9 @@
 #include "import.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad/io/mesh_compare.hpp"
-// The planes' variants: the view's final tier (defaultPlaneMeshOptions),
-// mitcad#644's checked Delabella (checkedPlaneMeshOptions), and the
+// The planes' variants: the default insertion (defaultPlaneMeshOptions),
+// the view's final tier, mitcad#644's checked Delabella
+// (checkedPlaneMeshOptions), and the
 // interactive tier's planes (previewMeshOptions), as the application meshes
 // them (mitcad#635).
 #include "view/ViewTessellation.hpp"

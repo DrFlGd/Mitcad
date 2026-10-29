@@ -24,25 +24,23 @@ namespace mitcad {
 // straight pieces (mitcad#438): those of radii over about half a metre,
 // and their edges, with a deviation of 2e-5 of the radius (about 700
 // points round a circle, where 6.8 m took 2 600 at 0.01 mm), smaller ones
-// at 0.01 mm. Planes are triangulated by the default insertion
-// (defaultPlaneMeshOptions). Planes through Delabella's base triangulation,
-// each checked (checkedPlaneMeshOptions, mitcad#644), were the final tier
-// from 0.29.0 until mitcad#846: a large design of 6 455 planes, meshed in
-// 4.7 s with the default insertion, did not end in 40 minutes that way,
-// and the design could not be opened.
+// at 0.01 mm. Planes go through Delabella's base triangulation, each
+// checked (checkedPlaneMeshOptions, mitcad#644). From 0.29.0 that path hung
+// on a large design of 6 455 planes (mitcad#846): Delabella's rounded signs
+// contradicted each other on nearly cocircular boundary points, and it
+// crashed or looped. The final tier was the default insertion
+// (defaultPlaneMeshOptions) until OCCT port patch 1070 made the signs exact;
+// the design then meshed in 10 of 10 runs on Windows.
 constexpr double kViewDeviation = 0.01;
 constexpr double kViewAngle = 5.0 * 3.14159265358979323846 / 180.0;
 constexpr std::size_t kViewFaceTriangles = 20000;
 
-// Planes by the default insertion alone: the view's final tier (and before
-// mitcad#644 too; mitcad-cli mesh-compare's reference, "default").
+// Planes by the default insertion alone: the view's final tier before
+// mitcad#644 (mitcad-cli mesh-compare's reference, "default"), and what the
+// checked path falls back to for a plane.
 inline io::MeshOptions defaultPlaneMeshOptions() {
   return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, false, false};
 }
-
-// The view's final tier: commit, refinement, opening a design, section
-// clips.
-inline io::MeshOptions viewMeshOptions() { return defaultPlaneMeshOptions(); }
 
 // Planes through Delabella's base triangulation, each checked
 // (io::MeshOptions::check_planes, mitcad#644): a plane left without a
@@ -51,11 +49,14 @@ inline io::MeshOptions viewMeshOptions() { return defaultPlaneMeshOptions(); }
 // every local corpus design (mitcad#644) gave the default's triangulation
 // on all but a handful of degenerate or sliver planes, about 5.5 times
 // faster on planes and up to 16 times on designs with large perforated
-// plates. Not the final tier while mitcad#846's hang is open (mitcad-cli
-// mesh-compare's "checked").
+// plates. The view's final tier (mitcad-cli mesh-compare's "checked").
 inline io::MeshOptions checkedPlaneMeshOptions() {
   return io::MeshOptions{kViewDeviation, kViewAngle, false, kViewFaceTriangles, true, true};
 }
+
+// The view's final tier: commit, refinement, opening a design, section
+// clips.
+inline io::MeshOptions viewMeshOptions() { return checkedPlaneMeshOptions(); }
 
 // The interactive preview tier's meshes (mitcad#635, framework/
 // DisplayMeshes): the view's deviation, angle and face bound, with planes
@@ -89,6 +90,17 @@ inline void setViewTessellation(const occ::handle<Prs3d_Drawer>& drawer) {
 // the final ones are made for its body by a job.
 inline bool viewMeshes(const geometry::Shape& shape) {
   return !shape.display_interactive() && (!shape.display_meshed() || io::has_triangulation(shape.occt()));
+}
+
+// Whether a body's drawers mesh it (their auto-triangulation): only a body
+// no job meshed for display. One a job meshed to the end in the final tier
+// has the view's meshes already, but a drawer finds a face whose deviation
+// is coarser than its own (a large face's bound, a large cylinder's)
+// untessellated and runs OCCT's mesher over the whole body again to keep
+// every face as it is: 0.6-0.8 s on the UI thread for a body of 6 700
+// faces, at every open and every change of it (mitcad#878).
+inline bool drawerMeshes(const geometry::Shape& shape) {
+  return viewMeshes(shape) && !shape.display_meshed();
 }
 
 // Makes every presentation mesh with the view's face bound (the meshing

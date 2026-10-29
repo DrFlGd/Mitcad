@@ -1013,7 +1013,9 @@ cubic feet, radians, kilograms); its definition tells what they are
 `cargo test -p mitcad-rvt` (`core.rvt` in ctest): the written project and
 family (container, pages, members, metadata, schema, walks, chains,
 element views, saved meshes) and `tests/corpus.rs` on the corpus (skipped
-without `MITCAD_RVT_CORPUS`). The import: `core/import-rvt/src` (mock
+without `MITCAD_RVT_CORPUS`; its files several at once, each in a thread
+of its own, the largest first: `MITCAD_CORPUS_JOBS`, else a quarter of
+the cores, at most 4; mitcad#875). The import: `core/import-rvt/src` (mock
 kernel), `core/import-rvt/tests/corpus/rvt_mullion_trims.rs` (the trimmed mullions' rule
 against their stored ends on three projects),
 `core/import-rvt/tests/corpus/rvt_corpus.rs` (mitcad#501: parameters in their
@@ -1027,4 +1029,5 @@ runs, the sloped elliptical rail pieces' joints against their stored
 edges),
 `core.exchange`,
 `cli.import_rvt`, `cli.import_rfa`,
-`rvt.corpus` and `tools/ui-rvt-import-test.sh`.
+`rvt.corpus` (its project and its link check in child processes at
+once, mitcad#875) and `tools/ui-rvt-import-test.sh`.

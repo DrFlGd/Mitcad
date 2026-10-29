@@ -26,6 +26,7 @@
 #include "framework/DebugLog.hpp"
 #include "framework/DesktopEntry.hpp"
 #include "framework/Diagnostics.hpp"
+#include "framework/DisplayMeshes.hpp"
 #include "framework/Numbers.hpp"
 #include "framework/Restart.hpp"
 #include "framework/TestDriver.hpp"
@@ -454,5 +455,10 @@ int main(int argc, char* argv[]) {
   // where an application usually stays running without windows: Mitcad has
   // one window and one document, and a menu bar with no document would
   // only be something to close again.
-  return QApplication::exec();
+  const int status = QApplication::exec();
+  // Display meshes still to be stored after an open (mitcad#880): the body
+  // being written is finished, the others are dropped (the next open
+  // meshes and stores them).
+  mitcad::finishDisplayMeshWrites();
+  return status;
 }

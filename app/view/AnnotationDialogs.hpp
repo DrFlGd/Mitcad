@@ -27,8 +27,11 @@ class QWidget;
 
 namespace mitcad {
 
-// The colours offered for annotations, (name, #rrggbb): the six new ones
-// take in turn (the model's ANNOTATION_COLORS), then red, black and white.
+// The colours offered for annotations, (name, #rrggbb or "auto"): Auto
+// first (mitcad#894: the neutral annotation colour of the background tone,
+// a new annotation's), then orange, blue, green, magenta, violet, amber,
+// red, black and white. None of them is one of the six colours new
+// annotations took in turn before, which the model reads as Auto.
 const std::vector<std::pair<QString, QString>>& annotationColours();
 
 // The annotation's own colour of these, or Other… with the colour dialog.
@@ -38,6 +41,11 @@ std::optional<QString> askAnnotationGroup(QWidget* parent, const QStringList& gr
                                           const QString& what);
 // Decimals: null for automatic (up to three), else 0 to 6.
 std::optional<QJsonValue> askAnnotationDecimals(QWidget* parent, const QJsonValue& current, const QString& what);
+// The height of the design's annotations' texts (mitcad#894), from the
+// model's `annotation_text_height` query: null for Auto (of the ISO 3098
+// series by the model's size), else mm, 0.1 to 1000 (the series offered,
+// any other typed).
+std::optional<QJsonValue> askAnnotationTextHeight(QWidget* parent, const QJsonObject& current);
 // A tolerance as the model takes it, null for none; `angle`: in degrees
 // and without fit codes.
 std::optional<QJsonValue> askAnnotationTolerance(QWidget* parent, const QJsonValue& current, bool angle,

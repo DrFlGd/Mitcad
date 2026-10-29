@@ -590,8 +590,11 @@ if(BUILD_TESTING)
     COMMAND mitcad-cli import-rvt "${exchange}/rvt-building/building.rvt" --save "${exchange}/rvt-building/building.mitcad")
   set_tests_properties(cli.import_rvt_building PROPERTIES FIXTURES_REQUIRED cli_rvt_building PASS_REGULAR_EXPRESSION
     "Built 6 elements as features \\(2 floor, 4 wall\\), checked against the geometry the file keeps of them \\(else their stored boxes\\); of those kinds none came in as meshes or boxes.*4 level planes, 2 grid axes, 0 grid arcs, 2 appearances.*link linked\\.rvt: linked\\.rvt, 4 elements")
+  # The corpus's project and its link check run in child processes at once
+  # (mitcad_run_parallel, mitcad#875), as do the .dwg corpus's drawings.
   add_test(NAME rvt.corpus
-    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/rvt-corpus"
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DRUNNER=$<TARGET_FILE:mitcad_run_parallel>"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/rvt-corpus"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/rvt-corpus.cmake")
   set_tests_properties(rvt.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "rvt corpus: skipped")
   # The .dwg import (mitcad#453): the reader's test drawing (a block of a
@@ -622,7 +625,8 @@ if(BUILD_TESTING)
   set_tests_properties(cli.import_dwg_empty_solid PROPERTIES FIXTURES_REQUIRED cli_dwg_empty_solid PASS_REGULAR_EXPRESSION
     "Imported empty-solid\\.dwg \\(dwg R2018 \\(AC1032\\)\\): 6 bodies \\(3 solids, 3 meshes; 6 valid\\), 2 components.*Not built: 3DSOLID 64: its B-rep record holds no body with faces.*Check every body built: FAIL")
   add_test(NAME dwg.corpus
-    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/dwg-corpus"
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DRUNNER=$<TARGET_FILE:mitcad_run_parallel>"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/dwg-corpus"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/dwg-corpus.cmake")
   set_tests_properties(dwg.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "dwg corpus: skipped")
 
@@ -677,12 +681,15 @@ if(BUILD_TESTING)
   else()
     set(f3d_designs_slower 1)
   endif()
-  # The designs one after another (no RUNNER): at once, in the Linux
-  # release's build root under the full check's load, db73863f's Fillet4 ran
-  # out of its item time (0.32.0-rc2) although it passed so on the host.
+  # The designs at once again (RUNNER, mitcad#874): in 0.32.0-rc2 a thread's
+  # sizing offset ran past its 2 s on the wall clock beside the others, the
+  # thread took the tube's route and a rounding along it (db73863f's
+  # Fillet4) ran out of its item time. The import's time limits are on a
+  # clock that leaves the load out now, and a definition cut short at its
+  # share goes on on its worker for the second round.
   add_test(NAME f3d.corpus_designs
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/f3d-designs"
-            "-DSLOWER=${f3d_designs_slower}"
+            "-DSLOWER=${f3d_designs_slower}" "-DRUNNER=$<TARGET_FILE:mitcad_run_parallel>"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/f3d-designs.cmake")
   set_tests_properties(f3d.corpus_designs PROPERTIES SKIP_REGULAR_EXPRESSION "f3d designs: skipped")
 
@@ -744,6 +751,27 @@ if(BUILD_TESTING)
   set_tests_properties(cli.perf_holes_recompute PROPERTIES FIXTURES_REQUIRED cli_perf_holes
     TIMEOUT ${perf_holes_limit} RUN_SERIAL TRUE
     PASS_REGULAR_EXPRESSION "F11 Extrude5 \\(extrude\\): ok.*Recompute: 11 features in [0-9.]+ ms")
+  # Their display meshing (mitcad#884): the body meshed twice by the view's
+  # final tier (planes through Delabella, checked), every face triangulated
+  # and no plane made again by the default insertion, which takes minutes
+  # on the two planes of 1,187 holes. 5 s in a Linux release build with the
+  # open (each meshing 1.3 s, 2.7 s before OCCT port patches 1080 and
+  # 1081); the limit only catches a plane gone to the default insertion or
+  # a large slowdown.
+  if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+    set(perf_holes_mesh_limit 120)
+  else()
+    set(perf_holes_mesh_limit 30)
+  endif()
+  add_test(NAME cli.perf_holes_mesh COMMAND mitcad-cli mesh-compare "${perf}/perf_holes.mitcad" --a checked
+                                            --b checked)
+  set_tests_properties(cli.perf_holes_mesh PROPERTIES FIXTURES_REQUIRED cli_perf_holes
+    TIMEOUT ${perf_holes_mesh_limit} RUN_SERIAL TRUE
+    PASS_REGULAR_EXPRESSION "1 bodies, 1257 faces \\(42 planes\\), without a triangulation a 0 b 0;.*planes redone a 0 b 0 \\(a checked, b checked\\)")
+  if(WIN32)
+    set_property(TEST cli.perf_holes_mesh APPEND PROPERTY ENVIRONMENT_MODIFICATION
+      "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
 
   # Sketches with many patterned circles (mitcad#670): one circle and a
   # 10 x 10 rectangular sketch pattern of it, a full solve and drag steps,

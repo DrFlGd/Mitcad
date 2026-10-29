@@ -10,6 +10,13 @@
 //! Either may have a chamfer cut at its free ends (mitcad#304), a cosmetic
 //! one too.
 //!
+//! A custom thread (mitcad#893) takes a major diameter and a pitch of its
+//! own (`custom`, expressions) on the 60-degree profile; a trapezoidal
+//! thread is modelled with the 30-degree profile of ISO 2901 and its crest
+//! clearance (`ThreadData::profile`). A modelled thread may have several
+//! starts (`starts`, or a trapezoidal designation's lead over its pitch):
+//! the grooves evenly spaced round the axis, the lead `starts` pitches.
+//!
 //! A taper pipe thread (NPT, ISO 7-1 `R`/`Rc`; mitcad#733) is tapered 1:16
 //! on the diameter from where it starts: an internal thread at its opening,
 //! an external one at its free end (see `ThreadSpec`). Even a cosmetic one
@@ -52,6 +59,9 @@ fn is_iso(standard: &ThreadStandard) -> bool {
 pub struct ThreadSize {
     #[serde(default, skip_serializing_if = "is_iso")]
     pub standard: ThreadStandard,
+    /// The size in the standard's table; none for a custom thread
+    /// (mitcad#893), whose size the feature gives.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub designation: String,
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
@@ -92,6 +102,116 @@ impl ThreadSize {
         }
         Ok(data)
     }
+}
+
+/// A custom thread's size (mitcad#893): its major diameter and its pitch,
+/// on the 60-degree profile (`ThreadData::custom`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CustomSize<P = ParamId> {
+    pub major: P,
+    pub pitch: P,
+}
+
+impl<P> CustomSize<P> {
+    /// The size with its values mapped, under `<prefix>major` and
+    /// `<prefix>pitch`.
+    pub fn map_params<Q, E>(
+        &self,
+        prefix: &str,
+        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+    ) -> Result<CustomSize<Q>, E> {
+        Ok(CustomSize {
+            major: f(&format!("{prefix}major"), &self.major)?,
+            pitch: f(&format!("{prefix}pitch"), &self.pitch)?,
+        })
+    }
+}
+
+/// Checks that a thread's size is either the table's or custom
+/// (mitcad#893): a custom thread (`standard` `custom`) has its `custom`
+/// size and no class, and only a custom thread has one.
+pub(crate) fn check_custom(size: &ThreadSize, custom: bool) -> Result<(), String> {
+    let is_custom = size.standard == ThreadStandard::Custom;
+    if is_custom && !custom {
+        return Err(
+            "a custom thread needs its size: `custom` with its `major` diameter and `pitch`"
+                .to_owned(),
+        );
+    }
+    if custom && !is_custom {
+        return Err("only a custom thread (standard `custom`) has a `custom` size".to_owned());
+    }
+    if is_custom && size.class.is_some() {
+        return Err("a custom thread has no tolerance class".to_owned());
+    }
+    Ok(())
+}
+
+/// A thread's size: the table's for its designation, its class and an
+/// ISO 7-1 thread's side checked for an internal or an external face
+/// (either when unknown), or a custom thread's of its given major diameter
+/// and pitch (mitcad#893).
+pub(crate) fn size_of<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    size: &ThreadSize,
+    custom: Option<&CustomSize>,
+    internal: Option<bool>,
+) -> Result<ThreadData, String> {
+    match custom {
+        Some(c) if size.standard == ThreadStandard::Custom => {
+            let major = ctx.param(c.major)?;
+            let pitch = ctx.param(c.pitch)?;
+            ThreadData::custom(major, pitch)
+        }
+        _ => size.check(internal),
+    }
+}
+
+/// The most starts a thread may have.
+pub const MAX_STARTS: u32 = 64;
+
+/// A number of starts: a whole number from 1 to [`MAX_STARTS`].
+pub(crate) fn starts_value(value: f64) -> Result<u32, String> {
+    let whole = value.round();
+    if value.is_finite()
+        && (value - whole).abs() <= 1e-9
+        && (1.0..=f64::from(MAX_STARTS)).contains(&whole)
+    {
+        Ok(whole as u32)
+    } else {
+        Err(format!(
+            "a thread's number of starts must be a whole number from 1 to {MAX_STARTS}, got {value}"
+        ))
+    }
+}
+
+/// Whether a number of starts suits the size: a designation with a lead
+/// (`Tr10x4(P2)`) has its own (2), which `starts` may only repeat.
+pub(crate) fn check_starts(starts: u32, data: &ThreadData) -> Result<(), String> {
+    if data.starts > 1 && starts != data.starts {
+        return Err(format!(
+            "{} has {} starts by its lead and pitch, not {starts}: leave out the number of starts",
+            data.designation, data.starts
+        ));
+    }
+    Ok(())
+}
+
+/// A thread's number of starts (mitcad#893): `starts` (an expression), or
+/// its designation's (a trapezoidal thread's lead over its pitch), 1
+/// without.
+pub(crate) fn thread_starts<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    starts: Option<ParamId>,
+    data: &ThreadData,
+) -> Result<u32, String> {
+    let Some(id) = starts else {
+        return Ok(data.starts);
+    };
+    let starts = starts_value(ctx.param(id)?)?;
+    check_starts(starts, data)?;
+    Ok(starts)
 }
 
 /// The end of the cylinder a partial thread is measured from: where the
@@ -238,6 +358,15 @@ pub struct ThreadDef<P = ParamId> {
     /// thread is a straight one, as it was: cosmetic only, no cone.
     #[serde(default, skip_serializing_if = "is_false")]
     pub taper: bool,
+    /// A custom thread's size (`thread.standard` `custom`, mitcad#893): its
+    /// major diameter and pitch; none for a size of the table.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomSize<P>>,
+    /// The number of starts (mitcad#893), a whole number of 1 or more: the
+    /// grooves evenly spaced round the axis, the lead that many pitches. A
+    /// designation with a lead (`Tr10x4(P2)`) gives its own; 1 without.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub starts: Option<P>,
 }
 
 impl<P> ThreadDef<P> {
@@ -287,6 +416,12 @@ impl<P> ThreadDef<P> {
                 .map(|v| f("chamfer_diameter", v))
                 .transpose()?,
             taper: self.taper,
+            custom: self
+                .custom
+                .as_ref()
+                .map(|c| c.map_params("custom.", &mut *f))
+                .transpose()?,
+            starts: self.starts.as_ref().map(|v| f("starts", v)).transpose()?,
         })
     }
 
@@ -349,16 +484,17 @@ fn thread_frame(c: &Cylinder) -> Option<[[f64; 3]; 4]> {
 /// other way) as a whole, its helix where the moved helix is, not the
 /// original's angle measured about the copy's own axis. The original
 /// face's cylinder is the copy's moved back. `angle` where the transform
-/// is not orthogonal (a scale).
+/// is not orthogonal (a scale). The helix rises a `lead` a turn (`pitch`
+/// for a single-start thread; mitcad#893).
 pub(crate) fn copied_angle(
     angle: f64,
     copy: &Cylinder,
     transform: &Transform,
-    pitch: f64,
+    (pitch, lead): (f64, f64),
     right_handed: bool,
 ) -> f64 {
     use std::f64::consts::TAU;
-    if !transform.is_orthogonal() || pitch <= 0.0 {
+    if !transform.is_orthogonal() || pitch <= 0.0 || lead <= 0.0 {
         return angle;
     }
     let back = crate::assembly::inverse(transform);
@@ -384,11 +520,11 @@ pub(crate) fn copied_angle(
     let v: [f64; 3] = std::array::from_fn(|i| moved[i] - o2[i]);
     let along = mitcad_vec3::dot(v, u2);
     let at = mitcad_vec3::dot(v, a2).atan2(mitcad_vec3::dot(v, r2));
-    // The copy's helix rises by a pitch a turn (falls for a left-hand one):
+    // The copy's helix rises by a lead a turn (falls for a left-hand one):
     // its angle at the low end is where it is `along - base` below.
     let right = right_handed != (transform.determinant() < 0.0);
     let sign = if right { 1.0 } else { -1.0 };
-    let turned = at - TAU * (along - base) / (pitch * sign);
+    let turned = at - TAU * (along - base) / (lead * sign);
     // (In (-pi, pi].)
     let turned = turned - TAU * (turned / TAU).round();
     turned + 0.0
@@ -450,23 +586,24 @@ pub(crate) fn thread_clearance<K: Kernel>(
 }
 
 /// The crest's width along the axis with a flank clearance: half a pitch at
-/// the pitch diameter, narrowing along the 30-degree flanks to the crest
-/// (the minor diameter of an internal thread, the major one of an external
-/// one), each flank moved `flank / cos 30°` into the tooth.
+/// the pitch diameter, narrowing along the flanks at `flank_angle` to the
+/// radius (30 degrees for the 60-degree profile, 15 for the trapezoidal
+/// one) to the crest (the minor diameter of an internal thread, the major
+/// one of an external one), each flank moved `flank / cos(flank_angle)`
+/// into the tooth.
 fn crest_width(
     pitch: f64,
     (major, minor, pitch_diameter): (f64, f64, f64),
     internal: bool,
     flank: f64,
+    flank_angle: f64,
 ) -> f64 {
-    let tan30 = 30f64.to_radians().tan();
-    let cos30 = 30f64.to_radians().cos();
     let depth = if internal {
         pitch_diameter - minor
     } else {
         major - pitch_diameter
     };
-    pitch / 2.0 - depth * tan30 - 2.0 * flank / cos30
+    pitch / 2.0 - depth * flank_angle.tan() - 2.0 * flank / flank_angle.cos()
 }
 
 /// The largest flank clearance that leaves the crest its minimum width
@@ -475,10 +612,10 @@ pub(crate) fn largest_flank_clearance(
     pitch: f64,
     diameters: (f64, f64, f64),
     internal: bool,
+    flank_angle: f64,
 ) -> f64 {
-    let cos30 = 30f64.to_radians().cos();
-    let crest = crest_width(pitch, diameters, internal, 0.0);
-    ((crest - MIN_CREST * pitch) * cos30 / 2.0).max(0.0)
+    let crest = crest_width(pitch, diameters, internal, 0.0, flank_angle);
+    ((crest - MIN_CREST * pitch) * flank_angle.cos() / 2.0).max(0.0)
 }
 
 /// Whether a modelled thread's flank clearance is the printed-fit
@@ -503,34 +640,40 @@ pub(crate) fn fitted_clearance(
     internal: bool,
     (radial, flank): (f64, f64),
     from_fit: bool,
+    flank_angle: f64,
 ) -> (f64, f64) {
-    if !from_fit || crest_width(pitch, diameters, internal, flank) >= MIN_CREST * pitch {
+    if !from_fit || crest_width(pitch, diameters, internal, flank, flank_angle) >= MIN_CREST * pitch
+    {
         return (radial, flank);
     }
-    let largest = largest_flank_clearance(pitch, diameters, internal);
+    let largest = largest_flank_clearance(pitch, diameters, internal, flank_angle);
     (radial, (largest - 1e-6).max(0.0))
 }
 
 /// Whether extra clearance leaves a thread of the profile (`pitch` and the
-/// `major`, `minor` and pitch diameters) on an internal or external face:
-/// the flank clearance moves each flank `flank / cos 30°` into the tooth
-/// along the axis, the crest keeping its radius, and must leave the crest
-/// at least P/50 wide; the radial clearance moves the whole profile away
-/// from the material and must leave an external thread a core. The
-/// geometry checks the same (`geometry/src/thread.cpp`).
+/// `major`, `minor` and pitch diameters, flanks at `flank_angle` to the
+/// radius) on an internal or external face: the flank clearance moves each
+/// flank `flank / cos(flank_angle)` into the tooth along the axis, the
+/// crest keeping its radius, and must leave the crest at least P/50 wide;
+/// the radial clearance moves the whole profile away from the material and
+/// must leave an external thread a core. The geometry checks the same
+/// (`geometry/src/thread.cpp`).
 pub(crate) fn check_clearance(
     pitch: f64,
     diameters: (f64, f64, f64),
     internal: bool,
     (radial, flank): (f64, f64),
+    flank_angle: f64,
 ) -> Result<(), String> {
     let (_, minor, _) = diameters;
     if flank > 0.0 {
-        let crest = crest_width(pitch, diameters, internal, flank);
+        let crest = crest_width(pitch, diameters, internal, flank, flank_angle);
         let needed = MIN_CREST * pitch;
         if crest < needed {
             // The most that fits, rounded down so that it fits as written.
-            let largest = (largest_flank_clearance(pitch, diameters, internal) * 1e4).floor() / 1e4;
+            let largest = (largest_flank_clearance(pitch, diameters, internal, flank_angle) * 1e4)
+                .floor()
+                / 1e4;
             return Err(format!(
                 "the flank clearance of {flank} mm leaves no usable tooth: the crest would be \
                  {crest:.4} mm wide, at least {needed:.4} mm is needed; this thread takes a \
@@ -614,6 +757,10 @@ impl FeatureInfo for ThreadDef {
         {
             return Err("a thread without a chamfer has no chamfer angle or diameter".to_owned());
         }
+        check_custom(&self.thread, self.custom.is_some())?;
+        if self.custom.is_some() {
+            return Ok(());
+        }
         self.thread.check(None).map(|_| ())
     }
 
@@ -645,6 +792,15 @@ impl FeatureInfo for ThreadDef {
         }
         clearance_value("radial clearance", self.radial_clearance.map(value))?;
         clearance_value("flank clearance", self.flank_clearance.map(value))?;
+        if let Some(custom) = &self.custom {
+            ThreadData::custom(value(custom.major), value(custom.pitch))?;
+        }
+        if let Some(starts) = self.starts {
+            let starts = starts_value(value(starts))?;
+            if let Ok(data) = self.thread.data() {
+                check_starts(starts, &data)?;
+            }
+        }
         if let Some(angle) = self.chamfer_angle {
             check_chamfer_angle(value(angle))?;
         }
@@ -736,7 +892,12 @@ impl ThreadDef {
             self.offset,
             self.location == ThreadEnd::HighEnd,
         )?;
-        // The profile's diameters: given, or the size's basic ones.
+        // The size: the table's, or a custom thread's (mitcad#893), and its
+        // number of starts.
+        let size = size_of(ctx, &self.thread, self.custom.as_ref(), None)?;
+        let starts = thread_starts(ctx, self.starts, &size)?;
+        let lead = size.pitch * f64::from(starts);
+        // The profile's diameters: given, or the size's (`ThreadData::profile`).
         let diameters = match &self.diameters {
             Some(d) => {
                 let (major, minor, pitch) = (
@@ -802,7 +963,7 @@ impl ThreadDef {
                     angle,
                     &cylinder,
                     &t,
-                    self.thread.data()?.pitch,
+                    (size.pitch, lead),
                     // (A mirror's copy is the other way round already.)
                     self.thread.right_handed != (t.determinant() < 0.0),
                 ),
@@ -812,7 +973,11 @@ impl ThreadDef {
                 return Err("the faces of a thread must all be internal or all external".to_owned());
             }
             internal = Some(cylinder.internal);
-            let data = self.thread.check(internal)?;
+            // The class and an ISO 7-1 thread's side, checked for the face.
+            if self.custom.is_none() {
+                self.thread.check(internal)?;
+            }
+            let data = &size;
             // The size must fit the cylinder: an external thread's root lies
             // inside it, an internal thread's root outside the bore (each
             // moved by the radial clearance).
@@ -824,7 +989,7 @@ impl ThreadDef {
                 } else {
                     None
                 })
-                .unwrap_or((data.major, data.minor, data.pitch_diameter))
+                .unwrap_or_else(|| data.profile(cylinder.internal))
             });
             let fits = if cylinder.internal {
                 diameter < major + 2.0 * radial
@@ -871,7 +1036,7 @@ impl ThreadDef {
             }
         }
         let mut output = Vec::new();
-        let data = self.thread.data()?;
+        let data = &size;
         let is_internal = internal.unwrap_or(false);
         let (major, minor, pitch_diameter) = diameters.unwrap_or_else(|| {
             (if self.tapers() {
@@ -879,8 +1044,9 @@ impl ThreadDef {
             } else {
                 None
             })
-            .unwrap_or((data.major, data.minor, data.pitch_diameter))
+            .unwrap_or_else(|| data.profile(is_internal))
         });
+        let flank_angle = data.flank_angle();
         // A tapered taper pipe thread (mitcad#733): even a cosmetic one
         // tapers the faces. Without `taper` (saved before) it is straight.
         let taper = data.taper.filter(|_| self.tapers()).map(|t| ThreadTaper {
@@ -896,6 +1062,7 @@ impl ThreadDef {
                 is_internal,
                 clearance,
                 flank_from_fit(ctx, self.flank_clearance),
+                flank_angle,
             )
         } else {
             clearance
@@ -915,7 +1082,7 @@ impl ThreadDef {
                     minor - 2.0 * radial_clearance
                 });
                 let diameter = chamfer_diameter
-                    .unwrap_or_else(|| default_chamfer_diameter(&data, is_internal, root));
+                    .unwrap_or_else(|| default_chamfer_diameter(data, is_internal, root));
                 if let Some(material) = extreme_diameter {
                     if !is_internal && diameter >= material {
                         return Err(format!(
@@ -943,6 +1110,7 @@ impl ThreadDef {
                 (major, minor, pitch_diameter),
                 is_internal,
                 clearance,
+                flank_angle,
             )?;
         }
         for (uid, shape, faces, ends, angles) in bodies {
@@ -973,6 +1141,8 @@ impl ThreadDef {
                     ends,
                 }),
                 taper,
+                starts,
+                flank_angle,
             };
             if !self.modeled
                 && spec.taper.is_none()
@@ -1020,12 +1190,15 @@ mod tests {
         // Moved along: the same angle.
         let along = Transform::translation([20.0, 5.0, 0.0]);
         let copy = rod([20.0, 5.0, 0.0], up);
-        assert!(close(copied_angle(0.3, &copy, &along, 1.0, true), 0.3));
+        assert!(close(
+            copied_angle(0.3, &copy, &along, (1.0, 1.0), true),
+            0.3
+        ));
         // Turned a quarter about the Z axis: the helix a quarter on.
         let turn = Transform::rotation([0.0; 3], up, FRAC_PI_2).unwrap();
         let copy = rod([0.0, 10.0, 0.0], up);
         assert!(close(
-            copied_angle(0.3, &copy, &turn, 1.0, true),
+            copied_angle(0.3, &copy, &turn, (1.0, 1.0), true),
             0.3 + FRAC_PI_2
         ));
         // Turned over about the X axis through the rod's middle: the copy's
@@ -1034,14 +1207,20 @@ mod tests {
         // (1, 0, 9.75), where the copy's groove, 9.5 turns on, is at pi.
         let over = Transform::rotation([0.0, 0.0, 5.0], [1.0, 0.0, 0.0], PI).unwrap();
         let copy = rod([0.0, 0.0, 10.0], [0.0, 0.0, -1.0]);
-        assert!(close(copied_angle(0.0, &copy, &over, 1.0, true), PI));
+        assert!(close(copied_angle(0.0, &copy, &over, (1.0, 1.0), true), PI));
         // Mirrored across x = 20: the left-handed image's groove lies
         // across the axis from the original's, at its low end.
         let mirror = Transform::mirror([20.0, 0.0, 0.0], [1.0, 0.0, 0.0]).unwrap();
         let copy = rod([40.0, 0.0, 0.0], up);
-        assert!(close(copied_angle(0.0, &copy, &mirror, 1.0, true), PI));
+        assert!(close(
+            copied_angle(0.0, &copy, &mirror, (1.0, 1.0), true),
+            PI
+        ));
         // A scale keeps the angle.
         let scale = Transform::scale([0.0; 3], [2.0, 2.0, 2.0]);
-        assert!(close(copied_angle(0.3, &copy, &scale, 1.0, true), 0.3));
+        assert!(close(
+            copied_angle(0.3, &copy, &scale, (1.0, 1.0), true),
+            0.3
+        ));
     }
 }

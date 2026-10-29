@@ -163,7 +163,14 @@
 //! has only the fields of the measurement objects of mitcad#649 (a
 //! dimension's `name`, `kind`, `color`, `visible`, `a`, `b`), they are
 //! written as `measurements`, which older versions read; both lists are
-//! read as annotations.
+//! read as annotations. Since mitcad#894 an annotation's `color` may be
+//! `auto` (the neutral annotation colour that follows the view's
+//! background, the colour of new annotations); one stored with one of the
+//! six colours new annotations took in turn before (`#d9480f`, `#1971c2`,
+//! `#2f9e44`, `#c2255c`, `#7048e8`, `#e67700`: the program's choice, not
+//! the user's) is read as `auto` and written so when saved again. The
+//! height of the annotations' texts set for the design (mm, 0.1 to 1000)
+//! is `annotation_text_height`, left out for the automatic one.
 //!
 //! Purge volumes set by hand (mitcad#705), when there are any:
 //! `purge_volumes` (`[{"from", "to", "volume"}]`: material ids and mm³),

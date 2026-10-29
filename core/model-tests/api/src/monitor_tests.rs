@@ -10,7 +10,7 @@ use mitcad_model::features::SketchPlane;
 use mitcad_model::ids::FeatureUid;
 use mitcad_model::test_support::{Block, block, extrude, num};
 use mitcad_model::testing::MockKernel;
-use mitcad_model::{Document, InsertOptions, ModelError, Progress, RecomputeMonitor};
+use mitcad_model::{Document, InsertOptions, ModelError, Progress, RecomputeMonitor, monitor};
 use mitcad_model_api::DocumentApi;
 
 /// Block (Sketch1, Extrude1 with d3) and a boss joined to it: Sketch2
@@ -449,12 +449,13 @@ fn a_monitor_within_others_stops_with_them_or_at_its_deadline() {
     other.cancel();
     assert!(part.is_cancelled());
     assert!(!job.is_cancelled());
-    // A deadline that passed cancels it, not its parents.
-    let late = RecomputeMonitor::within(vec![job.clone()], Some(Instant::now()));
+    // A deadline that passed cancels it, not its parents. (Deadlines are
+    // on the import's clock, mitcad#874.)
+    let late = RecomputeMonitor::within(vec![job.clone()], Some(monitor::now()));
     assert!(late.is_cancelled() && late.past_deadline() && late.progress().cancelled);
     assert!(!job.is_cancelled());
     let early =
-        RecomputeMonitor::within(Vec::new(), Some(Instant::now() + Duration::from_secs(60)));
+        RecomputeMonitor::within(Vec::new(), Some(monitor::now() + Duration::from_secs(60)));
     assert!(!early.is_cancelled() && !early.past_deadline());
 
     // A kernel operation of an evaluation stops once the deadline passes.
@@ -462,7 +463,7 @@ fn a_monitor_within_others_stops_with_them_or_at_its_deadline() {
     b.doc.kernel().stop_on_cancel.set(true);
     let part = Arc::new(RecomputeMonitor::within(
         vec![job.clone()],
-        Some(Instant::now()),
+        Some(monitor::now()),
     ));
     b.doc.set_monitor(Some(part));
     let before = snapshot(&b.doc);
@@ -500,4 +501,47 @@ fn a_job_asks_its_user_and_takes_the_answer_once() {
     job.ask("Second?");
     assert_eq!(job.take_answer(), None);
     assert_eq!(job.question().as_deref(), Some("Second?"));
+}
+
+#[test]
+fn the_import_s_clock_moves_at_the_share_of_the_processors_the_process_gets() {
+    // (mitcad#874) All the time wanted ran: the wall clock's pace; half of
+    // it waited for a processor: half the pace; nothing wanted (the
+    // threads blocked): the wall clock's; never stopped altogether.
+    assert_eq!(monitor::pace_rate(1_000, 0), 1.0);
+    assert_eq!(monitor::pace_rate(500, 500), 0.5);
+    assert_eq!(monitor::pace_rate(0, 0), 1.0);
+    assert!(monitor::pace_rate(0, 1_000) > 0.0);
+    // A core shared with another busy thread: no slower while no more
+    // logical processors are busy than there are cores, at the shared
+    // speed when all are busy, and between them in between.
+    assert_eq!(monitor::core_speed(16.0, 32.0, 16.0), 1.0);
+    assert_eq!(
+        monitor::core_speed(32.0, 32.0, 16.0),
+        monitor::SHARED_CORE_SPEED
+    );
+    let half = monitor::core_speed(24.0, 32.0, 16.0);
+    assert!(half > monitor::SHARED_CORE_SPEED && half < 1.0);
+    assert_eq!(monitor::core_speed(8.0, 8.0, 8.0), 1.0);
+    // It never goes back, and moves with the wall clock on a machine with
+    // processors to spare.
+    let start = monitor::now();
+    let wall = Instant::now();
+    let mut last = start;
+    while wall.elapsed() < 2 * monitor::PACE_STEP {
+        let now = monitor::now();
+        assert!(now >= last);
+        last = now;
+    }
+    assert!(monitor::since(start) > Duration::ZERO);
+    // A test's pace on its own thread.
+    monitor::pace_for_tests(Some(0.25));
+    let start = monitor::now();
+    std::thread::sleep(Duration::from_millis(200));
+    let paced = monitor::since(start);
+    monitor::pace_for_tests(None);
+    assert!(
+        paced >= Duration::from_millis(45) && paced < Duration::from_millis(150),
+        "{paced:?}"
+    );
 }

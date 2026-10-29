@@ -401,6 +401,7 @@ fn a_combine_finds_its_bodies_by_their_producers_and_consumes_its_tool() {
 /// after the second.
 #[test]
 fn a_split_in_two_operations_made_the_new_bodies_of_both() {
+    wall_clock();
     let whole = MockShape::imported("whole", 12);
     let kept = MockShape::imported("kept piece", 6);
     let rest = MockShape::imported("rest", 9);
@@ -497,6 +498,7 @@ fn a_split_in_two_operations_made_the_new_bodies_of_both() {
 /// others must stay); where it changed others too, all bodies are tried.
 #[test]
 fn named_participants_alone_when_the_history_changed_only_them() {
+    wall_clock();
     let mut reference = Document::new(TestKernel::default());
     import_design(
         &mut reference,

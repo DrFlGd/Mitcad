@@ -15,7 +15,7 @@ use mitcad_model::features::{FeatureDef, OccurrencePath, SketchPlane, ValueInput
 use mitcad_model::ids::{BodyUid, EntityUid, FeatureUid};
 use mitcad_model::kernel::Kernel;
 use mitcad_model::sketch::cleanup::Removal;
-use mitcad_model::sketch::edit::{EditReport, PointInput};
+use mitcad_model::sketch::edit::{EditReport, PointInput, SketchEdit};
 use mitcad_model::sketch::geometry::Curve2;
 use mitcad_model::sketch::modify::{DragTarget, Item, Map2, point_input};
 use mitcad_model::sketch::offset::derived_entities;
@@ -418,8 +418,9 @@ named_enum! {
         "sketch.mirror" => Mirror {
             sketch: FeatureUid,
             entities: Vec<Ref>,
-            #[serde(with = "mitcad_model::internal::ids::curve_serde")]
-            axis: EntityUid,
+            /// A line (`c4`), or the sketch's own axis `"x"` or `"y"`,
+            /// made in the same step when the sketch lacks it (mitcad#876).
+            axis: String,
         },
         "sketch.circular_pattern" => CircularPattern {
             sketch: FeatureUid,
@@ -831,6 +832,19 @@ mod points_opt {
 
 fn point(value: &Value) -> Result<PointInput, String> {
     point_input(value)
+}
+
+/// Mirror's line (mitcad#876): a line `c4`, or the sketch's own axis
+/// `"x"` or `"y"`, made (with the origin point) in the edit when the
+/// sketch has none, as `sketch.axis` makes it.
+fn mirror_axis(edit: &mut SketchEdit<'_>, axis: &str) -> Result<EntityUid, String> {
+    use mitcad_model::sketch::SketchAxis;
+    match axis {
+        "x" => Ok(edit.axis(SketchAxis::X)),
+        "y" => Ok(edit.axis(SketchAxis::Y)),
+        _ => EntityUid::parse_curve(axis)
+            .map_err(|_| format!("invalid mirror line '{axis}' (expected c<number>, x or y)")),
+    }
 }
 
 /// The copies a pattern made of its listed entities, instance by instance.
@@ -2407,6 +2421,7 @@ impl<K: Kernel> SketchLocal<K> for Document<K> {
                     *made_ref = curve_list(made);
                 }
                 C::Mirror { entities, axis, .. } => {
+                    let axis = mirror_axis(edit, &axis)?;
                     *made_ref = edit
                         .mirror(&entities, axis)?
                         .iter()

@@ -4,7 +4,9 @@
 //! faces' planes): added with a group, a tolerance, a format and the
 //! places a view suggests; their stored form, older files' measurements
 //! read unchanged, the geometry drawn in their planes, ISO 286 fit codes,
-//! several edited and deleted as one undo step, and leader notes.
+//! several edited and deleted as one undo step, and leader notes; lengths
+//! placed outside the body and stacked, the old default colours read as
+//! Auto and the texts' height (mitcad#894).
 
 use serde_json::{Value, json};
 
@@ -150,7 +152,7 @@ fn annotations_are_kept_with_their_format_tolerance_group_and_places() {
     let file: Value = serde_json::from_str(&doc.to_json()).unwrap();
     assert_eq!(
         file["annotations"],
-        json!([{"name": "Offset1", "kind": "offset", "color": mitcad_model::ANNOTATION_COLORS[0],
+        json!([{"name": "Offset1", "kind": "offset", "color": mitcad_model::AUTO_COLOR,
                 "group": "Shop", "a": top(), "b": bottom(), "line_offset": -4.0,
                 "text_offset": [1.0, 2.0],
                 "format": {"decimals": 1, "before": "2 x"},
@@ -364,17 +366,27 @@ fn a_dimension_is_drawn_in_its_plane_relative_to_its_picks() {
     let offset = annotation(&doc, "Offset1");
     let drawing = &offset["drawing"];
     let [p, q] = [vector(&offset["points"][0]), vector(&offset["points"][1])];
-    // Along -Z, so in the plane square to Y (the axis least along it), the
-    // line a quarter of the length off along -X.
+    // Along -Z, so in the plane square to Y (the axis least along it, a
+    // plane of the block's sides), the line outside the block along -X
+    // (mitcad#894): the block reaches 10 mm past the ends either way, the
+    // line 1.5 text heights (2.5 mm, the block being small) past it; the
+    // extension lines from the block's outline there, not across its top.
     near_point(&drawing["plane"]["normal"], [0.0, 1.0, 0.0]);
     near_point(&drawing["plane"]["x"], [0.0, 0.0, -1.0]);
     near_point(&drawing["plane"]["y"], [-1.0, 0.0, 0.0]);
-    near(&drawing["line_offset"], 5.0);
-    near_point(&drawing["extension_lines"][0][0], p);
-    near_point(&drawing["extension_lines"][0][1], [p[0] - 5.0, p[1], p[2]]);
-    near_point(&drawing["dimension_lines"][0][1], [q[0] - 5.0, q[1], q[2]]);
+    near(&drawing["text_height"], 2.5);
+    near(&drawing["line_offset"], 13.75);
+    near_point(&drawing["extension_lines"][0][0], [p[0] - 10.0, p[1], p[2]]);
+    near_point(
+        &drawing["extension_lines"][0][1],
+        [p[0] - 13.75, p[1], p[2]],
+    );
+    near_point(
+        &drawing["dimension_lines"][0][1],
+        [q[0] - 13.75, q[1], q[2]],
+    );
     near_point(&drawing["arrows"][1]["direction"], [0.0, 0.0, -1.0]);
-    near_point(&drawing["text"]["at"], [p[0] - 5.0, p[1], 10.0]);
+    near_point(&drawing["text"]["at"], [p[0] - 13.75, p[1], 10.0]);
     near_point(&drawing["text"]["direction"], [0.0, 0.0, -1.0]);
 
     // The text dragged along and off the line, the line to the other side.
@@ -401,7 +413,7 @@ fn a_dimension_is_drawn_in_its_plane_relative_to_its_picks() {
     );
     let stored = annotation(&doc, "Offset1");
     assert!(stored.get("text_offset").is_none(), "{stored}");
-    near(&stored["drawing"]["line_offset"], 7.5);
+    near(&stored["drawing"]["line_offset"], 13.75);
 
     // A plane picked: the XZ plane, which the length lies in already.
     command(
@@ -436,8 +448,11 @@ fn a_view_suggests_the_plane_and_the_places() {
                "view": {"direction": [0, 1, 0], "up": [0, 0, 1], "pixel": 0.5}}),
     );
     let offset = annotation(&doc, "Offset1");
+    // The block's front face, the plane of the part most facing the view;
+    // the line outside the block (mitcad#894), 1.5 text heights past its
+    // side, on +X (both sides as clear: neither is the view's upper one).
     assert_eq!(offset["plane"], json!({"normal": [0.0, -1.0, 0.0]}));
-    near(&offset["line_offset"], 11.0);
+    near(&offset["line_offset"], 13.75);
     near_point(&offset["drawing"]["plane"]["y"], [1.0, 0.0, 0.0]);
     // A note there: its text along the view's right, 40 and 30 pixels off.
     command(
@@ -1357,4 +1372,180 @@ fn more_annotations_than_the_measure_cache_holds_are_not_measured_again() {
     let first = measures(&doc);
     assert_eq!(annotations(&doc).len(), 300);
     assert_eq!(measures(&doc), first, "measured again");
+}
+
+/// mitcad#894: a length placed automatically on the synthetic 20 mm block
+/// lies outside the block's extent in its plane, on the side away from it,
+/// and a second parallel one stacks outside the first; with a view the
+/// places are kept, stacked the same way.
+#[test]
+fn lengths_are_placed_outside_the_body_and_stack_outside_each_other() {
+    let mut doc = block();
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": top(), "b": bottom()}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": top(), "b": bottom(), "kind": "distance"}),
+    );
+    // Both in the plane square to Y, along -Z, offset along -X: the block
+    // spans x 0 to 20, the ends are at x 10.
+    let offset = annotation(&doc, "Offset1")["drawing"].clone();
+    let distance = annotation(&doc, "Distance1")["drawing"].clone();
+    for drawing in [&offset, &distance] {
+        near_point(&drawing["plane"]["y"], [-1.0, 0.0, 0.0]);
+        for end in drawing["dimension_lines"][0].as_array().unwrap() {
+            let x = end[0].as_f64().unwrap();
+            assert!(x < 0.0, "inside the block's extent: {drawing}");
+        }
+    }
+    // 1.5 text heights (2.5 mm) past the block; the second 1.2 text
+    // heights further out.
+    near(&offset["line_offset"], 13.75);
+    near(&distance["line_offset"], 16.75);
+    near(&distance["dimension_lines"][0][0][0], -6.75);
+    // Hidden, the first leaves its place to the second.
+    command(
+        &mut doc,
+        json!({"cmd": "edit_annotation", "name": "Offset1", "visible": false}),
+    );
+    near(
+        &annotation(&doc, "Distance1")["drawing"]["line_offset"],
+        13.75,
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "edit_annotation", "name": "Offset1", "visible": true}),
+    );
+
+    // Added in a view from the front, Z up: each one's place kept, the
+    // second outside the first.
+    let mut doc = block();
+    let view = json!({"direction": [0, 1, 0], "up": [0, 0, 1], "pixel": 0.5});
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": top(), "b": bottom(), "view": view.clone()}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": top(), "b": bottom(), "kind": "distance",
+               "view": view}),
+    );
+    let first = annotation(&doc, "Offset1");
+    let second = annotation(&doc, "Distance1");
+    assert_eq!(second["plane"], json!({"normal": [0.0, -1.0, 0.0]}));
+    near(&first["line_offset"], 13.75);
+    near(&second["line_offset"], 16.75);
+    near_point(&second["drawing"]["plane"]["y"], [1.0, 0.0, 0.0]);
+    // Kept: the first moved by hand stays where it was put.
+    command(
+        &mut doc,
+        json!({"cmd": "edit_annotation", "name": "Offset1", "line_offset": 30}),
+    );
+    near(&annotation(&doc, "Offset1")["drawing"]["line_offset"], 30.0);
+    near(
+        &annotation(&doc, "Distance1")["drawing"]["line_offset"],
+        16.75,
+    );
+}
+
+/// mitcad#894: the six colours new annotations took in turn are read from
+/// a file as Auto; a colour the user chose stays; new ones are Auto.
+#[test]
+fn old_default_colours_are_read_as_auto() {
+    let mut doc = block();
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": top(), "b": bottom()}),
+    );
+    assert_eq!(annotation(&doc, "Offset1")["color"], "auto");
+    command(
+        &mut doc,
+        json!({"cmd": "edit_annotation", "name": "Offset1", "color": "#1971c2"}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": top(), "b": bottom(), "kind": "distance",
+               "color": "#112233"}),
+    );
+    // As an older version wrote it: Blue, one of the six.
+    let saved = doc.to_json();
+    assert!(saved.contains("#1971c2"), "{saved}");
+    let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
+    loaded.kernel().measures_selections.set(true);
+    command(&mut loaded, json!({"cmd": "recompute"}));
+    assert_eq!(annotation(&loaded, "Offset1")["color"], "auto");
+    assert_eq!(annotation(&loaded, "Distance1")["color"], "#112233");
+    // Saved again: Auto.
+    let again = loaded.to_json();
+    assert!(!again.contains("#1971c2"), "{again}");
+    assert!(again.contains("\"auto\""), "{again}");
+    // Auto given by name, in any case.
+    command(
+        &mut loaded,
+        json!({"cmd": "edit_annotation", "name": "Distance1", "color": "AUTO"}),
+    );
+    assert_eq!(annotation(&loaded, "Distance1")["color"], "auto");
+    let error = refused(
+        &mut loaded,
+        json!({"cmd": "edit_annotation", "name": "Distance1", "color": "grey"}),
+    );
+    assert!(error.contains("\"auto\""), "{error}");
+}
+
+/// mitcad#894: the height of the annotations' texts, automatic (of the ISO
+/// 3098 series by the size of what is annotated) or set for the design;
+/// the automatic line keeps 1.5 of it clear of the body.
+#[test]
+fn the_text_height_is_automatic_or_set_for_the_design() {
+    let mut doc = block();
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": top(), "b": bottom()}),
+    );
+    let height = |doc: &Document<MockKernel>| -> Value {
+        serde_json::from_str(&doc.query(r#"{"query": "annotation_text_height"}"#).unwrap()).unwrap()
+    };
+    // The 20 mm block: the smallest of the series.
+    assert_eq!(
+        height(&doc),
+        json!({"text_height": null, "in_use": 2.5, "automatic": 2.5,
+               "series": [2.5, 3.5, 5.0, 7.0, 10.0]})
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "set_annotation_text_height", "text_height": 5}),
+    );
+    assert_eq!(undo_label(&doc), "Annotation Text Height");
+    assert_eq!(height(&doc)["in_use"], 5.0);
+    let drawing = annotation(&doc, "Offset1")["drawing"].clone();
+    near(&drawing["text_height"], 5.0);
+    near(&drawing["line_offset"], 17.5);
+    // Kept in the file, read back.
+    let saved = doc.to_json();
+    let file: Value = serde_json::from_str(&saved).unwrap();
+    assert_eq!(file["annotation_text_height"], 5.0);
+    let loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
+    assert_eq!(loaded.annotation_text_height(), Some(5.0));
+    assert_eq!(loaded.to_json(), saved);
+    // Back to the automatic one; refused out of range.
+    command(
+        &mut doc,
+        json!({"cmd": "set_annotation_text_height", "text_height": null}),
+    );
+    assert_eq!(height(&doc)["text_height"], Value::Null);
+    let file: Value = serde_json::from_str(&doc.to_json()).unwrap();
+    assert!(file.get("annotation_text_height").is_none());
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "set_annotation_text_height", "text_height": 0}),
+    );
+    assert!(error.contains("text height"), "{error}");
+    let bad = saved.replace(
+        "\"annotation_text_height\": 5.0",
+        "\"annotation_text_height\": -1",
+    );
+    assert_ne!(bad, saved);
+    assert!(Document::from_json(&bad, MockKernel::default()).is_err());
 }

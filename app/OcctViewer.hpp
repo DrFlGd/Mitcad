@@ -560,6 +560,10 @@ public:
   // Frames drawn so far (paintGL), for the drag timings' logs (mitcad#636):
   // what was submitted, not what the screen showed.
   quint64 framesDrawn() const { return m_framesDrawn; }
+  // Logs "<what>: first frame <ms> ms after it began" once the next frame
+  // is drawn, the time taken from `started` (an open, mitcad#878): what an
+  // open costs until the design shows. A later call replaces a pending one.
+  void logFirstFrame(const QString& what, const QElapsedTimer& started);
   // Outline of the sketch shape being drawn; null clears it.
   void setSketchPreview(const TopoDS_Shape& shape);
 
@@ -910,6 +914,10 @@ private:
   void styleSketchHalo(const occ::handle<AIS_Shape>& halo, const SketchEntityLook& look) const;
   // Logs "Sketch halos: <n> dark|light" when it changed (for UI tests).
   void logSketchHalos();
+  // Logs "Sketch layers: halos < curves and highlights < points and point
+  // highlights; …" when it changed: the order the sketch layers are drawn
+  // in, read from the viewer (for UI tests, mitcad#897).
+  void logSketchLayers();
   // Recolours the sketch entities shown after the background turned dark
   // or light.
   void restyleSketchEntities();
@@ -1032,6 +1040,10 @@ private:
   std::map<const AIS_InteractiveObject*, occ::handle<AIS_Shape>> m_sketchEntityHalos;
   // The halos as last logged ("Sketch halos:").
   QString m_loggedSketchHalos;
+  // The sketch layers' order and the sketch highlights as last logged
+  // ("Sketch layers:", "Sketch highlights:", mitcad#897).
+  QString m_loggedSketchLayers;
+  QString m_loggedSketchHighlights;
   // The shown sketches' colours as last logged ("Sketch colours:", for UI
   // tests; mitcad#286).
   QString m_loggedSketchColours;
@@ -1073,6 +1085,9 @@ private:
   // frame that shows it (windowSelectionApplied).
   QElapsedTimer m_windowClock;
   bool m_windowShowPending = false;
+  // logFirstFrame: what to log after the next frame, and since when.
+  QString m_firstFrameOf;
+  QElapsedTimer m_firstFrameClock;
   gp_Ax3 m_sketchPlane;
   bool m_sketchInput = false;
   // The sketch tool's cursor (mitcad#3): its icon, and whether it snaps.
@@ -1130,6 +1145,11 @@ private:
   Graphic3d_ZLayerId m_edgeLayer = Graphic3d_ZLayerId_UNKNOWN;
   // Sketch entities' halos, just before the top layer (mitcad#302).
   Graphic3d_ZLayerId m_sketchHaloLayer = Graphic3d_ZLayerId_UNKNOWN;
+  // Sketch points and their selection highlights, just after the top layer
+  // that holds the curves and their highlights (mitcad#897), with the
+  // points' own hover style in it.
+  Graphic3d_ZLayerId m_sketchPointLayer = Graphic3d_ZLayerId_UNKNOWN;
+  occ::handle<Prs3d_Drawer> m_sketchPointHover;
   // Image references drawn through the bodies, just before the halos
   // (mitcad#782).
   Graphic3d_ZLayerId m_imageLayer = Graphic3d_ZLayerId_UNKNOWN;

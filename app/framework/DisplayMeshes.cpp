@@ -2,8 +2,10 @@
 #include "DisplayMeshes.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <set>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <QCoreApplication>
@@ -17,6 +19,7 @@
 #include <Standard_Failure.hxx>
 
 #include "Json.hpp"
+#include "bridge/shape.hpp"
 #include "mitcad/io/mesh.hpp"
 #include "view/ViewTessellation.hpp"
 
@@ -33,6 +36,26 @@ public:
 private:
   const ModelJob& m_job;
 };
+
+// The job's cancel or the meshing's own stop as OCCT's user break
+// (RecomputeMeshing, mitcad#881).
+class StopBreak : public Message_ProgressIndicator {
+public:
+  StopBreak(const ModelJob& job, const std::atomic<bool>& stop) : m_job(job), m_stop(stop) {}
+  bool UserBreak() override { return m_stop.load() || m_job.control().is_cancelled(); }
+  void Show(const Message_ProgressScope&, const bool) override {}
+
+private:
+  const ModelJob& m_job;
+  const std::atomic<bool>& m_stop;
+};
+
+// MITCAD_MESH_DURING_RECOMPUTE=0 (or off): opens mesh after the recompute
+// only (mitcad#881).
+bool meshDuringRecompute() {
+  const QByteArray given = qgetenv("MITCAD_MESH_DURING_RECOMPUTE");
+  return given != "0" && given != "off";
+}
 
 bool addShape(DisplayShapes& shapes, std::shared_ptr<geometry::Shape> shape) {
   if (shape && !shape->occt().IsNull()) {
@@ -74,6 +97,124 @@ void countShown(DisplayMeshing& meshing, const DisplayShapes& shapes) {
   for (const std::shared_ptr<geometry::Shape>& shape : shapes) {
     meshing.triangles += io::mesh_stats(shape->occt()).triangles;
   }
+}
+
+// What an open took of the meshing beside its recompute (mitcad#881).
+struct DuringRecompute {
+  qint64 wait = 0; // for its last batch, after the recompute
+  std::size_t taken = 0; // shapes given its meshes
+  std::size_t stale = 0; // meshed, but the body's shape is another now
+  std::size_t incomplete = 0; // of those taken, with faces OCCT's mesher failed on
+};
+
+// Gives each shown body that `during` meshed, and whose shape is still the
+// one it meshed and has no triangulations yet, the meshes of its copy; it
+// is then meshed to the end, as one meshed here would be.
+void takeMeshedDuring(DuringRecompute& out, const std::vector<RecomputeMeshing::Body>& bodies,
+                      const DisplayShapes& shapes, const std::vector<std::string>& uids) {
+  std::unordered_map<std::string, const RecomputeMeshing::Body*> meshed;
+  for (const RecomputeMeshing::Body& body : bodies) {
+    meshed.emplace(body.uid, &body);
+  }
+  std::vector<bool> had(shapes.size());
+  for (std::size_t i = 0; i < shapes.size(); ++i) {
+    had[i] = io::has_triangulation(shapes[i]->occt());
+  }
+  for (std::size_t i = 0; i < shapes.size() && i < uids.size(); ++i) {
+    const auto found = meshed.find(uids[i]);
+    if (found == meshed.end()) {
+      continue;
+    }
+    const RecomputeMeshing::Body& body = *found->second;
+    if (body.shape != shapes[i]) {
+      ++out.stale;
+      continue;
+    }
+    if (readyForDisplay(*shapes[i])) {
+      continue;
+    }
+    try {
+      io::restore_triangulations(shapes[i]->occt(), *body.meshes);
+    } catch (const Standard_Failure&) {
+      ++out.stale;
+      continue;
+    } catch (const std::exception&) {
+      ++out.stale;
+      continue;
+    }
+    shapes[i]->set_display_meshed();
+    ++out.taken;
+    if (!body.complete) {
+      ++out.incomplete;
+    }
+  }
+  // A body whose faces are all another's it shares them with (a pattern's
+  // copies) is meshed to the end too, as it would be meshed together with
+  // that one here.
+  for (std::size_t i = 0; i < shapes.size(); ++i) {
+    if (!had[i] && !shapes[i]->display_meshed() && io::has_triangulation(shapes[i]->occt())) {
+      shapes[i]->set_display_meshed();
+      ++out.taken;
+    }
+  }
+}
+
+void countDuring(DisplayMeshing& meshing, const DuringRecompute& taken, const RecomputeMeshing* during) {
+  if (during == nullptr) {
+    return;
+  }
+  meshing.during = taken.taken;
+  meshing.duringStale = taken.stale;
+  meshing.incomplete += taken.incomplete;
+  meshing.duringGiven = during->given();
+  meshing.duringLeftToStore = during->leftToStore();
+  meshing.duringLeft = during->left();
+  meshing.duringMilliseconds = during->milliseconds();
+  meshing.duringAfterMilliseconds = during->afterMilliseconds();
+  meshing.duringWaitMilliseconds = taken.wait;
+  meshing.duringTrace = during->trace();
+}
+
+// The shapes meshed for display after an open's recompute, with what
+// `during` meshed beside it (mitcad#881): the bodies it meshed take their
+// meshes; the others but those of its batch under way are meshed while
+// that batch goes on; then its bodies take theirs, and any it did not end
+// with (cut short) are meshed. Without `during`, meshForDisplay.
+DisplayMeshing meshBeside(const DisplayShapes& shapes, const std::vector<std::string>& uids, ModelJob& job,
+                          RecomputeMeshing* during) {
+  if (during == nullptr) {
+    return meshForDisplay(shapes, job);
+  }
+  DuringRecompute taken;
+  takeMeshedDuring(taken, during->takeMeshed(), shapes, uids);
+  const std::vector<std::string> underWay = during->underWay();
+  const auto isUnderWay = [&underWay](const std::string& uid) {
+    return std::find(underWay.begin(), underWay.end(), uid) != underWay.end();
+  };
+  DisplayShapes rest;
+  DisplayShapes waiting;
+  for (std::size_t i = 0; i < shapes.size() && i < uids.size(); ++i) {
+    (isUnderWay(uids[i]) ? waiting : rest).push_back(shapes[i]);
+  }
+  DisplayMeshing meshing = meshForDisplay(rest, job);
+  taken.wait = during->finish();
+  takeMeshedDuring(taken, during->takeMeshed(), shapes, uids);
+  DisplayShapes again;
+  for (const std::shared_ptr<geometry::Shape>& shape : waiting) {
+    if (!readyForDisplay(*shape)) {
+      again.push_back(shape);
+    }
+  }
+  if (!again.empty()) {
+    const DisplayMeshing more = meshForDisplay(again, job);
+    meshing.bodies += more.bodies;
+    meshing.incomplete += more.incomplete;
+    meshing.ready += more.ready;
+    meshing.report.meshed += more.report.meshed;
+    meshing.report.abandoned += more.report.abandoned;
+  }
+  countDuring(meshing, taken, during);
+  return meshing;
 }
 
 } // namespace
@@ -242,21 +383,36 @@ QByteArray displayMeshStoreOptions() {
       .toUtf8();
 }
 
-DisplayMeshing meshOpenedForDisplay(Document& document, ModelJob& job, bool store) {
+DisplayMeshing meshOpenedForDisplay(Document& document, ModelJob& job, bool store, DisplayMeshWrites* writes,
+                                    const QString& label, RecomputeMeshing* during) {
+  QElapsedTimer clock;
+  clock.start();
+  // The recompute is over: no batch begins beside it any more (mitcad#881).
+  if (during != nullptr) {
+    during->finishTaking();
+  }
   std::vector<std::string> uids;
   const DisplayShapes shapes = shownBodyShapes(document, &uids);
   if (!store || !displayMeshStore()) {
-    DisplayMeshing meshing = meshForDisplay(shapes, job);
+    DisplayMeshing meshing = meshBeside(shapes, uids, job, during);
     countShown(meshing, shapes);
+    meshing.milliseconds = clock.elapsed();
     return meshing;
   }
-  QElapsedTimer clock;
-  clock.start();
+  // The design opened again at once: what the writer still has of its
+  // earlier open is stored first, so that this open finds it (mitcad#880).
+  qint64 waited = 0;
+  if (writes != nullptr && writes->pending() > 0) {
+    job.setStage(QCoreApplication::translate("DisplayMeshes", "Storing the bodies' display meshes"));
+    waited = writes->wait(label);
+  }
   const QByteArray options = displayMeshStoreOptions();
   // The bodies the view would mesh take what the store keeps for them.
   std::vector<std::string> wanted;
+  std::vector<bool> readyBefore(shapes.size());
   for (std::size_t i = 0; i < shapes.size(); ++i) {
-    if (!readyForDisplay(*shapes[i])) {
+    readyBefore[i] = readyForDisplay(*shapes[i]);
+    if (!readyBefore[i]) {
       wanted.push_back(uids[i]);
     }
   }
@@ -269,21 +425,53 @@ DisplayMeshing meshOpenedForDisplay(Document& document, ModelJob& job, bool stor
   // The rest are meshed; what is meshed to the end goes to the store.
   std::vector<bool> ready(shapes.size());
   for (std::size_t i = 0; i < shapes.size(); ++i) {
+    // A body given the final tier's triangulation of every face is meshed
+    // to the end as one meshed here would be: the view draws it as it is
+    // (drawerMeshes, mitcad#878).
+    if (!readyBefore[i] && io::has_triangulation(shapes[i]->occt())) {
+      shapes[i]->set_display_meshed();
+    }
     ready[i] = readyForDisplay(*shapes[i]);
   }
-  DisplayMeshing meshing = meshForDisplay(shapes, job);
+  // Then those meshed beside the recompute (mitcad#881): not `ready`
+  // before, so stored below as the bodies meshed here are.
+  DisplayMeshing meshing = meshBeside(shapes, uids, job, during);
   meshing.restored = static_cast<std::size_t>(restored.value(QStringLiteral("restored")).toArray().size());
   meshing.restoredFaces = static_cast<std::size_t>(restored.value(QStringLiteral("faces")).toInteger());
   meshing.restoreMilliseconds = restoreMilliseconds;
+  meshing.waitMilliseconds = waited;
   if (!job.control().is_cancelled() && meshing.report.abandoned == 0) {
     std::vector<std::string> meshed;
+    std::vector<std::size_t> indices;
     for (std::size_t i = 0; i < shapes.size(); ++i) {
       if (!ready[i] && shapes[i]->display_meshed() && !shapes[i]->display_interactive() &&
           !io::is_mesh(shapes[i]->occt())) {
         meshed.push_back(uids[i]);
+        indices.push_back(i);
       }
     }
-    if (!meshed.empty()) {
+    if (!meshed.empty() && writes != nullptr) {
+      // Stored after the open (mitcad#880): only the triangulations are
+      // taken here, with the bodies' versions as they are now.
+      QElapsedTimer capturing;
+      capturing.start();
+      std::vector<DisplayMeshWrites::Body> bodies;
+      bodies.reserve(indices.size());
+      for (const std::size_t i : indices) {
+        try {
+          bodies.push_back({uids[i], io::capture_triangulations(shapes[i]->occt())});
+        } catch (const Standard_Failure& failure) {
+          meshing.storeErrors.append(QStringLiteral("%1: %2").arg(QString::fromStdString(uids[i]),
+                                                                  QString::fromUtf8(failure.what())));
+        } catch (const std::exception& error) {
+          meshing.storeErrors.append(QStringLiteral("%1: %2").arg(QString::fromStdString(uids[i]),
+                                                                  QString::fromUtf8(error.what())));
+        }
+      }
+      meshing.deferred = writes->queue(document.display_mesh_write(rustStr(meshRequest(meshed, options))),
+                                       std::move(bodies), label);
+      meshing.captureMilliseconds = capturing.elapsed();
+    } else if (!meshed.empty()) {
       QElapsedTimer storing;
       storing.start();
       const QJsonObject stored =
@@ -299,6 +487,404 @@ DisplayMeshing meshOpenedForDisplay(Document& document, ModelJob& job, bool stor
   countShown(meshing, shapes);
   meshing.milliseconds = clock.elapsed();
   return meshing;
+}
+
+// One open's bodies queued to be written.
+struct DisplayMeshWrites::Batch {
+  explicit Batch(rust::Box<DisplayMeshWrite> made) : write(std::move(made)) {}
+  rust::Box<DisplayMeshWrite> write;
+  std::vector<Body> bodies;
+  std::size_t next = 0; // the first body not taken; all taken or dropped at bodies.size()
+  DisplayMeshWriteReport report;
+  QElapsedTimer clock; // from the first body taken
+};
+
+DisplayMeshWrites::DisplayMeshWrites(bool started) : m_started(started) {}
+
+DisplayMeshWrites::~DisplayMeshWrites() {
+  drop();
+  {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_stopping = true;
+  }
+  m_changed.notify_all();
+  if (m_thread.joinable()) {
+    m_thread.join();
+  }
+}
+
+std::size_t DisplayMeshWrites::queue(rust::Box<DisplayMeshWrite> write, std::vector<Body> bodies,
+                                     const QString& label) {
+  auto batch = std::make_shared<Batch>(std::move(write));
+  batch->report.label = label;
+  for (Body& body : bodies) {
+    if (body.triangulations && batch->write->has_body(rust::Str(body.uid))) {
+      batch->bodies.push_back(std::move(body));
+    }
+  }
+  const std::size_t count = batch->bodies.size();
+  if (count == 0) {
+    return 0;
+  }
+  {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_batches.push_back(std::move(batch));
+    if (!m_thread.joinable()) {
+      m_thread = std::thread([this] { run(); });
+    }
+  }
+  m_changed.notify_all();
+  return count;
+}
+
+qint64 DisplayMeshWrites::wait(const QString& label) {
+  QElapsedTimer clock;
+  clock.start();
+  std::unique_lock<std::mutex> lock(m_mutex);
+  if (!m_started) {
+    m_started = true;
+    m_changed.notify_all();
+  }
+  // A batch stays queued until the writer has finished it (logged it).
+  m_changed.wait(lock, [this, &label] {
+    return std::none_of(m_batches.begin(), m_batches.end(), [&label](const std::shared_ptr<Batch>& batch) {
+      return label.isEmpty() || batch->report.label == label;
+    });
+  });
+  return clock.elapsed();
+}
+
+std::size_t DisplayMeshWrites::drop() {
+  std::vector<std::shared_ptr<Batch>> finished;
+  std::size_t dropped = 0;
+  std::unique_lock<std::mutex> lock(m_mutex);
+  for (auto it = m_batches.begin(); it != m_batches.end();) {
+    const std::shared_ptr<Batch>& batch = *it;
+    const std::size_t left = batch->bodies.size() - batch->next;
+    dropped += left;
+    batch->report.dropped += left;
+    for (std::size_t i = batch->next; i < batch->bodies.size(); ++i) {
+      batch->bodies[i].triangulations.reset();
+    }
+    batch->next = batch->bodies.size();
+    // The writer's own batch it finishes itself, after its body.
+    if (batch == m_writing) {
+      ++it;
+    } else {
+      finished.push_back(batch);
+      it = m_batches.erase(it);
+    }
+  }
+  lock.unlock();
+  for (const std::shared_ptr<Batch>& batch : finished) {
+    finish(*batch);
+  }
+  lock.lock();
+  m_changed.notify_all();
+  m_changed.wait(lock, [this] { return m_writing == nullptr && m_batches.empty(); });
+  return dropped;
+}
+
+void DisplayMeshWrites::start() {
+  {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_started = true;
+  }
+  m_changed.notify_all();
+}
+
+std::size_t DisplayMeshWrites::pending() const {
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  std::size_t count = 0;
+  for (const std::shared_ptr<Batch>& batch : m_batches) {
+    count += batch->bodies.size() - batch->next;
+  }
+  return count + (m_writingBody ? 1 : 0);
+}
+
+void DisplayMeshWrites::setReporter(std::function<void(const DisplayMeshWriteReport&)> reporter) {
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  m_reporter = std::move(reporter);
+}
+
+void DisplayMeshWrites::run() {
+  std::unique_lock<std::mutex> lock(m_mutex);
+  for (;;) {
+    m_changed.wait(lock, [this] { return m_stopping || (m_started && !m_batches.empty()); });
+    if (m_stopping) {
+      return;
+    }
+    const std::shared_ptr<Batch> batch = m_batches.front();
+    m_writing = batch;
+    if (batch->next >= batch->bodies.size()) {
+      // Every body written or dropped: logged, then no longer queued.
+      lock.unlock();
+      finish(*batch);
+      lock.lock();
+      m_batches.pop_front();
+      m_writing.reset();
+      m_changed.notify_all();
+      continue;
+    }
+    if (batch->next == 0) {
+      batch->clock.start();
+    }
+    Body body = std::move(batch->bodies[batch->next++]);
+    m_writingBody = true;
+    lock.unlock();
+    qint64 bytes = 0;
+    QString error;
+    try {
+      std::string data = io::triangulation_bytes(*body.triangulations);
+      body.triangulations.reset();
+      bytes = static_cast<qint64>(batch->write->write_body(
+          rust::Str(body.uid),
+          rust::Slice<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(data.data()), data.size())));
+    } catch (const Standard_Failure& failure) {
+      error = QStringLiteral("%1: %2").arg(QString::fromStdString(body.uid), QString::fromUtf8(failure.what()));
+    } catch (const std::exception& failure) {
+      // (write_body's errors name the body.)
+      error = QString::fromUtf8(failure.what());
+    }
+    lock.lock();
+    m_writingBody = false;
+    if (error.isEmpty()) {
+      ++batch->report.stored;
+      batch->report.bytes += bytes;
+    } else {
+      batch->report.errors.append(error);
+    }
+    batch->report.milliseconds = batch->clock.isValid() ? batch->clock.elapsed() : 0;
+    m_changed.notify_all();
+  }
+}
+
+void DisplayMeshWrites::finish(Batch& batch) {
+  const DisplayMeshWriteReport& report = batch.report;
+  if (report.stored > 0) {
+    qInfo().noquote() << QStringLiteral("Display meshes of %1: stored %2 bodies (%3 bytes) in %4 ms after the open")
+                             .arg(report.label)
+                             .arg(static_cast<qulonglong>(report.stored))
+                             .arg(report.bytes)
+                             .arg(report.milliseconds);
+  }
+  if (report.dropped > 0) {
+    qInfo().noquote() << QStringLiteral("Display meshes of %1: %2 bodies not stored (dropped)")
+                             .arg(report.label)
+                             .arg(static_cast<qulonglong>(report.dropped));
+  }
+  for (const QString& error : report.errors) {
+    qWarning().noquote() << QStringLiteral("Display meshes of %1: not stored: %2").arg(report.label, error);
+  }
+  std::function<void(const DisplayMeshWriteReport&)> reporter;
+  {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    reporter = m_reporter;
+  }
+  if (reporter) {
+    reporter(report);
+  }
+}
+
+namespace {
+
+std::mutex g_writesMutex;
+std::unique_ptr<DisplayMeshWrites> g_writes;
+bool g_writesFinished = false;
+
+} // namespace
+
+DisplayMeshWrites* displayMeshWrites() {
+  const QByteArray given = qgetenv("MITCAD_DISPLAY_MESH_WRITER");
+  if (given == "0" || given == "off") {
+    return nullptr;
+  }
+  const std::lock_guard<std::mutex> lock(g_writesMutex);
+  if (g_writesFinished) {
+    return nullptr;
+  }
+  if (!g_writes) {
+    g_writes = std::make_unique<DisplayMeshWrites>();
+  }
+  return g_writes.get();
+}
+
+void finishDisplayMeshWrites() {
+  std::unique_ptr<DisplayMeshWrites> writes;
+  {
+    const std::lock_guard<std::mutex> lock(g_writesMutex);
+    g_writesFinished = true;
+    writes = std::move(g_writes);
+  }
+  writes.reset();
+}
+
+std::unique_ptr<RecomputeMeshing> RecomputeMeshing::start(Document& document, const ModelJob& job) {
+  if (!meshDuringRecompute()) {
+    return nullptr;
+  }
+  // (The options here: the thread reads no settings.)
+  return std::make_unique<RecomputeMeshing>(document.display_feed(rustStr(displayMeshStoreOptions())), job,
+                                            viewMeshOptions());
+}
+
+RecomputeMeshing::RecomputeMeshing(rust::Box<DisplayFeed> feed, const ModelJob& job, const io::MeshOptions& options)
+    : m_feed(std::move(feed)), m_job(job), m_options(options) {
+  m_clock.start();
+  m_thread = std::thread([this] { run(); });
+}
+
+RecomputeMeshing::~RecomputeMeshing() {
+  m_stopping = true;
+  finishTaking();
+  if (m_thread.joinable()) {
+    m_thread.join();
+  }
+}
+
+void RecomputeMeshing::finishTaking() {
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  if (!m_finishing) {
+    m_finishing = true;
+    m_finishedAt = m_clock.elapsed();
+  }
+}
+
+std::vector<std::string> RecomputeMeshing::underWay() const {
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  return m_underWay;
+}
+
+std::vector<RecomputeMeshing::Body> RecomputeMeshing::takeMeshed() {
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  return std::exchange(m_meshed, {});
+}
+
+qint64 RecomputeMeshing::finish() {
+  QElapsedTimer clock;
+  clock.start();
+  finishTaking();
+  if (m_thread.joinable()) {
+    m_thread.join();
+  }
+  // What the recompute put in and no batch took: meshed by the open.
+  std::unique_ptr<bridge::ShapeList> shapes = bridge::new_shape_list();
+  m_left += m_feed->take(0, *shapes).size();
+  return clock.elapsed();
+}
+
+std::size_t RecomputeMeshing::given() const { return m_feed->given(); }
+std::size_t RecomputeMeshing::leftToStore() const { return m_feed->left_to_store(); }
+std::size_t RecomputeMeshing::changedLater() const { return m_feed->changed_later(); }
+
+std::size_t RecomputeMeshing::doneSoFar() const {
+  const std::lock_guard<std::mutex> lock(m_mutex);
+  return m_doneSoFar;
+}
+
+void RecomputeMeshing::run() {
+  // How long a take waits for bodies before it looks for a stop again.
+  constexpr std::uint32_t kWaitMs = 50;
+  for (;;) {
+    {
+      const std::lock_guard<std::mutex> lock(m_mutex);
+      if (m_finishing || m_stopping) {
+        break;
+      }
+    }
+    std::unique_ptr<bridge::ShapeList> shapes = bridge::new_shape_list();
+    const rust::Vec<rust::String> uids = m_feed->take(kWaitMs, *shapes);
+    if (uids.empty()) {
+      if (m_feed->is_done()) {
+        break;
+      }
+      continue;
+    }
+    const qint64 began = m_clock.elapsed();
+    std::vector<TopoDS_Shape> pending;
+    std::vector<Body> batch;
+    std::vector<std::shared_ptr<geometry::Shape>> copies;
+    {
+      // The copies are made before the batch is under way, so that once
+      // the open sees it under way, nothing here reads the bodies any
+      // more; put in after the recompute ended, the bodies are the open's.
+      const std::lock_guard<std::mutex> lock(m_mutex);
+      if (m_finishing || m_stopping) {
+        m_left += uids.size();
+        m_doneSoFar += uids.size();
+        break;
+      }
+      for (std::size_t i = 0; i < uids.size() && i < shapes->size(); ++i) {
+        std::shared_ptr<geometry::Shape> shape = shapes->at(i);
+        if (!shape || shape->occt().IsNull() || io::is_mesh(shape->occt()) || shape->display_meshed()) {
+          continue;
+        }
+        // A copy that shares no sub-shape with the body: meshing it writes
+        // nothing the recompute may read (the class comment).
+        try {
+          std::shared_ptr<geometry::Shape> copy = geometry::independent_copy(*shape);
+          pending.push_back(copy->occt());
+          copies.push_back(std::move(copy));
+          batch.push_back({std::string(uids[i]), std::move(shape), nullptr, true});
+          m_underWay.push_back(batch.back().uid);
+        } catch (const Standard_Failure&) {
+          ++m_left;
+        } catch (const std::exception&) {
+          ++m_left;
+        }
+      }
+      // (Skipped, or not copied: meshed by the open.)
+      m_doneSoFar += uids.size() - batch.size();
+    }
+    if (pending.empty()) {
+      continue;
+    }
+    const occ::handle<StopBreak> progress = new StopBreak(m_job, m_stopping);
+    io::MeshReport report;
+    std::vector<Body> meshed;
+    std::size_t failed = 0;
+    try {
+      const std::size_t count = io::mesh_all_in_place(pending, m_options, progress->Start(), &report);
+      if (count == pending.size() && report.abandoned == 0 && !m_stopping && !m_job.control().is_cancelled()) {
+        for (std::size_t i = 0; i < batch.size(); ++i) {
+          try {
+            batch[i].meshes = io::capture_triangulations(copies[i]->occt());
+            batch[i].complete = io::has_triangulation(copies[i]->occt());
+            meshed.push_back(std::move(batch[i]));
+          } catch (const Standard_Failure&) {
+            ++failed;
+          } catch (const std::exception&) {
+            ++failed;
+          }
+        }
+      } else {
+        failed = batch.size();
+      }
+    } catch (const Standard_Failure&) {
+      failed = batch.size();
+    } catch (const std::exception&) {
+      failed = batch.size();
+    }
+    const qint64 ended = m_clock.elapsed();
+    {
+      const std::lock_guard<std::mutex> lock(m_mutex);
+      m_underWay.clear();
+      m_doneSoFar += batch.size();
+      for (Body& body : meshed) {
+        m_meshed.push_back(std::move(body));
+      }
+      m_left += failed;
+      if (m_finishedAt >= 0) {
+        m_afterMilliseconds += std::max<qint64>(0, ended - std::max(began, m_finishedAt));
+      }
+    }
+    m_milliseconds += ended - began;
+    m_trace.append(QStringLiteral("batch of %1 bodies at %2 ms for %3 ms: %4")
+                       .arg(static_cast<qulonglong>(batch.size()))
+                       .arg(began)
+                       .arg(ended - began)
+                       .arg(QString::fromStdString(report.line())));
+  }
 }
 
 std::shared_ptr<geometry::Shape> displayShape(const std::shared_ptr<geometry::Shape>& shape) {
@@ -362,6 +948,39 @@ void logDisplayMeshing(const DisplayMeshing& meshing, const QString& label) {
                               .arg(static_cast<qulonglong>(meshing.stored))
                               .arg(meshing.storedBytes)
                               .arg(meshing.storeMilliseconds);
+  }
+  if (meshing.deferred > 0) {
+    qDebug().noquote() << QStringLiteral("Display meshes of %1: %2 bodies to store after the open (their "
+                                         "triangulations taken in %3 ms)")
+                              .arg(label)
+                              .arg(static_cast<qulonglong>(meshing.deferred))
+                              .arg(meshing.captureMilliseconds);
+  }
+  if (io::mesh_tracing()) {
+    for (const QString& line : meshing.duringTrace) {
+      qDebug().noquote() << QStringLiteral("Mesh trace %1 during the recompute: %2").arg(label, line);
+    }
+  }
+  if (meshing.duringGiven > 0) {
+    qDebug().noquote() << QStringLiteral("Display meshes of %1: %2 bodies meshed during the recompute in %3 ms, %4 ms "
+                                         "of it after the recompute, beside the open's own meshing, which then waited "
+                                         "%5 ms for its last batch; %6 bodies final before its end, %7 left to the "
+                                         "result store, %8 meshed after it, %9 changed after they were meshed")
+                              .arg(label)
+                              .arg(static_cast<qulonglong>(meshing.during))
+                              .arg(meshing.duringMilliseconds)
+                              .arg(meshing.duringAfterMilliseconds)
+                              .arg(meshing.duringWaitMilliseconds)
+                              .arg(static_cast<qulonglong>(meshing.duringGiven))
+                              .arg(static_cast<qulonglong>(meshing.duringLeftToStore))
+                              .arg(static_cast<qulonglong>(meshing.duringLeft))
+                              .arg(static_cast<qulonglong>(meshing.duringStale));
+  }
+  if (meshing.waitMilliseconds > 0) {
+    qInfo().noquote() << QStringLiteral("Display meshes of %1: waited %2 ms for those of its previous open to be "
+                                        "stored")
+                             .arg(label)
+                             .arg(meshing.waitMilliseconds);
   }
   for (const QString& error : meshing.storeErrors) {
     qWarning().noquote() << QStringLiteral("Display meshes of %1: not stored: %2").arg(label, error);

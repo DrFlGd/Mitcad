@@ -146,15 +146,20 @@ design in a project.
   edge and vertex names derived from them, which a shape read back takes
   instead of deriving them again
   (`geometry/include/mitcad/geometry/persist.hpp`); results of another
-  build are ignored; sketches, construction and plain base features are
-  not stored. An import's worker hands every result a store takes over
+  build are ignored; sketches and construction features are not stored
+  (base features are, also those that only bring in bodies: a stored body
+  keeps the edge and vertex names that bringing it in derives,
+  mitcad#887). An import's worker hands every result a store takes over
   to the window in a store of the import's own (mitcad#413). A result
   found keeps the shapes of the bodies it sets packed until something may
   read them (mitcad#858): the body states hold a stand-in under the stored
-  version, an evaluation (other than a sketch that reads no body) or a
-  joint unpacks them first, the bodies left at the end are unpacked, and
+  version, an evaluation unpacks those it reads as it reads them
+  (mitcad#886: the others stay packed), a joint unpacks them first, the
+  bodies left at the end are unpacked, and
   a state the next restored result replaces is never unpacked (its result
-  unpacks itself if the timeline's history is read later). The store also
+  unpacks itself if the timeline's history is read later). What is
+  unpacked together is unpacked on the machine's threads, a result's
+  several shapes too (mitcad#887). The store also
   keeps the shown bodies' display triangulations under each body's
   version and the meshing options (see the display meshes below). The memory
   cache has a byte budget (the app gives a quarter
@@ -432,8 +437,16 @@ design in a project.
   `api::measure_axes`), and laid out in Rust in its plane: extension and
   dimension lines, arcs, arrows, the text's place and direction, the
   value in words ISO 129 style; a pick that is gone gives an error
-  instead, and the annotation stays. The app projects the layout, keeps
-  the text readable within its plane and paints it with QPainter
+  instead, and the annotation stays. Since mitcad#894 the texts' height is
+  the design's, in millimetres (set, or Auto from the ISO 3098 series by
+  the size of what is annotated), a new annotation's colour is `auto`
+  (the background tone's annotation colour; the old rotating defaults read
+  as Auto), and a length's automatic dimension line lies outside its
+  bodies' extent in its plane, stacked outside parallel lines, all worked
+  out in Rust from the picks' bodies' boxes and planar faces kept with
+  the measured picks. The app projects the layout, keeps
+  the text readable within its plane (ISO 129-1), sizes the text and
+  arrowheads by the model's height on screen and paints it with QPainter
   (`app/view/MeasurementDrawing`, `MeasurementOverlay`, which also takes
   clicks and drags on the texts and lines), in snapshots rendered
   offscreen at a larger size (`OcctViewer::snapshot`, OCCT's
@@ -1254,6 +1267,17 @@ them through operations and derives edge names.
   but take every tied face.
 - A face may carry several names. When a boolean splits a face, pieces get
   `#k` in geometric order; a reference without `#k` means all pieces.
+  The order (`piece_order`, `geometry/src/util.hpp`) compares the pieces'
+  centres of mass in X, Y and Z, then the lower corners of their boxes,
+  their areas and the upper corners, each only where two pieces differ by
+  more than 1e-4 mm: pieces within that of each other in one component
+  are ordered by the next. So pieces lying symmetrically (alike in X,
+  apart in Y) are not numbered by the nanometres of noise an upstream
+  change leaves in X (mitcad#895: a chamfer lost its edge when a frame's
+  two start pieces swapped `#0` and `#1`). Pieces whose deciding
+  components differ by more than 1e-4 mm keep the order of the rounded
+  centres used before, so existing designs keep their numbers. A
+  reference that matches several faces lists them in this order too.
   A face a fillet or chamfer consumes, where the blend runs along the
   face's far edge (a face as wide as the blend or narrower, mitcad#121),
   gives its names to the blend's face, so its edges keep their names.
@@ -1266,7 +1290,17 @@ them through operations and derives edge names.
   too, and the old names of the other pieces find no face.
 - **Edge:** `E{<face A>|<face B>}` (sorted), `#k` when the same faces meet
   more than once; a seam has the same face twice. **Vertex:** the set of
-  faces meeting at it. Sorting is byte-wise in both languages.
+  faces meeting at it, `#k` likewise. Sorting is byte-wise in both
+  languages. The `#k` of edges and vertices follow the same tie-tolerant
+  order as a face's pieces (`edge_order`, `vertex_order`,
+  `geometry/src/util.hpp`, mitcad#896): an edge by the point in its middle
+  in X, Y and Z, then its centre of mass, its length and its box; a vertex
+  by its point. Each component tells two apart only where they differ by
+  more than 1e-4 mm, so two symmetric edges between the same two faces
+  (alike in X, apart in Z) are not numbered by nanometres of noise in X;
+  where the deciding components differ by more, the order is the earlier
+  one of the rounded keys, so existing references keep their edges and
+  vertices. A reference without `#k` lists them in this order.
 - Splitting a body: the first time, the first piece in geometric order
   keeps the body id and the others get ids of the splitting feature. The
   feature remembers each piece's volume and centre of mass (saved with it
@@ -1549,8 +1583,17 @@ not recompute.
   owns the document; candidate probes also call model-backed command filters.
   Queries run on the UI thread between jobs; reads during a job
   are refused (`ModelBusy`), and deferred work waits for idle
-  (`MainWindow::whenIdle`). `MITCAD_COMPUTE_INLINE=1` runs jobs on the UI
-  thread for debugging. Feature previews use asynchronous jobs on both
+  (`MainWindow::whenIdle`). What the UI must know at once during a job it
+  takes from what it showed last instead: the length unit a value box
+  gives a typed number when Enter closes it while a preview computes
+  (`MainWindow::lengthUnit`, from the snapshot, mitcad#888), whether the
+  design is modified (the title's mark). A job's wait runs the timers (a
+  synchronous command's event loop, an asynchronous preview's), so a call
+  put off "until after this event" that reads or changes the model goes
+  through `afterEventWhenIdle` (`app/framework/IdleCall.hpp`): at once
+  when no job runs, else at the job's end; a change of the edit lock waits
+  so too. `MITCAD_COMPUTE_INLINE=1` runs jobs on the UI thread for
+  debugging. Feature previews use asynchronous jobs on both
   frontends (mitcad#634), without modal progress. The first pending input
   starts a bounded 150 ms timer; further input does not restart it. While
   a job owns the document, numeric edits replace one pending action per
@@ -1619,6 +1662,51 @@ not recompute.
   bodies meshed instead go to the store once meshed to the end
   (`io::triangulation_bytes`). A changed body, other options or another
   build of the program find none (`MITCAD_DISPLAY_MESH_STORE=0`: never).
+  The open does not wait for that write (mitcad#880; a large design's
+  600 MB took 11 s of its first open): its job only takes the bodies'
+  triangulations and edge polygons by their handles
+  (`io::capture_triangulations`, which later meshings, changes and the
+  document's close leave as they were) with the bodies' versions
+  (`Document::display_mesh_write`), and the window's writer
+  (`DisplayMeshWrites`) turns them into bytes and stores them on a thread
+  of its own after the open, a body at a time, each file whole or not at
+  all. The design opened again waits for what is still queued for it;
+  clearing the store or quitting drops what is queued (the next open
+  meshes and stores those bodies again). `MITCAD_DISPLAY_MESH_WRITER=0`
+  stores them in the open's job as before.
+  A cold open meshes bodies while its recompute still goes on (mitcad#881,
+  `RecomputeMeshing`; a large design meshed 23 s after a 12 s recompute
+  that used one core). The open's recompute puts each shown body into a
+  feed once no later feature can change it (`Document::feed_final_bodies`,
+  `core/model/src/recompute/final_bodies.rs`): every feature is classified
+  by its definition as changing no body (sketches, construction geometry,
+  joints and the other features that only place occurrences or write
+  parameters), the bodies it names (participants, a fillet's or chamfer's
+  body, a combine's target and tools, the bodies of a move, transfer or
+  pattern, what the features a pattern repeats change), every body of its
+  component (an operation on all bodies, any other feature) or any body (a
+  cut across components, a feature that made a component); a body is final
+  after the last feature that may change it, and bodies a feature makes
+  are new. A body whose display meshes the store keeps is left to the
+  store. A thread of the open meshes what comes in batches, each body
+  through a copy that shares no sub-shape with it
+  (`geometry::independent_copy`; the body may still be read by later
+  features, which a triangulation in its faces would change), and hands
+  the copies' triangulations over by their handles
+  (`io::capture_triangulations`). After the recompute no batch begins; the
+  open meshes the other bodies while the last batch goes on, and the model
+  thread alone then gives each body whose shape is still the one meshed
+  its copy's triangulations and edge polygons
+  (`io::restore_triangulations` of a capture, checked face by face). A body
+  changed after all, a batch cut short and the bodies not taken are meshed
+  as before; the triangles are the same. The open's summary line counts
+  the bodies meshed during the recompute, the time and the part after it.
+  `MITCAD_MESH_DURING_RECOMPUTE=0` turns it off.
+  A body meshed to the end by a job or given its stored meshes is drawn
+  with them as they are: its drawers do not mesh (`drawerMeshes`,
+  mitcad#878), where they ran OCCT's mesher over a body again on the UI
+  thread whenever a face's deviation was coarser than theirs (a large
+  face's bound, a large cylinder's), only to keep every face.
   `MITCAD_MESH_TRACE=1` logs each meshing's faces, phases
   and slowest faces. While a handle is dragged, Extrude also shows a
   provisional tool at once (mitcad#636; `framework/DragProxy`,

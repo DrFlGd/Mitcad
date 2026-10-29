@@ -1803,6 +1803,14 @@ impl Kernel for MockKernel {
         if let Some(taper) = &spec.taper {
             clearance += &format!(" taper {:.4} high {}", taper.per_length, taper.high_end);
         }
+        // Several starts and a profile other than the 60-degree one
+        // (mitcad#893), only when so.
+        if spec.starts != 1 {
+            clearance += &format!(" starts {}", spec.starts);
+        }
+        if (spec.flank_angle.to_degrees() - 30.0).abs() > 1e-9 {
+            clearance += &format!(" flanks {:.4} deg", spec.flank_angle.to_degrees());
+        }
         self.specs.borrow_mut().push(format!(
             "thread {} pitch {} diameters {:.4}/{:.4}/{:.4} angle {:.6} right {} part {:?}{clearance}",
             spec.faces

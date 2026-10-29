@@ -149,6 +149,29 @@ Shape::Shape(TopoDS_Shape shape, const std::vector<NamedFace>& faces, DerivedNam
   register_check();
 }
 
+Shape::Shape(TopoDS_Shape shape, ShapeMap& faces, ShapeMap& edges, ShapeMap& vertices,
+             std::vector<NameList> face_names, DerivedNames derived)
+    : m_shape(std::move(shape)) {
+  if (m_shape.IsNull()) {
+    return;
+  }
+  store_curves_on_planes(m_shape);
+  m_faces.Exchange(faces);
+  m_edges.Exchange(edges);
+  m_vertices.Exchange(vertices);
+  if (face_names.size() == static_cast<std::size_t>(m_faces.Extent())) {
+    m_faceNames = std::move(face_names);
+  } else {
+    m_faceNames.resize(static_cast<std::size_t>(m_faces.Extent()));
+  }
+  sort_face_names();
+  if (!take_derived(derived)) {
+    derive_edge_names();
+    derive_vertex_names();
+  }
+  register_check();
+}
+
 void Shape::map_faces(const std::vector<NamedFace>& faces) {
   store_curves_on_planes(m_shape);
   TopExp::MapShapes(m_shape, TopAbs_FACE, m_faces);
@@ -162,6 +185,10 @@ void Shape::map_faces(const std::vector<NamedFace>& faces) {
       names.insert(names.end(), named.names.begin(), named.names.end());
     }
   }
+  sort_face_names();
+}
+
+void Shape::sort_face_names() {
   for (NameList& names : m_faceNames) {
     std::sort(names.begin(), names.end());
     names.erase(std::unique(names.begin(), names.end()), names.end());
@@ -466,34 +493,44 @@ bool Shape::vertex_matches(int i, const NameList& faces) const {
   return true;
 }
 
+// Edges and vertices are numbered in edge_order and vertex_order
+// (mitcad#896), so that rounding noise does not swap ones lying
+// symmetrically. Sorted by index first: ones alike in every component keep
+// the order of their indices, as before.
 std::vector<int> Shape::sorted_edges(std::vector<int> edges) const {
-  std::vector<std::pair<detail::ShapeKey, int>> keyed;
-  for (int i : edges) {
-    keyed.emplace_back(detail::edge_key(edge(i)), i);
+  std::sort(edges.begin(), edges.end());
+  std::vector<TopoDS_Shape> shapes;
+  shapes.reserve(edges.size());
+  for (const int i : edges) {
+    shapes.push_back(edge(i));
   }
-  std::sort(keyed.begin(), keyed.end());
-  for (std::size_t k = 0; k < keyed.size(); ++k) {
-    edges[k] = keyed[k].second;
+  std::vector<int> sorted;
+  sorted.reserve(edges.size());
+  for (const std::size_t k : detail::edge_order(shapes)) {
+    sorted.push_back(edges[k]);
   }
-  return edges;
+  return sorted;
 }
 
 std::vector<int> Shape::sorted_vertices(std::vector<int> vertices) const {
-  std::vector<std::pair<detail::ShapeKey, int>> keyed;
-  for (int i : vertices) {
-    keyed.emplace_back(detail::shape_key(vertex(i)), i);
+  std::sort(vertices.begin(), vertices.end());
+  std::vector<TopoDS_Shape> shapes;
+  shapes.reserve(vertices.size());
+  for (const int i : vertices) {
+    shapes.push_back(vertex(i));
   }
-  std::sort(keyed.begin(), keyed.end());
-  for (std::size_t k = 0; k < keyed.size(); ++k) {
-    vertices[k] = keyed[k].second;
+  std::vector<int> sorted;
+  sorted.reserve(vertices.size());
+  for (const std::size_t k : detail::vertex_order(shapes)) {
+    sorted.push_back(vertices[k]);
   }
-  return vertices;
+  return sorted;
 }
 
 // Below this many faces a reference is matched against every face's names.
 constexpr int kIndexedFaces = 64;
 
-std::vector<int> Shape::find_faces(const std::string& reference) const {
+std::vector<int> Shape::matching_faces(const std::string& reference) const {
   std::vector<int> matching;
   if (face_count() < kIndexedFaces) {
     for (int i = 0; i < face_count(); ++i) {
@@ -528,18 +565,26 @@ std::vector<int> Shape::find_faces(const std::string& reference) const {
       matching = found->second;
     }
   }
+  return matching;
+}
+
+std::vector<int> Shape::find_faces(const std::string& reference) const {
+  const std::vector<int> matching = matching_faces(reference);
   // (One face needs no order: its key measures the face.)
   if (matching.size() == 1) {
     return matching;
   }
-  std::vector<std::pair<detail::ShapeKey, int>> keyed;
+  // In the order FaceNamer::finish numbers pieces (mitcad#895), so that
+  // the first face of a split face's name is its piece #0.
+  std::vector<TopoDS_Shape> faces;
+  faces.reserve(matching.size());
   for (const int i : matching) {
-    keyed.emplace_back(detail::shape_key(face(i)), i);
+    faces.push_back(face(i));
   }
-  std::sort(keyed.begin(), keyed.end());
   std::vector<int> found;
-  for (const auto& entry : keyed) {
-    found.push_back(entry.second);
+  found.reserve(matching.size());
+  for (const std::size_t k : detail::piece_order(faces)) {
+    found.push_back(matching[k]);
   }
   return found;
 }
@@ -550,10 +595,52 @@ std::vector<int> Shape::find_edges(const std::string& reference) const {
     return {};
   }
   std::vector<int> candidates;
-  for (int i = 0; i < edge_count(); ++i) {
-    if (edge_matches(i, name->faces[0], name->faces[1])) {
-      candidates.push_back(i);
+  if (face_count() < kIndexedFaces) {
+    for (int i = 0; i < edge_count(); ++i) {
+      if (edge_matches(i, name->faces[0], name->faces[1])) {
+        candidates.push_back(i);
+      }
     }
+  } else {
+    // An edge between faces that match the two references bounds a face
+    // of each: only the edges of the faces of the reference with fewer
+    // edges are checked (mitcad#878), in index order as above. (Fewer
+    // edges, not fewer faces, mitcad#889: an edge of a hole in a large
+    // face named by the large face first checked all its thousands of
+    // edges, 0.2 ms per projected edge.)
+    std::shared_ptr<const FaceEdges> edges = m_faceEdges.get().value_or(nullptr);
+    if (!edges) {
+      auto made = std::make_shared<FaceEdges>(static_cast<std::size_t>(face_count()));
+      for (int i = 0; i < edge_count(); ++i) {
+        const std::array<int, 2> pair = m_edgeFaces[static_cast<std::size_t>(i)];
+        for (const int f : pair) {
+          if (f >= 0 && ((*made)[static_cast<std::size_t>(f)].empty() ||
+                         (*made)[static_cast<std::size_t>(f)].back() != i)) {
+            (*made)[static_cast<std::size_t>(f)].push_back(i);
+          }
+        }
+      }
+      edges = made;
+      m_faceEdges.set(edges);
+    }
+    const std::vector<int> first = matching_faces(name->faces[0]);
+    const std::vector<int> second = matching_faces(name->faces[1]);
+    const auto edges_of = [&edges](const std::vector<int>& faces) {
+      std::size_t count = 0;
+      for (const int f : faces) {
+        count += (*edges)[static_cast<std::size_t>(f)].size();
+      }
+      return count;
+    };
+    for (const int f : edges_of(first) <= edges_of(second) ? first : second) {
+      for (const int i : (*edges)[static_cast<std::size_t>(f)]) {
+        if (edge_matches(i, name->faces[0], name->faces[1])) {
+          candidates.push_back(i);
+        }
+      }
+    }
+    std::sort(candidates.begin(), candidates.end());
+    candidates.erase(std::unique(candidates.begin(), candidates.end()), candidates.end());
   }
   candidates = sorted_edges(candidates);
   if (name->index < 0) {

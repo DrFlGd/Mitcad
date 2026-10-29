@@ -316,6 +316,8 @@ const COMMANDS: &[(&str, ApiClass)] = &[
     ("export_cut_sheet", FileIo),
     // Scale of a whole sketch (mitcad#860).
     ("sketch.scale", Model),
+    // The height of the annotations' texts (mitcad#894).
+    ("set_annotation_text_height", Model),
 ];
 
 /// Every query (its `query`) with its class. A `cache` query with `disk`
@@ -483,6 +485,8 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("table_csv_preview", Model),
     // A cut sheet's parts and their outlines (mitcad#853).
     ("cut_sheet", Model),
+    // The height of the annotations' texts (mitcad#894).
+    ("annotation_text_height", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

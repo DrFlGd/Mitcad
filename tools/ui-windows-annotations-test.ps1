@@ -106,7 +106,7 @@ Ui-ExpectNew 'Inspect Measure: length 31.416, radius 5, diameter 10' 'the rim me
 Wait-Enabled 'Measure Keep'
 Ui-Step 'Keep'                             { Ui-ClickLogged 'Measure Keep' }
 Ui-ExpectNew 'Annotation kept: Diameter1' 'kept as the rim''s diameter'
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 (#d9480f) | Diameter1 = ${o}10 (#1971c2)" 'both drawn'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 (auto) | Diameter1 = ${o}10 (auto)" 'both drawn, in Auto'
 Ui-Step 'close (Enter)'                    { Ui-Key 'Return' }
 Ui-ExpectNew 'Closed Measure' 'measure closed'
 
@@ -122,7 +122,7 @@ Ui-Step 'Tolerance: symmetric (Alt+T, Down), OK' {
   Ui-Key 'Return'
   Ui-FocusMain
 }
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 ${pm}0.1 (#d9480f)" 'drawn with its tolerance'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 ${pm}0.1 (auto)" 'drawn with its tolerance'
 
 Write-Host '--- 3. Its text dragged'
 $from = Ui-LoggedAt 'Annotation label AxisDistance1'
@@ -157,25 +157,25 @@ Ui-Step 'Tolerance: fit (Alt+T, Down x4), OK' {
   foreach ($i in 1..4) { Ui-Key 'Down' }
   Ui-Key 'Return'
 }
-Ui-ExpectNew "Diameter1 = ${o}10 H7 (#1971c2)" 'drawn with its fit code'
+Ui-ExpectNew "Diameter1 = ${o}10 H7 (auto)" 'drawn with its fit code'
 Ui-Mark
 Ui-Step 'select both (Ctrl+A)'            { Window-Keys @('ctrl+a') }
 Ui-ExpectNew 'Annotations selected: AxisDistance1, Diameter1' 'both selected'
 Ui-Step 'Colour (Alt+C): Green' {
   Ui-Key 'alt+c'
   Ui-FocusDialog '^Annotation Colour$'
-  Ui-Key 'Down'
-  Ui-Key 'Down'
+  # From Auto, the first row: Orange, Blue, Green.
+  foreach ($i in 1..3) { Ui-Key 'Down' }
   Ui-Key 'Return'
 }
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 ${pm}0.1 (#2f9e44) | Diameter1 = ${o}10 H7 (#2f9e44)" 'both green'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10 H7 (#2b8a3e)" 'both green'
 Ui-Step 'Decimals (Alt+D): 2' {
   Window-Keys @('alt+d')
   Ui-FocusDialog '^Annotation Decimals$'
   foreach ($i in 1..3) { Ui-Key 'Down' }
   Ui-Key 'Return'
 }
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2f9e44) | Diameter1 = ${o}10.00 H7 (#2f9e44)" 'two decimals'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'two decimals'
 Ui-Step 'Group (Alt+R): Shop' {
   Window-Keys @('alt+r')
   Ui-FocusDialog '^Annotation Group$'
@@ -199,9 +199,9 @@ Ui-Mark
 Ui-Step 'filter Shop (Alt+G, Down x3)'    { Window-Keys @('alt+g', 'Down', 'Down', 'Down') }
 Ui-ExpectNew 'Annotations group filter: Shop' 'the filter on Shop'
 Ui-Step 'Hide Group (Alt+U)'              { Window-Keys @('alt+u') }
-Ui-ExpectNew "Annotations drawn: Diameter1 = ${o}10.00 H7 (#2f9e44)" 'only Inspect''s drawn'
+Ui-ExpectNew "Annotations drawn: Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'only Inspect''s drawn'
 Ui-Step 'Show Group (Alt+W)'              { Window-Keys @('alt+w') }
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2f9e44) | Diameter1 = ${o}10.00 H7 (#2f9e44)" 'both again'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'both again'
 Ui-Step 'close the window (Escape)'       { Window-Keys @('Escape'); Ui-FocusMain }
 
 Write-Host '--- 5. A snapshot of the group Inspect'
@@ -261,12 +261,12 @@ Ui-Step 'perpendicularity, cylindrical, maximum material, to A' {
 }
 Ui-ExpectNew 'Feature Control Frame dialog: {"characteristic":"perpendicularity","datums":["A"],"diameter":true,"modifier":"M","value":0.05}' 'the frame chosen'
 Ui-ExpectNew 'Annotation kept: Frame1' 'the frame added'
-Ui-ExpectNew "Frame1 = $perp | ${o}0.05 $mmc | A (#" 'drawn in its cells'
+Ui-ExpectNew "Frame1 = $perp | ${o}0.05 $mmc | A (auto)" 'drawn in its cells, in Auto'
 Ui-Step 'close (Enter)'                    { Ui-Key 'Return' }
 Ui-ExpectNew 'Closed Measure' 'measure closed'
 Ui-Mark
 Ui-Step 'Annotations (F8)'                { Ui-Key 'F8' }
-Ui-ExpectLog "Annotations row Frame1: frame, $perp | ${o}0.05 $mmc | A, ${o}0.05 $mmc, -, #" 'the frame listed'
+Ui-ExpectLog "Annotations row Frame1: frame, $perp | ${o}0.05 $mmc | A, ${o}0.05 $mmc, -, auto" 'the frame listed'
 Ui-Step 'AxisDistance1''s row (type Axis)' { Window-Keys @(); Ui-Type 'Axis' }
 Ui-ExpectNew 'Annotations selected: AxisDistance1' 'AxisDistance1 selected'
 Ui-ExpectNew 'Annotation picks highlighted: AxisDistance1: face F2:side(c1) of F2.b0; face F4:side(c1) of F4.b0' 'its faces highlighted'
@@ -293,7 +293,7 @@ foreach ($field in @('"group": "Shop"', '"group": "Inspect"', '"code": "H7"', '"
 }
 Ui-StartApp 'annotations-again' @('--open', $design)
 Ui-ExpectLog 'Annotations: AxisDistance1 axis_distance in Shop | Diameter1 diameter in Inspect' 'read back in their groups'
-Ui-ExpectLog "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2f9e44) | Diameter1 = ${o}10.00 H7 (#2f9e44)" 'drawn as they were'
+Ui-ExpectLog "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'drawn as they were'
 
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
 Ui-Finish 'UI Windows annotations test'

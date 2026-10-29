@@ -48,6 +48,9 @@ pub struct FileRun {
     /// When it was recorded, seconds since the Unix epoch.
     #[serde(default)]
     pub when: u64,
+    /// The child failed (a row of a run, never kept in the profiles).
+    #[serde(skip)]
+    pub failed: bool,
 }
 
 /// The rows a run recorded (key, seconds, peak bytes and the result,
@@ -60,22 +63,44 @@ pub fn parse_record(text: &str, when: u64) -> Vec<(String, FileRun)> {
             let key = fields.next().filter(|k| !k.is_empty())?;
             let wall: f64 = fields.next()?.trim().parse().ok()?;
             let peak: u64 = fields.next()?.trim().parse().ok()?;
+            let failed = fields.next().map(str::trim) == Some("failed");
             let ok = wall.is_finite() && wall >= 0.0;
-            ok.then(|| (key.to_owned(), FileRun { wall, peak, when }))
+            ok.then(|| {
+                let run = FileRun {
+                    wall,
+                    peak,
+                    when,
+                    failed,
+                };
+                (key.to_owned(), run)
+            })
         })
         .collect()
 }
 
 /// Adds a run's rows to a test's files (each file's newest run replaces
 /// its last) and drops the files not run for `FILE_AGE`. No rows at all
-/// (`one_process`) drops every file.
+/// (`one_process`) drops every file. A failed child's row only raises a
+/// file's time and peak: it may have stopped early (0.35.0-rc1's rvt
+/// project check, which then got the least memory limit and left
+/// elements out), so it tells nothing of what the file needs less.
 pub fn merge(files: &mut BTreeMap<String, FileRun>, rows: &[(String, FileRun)], now: u64) {
     if rows.is_empty() {
         files.clear();
         return;
     }
     for (key, run) in rows {
-        files.insert(key.clone(), *run);
+        let mut kept = FileRun {
+            failed: false,
+            ..*run
+        };
+        if run.failed
+            && let Some(last) = files.get(key)
+        {
+            kept.wall = kept.wall.max(last.wall);
+            kept.peak = kept.peak.max(last.peak);
+        }
+        files.insert(key.clone(), kept);
     }
     files.retain(|_, run| now.saturating_sub(run.when) <= FILE_AGE);
 }
@@ -225,7 +250,8 @@ mod tests {
             FileRun {
                 wall: 12.5,
                 peak: MIB,
-                when: 1000
+                when: 1000,
+                ..FileRun::default()
             }
         );
         assert_eq!(rows[1].0, "c/d e.ipt");
@@ -236,6 +262,7 @@ mod tests {
                 wall: 1.0,
                 peak: 1,
                 when: 1,
+                ..FileRun::default()
             },
         );
         files.insert(
@@ -244,6 +271,7 @@ mod tests {
                 wall: 99.0,
                 peak: 1,
                 when: 900,
+                ..FileRun::default()
             },
         );
         merge(&mut files, &rows, 1000 + FILE_AGE);
@@ -252,6 +280,15 @@ mod tests {
         assert_eq!(files["a.f3d"].wall, 12.5);
         assert!(!files.contains_key("old"));
         assert_eq!(table(&files), "a.f3d\t12.50\t1048576\nc/d e.ipt\t3.00\t2\n");
+        // A failed child of a known file only raises its time and peak
+        // (0.35.0-rc1: a child that stopped at once lowered the next
+        // limit); a failed row of a new file is kept as it is.
+        let failed = parse_record("a.f3d\t1.00\t5\tfailed\nc/d e.ipt\t4\t9\tfailed\n", 1500);
+        assert!(failed.iter().all(|(_, run)| run.failed));
+        merge(&mut files, &failed, 1500 + FILE_AGE);
+        assert_eq!((files["a.f3d"].wall, files["a.f3d"].peak), (12.5, MIB));
+        assert_eq!((files["c/d e.ipt"].wall, files["c/d e.ipt"].peak), (4.0, 9));
+        assert!(files.values().all(|run| !run.failed && run.when == 1500));
         // A test that passed without its children recording anything runs
         // in one process now: its files go.
         assert!(one_process(true, 0, 2));
@@ -272,6 +309,7 @@ mod tests {
                 wall: 30.0,
                 peak: GIB,
                 when: 0,
+                ..FileRun::default()
             },
         );
         files.insert(
@@ -280,6 +318,7 @@ mod tests {
                 wall: 10.0,
                 peak: 2 * GIB,
                 when: 0,
+                ..FileRun::default()
             },
         );
         let d = Demand::of(&files).unwrap();

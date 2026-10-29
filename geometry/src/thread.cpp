@@ -28,6 +28,7 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepBuilderAPI_Transform.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepGProp.hxx>
 #include <BRepLib.hxx>
@@ -64,6 +65,7 @@
 #include <gp_Ax3.hxx>
 #include <gp_GTrsf2d.hxx>
 #include <gp_Pnt2d.hxx>
+#include <gp_Trsf.hxx>
 // OSD_Parallel.hxx brings in windows.h on Windows, whose empty near and far
 // macros would remove those names below.
 #ifdef near
@@ -85,8 +87,34 @@ namespace mitcad::geometry {
 namespace {
 
 constexpr double kTwoPi = 6.28318530717958647692;
+// The most starts a thread may have (mitcad#893).
+constexpr int kMaxStarts = 64;
+// The 60-degree profile's flank angle to the radius, 30 degrees, and its
+// tangent and cosine.
+constexpr double kFlank60 = 0.52359877559829887308;
 constexpr double kTan30 = 0.57735026918962576451;
 constexpr double kCos30 = 0.86602540378443864676;
+
+// The flanks of a profile (mitcad#893): the tangent and the cosine of their
+// angle to the radius, and how far from the pitch diameter the flanks of a
+// tooth without relief meet, in pitches (1 / (4 tan)). The 60-degree
+// profile's are the values its threads were made with before (0.433 for
+// 0.4330127), so that they come out as they did.
+struct Flanks {
+  double tan = kTan30;
+  double cos = kCos30;
+  double meet = 0.433;
+};
+
+Flanks flanks_of(double angle) {
+  Flanks flanks;
+  if (std::abs(angle - kFlank60) > 1.0e-12) {
+    flanks.tan = std::tan(angle);
+    flanks.cos = std::cos(angle);
+    flanks.meet = 0.25 / flanks.tan;
+  }
+  return flanks;
+}
 // Radii closer than this are the same.
 constexpr double kSame = 1.0e-6;
 // The narrowest crest a flank clearance may leave, in pitches.
@@ -210,6 +238,14 @@ struct Thread {
   bool internal = false;
 
   double pitch = 0.0;
+  // The number of starts and the helices' lead, starts x pitch (mitcad#893).
+  int starts = 1;
+  double lead = 0.0;
+  // The flanks (flanks_of): 30 degrees to the radius for the 60-degree
+  // profile, 15 for the trapezoidal one.
+  double flank_tan = kTan30;
+  double flank_cos = kCos30;
+  double flank_meet = 0.433;
   double pitch_radius = 0.0;
   double major_radius = 0.0;
   double minor_radius = 0.0;
@@ -228,19 +264,23 @@ struct Thread {
 
   // Half the width of the groove (the space between the teeth) at a
   // radius: a quarter pitch at the pitch diameter, wider towards the crest
-  // along flanks at 30 degrees, and wider by the flank relief.
+  // along the flanks (at 30 degrees to the radius, 15 for a trapezoidal
+  // thread), and wider by the flank relief.
   double groove_half(double radius) const {
-    return pitch / 4.0 + relief + (internal ? pitch_radius - radius : radius - pitch_radius) * kTan30;
+    return pitch / 4.0 + relief + (internal ? pitch_radius - radius : radius - pitch_radius) * flank_tan;
   }
 
-  // How far from the pitch diameter the flanks of a tooth meet: H/2 =
-  // 0.433 P, less where the flank relief has thinned the tooth.
-  double reach() const { return 0.433 * pitch - relief / kTan30; }
+  // How far from the pitch diameter the flanks of a tooth meet: P / (4 tan
+  // of the flank angle), H/2 = 0.433 P for the 60-degree profile, less
+  // where the flank relief has thinned the tooth.
+  double reach() const { return flank_meet * pitch - relief / flank_tan; }
 
-  // The middle of the groove at the pitch diameter, along the axis from
-  // the origin, at an angle about the axis from the reference direction.
+  // The middle of the first start's groove at the pitch diameter, along
+  // the axis from the origin, at an angle about the axis from the reference
+  // direction: it rises a lead a turn (the other starts' grooves lie a
+  // pitch apart from it, mitcad#893).
   double groove_centre(double theta) const {
-    const double turn = (right_handed ? 1.0 : -1.0) * pitch * (theta - angle) / kTwoPi;
+    const double turn = (right_handed ? 1.0 : -1.0) * lead * (theta - angle) / kTwoPi;
     return (internal ? 0.75 : 0.25) * pitch + turn;
   }
 
@@ -304,8 +344,8 @@ TopoDS_Shape groove_sweep(const Thread& t, double theta, int turns, double low, 
   // (A taper pipe thread's radii where the section is, mitcad#733.)
   const double grown = t.slope * centre;
   occ::handle<Geom_Surface> surface;
-  // Along the surface's second parameter per pitch along the axis.
-  double rise = t.pitch;
+  // Along the surface's second parameter per turn: the lead along the axis.
+  double rise = t.lead;
   if (t.slope == 0.0) {
     surface = new Geom_CylindricalSurface(gp_Ax3(base, t.along, start_direction), t.pitch_radius);
   } else {
@@ -314,10 +354,10 @@ TopoDS_Shape groove_sweep(const Thread& t, double theta, int turns, double low, 
     // half-angle per length along the axis.
     const double half_angle = std::atan(t.slope);
     surface = new Geom_ConicalSurface(gp_Ax3(base, t.along, start_direction), half_angle, t.pitch_radius + grown);
-    rise = t.pitch / std::cos(half_angle);
+    rise = t.lead / std::cos(half_angle);
   }
   // On the unrolled cylinder the helix is a line: a turn of 2 pi about the
-  // axis rises one pitch, or falls one for a left-hand thread. (Turning the
+  // axis rises one lead, or falls one for a left-hand thread. (Turning the
   // other way instead, or mirroring a right-hand groove, gives sweeps that
   // OCCT's boolean cuts wrongly.)
   const occ::handle<Geom2d_Line> line =
@@ -373,28 +413,63 @@ std::vector<occ::handle<Geom_Surface>> screw_surfaces(const Thread& t, double th
                                      true);
   detail::NamedWire loop;
   loop.wire = section.Wire();
-  return detail::screwed_surfaces(loop, gp_Ax1(t.origin, t.along), t.pitch, static_cast<double>(turns),
+  return detail::screwed_surfaces(loop, gp_Ax1(t.origin, t.along), t.lead, static_cast<double>(turns),
                                   !t.right_handed, kScrewExact);
+}
+
+// The turn about the thread's axis that takes its first start's groove to
+// the k-th start's (mitcad#893): k / starts of a whole turn.
+gp_Trsf start_turn(const Thread& t, int k) {
+  gp_Trsf turn;
+  turn.SetRotation(gp_Ax1(t.origin, t.along), kTwoPi * k / t.starts);
+  return turn;
 }
 
 // The grooves between two radii, from `from` to `to` along the axis: whole
 // turns covering more than a pitch past both ends, cut to the length by a
-// cylinder of radius `outer`. `screws` gets the screw surfaces its faces
-// approximate (screw_surfaces).
+// cylinder of radius `outer`; for several starts, each start's groove (the
+// first one turned about the axis). `screws` gets the screw surfaces its
+// faces approximate (screw_surfaces).
 TopoDS_Shape grooves(const Thread& t, double low, double high, double from, double to, double outer,
                      std::vector<occ::handle<Geom_Surface>>& screws) {
   const double sign = t.right_handed ? 1.0 : -1.0;
   // The turns start a pitch before the start of the thread's helix (the
-  // low end of a right-hand thread, the high end of a left-hand one).
+  // low end of a right-hand thread, the high end of a left-hand one). The
+  // other starts' grooves, the first one turned, lie up to a lead less a
+  // pitch further back along the axis: three more turns than the length
+  // takes cover them past both ends too.
   const double target = t.right_handed ? from - 1.5 * t.pitch : to + 1.5 * t.pitch;
-  const double first = t.angle + sign * kTwoPi * (target - t.groove_centre(t.angle)) / t.pitch;
-  const int turns = static_cast<int>(std::ceil((to - from) / t.pitch)) + 3;
+  const double first = t.angle + sign * kTwoPi * (target - t.groove_centre(t.angle)) / t.lead;
+  const int turns = static_cast<int>(std::ceil((to - from) / t.lead)) + 3;
   // (A taper pipe thread's faces lie on no screw surface.)
   if (t.slope == 0.0) {
     screws = screw_surfaces(t, first, turns, low, high);
+    const std::size_t one = screws.size();
+    for (int k = 1; k < t.starts; ++k) {
+      const gp_Trsf turn = start_turn(t, k);
+      for (std::size_t i = 0; i < one; ++i) {
+        screws.push_back(occ::down_cast<Geom_Surface>(screws[i]->Transformed(turn)));
+      }
+    }
   }
-  return common_of(groove_sweep(t, first, turns, low, high), tube(t, 0.0, outer, from, to),
-                   "the thread's grooves could not be cut to length");
+  TopoDS_Shape sweep = groove_sweep(t, first, turns, low, high);
+  if (t.starts > 1) {
+    // The starts' grooves lie apart from each other (the teeth between
+    // them): one argument of the common, a compound of them all.
+    BRep_Builder builder;
+    TopoDS_Compound all;
+    builder.MakeCompound(all);
+    builder.Add(all, sweep);
+    for (int k = 1; k < t.starts; ++k) {
+      BRepBuilderAPI_Transform turned(sweep, start_turn(t, k), true);
+      if (!turned.IsDone()) {
+        throw std::runtime_error("the thread's grooves could not be turned to its starts");
+      }
+      builder.Add(all, turned.Shape());
+    }
+    sweep = all;
+  }
+  return common_of(sweep, tube(t, 0.0, outer, from, to), "the thread's grooves could not be cut to length");
 }
 
 // Whether the body has material just past the end of the threaded part
@@ -444,6 +519,12 @@ Thread thread_of(const CylinderFace& cylinder, const ThreadSpec& spec) {
   t.length = cylinder.length;
   t.internal = cylinder.internal;
   t.pitch = spec.pitch;
+  t.starts = spec.starts;
+  t.lead = spec.pitch * spec.starts;
+  const Flanks flanks = flanks_of(spec.flank_angle);
+  t.flank_tan = flanks.tan;
+  t.flank_cos = flanks.cos;
+  t.flank_meet = flanks.meet;
   // The radial clearance moves the whole profile away from the material:
   // out for a bore, in for a shaft.
   const double shift = cylinder.internal ? spec.radial_clearance : -spec.radial_clearance;
@@ -452,9 +533,9 @@ Thread thread_of(const CylinderFace& cylinder, const ThreadSpec& spec) {
   t.minor_radius = spec.minor / 2.0 + shift;
   t.right_handed = spec.right_handed;
   t.angle = spec.angle;
-  // A flank moved by c perpendicular to itself, at 30 degrees to the
-  // radius, moves c / cos 30 along the axis.
-  t.relief = spec.flank_clearance / kCos30;
+  // A flank moved by c perpendicular to itself, at the flank angle to the
+  // radius, moves c / cos(flank angle) along the axis.
+  t.relief = spec.flank_clearance / t.flank_cos;
   return t;
 }
 
@@ -901,8 +982,8 @@ ShapePtr thread_one_face(const Shape& body, const FacePlan& p, const ThreadSpec&
 
 // Checks that the extra clearance leaves a thread on an internal or an
 // external face: the flank clearance a crest at least P/50 wide (it moves
-// each flank flank_clearance / cos 30 into the tooth, the crest keeping its
-// radius), the radial clearance an external thread a core.
+// each flank flank_clearance / cos(flank angle) into the tooth, the crest
+// keeping its radius), the radial clearance an external thread a core.
 void check_clearance(const ThreadSpec& spec, bool internal) {
   const auto text = [](double value) {
     std::ostringstream out;
@@ -911,9 +992,10 @@ void check_clearance(const ThreadSpec& spec, bool internal) {
   };
   if (spec.flank_clearance > 0.0) {
     // The crest's width before the relief: half a pitch at the pitch
-    // diameter, narrowing along the 30-degree flanks to the crest.
+    // diameter, narrowing along the flanks to the crest.
     const double depth = internal ? spec.pitch_diameter - spec.minor : spec.major - spec.pitch_diameter;
-    const double crest = spec.pitch / 2.0 - depth * kTan30 - 2.0 * spec.flank_clearance / kCos30;
+    const Flanks flanks = flanks_of(spec.flank_angle);
+    const double crest = spec.pitch / 2.0 - depth * flanks.tan - 2.0 * spec.flank_clearance / flanks.cos;
     if (crest < kMinCrest * spec.pitch) {
       throw std::invalid_argument("the thread's flank clearance of " + text(spec.flank_clearance) +
                                   " mm leaves no usable tooth: its crest would be " + text(crest) +
@@ -1709,6 +1791,13 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
     throw std::invalid_argument("no faces to thread");
   }
   detail::require_positive("thread pitch", spec.pitch);
+  if (spec.starts < 1 || spec.starts > kMaxStarts) {
+    throw std::invalid_argument("the thread's number of starts must be from 1 to " + std::to_string(kMaxStarts));
+  }
+  detail::require_finite("thread flank angle", spec.flank_angle);
+  if (!(spec.flank_angle > 0.0 && spec.flank_angle <= kTwoPi / 8.0 + 1.0e-12)) {
+    throw std::invalid_argument("the thread's flank angle must be more than 0 and at most 45 degrees to the radius");
+  }
   if (spec.groove) {
     detail::require_positive("thread major diameter", spec.major);
     detail::require_positive("thread minor diameter", spec.minor);
@@ -1720,9 +1809,12 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
     if (!(spec.minor < spec.pitch_diameter && spec.pitch_diameter < spec.major)) {
       throw std::invalid_argument("the thread's diameters must grow from the minor to the pitch to the major one");
     }
-    // The 60-degree flanks meet H/2 = 0.433 P on either side of the pitch
-    // diameter: the crests and roots must lie within that.
-    const double reach = 0.4330127 * spec.pitch;
+    // The flanks meet P / (4 tan of the flank angle) on either side of the
+    // pitch diameter (H/2 = 0.433 P for the 60-degree profile, 0.933 P for
+    // the trapezoidal one): the crests and roots must lie within that.
+    const double reach = (std::abs(spec.flank_angle - kFlank60) > 1.0e-12 ? 0.25 / std::tan(spec.flank_angle)
+                                                                            : 0.4330127) *
+                         spec.pitch;
     if (spec.major - spec.pitch_diameter >= 2.0 * reach || spec.pitch_diameter - spec.minor >= 2.0 * reach) {
       throw std::invalid_argument("the thread's diameters are too far apart for its pitch");
     }

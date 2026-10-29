@@ -53,7 +53,6 @@
 //! that ends with z or x axes the wrong way turns the side over.
 
 use std::f64::consts::{PI, TAU};
-use std::sync::OnceLock;
 
 use mitcad_vec3::{add, cross, dot, norm, sub};
 
@@ -972,7 +971,8 @@ impl RigidEquations {
             plan: GramPlan::shared(&row_cols, n, None),
             jac,
             dcol,
-            analysis_plan: OnceLock::new(),
+            analysis_plans: Default::default(),
+            implicit: Vec::new(),
         }
     }
 

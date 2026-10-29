@@ -342,7 +342,7 @@ CommandDef MainWindow::print3dCommand() {
   // The design's printer or process saved in a library that another
   // design changed: asked once (mitcad#655), when the panel opens or it
   // is chosen. Use the changes or Keep these, one undo step either way.
-  const auto askChanges = [this] {
+  const auto askChangesNow = [this] {
     if (!canChangePrintSettings()) {
       return;
     }
@@ -358,6 +358,22 @@ CommandDef MainWindow::print3dCommand() {
         }
       }
     }
+  };
+  // Called a moment after the panel shows or a choice, never while a job
+  // computes the model: a Send typed before it ran exports in a job whose
+  // wait runs the timers (mitcad#888). Then it waits for the job's end, and
+  // asks only if 3D Print's panel is still open by then.
+  const auto askChanges = [this, askChangesNow] {
+    if (!modelBusy()) {
+      askChangesNow();
+      return;
+    }
+    qDebug().noquote() << QStringLiteral("3D Print: library changes asked after the job");
+    whenIdle(this, [this, askChangesNow] {
+      if (m_mode == Mode::Command && m_session && m_session->def().id == QStringLiteral("make.print3d")) {
+        askChangesNow();
+      }
+    });
   };
   // A choice changes the design at once, one undo step ("Use Printer …");
   // Cancel does not take it back.

@@ -314,6 +314,7 @@ fn an_unchecked_item_does_not_take_every_body_away() {
 
 #[test]
 fn after_the_time_limit_items_take_their_states() {
+    wall_clock();
     let (items, mut geometry) = block_history(Vec::new());
     let mut doc = Document::new(TestKernel::default());
     let options = Options {
@@ -424,6 +425,7 @@ fn import_block(options: &Options) -> (DesignReport, Document<TestKernel>, Vec<O
 
 #[test]
 fn after_a_stop_the_features_take_their_states_and_the_report_says_where() {
+    wall_clock();
     let (report, _, outcomes) = import_block(&Options::default());
     assert_eq!(
         outcomes,
@@ -476,6 +478,7 @@ fn after_a_stop_the_features_take_their_states_and_the_report_says_where() {
 
 #[test]
 fn a_stop_while_a_feature_is_tried_keeps_the_items_before_it() {
+    wall_clock();
     // Cancelled while the first definition is evaluated (made to take 20 s
     // longer): the stop's monitor is the document's while definitions are
     // tried, and cuts the evaluation short.

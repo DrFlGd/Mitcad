@@ -747,7 +747,9 @@ Run in the isolated environments:
   design.mitcad d3 21 20` on a release build;
   `mitcad-cli info design.mitcad --timings [--result-store <dir>
   --diagnostics]`. `cli.perf_recompute`, `cli.perf_join_recompute` and
-  `cli.perf_holes_recompute` guard against large slowdowns.
+  `cli.perf_holes_recompute` guard against large slowdowns, and
+  `cli.perf_holes_mesh` the display meshing of planes with many holes
+  (`mitcad-cli mesh-compare` with each face's time in `--report`).
   `mitcad-cli run script.json --timings` prints each step's time
   ("Timing steps[i] <command>: <ms> ms"); `cli.perf_sketch_pattern`
   runs it on a sketch with a 10 x 10 circle pattern
@@ -911,7 +913,10 @@ file's format and what is left: [tools/testrun/README.md](../tools/testrun/READM
 | `MITCAD_NO_PATTERN_RUNS=1` | Patterns of features join or cut each feature's copies on their own instead of a run of features in one boolean ([architecture](architecture.md#geometry-kernel), mitcad#855), for comparisons. |
 | `MITCAD_NO_NEAR_COPIES=1` | A mirror's `combine` joins every image with its body whole, also a near copy of it ([commands.md](../core/model-api/src/commands.md#mirror)), for comparisons. |
 | `MITCAD_RESULT_STORE` | Result store folder; `off` disables it. |
-| `MITCAD_RESULT_STORE_MIN_MS` | Store results that took at least this long (default 100). |
+| `MITCAD_RESULT_STORE_MIN_MS` | Store results that took at least this long (default 100); quicker ones only when cheaper to restore than to evaluate (mitcad#882). |
+| `MITCAD_STORE_QUICK=0` | Store no quicker results than `MITCAD_RESULT_STORE_MIN_MS` (also in `mitcad-cli`), for comparisons. |
+| `MITCAD_DISPLAY_MESH_WRITER=0` | An open stores its display meshes in its own job instead of after the open on the writer's thread (mitcad#880). |
+| `MITCAD_MESH_DURING_RECOMPUTE=0` | An open meshes its bodies for display only after its recompute, not each body once no later feature changes it (mitcad#881). |
 | `MITCAD_PROJECTS_DIR` | Where New Project creates projects instead of Documents/Mitcad. |
 | `MITCAD_GIT` | git program for remotes (Preferences sets it for the app). |
 | `MITCAD_LIBRARIES_DIR` | Where fetched component libraries are kept (default: `libraries` in the user's local data folder). |
@@ -1138,7 +1143,8 @@ imports each with `mitcad-cli import-dwg --check`: every body built and
 valid, every 3D entity taken, the bodies within the drawing's extents,
 and the row's values (see
 [core/dwg/README.md](../core/dwg/README.md)); it skips without the
-variable.
+variable. Each drawing is imported in a child process of its own, several
+at once, as the other corpus tests do (mitcad#875; the options above).
 
 ### FreeCAD reference models and corpus
 

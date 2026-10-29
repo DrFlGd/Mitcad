@@ -16,6 +16,8 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use serde_json::Value;
 
@@ -369,211 +371,283 @@ fn compare_elements(id8: &str, model: &Model, reference: &Value, tally: &mut Tal
     }
 }
 
+/// What one file's check found: whether it opened, its failures and the
+/// lines it prints.
+#[derive(Default)]
+struct FileCheck {
+    opened: bool,
+    failures: Vec<String>,
+    lines: Vec<String>,
+}
+
+/// Checks one corpus file (path relative to the corpus, content id,
+/// release, kind).
+fn check_file(dir: &Path, path: &str, id8: &str, release: Option<u32>, kind: &str) -> FileCheck {
+    let mut check = FileCheck::default();
+    let fail = |what: String| format!("{id8}: {what}");
+    let file = match RvtFile::open(&dir.join(path)) {
+        Ok(f) => f,
+        Err(e) => {
+            check.failures.push(fail(format!("does not open: {e}")));
+            return check;
+        }
+    };
+    check.opened = true;
+    // Metadata.
+    if file.release() != release {
+        check.failures.push(fail(format!(
+            "release {:?}, the index says {release:?}",
+            file.release()
+        )));
+    }
+    if file.release_by_table() != file.release() {
+        check.failures.push(fail(format!(
+            "the element table's class names release {:?}",
+            file.release_by_table()
+        )));
+    }
+    let family = kind == "family";
+    if (file.kind == mitcad_rvt::Kind::Family) != family {
+        check
+            .failures
+            .push(fail(format!("kind {:?}, the index says {kind}", file.kind)));
+    }
+    if family && file.part_atom().and_then(|a| a.title).is_none() {
+        check
+            .failures
+            .push(fail("a family without its PartAtom title".into()));
+    }
+    // The preview: the reference's image byte for byte, or none.
+    let theirs = std::fs::read(dir.join("reference").join(path).join("preview.png")).ok();
+    if file.preview() != theirs {
+        check.failures.push(fail(format!(
+            "preview of {:?} bytes, the reference's {:?}",
+            file.preview().map(|p| p.len()),
+            theirs.map(|p| p.len())
+        )));
+    }
+    // The schema: whole, every encoding known, every class the
+    // reference finds.
+    let schema = match file.schema() {
+        Ok(s) => s,
+        Err(e) => {
+            check.failures.push(fail(format!("schema: {e}")));
+            return check;
+        }
+    };
+    if let Some(stopped) = &schema.stopped {
+        check
+            .failures
+            .push(fail(format!("the schema stops: {stopped}")));
+    }
+    for unknown in schema.unknown_encodings() {
+        check
+            .failures
+            .push(fail(format!("unknown field encoding {unknown}")));
+    }
+    if let Some(reference) = reference_json(dir, path, "schema.json.gz") {
+        let missing: Vec<&str> = reference["classes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|c| c["name"].as_str())
+            .filter(|n| schema.tag(n).is_none())
+            .collect();
+        if !missing.is_empty() {
+            check.failures.push(fail(format!(
+                "classes the reference finds and the schema lacks: {missing:?}"
+            )));
+        }
+    }
+    // The element table and the records.
+    let model = match Model::read(&file, &schema) {
+        Ok(m) => m,
+        Err(e) => {
+            check.failures.push(fail(format!("elements: {e}")));
+            return check;
+        }
+    };
+    // The geometry the projects of 2023 on keep (mitcad#333): every
+    // record walks and reads, and every edge's two sides land within
+    // 0.001 ft of each other.
+    if !family && release.is_some_and(|r| r >= 2023) {
+        if model.geometry.is_empty() || model.geometry_errors > 0 {
+            check.failures.push(fail(format!(
+                "geometry of {} elements, {} records not walked",
+                model.geometry.len(),
+                model.geometry_errors
+            )));
+        }
+        for (id, g) in &model.geometry {
+            if let Some(note) = g.notes.first() {
+                check
+                    .failures
+                    .push(fail(format!("element {id}'s geometry: {note}")));
+            }
+            let gap = g.solids.iter().map(|s| s.seam_gap()).fold(0.0, f64::max);
+            if gap > 0.001 {
+                check.failures.push(fail(format!(
+                    "element {id}'s edges' sides lie {gap:.2e} ft apart"
+                )));
+            }
+        }
+    }
+    let declared: BTreeSet<i64> = model.declared.iter().map(|d| d.id).collect();
+    // The reference reads the table from 24 bytes into it, in records
+    // of 28 (to 2023) or 40 bytes: it leaves out the first record and
+    // (but in projects of 28-byte records) reads one past the last (the
+    // table's trailing word, or zeros). Its ids, in order, without that
+    // one, are ours without the first;
+    // on 40-byte records its second id is the element's (its first is
+    // the next record's original id). A table it reads in other strides
+    // it did not parse.
+    if let Some(reference) = reference_json(dir, path, "elem-table.json.gz") {
+        let stride = reference["layout"]["stride"].as_u64();
+        let key = if stride == Some(40) {
+            "id_secondary"
+        } else {
+            "id_primary"
+        };
+        let mut theirs: Vec<i64> = reference["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| r[key].as_i64())
+            .collect();
+        let ours: Vec<i64> = model.declared.iter().skip(1).map(|d| d.id).collect();
+        if theirs.len() == ours.len() + 1 {
+            theirs.pop();
+        }
+        if !matches!(stride, Some(28 | 40)) {
+            check.lines.push(format!(
+                "{id8}: the reference reads the element table in records of {stride:?} bytes: not compared"
+            ));
+        } else if theirs != ours {
+            let (a, b): (BTreeSet<i64>, BTreeSet<i64>) = (
+                ours.iter().copied().collect(),
+                theirs.iter().copied().collect(),
+            );
+            check.failures.push(fail(format!(
+                "declared ids: {} ours, {} the reference's, {} only ours, {} only theirs",
+                declared.len(),
+                theirs.len(),
+                a.difference(&b).count(),
+                b.difference(&a).count()
+            )));
+        }
+    }
+    if model.elements.len() != declared.len() {
+        check
+            .failures
+            .push(fail("not every declared element is listed".into()));
+    }
+    let without = model
+        .elements
+        .iter()
+        .filter(|e| e.partition.is_none())
+        .count();
+    if without > 0 {
+        check
+            .failures
+            .push(fail(format!("{without} declared elements without records")));
+    }
+    if model.header_errors > 0 || model.object_errors > 0 {
+        check.failures.push(fail(format!(
+            "{} header and {} object records not walked",
+            model.header_errors, model.object_errors
+        )));
+    }
+    // Records read in part stop only at data of extensible storage
+    // schemas (and one marshalled element), which the file's class
+    // schema does not describe.
+    for e in &model.elements {
+        if let Some(error) = &e.error
+            && !(error.contains("ESEntity") || error.contains("XMarshalledRec"))
+        {
+            check
+                .failures
+                .push(fail(format!("element {}: {error}", e.id)));
+        }
+    }
+    let partial = model.objects_partial;
+    let mut line = format!(
+        "{id8} {} {:?} {:>6} declared, {:>6} objects walked whole, {partial} in part (extensible storage)",
+        release.map_or("?".into(), |r| r.to_string()),
+        file.kind,
+        declared.len(),
+        model.objects_walked
+    );
+    // The 2024 and 2025 projects' elements against the reference.
+    if !family
+        && matches!(release, Some(2024 | 2025))
+        && let Some(reference) = reference_json(dir, path, "elements.json.gz")
+    {
+        let mut tally = Tally::default();
+        compare_elements(id8, &model, &reference, &mut tally);
+        line += &format!("; agree {:?}", tally.ok);
+        if !tally.explained.is_empty() {
+            line += &format!("; explained {:?}", tally.explained);
+        }
+        for f in tally.failed.iter().take(20) {
+            check.failures.push(fail(f.clone()));
+        }
+        if tally.failed.len() > 20 {
+            check
+                .failures
+                .push(fail(format!("... {} more", tally.failed.len() - 20)));
+        }
+    }
+    check.lines.push(line);
+    check
+}
+
+/// The files checked at once (mitcad#875): `MITCAD_CORPUS_JOBS` when set
+/// (1: one after another), else a quarter of the cores, at most 4 (one
+/// file's model took up to about 1 GB).
+fn jobs(files: usize) -> usize {
+    let given = std::env::var("MITCAD_CORPUS_JOBS")
+        .ok()
+        .and_then(|text| text.trim().parse::<usize>().ok())
+        .filter(|&n| n > 0);
+    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+    given.unwrap_or((cores / 4).clamp(1, 4)).min(files.max(1))
+}
+
 #[test]
 fn every_file_and_the_reference() {
     let Some(dir) = corpus_dir() else {
         eprintln!("MITCAD_RVT_CORPUS is not set: the corpus test is skipped");
         return;
     };
+    // The files several at once, each in a thread of its own, the largest
+    // first, their lines in the index's order (mitcad#875: one after
+    // another this was the longest crate test of the check).
+    let list = files(&dir);
+    let mut order: Vec<usize> = (0..list.len()).collect();
+    let size = |i: &usize| std::fs::metadata(dir.join(&list[*i].0)).map_or(0, |m| m.len());
+    order.sort_by_key(|i| std::cmp::Reverse(size(i)));
+    let next = AtomicUsize::new(0);
+    let results: Vec<Mutex<Option<FileCheck>>> = list.iter().map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..jobs(list.len()) {
+            scope.spawn(|| {
+                while let Some(&i) = order.get(next.fetch_add(1, Ordering::Relaxed)) {
+                    let (path, id8, release, kind) = &list[i];
+                    let check = check_file(&dir, path, id8, *release, kind);
+                    *results[i].lock().unwrap() = Some(check);
+                }
+            });
+        }
+    });
     let mut failures = Vec::new();
     let mut opened = 0;
-    for (path, id8, release, kind) in files(&dir) {
-        let fail = |what: String| format!("{id8}: {what}");
-        let file = match RvtFile::open(&dir.join(&path)) {
-            Ok(f) => f,
-            Err(e) => {
-                failures.push(fail(format!("does not open: {e}")));
-                continue;
-            }
-        };
-        opened += 1;
-        // Metadata.
-        if file.release() != release {
-            failures.push(fail(format!(
-                "release {:?}, the index says {release:?}",
-                file.release()
-            )));
+    for result in results {
+        let check = result.into_inner().unwrap().expect("every file checked");
+        for line in &check.lines {
+            eprintln!("{line}");
         }
-        if file.release_by_table() != file.release() {
-            failures.push(fail(format!(
-                "the element table's class names release {:?}",
-                file.release_by_table()
-            )));
-        }
-        let family = kind == "family";
-        if (file.kind == mitcad_rvt::Kind::Family) != family {
-            failures.push(fail(format!("kind {:?}, the index says {kind}", file.kind)));
-        }
-        if family && file.part_atom().and_then(|a| a.title).is_none() {
-            failures.push(fail("a family without its PartAtom title".into()));
-        }
-        // The preview: the reference's image byte for byte, or none.
-        let theirs = std::fs::read(dir.join("reference").join(&path).join("preview.png")).ok();
-        if file.preview() != theirs {
-            failures.push(fail(format!(
-                "preview of {:?} bytes, the reference's {:?}",
-                file.preview().map(|p| p.len()),
-                theirs.map(|p| p.len())
-            )));
-        }
-        // The schema: whole, every encoding known, every class the
-        // reference finds.
-        let schema = match file.schema() {
-            Ok(s) => s,
-            Err(e) => {
-                failures.push(fail(format!("schema: {e}")));
-                continue;
-            }
-        };
-        if let Some(stopped) = &schema.stopped {
-            failures.push(fail(format!("the schema stops: {stopped}")));
-        }
-        for unknown in schema.unknown_encodings() {
-            failures.push(fail(format!("unknown field encoding {unknown}")));
-        }
-        if let Some(reference) = reference_json(&dir, &path, "schema.json.gz") {
-            let missing: Vec<&str> = reference["classes"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|c| c["name"].as_str())
-                .filter(|n| schema.tag(n).is_none())
-                .collect();
-            if !missing.is_empty() {
-                failures.push(fail(format!(
-                    "classes the reference finds and the schema lacks: {missing:?}"
-                )));
-            }
-        }
-        // The element table and the records.
-        let model = match Model::read(&file, &schema) {
-            Ok(m) => m,
-            Err(e) => {
-                failures.push(fail(format!("elements: {e}")));
-                continue;
-            }
-        };
-        // The geometry the projects of 2023 on keep (mitcad#333): every
-        // record walks and reads, and every edge's two sides land within
-        // 0.001 ft of each other.
-        if !family && release.is_some_and(|r| r >= 2023) {
-            if model.geometry.is_empty() || model.geometry_errors > 0 {
-                failures.push(fail(format!(
-                    "geometry of {} elements, {} records not walked",
-                    model.geometry.len(),
-                    model.geometry_errors
-                )));
-            }
-            for (id, g) in &model.geometry {
-                if let Some(note) = g.notes.first() {
-                    failures.push(fail(format!("element {id}'s geometry: {note}")));
-                }
-                let gap = g.solids.iter().map(|s| s.seam_gap()).fold(0.0, f64::max);
-                if gap > 0.001 {
-                    failures.push(fail(format!(
-                        "element {id}'s edges' sides lie {gap:.2e} ft apart"
-                    )));
-                }
-            }
-        }
-        let declared: BTreeSet<i64> = model.declared.iter().map(|d| d.id).collect();
-        // The reference reads the table from 24 bytes into it, in records
-        // of 28 (to 2023) or 40 bytes: it leaves out the first record and
-        // (but in projects of 28-byte records) reads one past the last (the
-        // table's trailing word, or zeros). Its ids, in order, without that
-        // one, are ours without the first;
-        // on 40-byte records its second id is the element's (its first is
-        // the next record's original id). A table it reads in other strides
-        // it did not parse.
-        if let Some(reference) = reference_json(&dir, &path, "elem-table.json.gz") {
-            let stride = reference["layout"]["stride"].as_u64();
-            let key = if stride == Some(40) {
-                "id_secondary"
-            } else {
-                "id_primary"
-            };
-            let mut theirs: Vec<i64> = reference["records"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|r| r[key].as_i64())
-                .collect();
-            let ours: Vec<i64> = model.declared.iter().skip(1).map(|d| d.id).collect();
-            if theirs.len() == ours.len() + 1 {
-                theirs.pop();
-            }
-            if !matches!(stride, Some(28 | 40)) {
-                eprintln!(
-                    "{id8}: the reference reads the element table in records of {stride:?} bytes: not compared"
-                );
-            } else if theirs != ours {
-                let (a, b): (BTreeSet<i64>, BTreeSet<i64>) = (
-                    ours.iter().copied().collect(),
-                    theirs.iter().copied().collect(),
-                );
-                failures.push(fail(format!(
-                    "declared ids: {} ours, {} the reference's, {} only ours, {} only theirs",
-                    declared.len(),
-                    theirs.len(),
-                    a.difference(&b).count(),
-                    b.difference(&a).count()
-                )));
-            }
-        }
-        if model.elements.len() != declared.len() {
-            failures.push(fail("not every declared element is listed".into()));
-        }
-        let without = model
-            .elements
-            .iter()
-            .filter(|e| e.partition.is_none())
-            .count();
-        if without > 0 {
-            failures.push(fail(format!("{without} declared elements without records")));
-        }
-        if model.header_errors > 0 || model.object_errors > 0 {
-            failures.push(fail(format!(
-                "{} header and {} object records not walked",
-                model.header_errors, model.object_errors
-            )));
-        }
-        // Records read in part stop only at data of extensible storage
-        // schemas (and one marshalled element), which the file's class
-        // schema does not describe.
-        for e in &model.elements {
-            if let Some(error) = &e.error
-                && !(error.contains("ESEntity") || error.contains("XMarshalledRec"))
-            {
-                failures.push(fail(format!("element {}: {error}", e.id)));
-            }
-        }
-        let partial = model.objects_partial;
-        let mut line = format!(
-            "{id8} {} {:?} {:>6} declared, {:>6} objects walked whole, {partial} in part (extensible storage)",
-            release.map_or("?".into(), |r| r.to_string()),
-            file.kind,
-            declared.len(),
-            model.objects_walked
-        );
-        // The 2024 and 2025 projects' elements against the reference.
-        if !family
-            && matches!(release, Some(2024 | 2025))
-            && let Some(reference) = reference_json(&dir, &path, "elements.json.gz")
-        {
-            let mut tally = Tally::default();
-            compare_elements(&id8, &model, &reference, &mut tally);
-            line += &format!("; agree {:?}", tally.ok);
-            if !tally.explained.is_empty() {
-                line += &format!("; explained {:?}", tally.explained);
-            }
-            for f in tally.failed.iter().take(20) {
-                failures.push(fail(f.clone()));
-            }
-            if tally.failed.len() > 20 {
-                failures.push(fail(format!("... {} more", tally.failed.len() - 20)));
-            }
-        }
-        eprintln!("{line}");
+        opened += usize::from(check.opened);
+        failures.extend(check.failures);
     }
     assert!(opened > 0, "no corpus file found under {}", dir.display());
     assert!(

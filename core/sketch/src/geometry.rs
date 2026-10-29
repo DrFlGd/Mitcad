@@ -122,6 +122,17 @@ pub fn angle_after(start: f64, end: f64) -> f64 {
     end
 }
 
+#[cfg(test)]
+thread_local! {
+    /// How many times [`Curve2::closest`] searched a whole spline or
+    /// ellipse on this thread (tests of mitcad#878).
+    pub(crate) static WHOLE_SEARCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The highest degree whose evaluation works in stack arrays
+/// ([`Nurbs::eval`], [`Nurbs::point`]); higher degrees allocate.
+const STACK_DEGREE: usize = 15;
+
 /// A non-uniform rational B-spline: `knots` has `control.len() + degree + 1`
 /// values; empty `weights` is non-rational.
 #[derive(Debug, Clone, PartialEq)]
@@ -191,48 +202,92 @@ impl Nurbs {
         lo
     }
 
-    /// Basis functions and their derivatives up to `order` at `t` in span
-    /// `i` (The NURBS Book, A2.3).
-    #[allow(clippy::needless_range_loop)]
-    fn basis(&self, i: usize, t: f64, order: usize) -> Vec<Vec<f64>> {
+    /// Basis functions and their derivatives up to `order` (at most 2) at
+    /// `t` in span `i` (The NURBS Book, A2.3) into `ders`, row `k` (the
+    /// `k`-th derivative) at `ders[k * (p + 1)..]`; returns the order
+    /// computed (at most the degree). The work arrays are on the stack up
+    /// to degree [`STACK_DEGREE`]: a sketch's region search evaluates its
+    /// splines millions of times (an imported sketch of overlapping thread
+    /// projections took 6.8 s to evaluate, mitcad#878).
+    fn basis(&self, i: usize, t: f64, order: usize, ders: &mut [f64]) -> usize {
         let p = self.degree;
+        let w = p + 1;
+        if p <= STACK_DEGREE {
+            const W: usize = STACK_DEGREE + 1;
+            let mut ndu = [0.0; W * W];
+            let mut left = [0.0; W];
+            let mut right = [0.0; W];
+            let mut a = [0.0; 2 * W];
+            self.basis_with(
+                i,
+                t,
+                order,
+                &mut ndu[..w * w],
+                &mut left[..w],
+                &mut right[..w],
+                &mut a[..2 * w],
+                ders,
+            )
+        } else {
+            let (mut ndu, mut left, mut right, mut a) = (
+                vec![0.0; w * w],
+                vec![0.0; w],
+                vec![0.0; w],
+                vec![0.0; 2 * w],
+            );
+            self.basis_with(i, t, order, &mut ndu, &mut left, &mut right, &mut a, ders)
+        }
+    }
+
+    /// [`Nurbs::basis`] with its work arrays: `ndu` (p + 1)², `left` and
+    /// `right` p + 1, `a` 2 (p + 1).
+    #[allow(clippy::too_many_arguments)]
+    fn basis_with(
+        &self,
+        i: usize,
+        t: f64,
+        order: usize,
+        ndu: &mut [f64],
+        left: &mut [f64],
+        right: &mut [f64],
+        a: &mut [f64],
+        ders: &mut [f64],
+    ) -> usize {
+        let p = self.degree;
+        let w = p + 1;
         let u = &self.knots;
-        let mut ndu = vec![vec![0.0; p + 1]; p + 1];
-        let mut left = vec![0.0; p + 1];
-        let mut right = vec![0.0; p + 1];
-        ndu[0][0] = 1.0;
+        // ndu[j][r] at ndu[j * w + r]; a[s][j] at a[s * w + j].
+        ndu[0] = 1.0;
         for j in 1..=p {
             left[j] = t - u[i + 1 - j];
             right[j] = u[i + j] - t;
             let mut saved = 0.0;
             for r in 0..j {
-                ndu[j][r] = right[r + 1] + left[j - r];
-                let temp = if ndu[j][r] == 0.0 {
+                ndu[j * w + r] = right[r + 1] + left[j - r];
+                let temp = if ndu[j * w + r] == 0.0 {
                     0.0
                 } else {
-                    ndu[r][j - 1] / ndu[j][r]
+                    ndu[r * w + j - 1] / ndu[j * w + r]
                 };
-                ndu[r][j] = saved + right[r + 1] * temp;
+                ndu[r * w + j] = saved + right[r + 1] * temp;
                 saved = left[j - r] * temp;
             }
-            ndu[j][j] = saved;
+            ndu[j * w + j] = saved;
         }
-        let order = order.min(p);
-        let mut ders = vec![vec![0.0; p + 1]; order + 1];
+        let order = order.min(p).min(2);
         for j in 0..=p {
-            ders[0][j] = ndu[j][p];
+            ders[j] = ndu[j * w + p];
         }
-        let mut a = vec![vec![0.0; p + 1]; 2];
         for r in 0..=p {
-            let (mut s1, mut s2) = (0, 1);
-            a[0][0] = 1.0;
+            let (mut s1, mut s2) = (0, w);
+            a[0] = 1.0;
             for k in 1..=order {
                 let mut d = 0.0;
                 let rk = r as isize - k as isize;
                 let pk = p - k;
                 if r >= k {
-                    a[s2][0] = a[s1][0] / ndu[pk + 1][rk as usize];
-                    d = a[s2][0] * ndu[rk as usize][pk];
+                    a[s2] = a[s1] / ndu[(pk + 1) * w + rk as usize];
+                    d = a[s2] * ndu[rk as usize * w + pk];
                 }
                 let j1 = if rk >= -1 { 1 } else { (-rk) as usize };
                 let j2 = if (r as isize - 1) <= pk as isize {
@@ -242,37 +297,86 @@ impl Nurbs {
                 };
                 for j in j1..=j2 {
                     let idx = (rk + j as isize) as usize;
-                    a[s2][j] = (a[s1][j] - a[s1][j - 1]) / ndu[pk + 1][idx];
-                    d += a[s2][j] * ndu[idx][pk];
+                    a[s2 + j] = (a[s1 + j] - a[s1 + j - 1]) / ndu[(pk + 1) * w + idx];
+                    d += a[s2 + j] * ndu[idx * w + pk];
                 }
                 if r <= pk {
-                    a[s2][k] = -a[s1][k - 1] / ndu[pk + 1][r];
-                    d += a[s2][k] * ndu[r][pk];
+                    a[s2 + k] = -a[s1 + k - 1] / ndu[(pk + 1) * w + r];
+                    d += a[s2 + k] * ndu[r * w + pk];
                 }
-                ders[k][r] = d;
+                ders[k * w + r] = d;
                 std::mem::swap(&mut s1, &mut s2);
             }
         }
         let mut factor = p as f64;
         for k in 1..=order {
             for j in 0..=p {
-                ders[k][j] *= factor;
+                ders[k * w + j] *= factor;
             }
             factor *= (p - k) as f64;
         }
-        ders
+        order
+    }
+
+    /// The point at `t` alone (The NURBS Book, A2.2 and A4.1): no
+    /// derivatives, no heap. Equal to `eval(t)[0]`.
+    pub fn point(&self, t: f64) -> P2 {
+        let p = self.degree;
+        if p > STACK_DEGREE {
+            return self.eval(t)[0];
+        }
+        let i = self.span(t);
+        let u = &self.knots;
+        const W: usize = STACK_DEGREE + 1;
+        let mut n = [0.0; W];
+        let mut left = [0.0; W];
+        let mut right = [0.0; W];
+        n[0] = 1.0;
+        for j in 1..=p {
+            left[j] = t - u[i + 1 - j];
+            right[j] = u[i + j] - t;
+            let mut saved = 0.0;
+            for r in 0..j {
+                let sum = right[r + 1] + left[j - r];
+                let temp = if sum == 0.0 { 0.0 } else { n[r] / sum };
+                n[r] = saved + right[r + 1] * temp;
+                saved = left[j - r] * temp;
+            }
+            n[j] = saved;
+        }
+        let (mut x, mut y, mut wsum) = (0.0, 0.0, 0.0);
+        for (j, nj) in n.iter().take(p + 1).enumerate() {
+            let index = i - p + j;
+            let wi = self.weight(index);
+            let c = self.control[index];
+            x += nj * wi * c[0];
+            y += nj * wi * c[1];
+            wsum += nj * wi;
+        }
+        // As `eval` scales them, so that both give the same bits.
+        scale([x, y], 1.0 / wsum)
     }
 
     /// Point and first and second derivatives at `t`.
     #[allow(clippy::needless_range_loop)]
     pub fn eval(&self, t: f64) -> [P2; 3] {
         let p = self.degree;
+        let width = p + 1;
         let i = self.span(t);
-        let n = self.basis(i, t, 2);
+        let mut stack = [0.0; 3 * (STACK_DEGREE + 1)];
+        let mut heap = Vec::new();
+        let n: &mut [f64] = if p <= STACK_DEGREE {
+            &mut stack[..3 * width]
+        } else {
+            heap.resize(3 * width, 0.0);
+            &mut heap
+        };
+        let order = self.basis(i, t, 2, n);
         // Homogeneous sums: A = Σ N w P, W = Σ N w and their derivatives.
         let mut a = [[0.0; 2]; 3];
         let mut w = [0.0; 3];
-        for (k, row) in n.iter().enumerate() {
+        for k in 0..=order {
+            let row = &n[k * width..(k + 1) * width];
             for j in 0..=p {
                 let index = i - p + j;
                 let wi = self.weight(index);
@@ -284,7 +388,7 @@ impl Nurbs {
         }
         let c = scale(a[0], 1.0 / w[0]);
         let d1 = scale(sub(a[1], scale(c, w[1])), 1.0 / w[0]);
-        let d2 = if n.len() > 2 {
+        let d2 = if order >= 2 {
             scale(
                 sub(sub(a[2], scale(d1, 2.0 * w[1])), scale(c, w[2])),
                 1.0 / w[0],
@@ -625,7 +729,11 @@ impl Curve2 {
     }
 
     pub fn point(&self, t: f64) -> P2 {
-        self.eval(t)[0]
+        match self {
+            // Without the derivatives (mitcad#878): the same point.
+            Self::Nurbs(n) => n.point(t),
+            _ => self.eval(t)[0],
+        }
     }
 
     /// The start and end points of an open curve.
@@ -789,6 +897,8 @@ impl Curve2 {
                 }
             }
             _ => {
+                #[cfg(test)]
+                WHOLE_SEARCHES.with(|n| n.set(n.get() + 1));
                 // Samples, then Newton on (C(t) - p) . C'(t) = 0.
                 let params = self.sample_params(lo, hi);
                 let mut best = (lo, f64::INFINITY);
@@ -798,31 +908,61 @@ impl Curve2 {
                         best = (*t, d);
                     }
                 }
-                let mut t = best.0;
-                for _ in 0..50 {
-                    let [c, d1, d2] = self.eval(t);
-                    let r = sub(c, p);
-                    let f = dot(r, d1);
-                    let df = dot(d1, d1) + dot(r, d2);
-                    if df.abs() < 1e-300 {
-                        break;
-                    }
-                    let mut next = t - f / df;
-                    if self.is_periodic() {
-                        next = next.rem_euclid(TAU);
-                    } else {
-                        next = next.clamp(lo, hi);
-                    }
-                    let done = (next - t).abs() <= 1e-15 * (hi - lo).max(1.0);
-                    t = next;
-                    if done {
-                        break;
-                    }
-                }
-                let d = dist(p, self.point(t));
+                let (t, d) = self.newton_closest(p, best.0);
                 if d <= best.1 { (t, d) } else { best }
             }
         }
+    }
+
+    /// A point of the curve near `p` found by Newton's method from the
+    /// parameter `hint` alone, and its distance: a local closest point,
+    /// for a caller that knows about where to look and only asks whether
+    /// the curve passes within some distance (the distance found is never
+    /// below the true closest distance). [`Curve2::closest`] samples the
+    /// whole curve first, which on a long spline costs hundreds of
+    /// evaluations (mitcad#878).
+    pub fn closest_near(&self, p: P2, hint: f64) -> (f64, f64) {
+        match self {
+            Self::Line { .. } | Self::Circle { .. } | Self::Arc { .. } => self.closest(p),
+            _ => {
+                let (lo, hi) = self.domain();
+                let hint = if self.is_periodic() {
+                    hint.rem_euclid(TAU)
+                } else {
+                    hint.clamp(lo, hi)
+                };
+                let start = (hint, dist(p, self.point(hint)));
+                let (t, d) = self.newton_closest(p, hint);
+                if d <= start.1 { (t, d) } else { start }
+            }
+        }
+    }
+
+    /// Newton's method on (C(t) - p) . C'(t) = 0 from `t`: the parameter
+    /// it ends at and the distance of its point from `p`.
+    fn newton_closest(&self, p: P2, mut t: f64) -> (f64, f64) {
+        let (lo, hi) = self.domain();
+        for _ in 0..50 {
+            let [c, d1, d2] = self.eval(t);
+            let r = sub(c, p);
+            let f = dot(r, d1);
+            let df = dot(d1, d1) + dot(r, d2);
+            if df.abs() < 1e-300 {
+                break;
+            }
+            let mut next = t - f / df;
+            if self.is_periodic() {
+                next = next.rem_euclid(TAU);
+            } else {
+                next = next.clamp(lo, hi);
+            }
+            let done = (next - t).abs() <= 1e-15 * (hi - lo).max(1.0);
+            t = next;
+            if done {
+                break;
+            }
+        }
+        (t, dist(p, self.point(t)))
     }
 
     /// The piece between parameters `t0 < t1` (for closed curves `t1` may
@@ -1020,6 +1160,69 @@ mod tests {
             control: vec![[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
             weights: vec![1.0, w, 1.0],
             knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+        }
+    }
+
+    /// A wavy spline of `count` control points, rational when `rational`.
+    fn wavy(count: usize, degree: usize, rational: bool) -> Nurbs {
+        Nurbs {
+            degree,
+            control: (0..count)
+                .map(|i| [i as f64 * 2.0, if i % 2 == 0 { -3.0 } else { 3.0 }])
+                .collect(),
+            weights: if rational {
+                (0..count).map(|i| 1.0 + 0.25 * (i % 3) as f64).collect()
+            } else {
+                Vec::new()
+            },
+            knots: clamped_uniform_knots(count, degree),
+        }
+    }
+
+    #[test]
+    fn a_point_alone_is_the_point_of_the_evaluation() {
+        // The point without derivatives (mitcad#878) is the very point
+        // `eval` gives, to the bit, on the stack and above its degrees.
+        for degree in [1, 2, 3, 5, STACK_DEGREE, STACK_DEGREE + 2] {
+            for rational in [false, true] {
+                let spline = wavy(degree + 6, degree, rational);
+                let (lo, hi) = spline.domain();
+                for i in 0..=40 {
+                    let t = lo + (hi - lo) * i as f64 / 40.0;
+                    assert_eq!(spline.point(t), spline.eval(t)[0], "degree {degree} at {t}");
+                    assert_eq!(Curve2::Nurbs(spline.clone()).point(t), spline.eval(t)[0]);
+                }
+            }
+        }
+        // Derivatives above the stack's degrees as below: a degree 17
+        // spline's tangent agrees with finite differences.
+        let spline = wavy(STACK_DEGREE + 8, STACK_DEGREE + 2, true);
+        let t = 0.37;
+        let h = 1e-6;
+        let fd = scale(sub(spline.point(t + h), spline.point(t - h)), 0.5 / h);
+        assert!(
+            dist(fd, spline.eval(t)[1]) < 1e-4 * norm(fd).max(1.0),
+            "{fd:?}"
+        );
+    }
+
+    #[test]
+    fn a_closest_point_near_a_hint() {
+        let curve = Curve2::Nurbs(wavy(40, 3, false));
+        let (lo, hi) = curve.domain();
+        for i in 1..20 {
+            let t = lo + (hi - lo) * i as f64 / 20.0;
+            let p = curve.point(t);
+            // From a hint a little off (a tenth of a span), the point
+            // itself.
+            let (found, d) = curve.closest_near(p, t + 0.002 * (hi - lo));
+            assert!(d < 1e-9, "{t}: {found} at {d}");
+            assert!((found - t).abs() < 1e-6);
+            // The distance is that of a point of the curve: never below
+            // the true closest distance.
+            let off = add(p, [0.0, 0.5]);
+            let (s, d) = curve.closest_near(off, t);
+            assert_eq!(d, dist(off, curve.point(s)));
         }
     }
 

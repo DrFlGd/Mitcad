@@ -239,6 +239,8 @@ qt_add_executable(mitcad
   # The UI tests' sync key (mitcad#15).
   framework/TestSync.cpp
   framework/TestSync.hpp
+  # Calls after the current event, never during a job (mitcad#888).
+  framework/IdleCall.hpp
   platform/WindowsTestSync.hpp
   # Typed text in the UI tests' log (mitcad#102).
   framework/TypedTextLog.cpp

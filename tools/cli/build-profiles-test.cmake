@@ -27,6 +27,10 @@
 #    offers the LM8UU and not the LM10UU; a T-nut's row is found by its own
 #    part number; the screw's design lists its thread, which follows its
 #    length.
+# 5. The steel tubes (mitcad#873, mitcad#892): round, square, rectangular,
+#    furniture and stainless tubes in the standards' check sizes placed,
+#    their cut-list designations and masses within 1 % of the standards',
+#    their frames; a square tube on another's face.
 #
 # cmake -DCLI=<mitcad-cli> -DWORK=<folder> -P build-profiles-test.cmake
 
@@ -459,3 +463,69 @@ file(WRITE "${WORK}/screw.json" "[
 ")
 cli(run "${WORK}/screw.json" --open "${library}/linear/screw-tr8x1-5.mitcad")
 message("the lead screw's design lists its Tr8x1.5 thread")
+
+# 5. The steel tubes (mitcad#873), profiles of no slot system: each of the
+#    standards' check sizes placed in its row, 500 mm long. The cut list
+#    names it by its designation, and its mass is half the standard's mass
+#    per metre within 1 % (the script's tolerance is relative, or absolute
+#    below 1). A round tube has its axis frame, a square tube its face
+#    frames; a second square tube goes on the first one's face. The
+#    furniture tube's rows 30x30x1.5 (a sharp inner corner) and 35x35x3 (a
+#    rounded one) each switch its bores in the placed part, the rectangular
+#    one's 40x20x2 and 100x50x3 (mitcad#892) too. The stainless tube's
+#    masses are at EN ISO 1127's 7.97 kg/dm3.
+foreach(entry IN ITEMS "chs-en10219|48.3x3.2|CHS 48.3x3.2 L=500|1.78|0.01|axis"
+                       "chs-en10219|114.3x5|CHS 114.3x5 L=500|6.75|0.01|axis"
+                       "shs-en10219|40x40x3|SHS 40x40x3 L=500|1.65|0.01|face_xp"
+                       "shs-en10219|100x100x10|SHS 100x100x10 L=500|12.8|0.01|face_yn"
+                       "square-tube-en10305|30x30x1.5|Square tube 30x30x1.5 EN 10305-5 L=500|0.67|0.0067|face_xp"
+                       "square-tube-en10305|35x35x3|Square tube 35x35x3 EN 10305-5 L=500|1.43|0.01|face_xp"
+                       "square-tube-en10305|40x40x4|Square tube 40x40x4 EN 10305-5 L=500|2.125|0.01|face_yp"
+                       "rhs-en10219|100x50x4|RHS 100x50x4 L=500|4.295|0.01|face_yp"
+                       "rhs-en10219|200x100x8|RHS 200x100x8 L=500|16.95|0.01|face_xn"
+                       "rect-tube-en10305|40x20x2|Rectangular tube 40x20x2 EN 10305-5 L=500|0.875|0.00875|face_yn"
+                       "rect-tube-en10305|100x50x3|Rectangular tube 100x50x3 EN 10305-5 L=500|3.315|0.01|face_xp"
+                       "stainless-tube-iso1127|42.4x2|Stainless tube 42.4x2 L=500|1.01|0.01|axis"
+                       "stainless-tube-iso1127|114.3x2|Stainless tube 114.3x2 L=500|2.81|0.01|axis")
+  string(REPLACE "|" ";" fields "${entry}")
+  list(GET fields 0 id)
+  list(GET fields 1 row)
+  list(GET fields 2 designation)
+  list(GET fields 3 mass)
+  list(GET fields 4 tolerance)
+  list(GET fields 5 frame)
+  component_index("${id}" index)
+  string(JSON system ERROR_VARIABLE none GET "${manifest}" components ${index} build system)
+  if(NOT none)
+    message(FATAL_ERROR "${id} names a slot system: ${system}")
+  endif()
+  part("${id}" spec)
+  string(REGEX REPLACE "}$" ", \"config\": \"${row}\"}" spec "${spec}")
+  file(WRITE "${WORK}/${id}-${row}.json" "[
+  {\"cmd\": \"build_place\", \"part\": ${spec}, \"at\": {\"point\": [0, 0, 0]}, \"length\": 500},
+  {\"expect\": {\"feature\": \"F1\", \"status\": \"ok\"}},
+  {\"expect\": {\"query\": {\"query\": \"joint_frame\", \"occurrence\": \"O1\",
+                          \"geometry\": {\"mount\": \"F1:mount(${frame})\"}},
+               \"result\": {\"component\": \"C1\"}}},
+  {\"expect\": {\"query\": {\"query\": \"build_cut_list\"},
+               \"result\": {\"rows\": [{\"designation\": \"${designation}\", \"length\": 500, \"mass\": ${mass}}]},
+               \"tolerance\": ${tolerance}}}
+]
+")
+  cli(run "${WORK}/${id}-${row}.json")
+  message("${designation}: placed, about ${mass} kg")
+endforeach()
+part(shs-en10219 shs)
+file(WRITE "${WORK}/shs-on-shs.json" "[
+  {\"cmd\": \"build_place\", \"part\": ${shs}, \"at\": {\"point\": [0, 0, 0]}, \"length\": 500},
+  {\"cmd\": \"build_place\", \"part\": {\"source\": \"S1\"},
+   \"at\": {\"occurrence\": \"O1\", \"geometry\": {\"mount\": \"F1:mount(face_xp)\"}, \"offset\": 200}, \"length\": 300},
+  {\"expect\": {\"feature\": \"F2\", \"status\": \"ok\"}},
+  {\"expect\": {\"feature\": \"F3\", \"status\": \"ok\"}},
+  {\"expect\": {\"query\": {\"query\": \"build_parts\"}, \"result\": {\"parts\": [
+    {\"component\": \"C1\", \"part\": \"F1\", \"role\": \"profile\", \"length\": 500},
+    {\"component\": \"C2\", \"part\": \"F2\", \"joint\": \"F3\", \"role\": \"profile\", \"length\": 300}]}}}
+]
+")
+cli(run "${WORK}/shs-on-shs.json")
+message("an SHS 40x40x3 placed on another's face")

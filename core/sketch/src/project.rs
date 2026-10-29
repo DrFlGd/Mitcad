@@ -23,7 +23,7 @@
 //! points where the plane crosses its edge ([`mitcad_model_base::Kernel::section_points`],
 //! mitcad#736).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use mitcad_vec3::distance;
 
@@ -1050,6 +1050,15 @@ pub fn follow_links(
     let mut changed = false;
     let index = super::EntityIndex::new(&def.entities);
     let old_at = |id: EntityUid| index.point(id);
+    // Where each entity is in the list (the first of an id, as
+    // `SketchDef::entity` finds it): `updated` keeps the order. Looked up
+    // instead of searched for each projection's entities (mitcad#889: a
+    // sketch of 5 000 projections searched its 10 000 entities 30 000
+    // times).
+    let at = positions(&def.entities);
+    // Fresh ids above the sketch's: the old ids replace them one at a
+    // time, so no old id may also be a fresh one still to replace.
+    let top = def.entities.iter().map(|e| e.id.0).max().unwrap_or(0);
     for (k, projection) in def.projections.iter().enumerate() {
         let curves = source_curves(projection)?;
         if curves.is_empty() {
@@ -1057,7 +1066,7 @@ pub fn follow_links(
             out.reports.push(ProjectionFollow {
                 projection: k,
                 lost: true,
-                stale: linked_entities(def, projection)
+                stale: linked_entities_at(def, &at, projection)
                     .iter()
                     .filter(|e| !e.is_point())
                     .map(|e| e.id)
@@ -1066,14 +1075,12 @@ pub fn follow_links(
             });
             continue;
         }
-        // Fresh ids above the sketch's: the old ids replace them one at a
-        // time, so no old id may also be a fresh one still to replace.
-        let mut counter = def.entities.iter().map(|e| e.id.0).max().unwrap_or(0);
+        let mut counter = top;
         let mut fresh_id = || {
             counter += 1;
             EntityUid(counter)
         };
-        let old: Vec<Entity> = linked_entities(def, projection);
+        let old: Vec<Entity> = linked_entities_at(def, &at, projection);
         if !projection.by_geometry {
             // A projection of an earlier version or an import follows as
             // there: only a source whose curves come back as they were
@@ -1090,7 +1097,7 @@ pub fn follow_links(
                 continue;
             }
             for (new, old) in fresh.iter().zip(&old) {
-                if let Some(target) = updated.entity_mut(old.id) {
+                if let Some(target) = at.get(&old.id).map(|&i| &mut updated.entities[i]) {
                     let mut kind = new.kind.clone();
                     // Keep the old point ids.
                     for (from, to) in new.kind.points().iter().zip(old.kind.points()) {
@@ -1128,7 +1135,7 @@ pub fn follow_links(
             continue;
         }
         for (id, kind) in pairing.kinds {
-            if let Some(target) = updated.entity_mut(id)
+            if let Some(target) = at.get(&id).map(|&i| &mut updated.entities[i])
                 && target.kind != kind
             {
                 target.kind = kind;
@@ -1734,9 +1741,28 @@ pub fn with_moved(def: &SketchDef, moved: &[Entity]) -> Option<SketchDef> {
 /// The entities of a projection with the points they use, in order:
 /// each curve after its points, as [`entities`] makes them.
 pub fn linked_entities(def: &SketchDef, projection: &Projection) -> Vec<Entity> {
+    linked_entities_at(def, &positions(&def.entities), projection)
+}
+
+/// Where each entity id is first in `entities`, as [`SketchDef::entity`]
+/// finds it.
+fn positions(entities: &[Entity]) -> HashMap<EntityUid, usize> {
+    let mut at = HashMap::with_capacity(entities.len());
+    for (i, e) in entities.iter().enumerate() {
+        at.entry(e.id).or_insert(i);
+    }
+    at
+}
+
+/// [`linked_entities`] with the entities' [`positions`] in `def`.
+fn linked_entities_at(
+    def: &SketchDef,
+    at: &HashMap<EntityUid, usize>,
+    projection: &Projection,
+) -> Vec<Entity> {
     let mut out: Vec<Entity> = Vec::new();
     for r in &projection.entities {
-        let Some(e) = def.entity(r.uid()) else {
+        let Some(e) = at.get(&r.uid()).map(|&i| &def.entities[i]) else {
             continue;
         };
         if !out.iter().any(|o| o.id == e.id) {

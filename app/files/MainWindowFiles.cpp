@@ -36,6 +36,7 @@
 #include "../browser/DocumentSnapshot.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/CommandRegistry.hpp"
+#include "../framework/IdleCall.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/WaitCursor.hpp"
 #include "../web/WebPage.hpp"
@@ -362,7 +363,7 @@ bool MainWindow::openFile(const QString& path, QString& error) {
   case FileKind::Dwg:
     // After the window shows: the import has a progress dialog. (Opened by
     // openPath, it asks its choices, mitcad#507.)
-    QTimer::singleShot(0, this,
+    afterEventWhenIdle(*this, this,
                        [this, path, ask = m_askImportChoices] { startF3dImport(path, QJsonObject(), ask); });
     return true;
   case FileKind::Cad:
@@ -532,7 +533,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
   event->acceptProposedAction();
   qDebug().noquote() << QStringLiteral("Dropped %1").arg(paths.join(QStringLiteral(", ")));
   // Later, so that the drag ends first; a design opens, the rest come in.
-  QTimer::singleShot(0, this, [this, paths] {
+  afterEventWhenIdle(*this, this, [this, paths] {
     for (const QString& path : paths) {
       if (fileKind(path) == FileKind::Design) {
         openPath(path);
@@ -1005,7 +1006,8 @@ void MainWindow::startF3dImport(const QString& path, const QJsonObject& rerun, b
             // Items whose results deviate from the file's (mitcad#379):
             // asked once the report is closed, with the design in view.
             if (stop.isEmpty()) {
-              QTimer::singleShot(0, this, [this, path, result, options] { offerDeviations(path, result, options); });
+              afterEventWhenIdle(*this, this,
+                                 [this, path, result, options] { offerDeviations(path, result, options); });
             }
           });
   m_import->start();

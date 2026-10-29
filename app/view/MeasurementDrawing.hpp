@@ -18,8 +18,17 @@
 // first form) keeps the screen-facing layout: the dimension line above its
 // ends, the label "<name> = <value>" on a card.
 //
-// Everything is in the annotation's colour over a halo in the view's halo
-// tone (mitcad#633), so that it reads over light and dark faces. The view
+// The look of a technical drawing's dimensions (mitcad#894; ISO 129-1, ISO
+// 3098, ISO 1101): plain text of regular weight with no card under it, a
+// thin outline in the background tone (`halo`, the view's halo tone of
+// mitcad#633) round its glyphs, as high in its plane as the model says
+// (`text_height`, mm) and at least 9 pixels on screen; thin lines (ISO 128)
+// with no halo; closed, filled arrowheads of 30 degrees, 0.8 text heights
+// long; extension lines a quarter text height off the measured point and
+// half a text height past the dimension line; a frame's cells and a datum
+// label's square outlined thinly and filled in the background tone. An
+// annotation of the colour Auto is drawn in the neutral annotation colour
+// of the background tone (measurementAutoColor). The view
 // (MeasurementOverlay), its snapshots (OcctViewer::snapshot) and Render
 // Image draw them the same way; pixel sizes grow with a picture's scale.
 // Plain Qt Gui and OCCT's points: no model, no widgets.
@@ -57,7 +66,8 @@ struct MeasurementDisplay {
   // distance, angle, offset, axis_distance, center_distance, radius,
   // diameter; the leaders note, datum, frame
   QString kind;
-  QColor color;
+  QColor color;       // invalid for Auto
+  bool autoColor = false; // the model's "auto" (mitcad#894): the background tone's annotation colour
   QString group;
   QString label; // on one line: "Ø20 H7 (+0.021/0)"; "Distance1 = 40 mm" without the model's label
   // A length's two ends; a radius from the centre to the rim, a diameter
@@ -127,6 +137,9 @@ struct MeasurementDisplay {
   // A frame under a dimension: that dimension's name; the frame is set
   // just below its dimension line, at its text.
   QString attached;
+  // The height of its text in its plane, mm (the model's `text_height`,
+  // mitcad#894); 0 when the model gives none (the pixel floor then).
+  double textHeight = 0.0;
 };
 
 // A value of a kind in words: "40 mm", "90°".
@@ -155,6 +168,11 @@ using MeasurementProjection = std::function<std::optional<QPointF>(const gp_Pnt&
 struct MeasurementShape {
   QString name;
   QColor color;
+  bool autoColor = false; // drawn in measurementAutoColor of the halo
+  // The height of its text's capitals on the picture: the model's height
+  // in its plane, at least 9 pixels (times the scale); a screen-facing
+  // label's. Arrowheads, gaps and frames' cells are sized by it.
+  double textPixels = 0.0;
   std::vector<QLineF> lines;                       // extension and dimension lines, rays, leaders
   std::vector<QPolygonF> arcs;                     // an angle's arc
   std::vector<std::pair<QPointF, QPointF>> arrows; // the tip and the direction it points along
@@ -217,17 +235,28 @@ struct MeasurementShape {
 MeasurementShape layoutMeasurement(const MeasurementDisplay& measurement, const MeasurementProjection& project,
                                    double scale = 1.0);
 
-// The labels' font at `scale`: `base`'s family, bold, of a fixed pixel
-// size.
+// The screen-facing labels' font at `scale`: `base`'s family, regular, of
+// a fixed pixel size.
 QFont measurementFont(const QFont& base, double scale = 1.0);
-// Where a laid out annotation's label is drawn, in `font`: on the picture
-// for a screen-facing one, in the text's own coordinates for one in its
-// plane.
+// A laid out annotation's text font: `base`'s family, regular, its
+// capitals `shape.textPixels` high.
+QFont measurementTextFont(const QFont& base, const MeasurementShape& shape, double scale = 1.0);
+// Where a laid out annotation's label is drawn, in `font`'s family: on the
+// picture for a screen-facing one, in the text's own coordinates for one
+// in its plane (at its own height).
 QRectF measurementLabelRect(const MeasurementShape& shape, const QFont& font, double scale = 1.0);
+// The neutral annotation colour of Auto on a background of the tone of
+// `halo` (mitcad#894): near-black on a light one, light grey on a dark one.
+QColor measurementAutoColor(const QColor& halo);
+// A closed arrowhead with its tip at `tip`, pointing along `along`: 30
+// degrees included (ISO 129-1), 0.8 times `textPixels` long (at least 5
+// pixels times `scale`).
+QPolygonF measurementArrowHead(const QPointF& tip, const QPointF& along, double textPixels, double scale = 1.0);
 
-// Paints laid out annotations: every halo first (in `halo`), so that a
-// halo never cuts another annotation's line, then each one's lines, arrows
-// and label in its colour, the label on a card of the halo's tone.
+// Paints laid out annotations, each in its colour (Auto: of the
+// background tone `halo`): its thin lines, filled arrowheads and its text
+// outlined in `halo`'s tone, with no card; a highlighted one over a band of
+// the selection's colour, all those bands first.
 void paintMeasurements(QPainter& painter, const std::vector<MeasurementShape>& shapes, const QColor& halo,
                        const QFont& font, double scale = 1.0);
 

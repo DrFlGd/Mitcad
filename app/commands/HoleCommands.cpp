@@ -4,7 +4,9 @@
 // sketch points; it may be counterdrilled and tapered (mitcad#27, as the
 // FreeCAD import makes them). A thread's size is suggested from the
 // cylinder picked; its free ends may be chamfered (mitcad#304). Sizes, designations and classes are chosen from the
-// model's table (`thread_sizes`, P9), ISO metric first (P11).
+// model's table (`thread_sizes`, P9), ISO metric first (P11); Thread Type
+// Custom takes a major diameter and a pitch of its own instead, and a
+// modelled one a number of starts (mitcad#893).
 #include <algorithm>
 #include <cmath>
 #include <exception>
@@ -254,6 +256,53 @@ bool taperStandard(const CommandState& state) {
 // Whether the thread is a taper pipe thread that tapers.
 bool tapers(const CommandState& state) { return taperStandard(state) && state.checked(kTaperThread); }
 
+// A custom thread (mitcad#893): Thread Type Custom (the `thread_sizes`
+// query's last standard, without sizes or classes) takes a major diameter
+// and a pitch of its own, expressions, instead of a size of the table, and
+// a modelled one a number of starts.
+const QString kCustom = QStringLiteral("custom");
+const QString kThreadMajor = QStringLiteral("thread_major");
+const QString kThreadPitch = QStringLiteral("thread_pitch");
+const QString kStarts = QStringLiteral("starts");
+
+bool customThread(const CommandState& state) { return state.choice(QStringLiteral("standard")) == kCustom; }
+
+// A custom thread's size in a definition: `{"major", "pitch"}`.
+QJsonObject customSize(const CommandState& state) {
+  return {{QStringLiteral("major"), state.expression(kThreadMajor)},
+          {QStringLiteral("pitch"), state.expression(kThreadPitch)}};
+}
+
+// Fills a custom thread's inputs from its size (`custom`) and starts.
+void loadCustomSize(const QJsonObject& custom, const QJsonValue& starts, const QJsonObject& feature,
+                    CommandState& state, const CommandContext& context) {
+  loadValue(state, kThreadMajor, custom.value(QStringLiteral("major")), feature, context);
+  loadValue(state, kThreadPitch, custom.value(QStringLiteral("pitch")), feature, context);
+  loadCount(state, kStarts, starts, feature, context);
+}
+
+// The size a description names: a designation and its class, or a custom
+// thread's diameter and pitch with its starts.
+QString sizeText(const CommandState& state) {
+  if (!customThread(state)) {
+    return QStringLiteral("%1 %2").arg(state.choice(QStringLiteral("designation")), state.choice(QStringLiteral("class")));
+  }
+  QString text = QStringLiteral("custom %1x%2").arg(number(state.value(kThreadMajor)), number(state.value(kThreadPitch)));
+  if (state.checked(QStringLiteral("modeled")) && state.value(kStarts) > 1.0) {
+    text += QStringLiteral(", %1 starts").arg(number(state.value(kStarts)));
+  }
+  return text;
+}
+
+// A modelled custom thread's Starts, shown while `shown` holds.
+InputDef startsInput(const std::function<bool(const CommandState&)>& shown) {
+  return valueInput(kStarts, QObject::tr("Starts"), ValueKind::Unitless, QStringLiteral("1"))
+      .withTooltip(QObject::tr("The number of starts: grooves evenly spaced round the axis, the lead that many pitches"))
+      .withVisible([shown](const CommandState& s) {
+        return (!shown || shown(s)) && customThread(s) && s.checked(QStringLiteral("modeled"));
+      });
+}
+
 InputDef taperInput(const std::function<bool(const CommandState&)>& shown) {
   return checkInput(kTaperThread, QObject::tr("Tapered"), true)
       .withTooltip(QObject::tr("Taper the thread 1:16 on the diameter; a cosmetic one tapers the bore or the shaft too"))
@@ -319,14 +368,20 @@ void keepClassOnSide(CommandState& state, const CommandContext& context, bool in
 
 // The ISO metric coarse size a cylindrical face suggests (its nominal
 // diameter outside, its tap drill inside), with 6H for a hole and 6g for a
-// shaft; nothing for another standard or another surface. A face picked in
-// the open command and one selected before it alike (mitcad#691).
+// shaft; a custom thread's major diameter a shaft's own (mitcad#893);
+// nothing for another standard or another surface. A face picked in the
+// open command and one selected before it alike (mitcad#691).
 void suggestSize(const SelectionItem& item, CommandState& state, const CommandContext& model) {
-  if (state.choice(QStringLiteral("standard")) != QStringLiteral("iso_metric")) {
-    return;
-  }
   const auto cylinder = cylinderOf(item, model);
   if (!cylinder) {
+    return;
+  }
+  if (customThread(state) && !cylinder->second) {
+    state.setText(kThreadMajor, lengthText(std::round(cylinder->first * 1000.0) / 1000.0, model));
+    state.setValue(kThreadMajor, std::numeric_limits<double>::quiet_NaN());
+    return;
+  }
+  if (state.choice(QStringLiteral("standard")) != QStringLiteral("iso_metric")) {
     return;
   }
   const MetricSize size = sizeFor(cylinder->first, cylinder->second);
@@ -410,8 +465,13 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
     standards = {{QStringLiteral("iso_metric"), QStringLiteral("ISO Metric profile")},
                  {QStringLiteral("unified"), QStringLiteral("ANSI Unified Screw Threads")}};
   }
+  // A size of the table, or a custom thread's own (mitcad#893).
+  const auto tabled = [shown](const CommandState& s) { return (!shown || shown(s)) && !customThread(s); };
+  const auto custom = [shown](const CommandState& s) { return (!shown || shown(s)) && customThread(s); };
   QVector<InputDef> inputs = {
       choiceInput(QStringLiteral("standard"), QObject::tr("Thread Type"), standards, standards.first().first)
+          .withTooltip(QObject::tr("A standard's table of sizes, or Custom: a major diameter and a pitch of your own"))
+          .withVisible(shown)
           .withOnChange(startStandard),
       choiceInput(QStringLiteral("size"), QObject::tr("Size"), {}, start.size)
           .withTooltip(QObject::tr("The nominal size"))
@@ -427,11 +487,13 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
           .withOnChange([designationsIn, keepClass](CommandState& state, const CommandContext& model) {
             state.setChoice(QStringLiteral("designation"), designationsIn(state).value(0));
             keepClass(state, model);
-          }),
+          })
+          .withVisible(tabled),
       choiceInput(QStringLiteral("designation"), QObject::tr("Designation"), {}, start.designation)
           .withTooltip(QObject::tr("The size and pitch: M10x1.5 (coarse), M10x1.25 (fine), 1/4-20 UNC"))
           .withChoices([designationsIn](const CommandState& state) { return labelled(designationsIn(state)); })
-          .withOnChange(keepClass),
+          .withOnChange(keepClass)
+          .withVisible(tabled),
       // Once the faces are known, only the classes of their side (mitcad#691).
       choiceInput(QStringLiteral("class"), QObject::tr("Class"), {}, start.threadClass)
           .withTooltip(internalOnly ? QObject::tr("The tolerance class of the tapped hole")
@@ -445,15 +507,20 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
             return labelled(side == kInternal   ? standard->internal
                             : side == kExternal ? standard->external
                                                 : standard->external + standard->internal);
-          }),
+          })
+          .withVisible(tabled),
+      valueInput(kThreadMajor, QObject::tr("Major Diameter"), ValueKind::Length, QStringLiteral("10 mm"))
+          .withTooltip(QObject::tr("The custom thread's major diameter, on the 60-degree profile"))
+          .withVisible(custom),
+      valueInput(kThreadPitch, QObject::tr("Pitch"), ValueKind::Length, QStringLiteral("1.5 mm"))
+          .withTooltip(QObject::tr("The distance from one tooth to the next along the axis"))
+          .withVisible(custom),
   };
-  for (InputDef& input : inputs) {
-    input.withVisible(shown);
-  }
   return inputs;
 }
 
-// Fills the size table's inputs from a thread definition.
+// Fills the size table's inputs from a thread definition (a custom
+// thread's size: loadCustomSize).
 void loadThreadInputs(const QJsonObject& thread, CommandState& state, const CommandContext& context) {
   const QString id = thread.value(QStringLiteral("standard")).toString(QStringLiteral("iso_metric"));
   state.setChoice(QStringLiteral("standard"), id);
@@ -525,13 +592,22 @@ QVector<InputDef> chamferInputs(const CommandContext& context) {
     }
     const QString standardId = state.choice(QStringLiteral("standard"));
     const ThreadStandard* standard = standardOf(context, standardId);
-    const bool internal = standard != nullptr && standard->internal.contains(state.choice(QStringLiteral("class")));
+    // (A custom thread has no classes: the faces' side, mitcad#893.)
+    const bool internal = customThread(state)
+                              ? state.choice(kSide) == kInternal
+                              : standard != nullptr && standard->internal.contains(state.choice(QStringLiteral("class")));
+    QJsonObject request{{QStringLiteral("query"), QStringLiteral("thread_chamfer")},
+                        {QStringLiteral("standard"), standardId},
+                        {QStringLiteral("internal"), internal}};
+    if (customThread(state)) {
+      request.insert(QStringLiteral("major"), state.value(kThreadMajor));
+      request.insert(QStringLiteral("pitch"), state.value(kThreadPitch));
+    } else {
+      request.insert(QStringLiteral("designation"), state.choice(QStringLiteral("designation")));
+    }
     QJsonObject answer;
     try {
-      answer = model.queryObject({{QStringLiteral("query"), QStringLiteral("thread_chamfer")},
-                                  {QStringLiteral("standard"), standardId},
-                                  {QStringLiteral("designation"), state.choice(QStringLiteral("designation"))},
-                                  {QStringLiteral("internal"), internal}});
+      answer = model.queryObject(request);
     } catch (const std::exception&) {
       return;
     }
@@ -735,7 +811,14 @@ CommandDef holeCommand(const CommandContext& context) {
   def.inputs += threadInputs(context, {QStringLiteral("6"), QStringLiteral("M6x1"), QStringLiteral("6H")}, true, tapped,
                              startTapDrill);
   def.inputs.append(taperInput(tapped).withOnChange(startTapDrill));
+  // The thread's hand (mitcad#893: a custom thread's too).
+  def.inputs.append(choiceInput(QStringLiteral("direction"), QObject::tr("Direction"),
+                                {{QStringLiteral("right"), QStringLiteral("Right Hand")},
+                                 {QStringLiteral("left"), QStringLiteral("Left Hand")}},
+                                QStringLiteral("right"))
+                        .withVisible(tapped));
   def.inputs.append(checkInput(QStringLiteral("modeled"), QObject::tr("Modeled"), false).withVisible(tapped));
+  def.inputs.append(startsInput(tapped));
   def.inputs += clearanceInputs(
       [tapped](const CommandState& s) { return tapped(s) && s.checked(QStringLiteral("modeled")); });
   def.inputs += {
@@ -832,9 +915,20 @@ CommandDef holeCommand(const CommandContext& context) {
     }
     if (tapped) {
       QJsonObject thread{{QStringLiteral("standard"), state.choice(QStringLiteral("standard"))},
-                         {QStringLiteral("designation"), state.choice(QStringLiteral("designation"))},
-                         {QStringLiteral("class"), state.choice(QStringLiteral("class"))},
                          {QStringLiteral("modeled"), state.checked(QStringLiteral("modeled"))}};
+      // A size of the table, or a custom thread's own (mitcad#893).
+      if (customThread(state)) {
+        thread.insert(QStringLiteral("custom"), customSize(state));
+        if (state.checked(QStringLiteral("modeled"))) {
+          thread.insert(kStarts, state.expression(kStarts));
+        }
+      } else {
+        thread.insert(QStringLiteral("designation"), state.choice(QStringLiteral("designation")));
+        thread.insert(QStringLiteral("class"), state.choice(QStringLiteral("class")));
+      }
+      if (state.choice(QStringLiteral("direction")) == QStringLiteral("left")) {
+        thread.insert(QStringLiteral("right_handed"), false);
+      }
       if (state.checked(QStringLiteral("modeled"))) {
         insertClearance(state, thread);
       }
@@ -949,6 +1043,9 @@ CommandDef holeCommand(const CommandContext& context) {
     if (!thread.isEmpty()) {
       state.setChoice(QStringLiteral("tap"), QStringLiteral("tapped"));
       loadThreadInputs(thread, state, context);
+      loadCustomSize(thread.value(QStringLiteral("custom")).toObject(), thread.value(kStarts), feature, state, context);
+      state.setChoice(QStringLiteral("direction"),
+                      thread.value(QStringLiteral("right_handed")).toBool(true) ? QStringLiteral("right") : QStringLiteral("left"));
       state.setChecked(QStringLiteral("modeled"), thread.value(QStringLiteral("modeled")).toBool());
       loadClearance(thread, feature, state, context);
       // A hole saved before mitcad#733 keeps its straight thread.
@@ -958,8 +1055,8 @@ CommandDef holeCommand(const CommandContext& context) {
     state.setItems(QStringLiteral("objects"), bodiesOf(feature.value(QStringLiteral("participants")).toArray()));
   };
 
-  // Holes at sketch coordinates, left-handed or partial threads have no
-  // inputs.
+  // Holes at sketch coordinates or partial threads have no inputs (a
+  // left-handed thread has its Direction since mitcad#893).
   def.canEdit = [&context](const QJsonObject& feature) {
     const QJsonObject placement = feature.value(QStringLiteral("placement")).toObject();
     const QString type = str(placement, "type");
@@ -975,8 +1072,11 @@ CommandDef holeCommand(const CommandContext& context) {
       }
     }
     const QJsonObject thread = feature.value(QStringLiteral("thread")).toObject();
-    if (thread.contains(QStringLiteral("length")) || thread.contains(QStringLiteral("offset")) ||
-        !thread.value(QStringLiteral("right_handed")).toBool(true)) {
+    if (thread.contains(QStringLiteral("length")) || thread.contains(QStringLiteral("offset"))) {
+      return false;
+    }
+    // Starts are offered for a custom thread only (mitcad#893).
+    if (thread.contains(kStarts) && str(thread, "standard") != kCustom) {
       return false;
     }
     const QJsonObject extent = feature.value(QStringLiteral("extent")).toObject();
@@ -995,12 +1095,11 @@ CommandDef holeCommand(const CommandContext& context) {
     const QString taper = !tapped && nonZero(state, QStringLiteral("taper"))
                               ? QStringLiteral(", taper %1 deg").arg(degrees(state.value(QStringLiteral("taper"))))
                               : QString();
-    return QStringLiteral("Added %1 hole(s) (%2), %3%4")
-        .arg(count)
-        .arg(state.choice(QStringLiteral("type")),
-             tapped ? state.choice(QStringLiteral("designation"))
-                    : QStringLiteral("diameter %1").arg(number(state.value(QStringLiteral("diameter")))),
-             taper);
+    // (A custom thread's diameter and pitch, mitcad#893.)
+    const QString tap = !tapped ? QStringLiteral("diameter %1").arg(number(state.value(QStringLiteral("diameter"))))
+                        : customThread(state) ? sizeText(state)
+                                              : state.choice(QStringLiteral("designation"));
+    return QStringLiteral("Added %1 hole(s) (%2), %3%4").arg(count).arg(state.choice(QStringLiteral("type")), tap, taper);
   };
   return def;
 }
@@ -1064,6 +1163,7 @@ CommandDef threadCommand(const CommandContext& context) {
                   QStringLiteral("right")),
       checkInput(QStringLiteral("modeled"), QObject::tr("Modeled"), false)
           .withTooltip(QObject::tr("Cut the thread into the geometry; otherwise only listed")),
+      startsInput(nullptr),
   };
   def.inputs += clearanceInputs([](const CommandState& s) { return s.checked(QStringLiteral("modeled")); });
   for (InputDef& input : def.inputs) {
@@ -1096,9 +1196,12 @@ CommandDef threadCommand(const CommandContext& context) {
     for (const SelectionItem& item : state.items(QStringLiteral("faces"))) {
       faces.append(item.reference());
     }
-    QJsonObject thread{{QStringLiteral("standard"), state.choice(QStringLiteral("standard"))},
-                       {QStringLiteral("designation"), state.choice(QStringLiteral("designation"))},
-                       {QStringLiteral("class"), state.choice(QStringLiteral("class"))}};
+    QJsonObject thread{{QStringLiteral("standard"), state.choice(QStringLiteral("standard"))}};
+    // A size of the table, or a custom thread's own (mitcad#893).
+    if (!customThread(state)) {
+      thread.insert(QStringLiteral("designation"), state.choice(QStringLiteral("designation")));
+      thread.insert(QStringLiteral("class"), state.choice(QStringLiteral("class")));
+    }
     if (state.choice(QStringLiteral("direction")) == QStringLiteral("left")) {
       thread.insert(QStringLiteral("right_handed"), false);
     }
@@ -1106,6 +1209,12 @@ CommandDef threadCommand(const CommandContext& context) {
                   {QStringLiteral("faces"), faces},
                   {QStringLiteral("thread"), thread},
                   {QStringLiteral("modeled"), state.checked(QStringLiteral("modeled"))}};
+    if (customThread(state)) {
+      result.def.insert(QStringLiteral("custom"), customSize(state));
+      if (state.checked(QStringLiteral("modeled"))) {
+        result.def.insert(kStarts, state.expression(kStarts));
+      }
+    }
     if (state.checked(QStringLiteral("modeled"))) {
       insertClearance(state, result.def);
     }
@@ -1132,6 +1241,7 @@ CommandDef threadCommand(const CommandContext& context) {
     state.setItems(QStringLiteral("faces"), faces);
     const QJsonObject thread = feature.value(QStringLiteral("thread")).toObject();
     loadThreadInputs(thread, state, context);
+    loadCustomSize(feature.value(QStringLiteral("custom")).toObject(), feature.value(kStarts), feature, state, context);
     state.setChoice(QStringLiteral("direction"),
                     thread.value(QStringLiteral("right_handed")).toBool(true) ? QStringLiteral("right") : QStringLiteral("left"));
     state.setChecked(QStringLiteral("modeled"), feature.value(QStringLiteral("modeled")).toBool());
@@ -1146,10 +1256,17 @@ CommandDef threadCommand(const CommandContext& context) {
     loadChamfer(feature, state, context);
   };
 
+  // Starts are offered for a custom thread only (mitcad#893): a thread of a
+  // standard size with starts has no inputs.
+  def.canEdit = [](const QJsonObject& feature) {
+    return !feature.contains(kStarts) ||
+           str(feature.value(QStringLiteral("thread")).toObject(), "standard") == kCustom;
+  };
+
   def.describe = [](const CommandState& state, const CommandContext&) {
-    return QStringLiteral("Added %1 thread %2 %3 on %4 face(s)")
+    return QStringLiteral("Added %1 thread %2 on %3 face(s)")
         .arg(state.checked(QStringLiteral("modeled")) ? QStringLiteral("modeled") : QStringLiteral("cosmetic"),
-             state.choice(QStringLiteral("designation")), state.choice(QStringLiteral("class")))
+             sizeText(state))
         .arg(state.items(QStringLiteral("faces")).size());
   };
   return def;

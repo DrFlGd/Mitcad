@@ -2225,7 +2225,7 @@ pub struct TimelineOptions {
     pub time_limit: Option<f64>,
     /// A factor on the time an item is tried from its own start first
     /// (`mitcad_import::Options::own_start_scale`, half of the item's 60 s;
-    /// mitcad#847): a debug build's checks give it their slowdown, so that
+    /// mitcad#847), and on a thread's sizing offset's 2 s (mitcad#874): a debug build's checks give it their slowdown, so that
     /// an item's outcome does not hang on the build or the load. None, or
     /// not a number above 0: 1. Passed on to the documents the design
     /// refers to.
@@ -3333,8 +3333,9 @@ mod tests {
     /// The own-start time scale of the command's JSON (`mitcad-cli
     /// import-f3d --own-start-time-scale`) reaches the import's options
     /// (mitcad#847): it scales the time an item is tried from its own
-    /// start (half of the item's 60 s) and leaves the item's time as it
-    /// is; left out or not above 0, 30 s.
+    /// start (half of the item's 60 s) and a thread's sizing offset's
+    /// (mitcad#874), and leaves the item's time as it is; left out or not
+    /// above 0, 30 s.
     #[test]
     fn the_own_start_time_scale_reaches_the_import_s_options() {
         let import = |json: Value| {
@@ -3347,6 +3348,8 @@ mod tests {
         let scaled = import(json!({"own_start_time_scale": 3.0}));
         assert_eq!(scaled.own_start_scale, 3.0);
         assert_eq!(scaled.own_start_seconds(), 90.0);
+        // (A thread's sizing offset too, mitcad#874.)
+        assert_eq!(scaled.sizing_offset_seconds(), 6.0);
         assert_eq!(scaled.item_seconds, 60.0);
         let halved = import(json!({"own_start_time_scale": 0.5}));
         assert_eq!(halved.own_start_seconds(), 15.0);

@@ -57,7 +57,7 @@ impl Symbolic {
     /// Symbolic factorization in the given order (`order[k]` is eliminated
     /// `k`th).
     pub fn with_order(adj: &[Vec<usize>], order: &[usize]) -> Symbolic {
-        eliminate(adj, Some(order))
+        eliminate_in_order(adj, order)
     }
 
     pub fn n(&self) -> usize {
@@ -87,6 +87,59 @@ impl Symbolic {
             .ok()
             .map(|k| s + k)
     }
+}
+
+/// The pattern of `L` for a given order from the elimination tree (Liu):
+/// a column's pattern is its node's neighbours eliminated after it with
+/// the patterns of its children, the columns whose first entry below the
+/// diagonal is in its row. The same `Symbolic` as [`eliminate`] with the
+/// order, in time of the pattern's size: simulating the elimination on the
+/// graph merged neighbour lists over and over, and a sketch whose
+/// projections gave a nearly dense pattern (1 174 rows, 640 000 entries)
+/// took 0.6 s on it in each of three sketches of one design (mitcad#878).
+fn eliminate_in_order(adj: &[Vec<usize>], order: &[usize]) -> Symbolic {
+    let n = adj.len();
+    let mut pos = vec![usize::MAX; n];
+    for (k, &v) in order.iter().enumerate() {
+        pos[v] = k;
+    }
+    let mut mark = vec![usize::MAX; n];
+    let mut children: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut lp = Vec::with_capacity(n + 1);
+    let mut li: Vec<usize> = Vec::new();
+    lp.push(0);
+    for (k, &v) in order.iter().enumerate() {
+        let start = li.len();
+        mark[k] = k;
+        for &a in &adj[v] {
+            let p = pos[a];
+            if p > k && mark[p] != k {
+                mark[p] = k;
+                li.push(p);
+            }
+        }
+        for &c in &children[k] {
+            for q in lp[c]..lp[c + 1] {
+                let p = li[q];
+                if p > k && mark[p] != k {
+                    mark[p] = k;
+                    li.push(p);
+                }
+            }
+        }
+        li[start..].sort_unstable();
+        if let Some(&parent) = li.get(start) {
+            children[parent].push(k);
+        }
+        lp.push(li.len());
+    }
+    let mut rows = vec![Vec::new(); n];
+    for k in 0..n {
+        for (p, &r) in li.iter().enumerate().take(lp[k + 1]).skip(lp[k]) {
+            rows[r].push((k, p));
+        }
+    }
+    Symbolic { pos, lp, li, rows }
 }
 
 /// Simulates Gaussian elimination on the graph `adj` (symmetric, without
@@ -197,6 +250,21 @@ impl Factor {
         tol: f64,
         max_rank: usize,
     ) -> usize {
+        self.factor_against(sym, shift, None, tol, max_rank)
+    }
+
+    /// Like [`Factor::factor_limited`], with the pivot tolerance relative to
+    /// `reference` (by position) instead of the diagonal: the rank analysis
+    /// factors rows shortened by known columns, whose pivots still count
+    /// against their full length (mitcad#883).
+    pub fn factor_against(
+        &mut self,
+        sym: &Symbolic,
+        shift: f64,
+        reference: Option<&[f64]>,
+        tol: f64,
+        max_rank: usize,
+    ) -> usize {
         let n = sym.n();
         let y = &mut self.work;
         let mut skipped = 0;
@@ -206,8 +274,8 @@ impl Factor {
             for p in s..e {
                 y[sym.li[p]] = self.ax[p];
             }
-            let reference = self.adiag[j] + shift;
-            let mut dj = reference;
+            let mut dj = self.adiag[j] + shift;
+            let reference = reference.map_or(dj, |r| r[j] + shift);
             for &(k, pk) in &sym.rows[j] {
                 let ljk = self.lx[pk];
                 if ljk == 0.0 {
@@ -518,6 +586,46 @@ mod tests {
             r.ptr.push(r.col.len());
         }
         r
+    }
+
+    /// The pattern from the elimination tree in a given order is the one
+    /// simulating the elimination on the graph gives (mitcad#878), on
+    /// pseudo-random graphs from sparse to nearly dense, in their natural
+    /// order and shuffled.
+    #[test]
+    fn ordered_patterns_match_the_simulated_elimination() {
+        let mut seed = 987654321u64;
+        let mut rnd = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed
+        };
+        for (n, per) in [(1, 0), (7, 2), (40, 3), (120, 6), (200, 40)] {
+            let mut adj = vec![Vec::new(); n];
+            for i in 0..n {
+                for _ in 0..per {
+                    let j = (rnd() % n as u64) as usize;
+                    if j != i && !adj[i].contains(&j) {
+                        adj[i].push(j);
+                        adj[j].push(i);
+                    }
+                }
+            }
+            let natural: Vec<usize> = (0..n).collect();
+            let mut shuffled = natural.clone();
+            for i in (1..n).rev() {
+                shuffled.swap(i, (rnd() % (i as u64 + 1)) as usize);
+            }
+            for order in [natural, shuffled] {
+                let fast = Symbolic::with_order(&adj, &order);
+                let simulated = eliminate(&adj, Some(&order));
+                assert_eq!(fast.pos, simulated.pos, "n {n}");
+                assert_eq!(fast.lp, simulated.lp, "n {n}");
+                assert_eq!(fast.li, simulated.li, "n {n}");
+                assert_eq!(fast.rows, simulated.rows, "n {n}");
+            }
+        }
     }
 
     /// Pseudo-random sparse system: solving G x = b must match a dense check.

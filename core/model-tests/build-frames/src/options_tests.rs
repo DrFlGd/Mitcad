@@ -6,6 +6,7 @@
 use serde_json::json;
 
 use mitcad_model::ids::BodyUid;
+use mitcad_model_build::prelude::*;
 use mitcad_model_tests_support::test_library::*;
 
 #[test]
@@ -67,4 +68,34 @@ fn a_build_cut_length_works_through_parameters() {
     )
     .unwrap();
     assert!((length(&doc) - 480.0).abs() < 1e-6);
+}
+
+#[test]
+fn a_part_s_row_sets_the_suppression_its_source_binds() {
+    // The source's second body is suppressed by a condition of its rows'
+    // parameter (mitcad#873): placed in its default row the part is 40
+    // wide, in the other row 80, and moved back to the default row 40.
+    let mut doc = design();
+    let narrow = first(&mut doc, "bound-rows", [0.0; 3], 500.0);
+    let mut wide_part = part("bound-rows");
+    wide_part["config"] = json!("wide");
+    let wide = place(
+        &mut doc,
+        json!({"part": wide_part, "at": {"point": [300, 0, 0]}, "length": 500}),
+    );
+    all_ok(&doc);
+    let width = |doc: &mitcad_model::Document<mitcad_model::testing::MockKernel>,
+                 answer: &serde_json::Value| {
+        let bounds = doc.part_bounds(component(answer)).unwrap();
+        bounds.max[0] - bounds.min[0]
+    };
+    assert!((width(&doc, &narrow) - 40.0).abs() < 1e-6);
+    assert!((width(&doc, &wide) - 80.0).abs() < 1e-6);
+    command(
+        &mut doc,
+        json!({"cmd": "build_edit", "component": component(&wide), "config": "narrow"}),
+    )
+    .unwrap();
+    all_ok(&doc);
+    assert!((width(&doc, &wide) - 40.0).abs() < 1e-6);
 }

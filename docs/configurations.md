@@ -283,6 +283,9 @@ expression of the **parent** design's parameters:
   that breaks a rule is not moved. Instead, the component gets an error
   status that names the rule, as a failed feature does, and the parent's
   change itself is not refused.
+- The source's bindings follow the component's values, as they do in
+  the source itself (mitcad#873). A row of a library part can thus
+  suppress a feature that another row uses.
 - The parts list and the designation take the combination's row, or
   else the pattern with option values (see Rows).
 

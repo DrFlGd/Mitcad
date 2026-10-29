@@ -20,7 +20,7 @@
 //!    with `#k` along the curve for repeats; a curve that is a loop by
 //!    itself is `c5`. A region is named by its outer loop's segments.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::f64::consts::TAU;
 
 use super::geometry::{
@@ -405,20 +405,29 @@ impl<'a> Arrangement<'a> {
                     .then(|| self.eval(e, (edge.t0 + edge.t1) / 2.0)[0])
             })
             .collect();
+        let ends = |x: &Edge| {
+            let (a, b) = (x.v0.unwrap_or(usize::MAX), x.v1.unwrap_or(usize::MAX));
+            (a.min(b), a.max(b))
+        };
+        // The pieces with a middle by their ends, in order: only pieces with
+        // the same ends can repeat each other (mitcad#889: every pair of 5 000
+        // pieces was compared).
+        let mut by_ends: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        for (e, mid) in mids.iter().enumerate() {
+            if mid.is_some() {
+                by_ends.entry(ends(&self.edges[e])).or_default().push(e);
+            }
+        }
         for e in 0..self.edges.len() {
             let Some(me) = mids[e] else { continue };
             if !self.edges[e].alive {
                 continue;
             }
-            let ends = |x: &Edge| {
-                let (a, b) = (x.v0.unwrap_or(usize::MAX), x.v1.unwrap_or(usize::MAX));
-                (a.min(b), a.max(b))
-            };
-            for (f, mid) in mids.iter().enumerate().skip(e + 1) {
-                let Some(mf) = *mid else { continue };
-                if self.edges[f].alive
-                    && ends(&self.edges[e]) == ends(&self.edges[f])
-                    && (dist(me, mf) <= 100.0 * self.tol || self.run_along(e, f))
+            let same_ends = &by_ends[&ends(&self.edges[e])];
+            let later = same_ends.partition_point(|&f| f <= e);
+            for &f in &same_ends[later..] {
+                let Some(mf) = mids[f] else { continue };
+                if self.edges[f].alive && (dist(me, mf) <= 100.0 * self.tol || self.run_along(e, f))
                 {
                     // Keep the lower curve id; of a spline and another curve that
                     // run along each other the spline (a projected edge, which the
@@ -557,6 +566,18 @@ impl<'a> Arrangement<'a> {
 
     /// Joins the pieces of a curve that meet only each other at a vertex.
     fn join_pieces(&mut self) {
+        // The edges that end at each vertex or did (in order): the live ones
+        // that still end there are picked from these instead of from every
+        // edge (mitcad#889: a sketch of 5 000 pieces looked through all of
+        // them at each vertex).
+        let mut touching: Vec<Vec<usize>> = vec![Vec::new(); self.vertices.len()];
+        for (e, edge) in self.edges.iter().enumerate() {
+            for v in [edge.v0, edge.v1].into_iter().flatten() {
+                if touching[v].last() != Some(&e) {
+                    touching[v].push(e);
+                }
+            }
+        }
         loop {
             let degree = self.degrees();
             let mut joined = false;
@@ -564,7 +585,9 @@ impl<'a> Arrangement<'a> {
                 if *d != 2 {
                     continue;
                 }
-                let at: Vec<usize> = (0..self.edges.len())
+                let at: Vec<usize> = touching[v]
+                    .iter()
+                    .copied()
                     .filter(|&e| {
                         let edge = &self.edges[e];
                         edge.alive && (edge.v0 == Some(v) || edge.v1 == Some(v))
@@ -610,6 +633,11 @@ impl<'a> Arrangement<'a> {
                         self.edges[first].t1 = t1;
                         self.edges[first].v1 = v1;
                         self.edges[second].alive = false;
+                        if let Some(end) = v1
+                            && let Err(k) = touching[end].binary_search(&first)
+                        {
+                            touching[end].insert(k, first);
+                        }
                         joined = true;
                     }
                     _ => {}

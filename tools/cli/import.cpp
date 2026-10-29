@@ -6,6 +6,7 @@
 #include "import.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -116,14 +117,18 @@ rust::Box<mitcad::Document> open_document(const std::string& path, const StoreOp
     base = ".";
   }
   document->command(R"({"cmd": "update_links", "base": )" + json_string(base) + "}");
+  const auto start = std::chrono::steady_clock::now();
   const std::string recomputed(document->command(R"({"cmd": "recompute"})"));
+  const std::chrono::duration<double, std::milli> recompute_ms = std::chrono::steady_clock::now() - start;
   if (!store.dir.empty()) {
     const std::string persisted(document->persist_results(store.min_ms));
     if (log != nullptr) {
       *log << "Result store: restored from store: " << std::max(0LL, json_count(recomputed, "restored"))
            << ", evaluated: " << json_count(recomputed, "recomputed")
            << "; stored: " << json_count(persisted, "results") << " ("
-           << json_count(persisted, "bytes") << " bytes)\n";
+           << json_count(persisted, "bytes") << " bytes, " << json_count(persisted, "quick")
+           << " quick); recompute " << std::lround(recompute_ms.count())
+           << " ms\n";
     }
   }
   return document;

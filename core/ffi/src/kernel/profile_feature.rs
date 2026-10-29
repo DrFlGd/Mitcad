@@ -117,6 +117,10 @@ pub mod ffi {
         /// Per face, the angle it is turned by instead of `angle`; empty:
         /// `angle` for every face (mitcad#733).
         angles: Vec<f64>,
+        /// The number of starts and the flanks' angle to the radius, radians
+        /// (mitcad#893; `ThreadSpec` in thread.hpp).
+        starts: u32,
+        flank_angle: f64,
     }
 
     struct PlaneOutput {
@@ -415,6 +419,8 @@ pub fn thread_input(spec: &ThreadSpec<'_>) -> ffi::ThreadInput {
         taper: spec.taper.map_or(0.0, |t| t.per_length),
         taper_high_end: spec.taper.is_some_and(|t| t.high_end),
         angles: spec.face_angles.to_vec(),
+        starts: spec.starts,
+        flank_angle: spec.flank_angle,
     }
 }
 

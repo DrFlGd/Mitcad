@@ -20,6 +20,7 @@
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include "DisplayMeshes.hpp"
 #include "Json.hpp"
 #include "ResultCache.hpp"
 #include "mitcad_bridge/lib.h"
@@ -265,6 +266,10 @@ void CacheDiagnosticsDialog::clearDisk() {
   const QString folder = resultStoreLocation();
   if (folder.isEmpty()) {
     return;
+  }
+  // Display meshes still to be stored after an open (mitcad#880).
+  if (DisplayMeshWrites* writes = displayMeshWrites()) {
+    writes->drop();
   }
   const QJsonObject report = parseObject(result_store_clear(rustStr(folder.toUtf8())));
   qInfo().noquote() << QStringLiteral("Diagnostics: cleared disk: %1 files, %2 bytes")

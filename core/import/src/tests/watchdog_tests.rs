@@ -33,6 +33,7 @@ fn import_block_on_thread(
 
 #[test]
 fn a_try_the_watchdog_gave_up_does_no_more_items() {
+    wall_clock();
     // The first extrusion's kernel call blocks past the hang limit (until
     // released); the watchdog gives the try up meanwhile (mitcad#71).
     use std::sync::atomic::Ordering;
@@ -122,6 +123,7 @@ fn an_extrusion_out_of_memory_takes_its_state_as_do_the_items_while_memory_is_lo
 
 #[test]
 fn a_definition_cut_short_for_lack_of_memory_falls_back_and_the_import_goes_on() {
+    wall_clock();
     // While the first extrusion is evaluated, the memory guard finds the
     // process low on memory (mitcad#80): the evaluation stops, as the
     // kernel's long operations do on request, and the item takes its
@@ -212,6 +214,7 @@ fn the_failed_operation_names_a_failed_allocation_the_guard_saw_first() {
 
 #[test]
 fn the_next_item_waits_for_the_memory_guard_to_see_the_memory_recover() {
+    wall_clock();
     // The memory guard measures the process every so often: it sees the
     // memory recover after the definition cut short only a little later,
     // and the join after it is tried all the same.
@@ -240,6 +243,7 @@ fn the_next_item_waits_for_the_memory_guard_to_see_the_memory_recover() {
 
 #[test]
 fn memory_tight_drops_what_the_import_can_build_again() {
+    wall_clock();
     // Asked to while the first extrusion is evaluated (mitcad#80), the
     // import drops before its next item the cached results of the
     // definitions it tried and the bodies of the history states behind it;
@@ -289,6 +293,7 @@ fn the_oracle_builds_released_states_again() {
 
 #[test]
 fn a_definition_that_takes_longer_than_its_item_is_cut_short() {
+    wall_clock();
     // The first extrusion's kernel call would take 30 s, checking for a
     // request to stop as the geometry kernel's long operations do; the item
     // has a quarter of a second (mitcad#69). Its only definition has the
@@ -389,6 +394,7 @@ fn import_base_feature_on_thread(
 
 #[test]
 fn long_loops_of_the_import_tick_the_watchdog() {
+    wall_clock();
     // Measuring the bodies of a large history state takes long, a kernel
     // call each (mitcad#82: 110 s on the first item of a large design,
     // whose hang limit was 60 s): here 30 bodies of 20 ms each, measured
@@ -419,6 +425,7 @@ fn long_loops_of_the_import_tick_the_watchdog() {
 
 #[test]
 fn a_kernel_call_that_does_not_return_still_looks_hung() {
+    wall_clock();
     // The same import, one measurement blocking for longer than the hang
     // limit (a kernel call that does not return): the ticks around it do
     // not hide it, and the watchdog gives the try up.
@@ -511,6 +518,7 @@ fn definitions_that_gave_way_wait_for_the_rest_of_the_time() {
 
 #[test]
 fn a_slow_definition_gives_way_to_the_next_ones() {
+    wall_clock();
     // The file's extrusion goes against the sketch's normal; the one
     // along it is tried first and would take 30 s: at its share of the
     // item's 2 s it gives way, and the next one gives the state (mitcad#78).
@@ -541,6 +549,7 @@ fn a_slow_definition_gives_way_to_the_next_ones() {
 
 #[test]
 fn a_definition_that_gave_way_gets_the_rest_of_the_time() {
+    wall_clock();
     // The file's extrusion, tried first, takes 1 s, more than its share (a
     // third of 2 s): it gives way, the others give no state, and it is
     // tried again with the rest of the item's time and gives the state.
@@ -567,6 +576,7 @@ fn a_definition_that_gave_way_gets_the_rest_of_the_time() {
 
 #[test]
 fn an_item_out_of_time_names_the_definition_its_time_went_to() {
+    wall_clock();
     // No definition gives the file's state (an extrusion by 20 mm), and
     // the one of both rectangles along the sketch's normal takes longer
     // than the item's second: it gives way, is tried again with the rest
@@ -617,10 +627,12 @@ fn points_along_a_segment_are_inside_between_its_crossings() {
     assert!(!inside_at(&[], 0.5));
 }
 
-#[test]
-fn a_sizing_offset_that_takes_long_gives_way_to_the_next_definition() {
-    // The offset of the threaded face would take 30 s: it is cut short at
-    // its few seconds and the thread comes in without it (mitcad#68).
+/// A thread on the side of a cylinder, its offset of the threaded face
+/// (the sizing offset) running `offset`: the document, the report and the
+/// seconds the import took.
+fn import_thread_with_offset(
+    offset: Box<dyn FnMut(&MockKernel) + Send>,
+) -> (Document<TestKernel>, DesignReport, f64) {
     let kernel = || TestKernel {
         face_listing: true,
         ..TestKernel::default()
@@ -654,7 +666,7 @@ fn a_sizing_offset_that_takes_long_gives_way_to_the_next_definition() {
         face_point(&side).map(|x| x / 10.0),
     ));
     let k = kernel();
-    *k.on_call.borrow_mut() = Some(("offset_faces", Box::new(slow_call)));
+    *k.on_call.borrow_mut() = Some(("offset_faces", offset));
     let mut doc = Document::new(k);
     let started = std::time::Instant::now();
     let report = import_design(
@@ -663,7 +675,17 @@ fn a_sizing_offset_that_takes_long_gives_way_to_the_next_definition() {
         &mut NoGeometry,
         &Options::default(),
     );
-    let elapsed = started.elapsed().as_secs_f64();
+    (doc, report, started.elapsed().as_secs_f64())
+}
+
+#[test]
+fn a_sizing_offset_that_takes_long_gives_way_to_the_next_definition() {
+    wall_clock();
+    // The offset of the threaded face would work for 30 s: it is cut short
+    // at its few seconds and the thread comes in without it (mitcad#68).
+    let (doc, report, elapsed) = import_thread_with_offset(Box::new(|mock: &MockKernel| {
+        busy_call_for(mock, 30.0);
+    }));
     assert!(
         (SIZING_OFFSET_SECONDS..10.0).contains(&elapsed),
         "{elapsed} s"
@@ -676,6 +698,33 @@ fn a_sizing_offset_that_takes_long_gives_way_to_the_next_definition() {
     );
     assert!(
         !doc.features()
+            .any(|f| matches!(f.def, FeatureDef::OffsetFace(_))),
+        "{}",
+        report.text()
+    );
+}
+
+#[test]
+fn a_sizing_offset_slowed_by_the_load_beside_it_is_not_cut_short() {
+    // The offset works a second longer than its time on the wall clock,
+    // on a machine so busy with other work that the import gets a quarter
+    // of the processors it wants: its time is on the import's clock, which
+    // leaves the load out (mitcad#874), so the thread keeps its faces
+    // sized by the offset (0.75 s of its 2 s).
+    mitcad_model::monitor::pace_for_tests(Some(0.25));
+    let (doc, report, elapsed) = import_thread_with_offset(Box::new(|mock: &MockKernel| {
+        busy_call_for(mock, SIZING_OFFSET_SECONDS + 1.0);
+    }));
+    mitcad_model::monitor::pace_for_tests(None);
+    assert!(elapsed >= SIZING_OFFSET_SECONDS + 1.0, "{elapsed} s");
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    assert!(
+        doc.features()
             .any(|f| matches!(f.def, FeatureDef::OffsetFace(_))),
         "{}",
         report.text()

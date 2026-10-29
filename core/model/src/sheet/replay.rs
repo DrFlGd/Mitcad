@@ -528,13 +528,20 @@ fn with_sheet<K: Kernel>(
             value: shape.clone(),
         },
     );
+    // (The body holds `shape` now, not a stand-in of a restored result,
+    // mitcad#886.)
+    let mut pending = ctx.env.pending.clone();
+    pending.remove(&body);
     let env = crate::features::Env {
         sheets: &sheets,
         bodies: &bodies,
+        pending: &pending,
         ..ctx.env
     };
     let mut child = EvalContext::new(ctx.kernel, ctx.uid, env);
-    run(&mut child)
+    let result = run(&mut child);
+    ctx.unpack_time += child.unpack_time;
+    result
 }
 
 /// The shape and sheet state a sheet operation published for `body`.

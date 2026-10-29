@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/framework/ModelShapes.cpp tools/cli
 # check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
+# check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp
 # The sketch's axes and origin as picks of Sketch Dimension and the
 # constraint tools (mitcad#500), on a design mitcad-cli makes: Sketch1 (F1)
 # on XY with a free point p1 at (20, 12), a free line c2 from (40, 5) to
@@ -22,6 +23,12 @@
 #      has two free circles, about (-30, 20) radius 4 and (-27, -16)
 #      radius 5 (6 DOF). Both selected, Symmetry takes them as its first
 #      picks; one click on the x axis then adds the constraint (3 DOF).
+#   6. Mirror about the y axis (mitcad#876): Sketch3 (F3, on XY) has a
+#      free point p1 at (-8, 5) and a free circle c2 about (10, 12) radius
+#      3. The circle selected, Mirror opens with Mirror Line active; a
+#      click on the y axis picks it (no sketch entity there), the preview
+#      and OK mirror the circle to (-10, 12), the y axis made in the same
+#      step; the saved sketch has the copy symmetric about the axis.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-axes-test.sh [screenshot.png]
@@ -42,7 +49,10 @@ cat > "$WORK/model.json" << 'EOF'
   {"cmd": "sketch.add_point", "sketch": "F1", "at": [-8, 15]},
   {"cmd": "sketch.create"},
   {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [-30, 20], "radius": 4},
-  {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [-27, -16], "radius": 5}
+  {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [-27, -16], "radius": 5},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_point", "sketch": "F3", "at": [-8, 5]},
+  {"cmd": "sketch.circle", "sketch": "F3", "mode": "center", "center": [10, 12], "radius": 3}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
@@ -197,5 +207,52 @@ ui_step "end the tool (Esc)"             ui_key Escape
 ui_mark
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 ui_expect_new "Sketch finished" "Sketch2 finished"
+
+echo "--- 6. Mirror a circle about the y axis (mitcad#876)"
+ui_mark
+ui_step "double-click Sketch3"           ui_double_click_logged "Timeline Sketch3"
+ui_expect_new "Editing sketch F3 (Sketch3)" "Sketch3 edited"
+ui_expect_new "Sketch Sketch3: 5 DOF" "a free point and a free circle"
+ui_step "show the circle and the y axis" zoom_to_show -15 -5 20 20
+ui_mark
+ui_step "select the circle"              ui_sketch_click 10 15
+ui_expect_new "Selected: 1 sketch curve" "the circle selected"
+ui_mark
+ui_step "mirror (search)"                ui_command "Mirror"
+ui_step "pick the y axis"                ui_sketch_click 0 18
+ui_expect_new "Sketch axis picked for the command: y_axis (y axis)" "the y axis picked as the mirror line"
+ui_expect_new "Mirror Mirror Line: 1 sketch curve [sketch curve y_axis of F3]" "Mirror Line holds the y axis"
+ui_expect_new "Preview Mirror: ok" "the mirror previewed"
+ui_mark
+ui_step "OK (Enter)"                     ui_key Return
+ui_expect_new "Mirrored 1 object(s) about the y axis" "the circle mirrored about the y axis"
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "Sketch3 finished"
+ui_mark
+ui_step "save (Ctrl+S)"                  ui_key ctrl+s
+ui_expect_new "Saved $FILE" "saved"
+# The point, the circle's centre and the circle, then what the mirror
+# made in its step: the origin point, the y axis's far end and line, the
+# copy's centre and the copy.
+cat > "$WORK/check-mirror.json" << 'EOF3'
+[
+  {"expect": {"sketch": "Sketch3", "dof": 5}},
+  {"expect": {"query": {"query": "sketch", "uid": "F3"}, "result": {
+    "entities": [
+      {"id": "p1", "at": [-8, 5]},
+      {"id": "p3", "at": [10, 12]},
+      {"id": "c2", "type": "circle", "center": "p3", "radius": 3},
+      {"id": "p4", "at": [0, 0], "fixed": true},
+      {"id": "p6", "axis": "y", "fixed": true},
+      {"id": "c5", "type": "line", "start": "p4", "end": "p6", "axis": "y", "construction": true, "fixed": true},
+      {"id": "p8", "at": [-10, 12]},
+      {"id": "c7", "type": "circle", "center": "p8", "radius": 3}],
+    "constraints": [{"type": "symmetric", "a": "c2", "b": "c7", "axis": "c5"}]}}}
+]
+EOF3
+"$CLI" run "$WORK/check-mirror.json" --open "$FILE" > "$WORK/check-mirror.log" 2>&1 ||
+  { cat "$WORK/check-mirror.log"; ui_fail "the saved mirror about the y axis"; }
+echo "ok   the copy saved symmetric about the y axis"
 
 ui_finish "UI sketch axes test"

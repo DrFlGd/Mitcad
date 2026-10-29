@@ -149,7 +149,7 @@ impl Clock {
         let since = |(total, at): &(Arc<AtomicU64>, u64)| {
             Duration::from_nanos(total.load(Ordering::Relaxed).saturating_sub(*at))
         };
-        let elapsed = self.started.elapsed().saturating_sub(since(&self.waited));
+        let elapsed = crate::since(self.started).saturating_sub(since(&self.waited));
         match &self.paused {
             Some(paused) => elapsed.saturating_sub(since(paused)),
             None => elapsed,
@@ -183,7 +183,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// A stopwatch started now that leaves out the dump's work ([`Clock`]).
     pub(crate) fn clock(&self) -> Clock {
         Clock {
-            started: Instant::now(),
+            started: crate::now(),
             paused: self.learn.as_ref().map(|s| {
                 let at = s.paused.load(Ordering::Relaxed);
                 (Arc::clone(&s.paused), at)
@@ -207,9 +207,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if self.learn.is_none() {
             return;
         }
-        let started = Instant::now();
+        let started = crate::now();
         self.learn_offered(index, item, translated);
-        let spent = started.elapsed();
+        let spent = crate::since(started);
         if let Some(s) = &self.learn {
             let nanos = u64::try_from(spent.as_nanos()).unwrap_or(u64::MAX);
             s.paused.fetch_add(nanos, Ordering::Relaxed);
@@ -987,7 +987,7 @@ mod tests {
         let paused = Arc::new(AtomicU64::new(5));
         let waited = Arc::new(AtomicU64::new(7));
         let clock = Clock {
-            started: Instant::now() - Duration::from_secs(10),
+            started: crate::now() - Duration::from_secs(10),
             paused: Some((Arc::clone(&paused), 5)),
             waited: (Arc::clone(&waited), 7),
         };

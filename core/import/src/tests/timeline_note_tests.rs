@@ -22,6 +22,7 @@ fn timeline_item(doc: &Document<TestKernel>, name: &str) -> Value {
 
 #[test]
 fn a_fallback_stands_in_for_its_items_with_their_reasons() {
+    wall_clock();
     let (items, mut geometry) = block_history(Vec::new());
     let mut doc = Document::new(TestKernel::default());
     let options = Options {

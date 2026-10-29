@@ -1,16 +1,22 @@
 # SPDX-License-Identifier: MIT
-# A changed distance while the edit's first preview is busy keeps the
+# A changed distance while an uncached edit preview is busy keeps the
 # deliberately saved New Body: an edit keeps its stored operation
 # (mitcad#868).
 wait-idle
 window-resize 1400 990
 mark
 dblclick-logged '^Timeline Extrude1 at '
+expect-log 'Extrude: editing keeps the stored operation' 30
+wait-idle
+# The unchanged opening preview may reuse every evaluated feature, so
+# its per-evaluation delay cannot keep the worker busy. Change the actual
+# distance first, then make the asserted input while that preview computes.
+mark
+qt-type-now input_distance '7 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 qt-type-now input_distance '5 mm'
 wait-log '^Extrude Distance: 5 mm' 30
-expect-log 'Extrude: editing keeps the stored operation' 30
 wait-idle 30
 expect-no-log 'Extrude: automatic Operation'
 focus-main

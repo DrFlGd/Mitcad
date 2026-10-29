@@ -24,6 +24,48 @@ of 35 × 35 copies took 113 s): the definition fails ("the item's time was
 over before its definition was evaluated") and the item gives up like one
 out of time.
 
+**What the times measure** (mitcad#874). Every time limit of the replay
+(an item's time and its shares, a definition's own time, the import's
+`time_limit`, the comparison of the final bodies) is on the import's
+clock (`mitcad_model::monitor::now`), not the wall clock. On Linux it
+moves as the wall clock does while the process's threads get the
+processors they want, and more slowly while they wait for processors
+that other work holds: every 0.1 s it takes, over all the process's
+threads (`/proc/self/task/*/schedstat`), the time they ran and the time
+they waited runnable, and moves on by that interval times the share they
+ran. A thread that waits for something else (a lock, a worker, the
+user) counts as on the wall clock. A thread whose core's other logical
+processor is busy too runs slower without waiting: once more logical
+processors are busy than the machine has cores (`/proc/stat`), the clock
+moves more slowly by the share of them that share a core, down to half
+(`SHARED_CORE_SPEED`) when all are busy (a pattern that took 34 s alone
+took 66 s of the time it ran beside 32 busy processes on 16 cores of two
+logical processors). So on an idle machine the times are the wall
+clock's, as before, and beside other work an import decides as it would
+alone: before, the wall clock let the load decide between routes (a
+thread's offset of the faces it sizes past its 2 s, a definition of 14 s
+past its 20 s share, both under load). Beside 0, 12 and 32 busy
+processes the five designs of `f3d.corpus_designs` at once gave the same
+items, and that pattern took 35.7, 36.0 and 35.1 s of the clock (35.7,
+53.9 and 95.7 s of the wall clock). The clock is the wall clock on
+other platforms, and the kernel's own comparison of two bodies keeps its
+seconds on the wall clock. The trace gives a
+definition's time on it, with the wall clock's where the load made that
+longer ("evaluated in 0.80 s (2.20 s of the wall clock)").
+
+**Second round without starting again** (mitcad#874). With workers
+(`threads` above one), a definition given a share in the first round of
+the turns (a definition's share, below) is evaluated on a worker of its own,
+the first of a list too: the importer waits for it until its share has
+passed, takes it as given way then, as on the document, and the worker
+goes on with the item's time. The second round takes its result from
+there instead of evaluating it again from the start, and is not passed
+over for having run as long as the time left. A pattern of threads
+that takes 37 s in a debug build spent its share of 20 s and then the
+37 s again (58 s of its item's 60); it now needs its 37 s. Without a free
+worker the definition is evaluated on the document and starts again, as
+before.
+
 **A definition's share** (mitcad#78). One slow definition must not use up
 the item's time before those ranked after it are tried (a join onto a plate
 of a thousand holes took a minute where the next definitions took a second
@@ -233,6 +275,9 @@ mitcad#95), and the import is the same as with one thread, only faster:
   far as the item's attempts and a loose match's closer tries reach), from
   the second candidate of a list on: the first is usually the one taken,
   and workers beside it would only take processors and memory from it.
+  (A definition given a share goes to a worker of its own itself, the
+  first one too, so that it can go on past its share, mitcad#874: the
+  import waits for it as it would evaluate it.)
   When
   it comes to a candidate a worker has evaluated (or waits for it), it
   takes the worker's result instead of evaluating it again. So candidate
@@ -261,13 +306,15 @@ mitcad#95), and the import is the same as with one thread, only faster:
   and OCCT's handles count references atomically. The cancellation scope
   of the geometry is per thread, and each worker installs the kernel's
   crash handlers and ticks the import's progress (`mitcad-ffi`).
-- **Time.** A worker's definition is given the first round's share of the
-  item's time (`SHARE`) from when it starts, and the item's deadline. One
-  that gave way at its share is evaluated again on the document when the
-  import would give it the rest of the item's time (the last one);
-  otherwise its result stands. Results that depend on the time (an item
-  out of time, an import past its time limit) can differ, as between two
-  runs with one thread: with workers more definitions fit into the time.
+- **Time.** A worker's definition is given the item's time (and its own,
+  a sizing offset's); the import gives it the share it would give it on
+  the document by waiting for it no longer than that from when it began
+  (also a result that came later counts as given way there). One that
+  gave way goes on on its worker, and the second round takes its result
+  from there (mitcad#874, *Second round without starting again*).
+  Results that depend on the time (an item out of time, an import past
+  its time limit) can differ, as between two runs with one thread: with
+  workers more definitions fit into the time.
 - **Memory.** Each worker holds its definition's memory and a stack of
   64 MiB (the import's own thread has 256 MiB). No worker starts while the
   process uses half of its tightest memory limit or more (*Memory*;
@@ -290,9 +337,9 @@ mitcad#95), and the import is the same as with one thread, only faster:
   kernel call that does not check for a request to stop runs on past the
   definition's time. The import waits for such a worker until another
   share of the item's time (the first round's) has passed after the end of
-  the time it would give the definition (its share, its own time or the
-  item's). Then the definition is cut short as if it had stopped there
-  (gave way, or out of time), and the import goes on. The worker is left to
+  the time the worker was given (its own time or the item's). Then the
+  definition is cut short as if it had stopped there (out of time), and
+  the import goes on; at its share the import has gone on already. The worker is left to
   end on its own and counts in `running_workers()`. The case behind it was
   `db73863f` item 88, a fillet whose definition named some edges of a
   closed tangent chain. Its contour's walk inside

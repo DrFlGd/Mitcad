@@ -2,9 +2,11 @@
 #include "util.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
 #include <cmath>
+#include <cstddef>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
@@ -35,6 +37,7 @@
 #include <TopExp.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Iterator.hxx>
 #include <TopoDS_Vertex.hxx>
 #include <gp_Pnt2d.hxx>
@@ -76,7 +79,17 @@ void require_surfaces(const TopoDS_Shape& shape, const char* operation) {
   }
 }
 
-ShapeKey shape_key(const TopoDS_Shape& shape) {
+namespace {
+
+// What shape_key and piece_order measure of a shape: its centre of mass,
+// its size (volume, area or length; 0 for a vertex) and its bounding box.
+struct Measure {
+  gp_Pnt centre;
+  double size = 0.0;
+  double xmin = 0.0, ymin = 0.0, zmin = 0.0, xmax = 0.0, ymax = 0.0, zmax = 0.0;
+};
+
+Measure measure(const TopoDS_Shape& shape) {
   GProp_GProps props;
   switch (shape.ShapeType()) {
   case TopAbs_SOLID:
@@ -95,32 +108,154 @@ ShapeKey shape_key(const TopoDS_Shape& shape) {
   default:
     break;
   }
-  gp_Pnt centre;
+  Measure m;
   if (shape.ShapeType() == TopAbs_VERTEX) {
-    centre = BRep_Tool::Pnt(TopoDS::Vertex(shape));
+    m.centre = BRep_Tool::Pnt(TopoDS::Vertex(shape));
   } else {
-    centre = props.CentreOfMass();
+    m.centre = props.CentreOfMass();
+    m.size = props.Mass();
   }
   Bnd_Box box;
   BRepBndLib::Add(shape, box);
-  double xmin = 0, ymin = 0, zmin = 0, xmax = 0, ymax = 0, zmax = 0;
   if (!box.IsVoid()) {
-    box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    box.Get(m.xmin, m.ymin, m.zmin, m.xmax, m.ymax, m.zmax);
   }
-  return {rounded(centre.X()), rounded(centre.Y()), rounded(centre.Z()),
-          rounded(xmin),       rounded(ymin),       rounded(zmin)};
+  return m;
+}
+
+ShapeKey key_of(const Measure& m) {
+  return {rounded(m.centre.X()), rounded(m.centre.Y()), rounded(m.centre.Z()),
+          rounded(m.xmin),       rounded(m.ymin),       rounded(m.zmin)};
+}
+
+// A piece, edge or vertex as piece_order, edge_order and vertex_order
+// order it: its N components in their order, its earlier sort key (the
+// rounded components shape_key or edge_key gives), and its position among
+// the ones ordered.
+template <std::size_t N>
+struct PlaceKey {
+  std::array<double, N> place{};
+  ShapeKey legacy{};
+  std::size_t position = 0;
+};
+
+// A component to compare: a value that is no number (a centre of nothing)
+// compares as 0, so that the order stays a strict one.
+double comparable(double value) { return std::isfinite(value) ? value : 0.0; }
+
+// Orders `keys` from `first` to `last` by their places' components from
+// `component` on, as piece_order describes.
+template <std::size_t N>
+void order_places(std::vector<PlaceKey<N>>& keys, std::size_t first, std::size_t last, std::size_t component) {
+  if (last - first < 2) {
+    return;
+  }
+  const auto begin = keys.begin() + static_cast<std::ptrdiff_t>(first);
+  const auto end = keys.begin() + static_cast<std::ptrdiff_t>(last);
+  if (component == N) {
+    std::sort(begin, end, [](const PlaceKey<N>& a, const PlaceKey<N>& b) {
+      return a.legacy != b.legacy ? a.legacy < b.legacy : a.position < b.position;
+    });
+    return;
+  }
+  std::sort(begin, end, [component](const PlaceKey<N>& a, const PlaceKey<N>& b) {
+    return a.place[component] < b.place[component];
+  });
+  std::size_t run = first;
+  for (std::size_t k = first + 1; k <= last; ++k) {
+    if (k == last || keys[k].place[component] - keys[k - 1].place[component] > kPieceTie) {
+      order_places(keys, run, k, component + 1);
+      run = k;
+    }
+  }
+}
+
+// The positions of `keys` in their order (order_places from the first
+// component).
+template <std::size_t N>
+std::vector<std::size_t> place_order(std::vector<PlaceKey<N>>& keys) {
+  order_places(keys, 0, keys.size(), 0);
+  std::vector<std::size_t> order;
+  order.reserve(keys.size());
+  for (const PlaceKey<N>& key : keys) {
+    order.push_back(key.position);
+  }
+  return order;
+}
+
+// The point in the middle of an edge (by parameter); none for a
+// degenerated edge, which edge_key places by shape_key instead.
+std::optional<gp_Pnt> middle_of(const TopoDS_Edge& edge) {
+  if (BRep_Tool::Degenerated(edge)) {
+    return std::nullopt;
+  }
+  const BRepAdaptor_Curve curve(edge);
+  return curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
+}
+
+// edge_key of an edge whose middle is `middle` and whose measure is `m`.
+ShapeKey edge_key_of(const std::optional<gp_Pnt>& middle, const Measure& m) {
+  const ShapeKey whole = key_of(m);
+  if (!middle) {
+    return whole;
+  }
+  return {rounded(middle->X()), rounded(middle->Y()), rounded(middle->Z()),
+          whole[0],             whole[1],             whole[2]};
+}
+
+} // namespace
+
+ShapeKey shape_key(const TopoDS_Shape& shape) { return key_of(measure(shape)); }
+
+std::vector<std::size_t> piece_order(const std::vector<TopoDS_Shape>& pieces) {
+  std::vector<PlaceKey<10>> keys(pieces.size());
+  for (std::size_t i = 0; i < pieces.size(); ++i) {
+    const Measure m = measure(pieces[i]);
+    keys[i].place = {comparable(m.centre.X()), comparable(m.centre.Y()), comparable(m.centre.Z()),
+                     comparable(m.xmin),       comparable(m.ymin),       comparable(m.zmin),
+                     comparable(m.size),       comparable(m.xmax),       comparable(m.ymax),
+                     comparable(m.zmax)};
+    keys[i].legacy = key_of(m);
+    keys[i].position = i;
+  }
+  return place_order(keys);
+}
+
+std::vector<std::size_t> edge_order(const std::vector<TopoDS_Shape>& edges) {
+  std::vector<PlaceKey<13>> keys(edges.size());
+  for (std::size_t i = 0; i < edges.size(); ++i) {
+    const Measure m = measure(edges[i]);
+    const std::optional<gp_Pnt> middle = middle_of(TopoDS::Edge(edges[i]));
+    // The first six components are the ones edge_key rounds: the middle
+    // and the centre of mass, or for a degenerated edge the centre and the
+    // lower corner of its box.
+    const gp_Pnt first = middle ? *middle : m.centre;
+    const gp_Pnt second = middle ? m.centre : gp_Pnt(m.xmin, m.ymin, m.zmin);
+    keys[i].place = {comparable(first.X()),  comparable(first.Y()),  comparable(first.Z()),
+                     comparable(second.X()), comparable(second.Y()), comparable(second.Z()),
+                     comparable(m.size),     comparable(m.xmin),     comparable(m.ymin),
+                     comparable(m.zmin),     comparable(m.xmax),     comparable(m.ymax),
+                     comparable(m.zmax)};
+    keys[i].legacy = edge_key_of(middle, m);
+    keys[i].position = i;
+  }
+  return place_order(keys);
+}
+
+std::vector<std::size_t> vertex_order(const std::vector<TopoDS_Shape>& vertices) {
+  std::vector<PlaceKey<6>> keys(vertices.size());
+  for (std::size_t i = 0; i < vertices.size(); ++i) {
+    const Measure m = measure(vertices[i]);
+    keys[i].place = {comparable(m.centre.X()), comparable(m.centre.Y()), comparable(m.centre.Z()),
+                     comparable(m.xmin),       comparable(m.ymin),       comparable(m.zmin)};
+    keys[i].legacy = key_of(m);
+    keys[i].position = i;
+  }
+  return place_order(keys);
 }
 
 ShapeKey edge_key(const TopoDS_Shape& edge) {
-  const TopoDS_Edge& e = TopoDS::Edge(edge);
-  if (BRep_Tool::Degenerated(e)) {
-    return shape_key(edge);
-  }
-  const BRepAdaptor_Curve curve(e);
-  const gp_Pnt middle = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
-  const ShapeKey whole = shape_key(edge);
-  return {rounded(middle.X()), rounded(middle.Y()), rounded(middle.Z()),
-          whole[0],           whole[1],           whole[2]};
+  return edge_key_of(middle_of(TopoDS::Edge(edge)), measure(edge));
 }
 
 namespace {

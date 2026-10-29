@@ -28,3 +28,7 @@ mod sketch_rounded_rectangle_867_tests;
 mod sketch_scale_860_tests;
 // Symmetry of circles and arcs whose radii are fixed (mitcad#865).
 mod sketch_symmetry_865_tests;
+// Mirror over a construction diagonal and about the sketch axes (mitcad#876).
+mod sketch_mirror_876_tests;
+// Offsets' tangent corners where their curves touch (mitcad#890).
+mod sketch_offset_tangent_corners_890_tests;

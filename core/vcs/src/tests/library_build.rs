@@ -998,3 +998,67 @@ fn the_shipped_timber_fasteners_default_to_the_countersunk_wood_screw() {
     assert_eq!(connector["build"]["wood"]["seat"], "head_underside");
     assert!(connector["build"]["wood"].get("default").is_none());
 }
+
+/// A profile without slots (a steel tube, mitcad#873) names no slot
+/// system and has no slot block; a profile with a slot frame still needs
+/// its system.
+#[test]
+fn a_profile_without_slots_needs_no_slot_system() {
+    let scratch = Scratch::new("library-build-tube");
+    let cache = LibraryCache::new(scratch.join("cache"));
+    let mut all = components();
+    let tube = json!({"id": "tube-40", "path": "profiles/tube-40.mitcad", "name": "Square tube 40x40x3",
+        "category": "profiles", "designation": "Square tube 40x40x3 L={L}",
+        "build": {"role": "profile",
+            "length": {"parameter": "L", "min": "10 mm", "max": "6000 mm", "stock": ["6000 mm"]},
+            "section": {"width": "40 mm", "height": "40 mm"},
+            "mass_per_metre": "3.303 kg", "material": {"density": 7850},
+            "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+                       {"name": "face_xp", "kind": "face"}]}});
+    all.as_array_mut().unwrap().push(tube);
+    let mut files = designs();
+    files.push((
+        "profiles/tube-40.mitcad",
+        timber_design(&[("L", "100 mm")], &["face_xp"], &[]),
+    ));
+    let good = scratch.join("good");
+    write_library(&good, all.clone(), &files);
+    let (errors, warnings) = check(&cache, &good);
+    assert_eq!(errors, Vec::<String>::new());
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.contains("tube-40") && !w.ends_with("no preview image")),
+        "{warnings:#?}"
+    );
+
+    // With a slot frame it is a slot profile again: its system and slot
+    // block are asked for.
+    let mut slotted = all.clone();
+    let parts = slotted.as_array_mut().unwrap();
+    let n = parts.len();
+    parts[n - 1]["build"]["frames"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"name": "slot_x+_1", "kind": "slot"}));
+    let mut files = designs();
+    files.push((
+        "profiles/tube-40.mitcad",
+        timber_design(&[("L", "100 mm")], &["face_xp", "slot_x+_1"], &[]),
+    ));
+    let bad = scratch.join("bad");
+    write_library(&bad, slotted, &files);
+    let (errors, warnings) = check(&cache, &bad);
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("tube-40: a profile names its slot system")),
+        "{errors:#?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.contains("tube-40: no build.slot")),
+        "{warnings:#?}"
+    );
+}

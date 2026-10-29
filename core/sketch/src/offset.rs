@@ -743,6 +743,10 @@ pub fn regenerate(
     Ok(())
 }
 
+/// An arc or circle of an offset's chain, as [`seed`] places its helper:
+/// the centre, the source's radius, the result's, and an arc's angles.
+type Round = (P2, f64, f64, Option<(f64, f64)>);
+
 /// Puts the curves of each offset made by constraints where the offset of
 /// its source is now, as the solve's start (mitcad#641). The solver keeps a
 /// distance dimension on the side its curves start on: when the source has
@@ -844,6 +848,9 @@ pub fn seed(
             let mut lines: Vec<(EntityUid, P2, P2)> = Vec::new();
             let mut radii: Vec<(EntityUid, f64)> = Vec::new();
             let mut circles: Vec<(EntityUid, P2, f64)> = Vec::new();
+            // The arcs and circles in chain order: centre, the source's
+            // radius and the result's, and an arc's range of angles.
+            let mut rounds: Vec<Round> = Vec::new();
             let mut fits = true;
             for ((curve, forward), result) in chain.iter().zip(&offset.results) {
                 // Along the left normal of the curve's own direction, as
@@ -892,6 +899,7 @@ pub fn seed(
                         let on = |t: f64| add(*center, [r * t.cos(), r * t.sin()]);
                         points.extend([(*c, *center), (*start, on(*s)), (*end, on(*e))]);
                         circles.extend([(*start, *center, r), (*end, *center, r)]);
+                        rounds.push((*center, *radius, r, Some((*s, *e))));
                     }
                     (
                         Curve2::Circle { center, radius, .. },
@@ -904,12 +912,51 @@ pub fn seed(
                         }
                         points.push((*c, *center));
                         radii.push((*result, r));
+                        rounds.push((*center, *radius, r, None));
                     }
                     _ => fits = false,
                 }
             }
             if !fits {
                 continue;
+            }
+            // The construction line each arc or circle holds its distance
+            // with (one per arc, in chain order, from a point on the source
+            // to one on the result through the centre) goes along with it,
+            // in its own direction: left where it was when its arc had
+            // moved, it started a solve of its own once the corners were
+            // held where the curves touch (mitcad#890), and that solve did
+            // not find the arc again from 17 mm away.
+            if offset.helpers.len() == rounds.len() {
+                for (helper, (center, from, to, range)) in offset.helpers.iter().zip(&rounds) {
+                    let Some(EntityKind::Line { start, end, .. }) =
+                        index.get(*helper).map(|e| &e.kind)
+                    else {
+                        continue;
+                    };
+                    let (Some(p0), Some(p1)) = (at(*start), at(*end)) else {
+                        continue;
+                    };
+                    // Out from the centre along the helper, the way the
+                    // result lies from the source.
+                    let along = sub(p1, p0);
+                    let length = norm(along);
+                    let mut radial = if length > 0.0 {
+                        scale(along, if to > from { 1.0 } else { -1.0 } / length)
+                    } else {
+                        [1.0, 0.0]
+                    };
+                    // On an arc: within its angles, else across its middle.
+                    if let Some((s, e)) = range {
+                        let angle = radial[1].atan2(radial[0]);
+                        if angle_after(*s, angle) > *e {
+                            let middle = (s + e) / 2.0;
+                            radial = [middle.cos(), middle.sin()];
+                        }
+                    }
+                    points.push((*start, add(*center, scale(radial, *from))));
+                    points.push((*end, add(*center, scale(radial, *to))));
+                }
             }
             // Corners: each point once.
             let mut placed: Vec<(EntityUid, P2)> = Vec::new();
@@ -1025,6 +1072,164 @@ pub fn seed(
                 _ => {}
             }
         }
+    }
+}
+
+/// The tangent corners of the offsets made by constraints, as solver
+/// bindings (mitcad#890). Two results of such an offset share their corner
+/// point and are held only by their own constraints (a line parallel to its
+/// source at the distance, an arc about its source's centre); where the
+/// source curves touch at their corner, the results touch there too, and the
+/// corner is where the result line touches the result circle. That point is
+/// fixed only to the second order: the corner slides along the line by the
+/// square root of the solve's rounding (2e-5 mm for 1.6e-11 mm on a 12 mm
+/// arc), so the arc ended past the touching point, the profile turned there
+/// by 1.6e-6 rad, and a sweep along the extruded outline and its cut came out
+/// in pieces after a grid design was widened. The binding holds the corner
+/// where the curves touch (the solver's tangency at a shared point, which is
+/// of the first order). A source corner touches by its definition: the two
+/// source curves are tangent by a constraint, or both are fixed (projected
+/// edges) and touch at their shared point, or they are results of an offset
+/// whose corner is bound so. A corner of free curves that only happen to
+/// touch is not bound: it may part when they move.
+pub fn tangent_corners(
+    offsets: &[SketchOffset<ParamId>],
+    entities: &[Entity],
+    constraints: &[super::Constraint],
+) -> Vec<super::pattern::Binding> {
+    use super::pattern::{Binding, BindingKind};
+    let index = EntityIndex::new(entities);
+    let pair = |a: EntityUid, b: EntityUid| if a <= b { (a, b) } else { (b, a) };
+    let mut touching: BTreeSet<(EntityUid, EntityUid)> = constraints
+        .iter()
+        .filter(|c| c.active)
+        .filter_map(|c| match c.kind {
+            ConstraintKind::Tangent { a, b, .. } | ConstraintKind::Smooth { a, b, .. } => {
+                Some(pair(a, b))
+            }
+            _ => None,
+        })
+        .collect();
+    let mut out = Vec::new();
+    for offset in offsets.iter().filter(|o| !o.derived) {
+        let n = offset.curves.len();
+        if n < 2 || offset.results.len() != n {
+            continue;
+        }
+        let forward = chain_directions(&offset.curves, &index);
+        let end = |curve: EntityUid, forward: bool, last: bool| {
+            index
+                .get(curve)
+                .and_then(|e| e.kind.ends())
+                .map(|(s, e)| if forward != last { s } else { e })
+        };
+        let closed = {
+            let (start, finish) = (
+                end(offset.curves[0], forward[0], false),
+                end(offset.curves[n - 1], forward[n - 1], true),
+            );
+            start.is_some() && start == finish
+        };
+        let corners = if closed { n } else { n - 1 };
+        for i in 0..corners {
+            let j = (i + 1) % n;
+            let (s1, s2) = (offset.curves[i], offset.curves[j]);
+            let (r1, r2) = (offset.results[i], offset.results[j]);
+            // The point the sources share, and the one the results share.
+            let Some(at) =
+                end(s1, forward[i], true).filter(|p| end(s2, forward[j], false) == Some(*p))
+            else {
+                continue;
+            };
+            let Some(corner) = shared_end(&index, r1, r2) else {
+                continue;
+            };
+            let by_definition = touching.contains(&pair(s1, s2))
+                || (fixed(&index, s1) && fixed(&index, s2) && touch_at(&index, s1, s2, at));
+            // (Two lines touch only along each other: no corner. Results
+            // tangent by a constraint of their own need no binding.)
+            if by_definition
+                && (round(&index, r1) || round(&index, r2))
+                && touching.insert(pair(r1, r2))
+            {
+                out.push(Binding {
+                    owner: offset.id,
+                    kind: BindingKind::TangentAt {
+                        a: r1,
+                        b: r2,
+                        at: corner,
+                    },
+                });
+            }
+        }
+    }
+    out
+}
+
+/// The end point two curves share.
+fn shared_end(index: &EntityIndex<'_>, a: EntityUid, b: EntityUid) -> Option<EntityUid> {
+    let (a0, a1) = index.get(a)?.kind.ends()?;
+    let (b0, b1) = index.get(b)?.kind.ends()?;
+    [a0, a1].into_iter().find(|p| *p == b0 || *p == b1)
+}
+
+/// Whether a curve is fixed (a projected edge).
+fn fixed(index: &EntityIndex<'_>, id: EntityUid) -> bool {
+    index.get(id).is_some_and(|e| e.fixed)
+}
+
+/// Whether a curve is an arc or a circle.
+fn round(index: &EntityIndex<'_>, id: EntityUid) -> bool {
+    matches!(
+        index.get(id).map(|e| &e.kind),
+        Some(EntityKind::Arc { .. } | EntityKind::Circle { .. })
+    )
+}
+
+/// Whether a line and an arc, or two arcs, touch at their shared point `at`:
+/// the line runs along the circle's tangent there, or the two centres lie on
+/// one line with it, within the angle at which a line [`TOUCH`]es a circle
+/// (the square root of twice that, relative to the radius).
+fn touch_at(index: &EntityIndex<'_>, a: EntityUid, b: EntityUid, at: EntityUid) -> bool {
+    let point = |id: EntityUid| index.point(id);
+    // An arc's centre, when its ends lie on one circle (fixed geometry that
+    // contradicts itself, a projection followed past where its curves still
+    // meet, is no corner to hold: the solve says what contradicts).
+    let circle = |id: EntityUid| match index.get(id).map(|e| &e.kind) {
+        Some(EntityKind::Arc { center, start, end }) => {
+            let (c, s, e) = (point(*center)?, point(*start)?, point(*end)?);
+            let (rs, re) = (norm(sub(s, c)), norm(sub(e, c)));
+            ((rs - re).abs() <= TOUCH * rs.max(1.0)).then_some(c)
+        }
+        _ => None,
+    };
+    let line = |id: EntityUid| match index.get(id).map(|e| &e.kind) {
+        Some(EntityKind::Line { start, end, .. }) => point(*start).zip(point(*end)),
+        _ => None,
+    };
+    let Some(p) = point(at) else {
+        return false;
+    };
+    // The sine of the angle the curves meet at, against the tangent's for
+    // the smaller radius.
+    let within = |sine: f64, r: f64| r > 0.0 && sine.abs() <= (2.0 * TOUCH * r.max(1.0) / r).sqrt();
+    match (line(a).or(line(b)), circle(a), circle(b)) {
+        (Some((s, e)), Some(c), None) | (Some((s, e)), None, Some(c)) => {
+            let (u, v) = (sub(e, s), sub(p, c));
+            let (lu, lv) = (norm(u), norm(v));
+            lu > 0.0 && within(dot(u, v) / (lu * lv), lv)
+        }
+        // Two arcs of one circle (centres within rounding of each other,
+        // mitcad#709) are no corner that touching holds.
+        (None, Some(c1), Some(c2)) => {
+            let (v1, v2) = (sub(p, c1), sub(p, c2));
+            let (l1, l2) = (norm(v1), norm(v2));
+            l1 > 0.0
+                && l2 > 0.0
+                && norm(sub(c2, c1)) > TOUCH * (l1 + l2).max(1.0)
+                && within(cross(v1, v2) / (l1 * l2), l1.min(l2))
+        }
+        _ => false,
     }
 }
 

@@ -5,7 +5,11 @@
 # import-f3d, its parameters changed and the design recomputed (mitcad-cli
 # run --open). Per design:
 #
-# - every feature recomputes without an error;
+# - every feature recomputes without an error, and without a warning it
+#   did not have as imported (mitcad#891: projections that no longer
+#   followed their source kept their last geometry);
+# - the design has the bodies it had as imported, no more (mitcad#890: a
+#   cut that left rings of a body as bodies of their own);
 # - each body named has the bounding box given, within 0.001 mm, where
 #   the expected box is derived from the design's own parameter
 #   expressions; a body whose box grew has a larger volume than in the
@@ -36,7 +40,16 @@ set(designs
     "b35176e6|base-x|BaseX=5|Body3=0:0:0:140:84:28,Body5=1.8:1.8:21:138.2:82.2:119,Body6=0:0:-56:140:84:-28"
     "b35176e6|base-z|BaseZ=6|Body3=0:0:0:112:84:28,Body5=1.8:1.8:21:110.2:82.2:147,Body6=0:0:-56:112:84:-28"
     "b35176e6|depth-y|DepthY=4|Body3=0:0:0:112:112:28,Body5=1.8:1.8:21:110.2:110.2:119,Body6=0:0:-56:112:112:-28"
-    "b35176e6|one-cell-more|BaseX=5,BaseZ=6,DepthY=4|Body3=0:0:0:140:112:28,Body5=1.8:1.8:21:138.2:110.2:147,Body6=0:0:-56:140:112:-28")
+    "b35176e6|one-cell-more|BaseX=5,BaseZ=6,DepthY=4|Body3=0:0:0:140:112:28,Body5=1.8:1.8:21:138.2:110.2:147,Body6=0:0:-56:140:112:-28"
+    # Three cells wider (mitcad#890, mitcad#891): the frame's offset
+    # outlines had their tangent corners 2e-5 mm off where the lines touch
+    # the arcs, the chamfers lost their edges and the projections of the
+    # slot their source; on a square chute (four cells deep and high) the
+    # sweep cut along those corners left four rings as bodies of their own.
+    # Then back: the design as imported.
+    "b35176e6|base-x-three-cells|BaseX=7|Body3=0:0:0:196:84:28,Body5=1.8:1.8:21:194.2:82.2:119,Body6=0:0:-56:196:84:-28"
+    "b35176e6|base-x-three-cells-square|BaseZ=4,DepthY=4,BaseX=7|Body3=0:0:0:196:112:28,Body5=1.8:1.8:21:194.2:110.2:91,Body6=0:0:-56:196:112:-28"
+    "b35176e6|base-x-three-cells-and-back|BaseX=7,BaseX=4|Body3=0:0:0:112:84:28,Body5=1.8:1.8:21:110.2:82.2:119,Body6=0:0:-56:112:84:-28")
 
 set(folders "")
 foreach(variable MITCAD_F3D_CORPUS MITCAD_F3D_BACKUP)
@@ -206,18 +219,38 @@ foreach(design IN LISTS designs)
     list(APPEND problems "${id} ${change}: run failed (${status}): ${err}")
     continue()
   endif()
-  # Every feature recomputes without an error.
+  # Every feature recomputes without an error, and with no warning it did
+  # not have as imported (a projection that no longer follows its source).
+  set(warned "")
+  string(JSON count LENGTH "${before}" timeline features)
+  math(EXPR last "${count} - 1")
+  foreach(i RANGE ${last})
+    string(JSON s GET "${before}" timeline features ${i} status)
+    if(s STREQUAL "warning")
+      string(JSON uid GET "${before}" timeline features ${i} uid)
+      list(APPEND warned "${uid}")
+    endif()
+  endforeach()
   string(JSON count LENGTH "${after}" timeline features)
   math(EXPR last "${count} - 1")
   foreach(i RANGE ${last})
     string(JSON s GET "${after}" timeline features ${i} status)
-    if(s STREQUAL "error")
+    string(JSON uid GET "${after}" timeline features ${i} uid)
+    list(FIND warned "${uid}" known)
+    if(s STREQUAL "error" OR (s STREQUAL "warning" AND known EQUAL -1))
       string(JSON name GET "${after}" timeline features ${i} name)
       string(JSON e GET "${after}" timeline features ${i} error)
-      list(APPEND problems "${id} ${change}: ${name}: ${e}")
+      list(APPEND problems "${id} ${change}: ${name} (${s}): ${e}")
     endif()
   endforeach()
   read_bodies("${after}" after)
+  # The design's bodies, no more: a cut that leaves pieces of a body as
+  # bodies of their own (mitcad#890) is no change of size.
+  if(NOT after_names STREQUAL before_names)
+    string(REPLACE ";" ", " got "${after_names}")
+    string(REPLACE ";" ", " was "${before_names}")
+    list(APPEND problems "${id} ${change}: the bodies are ${got}, not ${was}")
+  endif()
   string(REPLACE "," ";" expected "${expected}")
   foreach(body IN LISTS expected)
     string(REGEX REPLACE "^([^=]+)=(.*)$" "\\1" name "${body}")

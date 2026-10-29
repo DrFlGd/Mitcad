@@ -26,7 +26,8 @@ namespace mitcad {
 // And for background computation (P7, MainWindow::runJob):
 //
 // - MITCAD_TEST_RECOMPUTE_DELAY_MS=n[,<label>=m...]: for tests, every
-//   feature a job evaluates takes n ms longer, so that opening a small
+//   feature a job evaluates or restores from the result store takes n ms
+//   longer, so that opening a small
 //   design shows the progress dialog and can be cancelled
 //   (tools/ui-compute-test.sh); in a job named <label> m ms instead: a
 //   model command's name ("undo", "set_parameter"), "preview", or the file

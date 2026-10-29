@@ -1,8 +1,8 @@
-# Meshing: 1070
+# Meshing: 1070, 1080, 1081
 
-A patch to the triangulation BRepMesh takes a plane's base triangulation
-from with its Delabella algorithms. Back to the
-[port's README](../README.md).
+Patches to the triangulation BRepMesh takes a plane's base triangulation
+from with its Delabella algorithms, and to the check of a face's wires
+before it is triangulated. Back to the [port's README](../README.md).
 
 ## Overview
 
@@ -10,6 +10,12 @@ from with its Delabella algorithms. Back to the
   that nearly cocircular boundaries no longer crash it or loop it forever,
   and ends a hull that still comes out inconsistent as a failed
   triangulation (mitcad#846).
+- **1080** evaluates 1070's exact signs without the heap, and from the
+  differences directly where they are exact: the same triangulations in
+  less than half of Delabella's time on a perforated plate (mitcad#884).
+- **1081** skips, in the healer's search for crossing segments of a
+  face's wires, the pairs of wires whose boxes are apart: the same
+  crossings, a tenth of the time on a plate with many holes (mitcad#884).
 
 ## 1070: Delabella on nearly cocircular points
 
@@ -67,6 +73,51 @@ BRepMesh alone and through MitCad's meshing alike.
   checked planes then triangulate it by the default insertion) instead of
   going on without a base triangulation.
 
+## 1080, 1081: perforated plates
+
+A plate with 1,187 round holes (the repo's `perf_holes` design: two such
+planes, 172,924 boundary nodes each) took 2.8 s per plane in BRepMesh
+alone (one thread): 1.0 s in the healer's check of its wires and 1.7 s in
+its triangulation, 1.1 s of that in Delabella. With both patches 1.1 s
+(the check 0.1 s, the triangulation 0.9 s, Delabella 0.49 s), the same
+triangulations; in the application the design's display meshing on a cold
+open fell from 2.7–2.9 s to 1.3 s, the open from 4.6–5.1 s to 3.1–3.3 s.
+
+### 1080-brepmesh-delabella-exact-signs-in-place
+
+Of the plate's 14 million in-circle tests, 334,000 (the points of one hole
+are nearly cocircular) are too close to call in floating point and are
+evaluated exactly (1070). Each such evaluation built its expansions in
+`std::vector`s, dozens of heap allocations a test.
+
+- The expansions are held in place (`Expansion<N>`, N the most components
+  the operation can give), with the same operations in the same order.
+- The exact evaluations are functions of their own, not inlined, so that
+  their frames (the expansions in place, tens of kilobytes) are set up
+  only when the floating-point filter cannot decide.
+- When the six differences of the points are exact in floating point (as
+  between near points), the determinant is evaluated from them directly,
+  (adx² + ady²) bc + (bdx² + bdy²) ca + (cdx² + cdy²) ab with every product
+  exact, far fewer components than from the differences' expansions.
+- The faces made once the hull is no longer flat get only the sign of
+  their normal's z (`Face::turn`), all that is read of them.
+
+The signs are exact before and after, so the triangulations are the same;
+on the plate's planes, every triangle's nodes the same, Delabella took
+0.49 s instead of 1.1 s.
+
+### 1081-brepmesh-face-checker-wire-boxes
+
+`BRepMesh_FaceChecker` (the healer's search for crossing segments of a
+face's wires) searched every segment of a wire in the box tree of every
+later wire of the face: on the plate 1,187 × 593 pairs of wires, about
+145 searches each, nearly all rejected at the tree's root. A wire's tree is
+now searched only when the box of the wire's own segments (its tree's
+root) meets it. A segment's box lies in its wire's box, and both have at
+least its gap, so the searches left out would have been rejected at the
+root anyway: the crossings found are the same. The plate's check took
+0.1 s instead of 1.0 s.
+
 ## Reports and tests
 
 - 1070: mitcad#846 and `test_nearly_cocircular_planes` in
@@ -78,3 +129,13 @@ BRepMesh alone and through MitCad's meshing alike.
   integer-grid and arc point sets, each triangulation checked for its area
   against the convex hull's and for empty circumcircles, with 64- and
   53-bit `long double`.
+- 1080, 1081: mitcad#884. `test_face_checker_wire_boxes` in
+  `geometry/io/tests/test_io.cpp`: a square with 64 holes apart has no
+  crossing segments, and with two holes that overlap each other exactly
+  their two edges cross. `cli.perf_holes_mesh` meshes the `perf_holes`
+  design's body by the view's final tier, every face triangulated and no
+  plane made again by the default insertion. The patches' own validation
+  (not committed): the plate's two planes meshed through BRepMesh before
+  and after, the triangulations compared (every triangle's nodes and
+  every node's coordinates), and Delabella's triangulation of their nodes
+  compared triangle by triangle.

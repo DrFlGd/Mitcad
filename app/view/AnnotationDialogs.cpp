@@ -328,11 +328,14 @@ QComboBox* colourBox(QWidget* parent, const QString& current) {
   }
   box->addItem(QObject::tr("Other…"), QString());
   box->setCurrentIndex(std::max(0, box->findData(current)));
-  QObject::connect(box, &QComboBox::activated, parent, [box, parent](int index) {
+  QObject::connect(box, &QComboBox::activated, parent, [box, parent, current](int index) {
     if (!box->itemData(index).toString().isEmpty()) {
       return;
     }
-    const QColor picked = dialogColor(QColor(box->itemData(0).toString()), parent, QObject::tr("Annotation Colour"));
+    // The colour dialog from the annotation's own colour (black for Auto).
+    const QColor own(current);
+    const QColor picked =
+        dialogColor(own.isValid() ? own : QColor(0x21, 0x25, 0x29), parent, QObject::tr("Annotation Colour"));
     if (!picked.isValid()) {
       box->setCurrentIndex(0);
       return;
@@ -532,11 +535,11 @@ struct FrameFields {
 
 const std::vector<std::pair<QString, QString>>& annotationColours() {
   static const std::vector<std::pair<QString, QString>> colours = {
-      {QObject::tr("Orange"), QStringLiteral("#d9480f")}, {QObject::tr("Blue"), QStringLiteral("#1971c2")},
-      {QObject::tr("Green"), QStringLiteral("#2f9e44")},  {QObject::tr("Magenta"), QStringLiteral("#c2255c")},
-      {QObject::tr("Violet"), QStringLiteral("#7048e8")}, {QObject::tr("Amber"), QStringLiteral("#e67700")},
-      {QObject::tr("Red"), QStringLiteral("#e03131")},    {QObject::tr("Black"), QStringLiteral("#212529")},
-      {QObject::tr("White"), QStringLiteral("#f8f9fa")}};
+      {QObject::tr("Auto"), QStringLiteral("auto")},      {QObject::tr("Orange"), QStringLiteral("#e8590c")},
+      {QObject::tr("Blue"), QStringLiteral("#1864ab")},   {QObject::tr("Green"), QStringLiteral("#2b8a3e")},
+      {QObject::tr("Magenta"), QStringLiteral("#a61e4d")}, {QObject::tr("Violet"), QStringLiteral("#5f3dc4")},
+      {QObject::tr("Amber"), QStringLiteral("#f08c00")},  {QObject::tr("Red"), QStringLiteral("#e03131")},
+      {QObject::tr("Black"), QStringLiteral("#212529")},  {QObject::tr("White"), QStringLiteral("#f8f9fa")}};
   return colours;
 }
 
@@ -563,7 +566,9 @@ std::optional<QString> askAnnotationColour(QWidget* parent, const QString& curre
   if (index >= 0 && index < static_cast<qsizetype>(annotationColours().size())) {
     hex = annotationColours()[static_cast<std::size_t>(index)].second;
   } else {
-    const QColor picked = dialogColor(QColor(current), parent, QObject::tr("Colour of %1").arg(what));
+    const QColor own(current);
+    const QColor picked =
+        dialogColor(own.isValid() ? own : QColor(0x21, 0x25, 0x29), parent, QObject::tr("Colour of %1").arg(what));
     if (!picked.isValid()) {
       return std::nullopt;
     }
@@ -619,6 +624,62 @@ std::optional<QJsonValue> askAnnotationDecimals(QWidget* parent, const QJsonValu
   const QJsonValue decimals = index > 0 ? QJsonValue(static_cast<int>(index - 1)) : QJsonValue(QJsonValue::Null);
   qDebug().noquote() << QStringLiteral("Annotation Decimals dialog: %1").arg(compact(decimals));
   return decimals;
+}
+
+std::optional<QJsonValue> askAnnotationTextHeight(QWidget* parent, const QJsonObject& current) {
+  QDialog dialog(parent);
+  dialog.setWindowTitle(QObject::tr("Annotation Text Height"));
+  auto* layout = new QVBoxLayout(&dialog);
+  auto* form = new QFormLayout;
+  layout->addLayout(form);
+  const double automatic = current.value(QStringLiteral("automatic")).toDouble();
+  const QString autoText = QObject::tr("Auto (%1 mm)").arg(QString::number(automatic));
+  auto* height = new QComboBox(&dialog);
+  height->setEditable(true);
+  height->addItem(autoText);
+  for (const QJsonValue& value : current.value(QStringLiteral("series")).toArray()) {
+    height->addItem(QStringLiteral("%1 mm").arg(QString::number(value.toDouble())));
+  }
+  const QJsonValue set = current.value(QStringLiteral("text_height"));
+  if (set.isDouble()) {
+    const QString own = QStringLiteral("%1 mm").arg(QString::number(set.toDouble()));
+    if (height->findText(own) < 0) {
+      height->addItem(own);
+    }
+    height->setCurrentIndex(height->findText(own));
+  } else {
+    height->setCurrentIndex(0);
+  }
+  form->addRow(QObject::tr("&Height:"), height);
+  auto* note = new QLabel(QObject::tr("Every annotation's text in the design, in the model's millimetres; "
+                                      "Auto takes one of 2.5, 3.5, 5, 7 and 10 mm by the model's size."),
+                          &dialog);
+  note->setWordWrap(true);
+  layout->addWidget(note);
+  const Buttons buttons = addButtons(dialog, layout);
+  height->setFocus();
+  qDebug().noquote() << QStringLiteral("Annotation Text Height dialog opened: %1 (%2)")
+                            .arg(compact(set), height->currentText());
+  prepareModal(&dialog);
+  while (execDialog(&dialog) == QDialog::Accepted) {
+    QString text = height->currentText().trimmed();
+    QJsonValue chosen(QJsonValue::Null);
+    if (text != autoText && !text.startsWith(QObject::tr("Auto"), Qt::CaseInsensitive)) {
+      if (text.endsWith(QStringLiteral("mm"), Qt::CaseInsensitive)) {
+        text.chop(2);
+      }
+      bool number = false;
+      const double mm = text.trimmed().replace(QLatin1Char(','), QLatin1Char('.')).toDouble(&number);
+      if (!number || !(mm >= 0.1 && mm <= 1000.0)) {
+        showMessage(buttons, QObject::tr("A text height is Auto or 0.1 to 1000 mm."));
+        continue;
+      }
+      chosen = mm;
+    }
+    qDebug().noquote() << QStringLiteral("Annotation Text Height dialog: %1").arg(compact(chosen));
+    return chosen;
+  }
+  return std::nullopt;
 }
 
 std::optional<QJsonValue> askAnnotationTolerance(QWidget* parent, const QJsonValue& current, bool angle,
@@ -1130,6 +1191,11 @@ std::optional<AnnotationEdit> editAnnotation(QWidget* parent, const QJsonObject&
     }
     if (planeCleared && pick != QLatin1String("plane")) {
       change.insert(QStringLiteral("plane"), QJsonValue(QJsonValue::Null));
+      // Automatic (mitcad#894): a length's dimension line placed by the
+      // model again too, outside its bodies, as its plane is chosen.
+      if (annotation.contains(QStringLiteral("line_offset"))) {
+        change.insert(QStringLiteral("line_offset"), QJsonValue(QJsonValue::Null));
+      }
     }
     const QString chosenColour = colourField->currentData().toString();
     if (!chosenColour.isEmpty() && chosenColour != colour) {

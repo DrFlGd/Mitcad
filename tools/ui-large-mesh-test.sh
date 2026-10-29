@@ -67,7 +67,12 @@ echo "--- Opening the dome"
 ui_start_display
 # The usual wait for the window (a debug build on a software renderer).
 UI_WINDOW_WAIT=30 ui_start_app --open "$FILE"
-ui_expect_log "Display meshes of dome.mitcad: 1 bodies in" "the dome was meshed on the model's thread while opening"
+ui_expect_log "Open dome.mitcad: " "the dome opened"
+# Meshed in the open's job: by the open itself, or beside the recompute
+# since mitcad#881.
+grep -qE "Display meshes of dome\.mitcad: 1 bodies (in|meshed during the recompute)" "$UI_LOG" ||
+  ui_fail "the dome was meshed on the model's thread while opening"
+echo "ok   the dome was meshed on the model's thread while opening"
 ui_expect_log "Timeline Dome revolve at" "the timeline lists the revolve"
 grep -q "Failed features: [^n]" "$UI_LOG" && ui_fail "a feature failed"
 ui_step "fit (F6)"                        ui_key F6

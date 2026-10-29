@@ -166,7 +166,7 @@ fn thread_tables_list_iso_metric_first() {
     let doc = Document::new(MockKernel::default());
     let table = query(&doc, json!({"query": "thread_sizes"}));
     let standards = table["standards"].as_array().unwrap();
-    assert_eq!(standards.len(), 8);
+    assert_eq!(standards.len(), 9);
     assert_eq!(standards[0]["standard"], "iso_metric");
     assert_eq!(standards[0]["title"], "ISO Metric profile");
     assert_eq!(standards[0]["default"], true);
@@ -182,8 +182,15 @@ fn thread_tables_list_iso_metric_first() {
     // The trapezoidal threads of lead screws (mitcad#449) after them.
     assert_eq!(standards[6]["standard"], "trapezoidal");
     assert_eq!(standards[6]["default_class_external"], "7e");
-    // ISO 7-1's taper pipe threads (mitcad#733) last.
+    // ISO 7-1's taper pipe threads (mitcad#733) after them.
     assert_eq!(standards[7]["standard"], "iso_taper");
+    // A custom thread (mitcad#893) last: no sizes, no classes.
+    assert_eq!(standards[8]["standard"], "custom");
+    assert_eq!(standards[8]["title"], "Custom");
+    assert_eq!(standards[8]["custom"], true);
+    assert_eq!(standards[8]["sizes"], json!([]));
+    assert_eq!(standards[8]["classes_external"], json!([]));
+    assert!(standards[..8].iter().all(|s| s.get("custom").is_none()));
     // A taper pipe thread's sizes give their tap drills (mitcad#733).
     let quarter = standards[3]["sizes"]
         .as_array()
@@ -211,6 +218,19 @@ fn thread_tables_list_iso_metric_first() {
     );
     assert_eq!(unified["standards"][0]["standard"], "unified");
     assert_eq!(unified["standards"].as_array().unwrap().len(), 1);
+    let custom = query(&doc, json!({"query": "thread_sizes", "standard": "custom"}));
+    assert_eq!(custom["standards"].as_array().unwrap().len(), 1);
+    assert_eq!(custom["standards"][0]["standard"], "custom");
+    // A custom size's default end chamfer: its minor diameter less P/10.
+    let chamfer = query(
+        &doc,
+        json!({"query": "thread_chamfer", "standard": "custom", "major": 12, "pitch": 3}),
+    );
+    let minor = 12.0 - 1.25 * 3f64.sqrt() / 2.0 * 3.0;
+    assert!(
+        (chamfer["diameter"].as_f64().unwrap() - (minor - 0.3)).abs() < 1e-9,
+        "{chamfer}"
+    );
 
     // A thread or a tapped hole without a standard is ISO metric.
     assert_eq!(ThreadStandard::default(), ThreadStandard::IsoMetric);

@@ -548,6 +548,10 @@ impl TestLibrary {
         }
         // A ring nail in rows (mitcad#497).
         add("ring-nail", V1, ring_nail());
+        // A tube whose rows switch a feature by a condition (mitcad#873).
+        add("bound-rows", V1, bound_rows());
+        // A profile without slots that is no timber: a steel tube.
+        add("tube40", V1, tube40());
         Arc::new(library)
     }
 }
@@ -866,6 +870,91 @@ fn post_base() -> Part {
         part_number: "PB98".to_owned(),
         name: "Post base 98".to_owned(),
         designation: String::new(),
+    }
+}
+
+/// A profile of no slot system whose rows switch a feature by a condition
+/// (mitcad#873, as a steel tube's rows switch its bores): 40 x 40 x `L`,
+/// and a second body beside it (x from 20 to 60), which the condition
+/// `S < 1 mm` suppresses in the default row `narrow` (S 0) and not in the
+/// row `wide` (S 10).
+fn bound_rows() -> Part {
+    let mut doc: Document<MockKernel> =
+        Document::from_json(&board_design(40.0, 40.0, &[]), MockKernel::default()).unwrap();
+    command(
+        &mut doc,
+        json!({"cmd": "add_parameter", "name": "S", "expression": "0 mm"}),
+    )
+    .unwrap();
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(
+            sketch,
+            [20.0, -20.0],
+            &ValueInput::Number(40.0),
+            &ValueInput::Number(40.0),
+        )
+        .unwrap()
+        .region;
+    let extra = doc
+        .add_feature(
+            &def(
+                json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                        "extent": {"type": "distance", "distance": "L"}, "operation": "new_body"}),
+            ),
+            Some("Extra"),
+        )
+        .unwrap()
+        .uid;
+    command(
+        &mut doc,
+        json!({"cmd": "suppress_feature", "uid": extra, "expression": "S < 1 mm"}),
+    )
+    .unwrap();
+    command(
+        &mut doc,
+        json!({"cmd": "set_configurations", "configurations": {
+            "parameters": ["S"], "default": "narrow",
+            "rows": [{"name": "narrow", "values": {"S": "0 mm"}},
+                     {"name": "wide", "values": {"S": "10 mm"}}]}}),
+    )
+    .unwrap();
+    doc.recompute();
+    Part {
+        text: doc.to_json(),
+        build: Some(json!({
+            "role": "profile",
+            "section": {"width": "40 mm", "height": "40 mm"},
+            "mass_per_metre": "1 kg",
+            "length": {"parameter": "L", "min": "10 mm", "max": "6000 mm"},
+            "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+                       {"name": "face_xp", "kind": "face"}, {"name": "face_xn", "kind": "face"},
+                       {"name": "face_yp", "kind": "face"}, {"name": "face_yn", "kind": "face"}],
+        })),
+        part_number: String::new(),
+        name: "Bound rows".to_owned(),
+        designation: "Bound rows {config} L={L}".to_owned(),
+    }
+}
+
+/// A square steel tube 40 x 40 x `L` (3000 mm; mitcad#873): a profile of
+/// no slot system and no timber kind, with face frames on its four sides.
+fn tube40() -> Part {
+    Part {
+        text: board_design(40.0, 40.0, &[]),
+        build: Some(json!({
+            "role": "profile",
+            "section": {"width": "40 mm", "height": "40 mm"},
+            "mass_per_metre": "3.303 kg",
+            "material": {"density": 7850},
+            "length": {"parameter": "L", "min": "10 mm", "max": "6000 mm", "stock": [6000]},
+            "frames": [{"name": "end_a", "kind": "end"}, {"name": "end_b", "kind": "end"},
+                       {"name": "face_xp", "kind": "face"}, {"name": "face_xn", "kind": "face"},
+                       {"name": "face_yp", "kind": "face"}, {"name": "face_yn", "kind": "face"}],
+        })),
+        part_number: String::new(),
+        name: "SHS 40x40x3".to_owned(),
+        designation: "SHS 40x40x3 L={L}".to_owned(),
     }
 }
 

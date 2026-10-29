@@ -23,18 +23,27 @@
 //! cancels a definition.
 //!
 //! A worker's result stands in only where the run without workers would
-//! have had the same one: its share of the item's time is the first
-//! round's share ([`SHARE`]); one that gave way at it is evaluated again on
-//! the document when the importer would give it the rest of the time.
-//! Results that depend on the time (definitions cut short by the item's
-//! time) can differ, as they do between two runs without workers.
+//! have had the same one: the importer gives it the first round's share
+//! of the item's time ([`SHARE`]) by waiting for it no longer than that
+//! from when it began, and takes it as given way then. The worker itself
+//! has the item's time (mitcad#874): a definition that gave way goes on
+//! there, and the second round takes its result from there instead of
+//! evaluating it again from the start. So a definition given a share in
+//! the first round goes to a worker of its own too, the first of a list
+//! included, when one is free (a pattern that takes 37 s spent its share
+//! of 20 s and then 37 s again in the second round, 58 s of its item's
+//! 60). The decisions stay those of the rounds; only the time already
+//! run is not spent twice. Results that depend on the time (definitions
+//! cut short by the item's time) can differ, as they do between two runs
+//! without workers.
 //!
-//! Only the first round of the plain candidate lists is evaluated ahead
+//! Only the plain candidate lists are evaluated ahead
 //! ([`Importer::try_state`], and each set of bodies of an item without a
-//! state of its own): the second round of definitions that gave way, the
-//! closer definition after a loose match, the edits of a pattern's
-//! extrusions and the definitions on bodies the history holds already
-//! stay on the importer's thread.
+//! state of its own): the closer definition after a loose match, the
+//! edits of a pattern's extrusions and the definitions on bodies the
+//! history holds already stay on the importer's thread, and so does the
+//! second round of a definition that gave way on the document (no worker
+//! was free).
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -133,49 +142,64 @@ pub(crate) struct Done<K: Kernel> {
     added: Result<Vec<FeatureUid>, String>,
     /// The solids afterwards (when added).
     bodies: Vec<(BodyUid, Sig)>,
-    /// Seconds it evaluated.
+    /// Seconds it evaluated, on the import's clock ([`crate::now`]) and on
+    /// the wall clock (for the trace), and when it ended (the import's).
     ran: f64,
+    wall: Duration,
+    ended: Instant,
     /// Which of its deadlines had passed when it ended: the item's, its
-    /// own ([`candidate_seconds`]), its share.
+    /// own ([`candidate_seconds`]).
     past_item: bool,
     past_own: bool,
-    past_share: bool,
     /// The worker's document, whose results an accepted candidate adopts.
     doc: Document<K>,
 }
 
-/// A candidate given to a worker.
+/// A candidate given to a worker. The worker is given the item's time
+/// (and the definition's own), not a share of it: the importer gives it
+/// its share by waiting for it no longer, and a definition that gave way
+/// so goes on on its worker for the second round (mitcad#874), instead of
+/// starting there again from nothing.
 struct Job<K: Kernel> {
     /// Cancels it (no longer wanted).
     cancel: Arc<RecomputeMonitor>,
     done: mpsc::Receiver<Done<K>>,
-    /// The share of the item's time it was given.
-    share: Option<f64>,
-    /// When it was given to the worker, and the end of the time it is given
-    /// of its own ([`candidate_seconds`]).
+    /// Its result, once it came after the importer had given it way.
+    finished: Option<Done<K>>,
+    /// When it was given to the worker, and the end of the time it is
+    /// given of its own ([`candidate_seconds`]); on the import's clock.
     started: Instant,
     own: Option<Instant>,
 }
 
 impl<K: Kernel> Job<K> {
     /// When the importer stops waiting for the worker: `grace` seconds
-    /// after the end of the time the importer would give the definition
-    /// (the item's `deadline`, its own, or `share` seconds from when the
-    /// worker began); None without any. A kernel call that does not check
-    /// for a request to stop runs on past the end of its time (one ran for
-    /// hours, mitcad#434); the importer does not wait for it.
-    fn wait_limit(
-        &self,
-        deadline: Option<Instant>,
-        share: Option<f64>,
-        grace: f64,
-    ) -> Option<Instant> {
-        let shared = share.map(|s| self.started + seconds(s));
-        [deadline, self.own, shared]
+    /// after the end of the time the worker was given (the item's
+    /// `deadline`, or its own); None without any. A kernel call that does
+    /// not check for a request to stop runs on past the end of its time
+    /// (one ran for hours, mitcad#434); the importer does not wait for it.
+    fn wait_limit(&self, deadline: Option<Instant>, grace: f64) -> Option<Instant> {
+        [deadline, self.own]
             .into_iter()
             .flatten()
             .min()
             .map(|end| end + seconds(grace))
+    }
+
+    /// Whether it has a result or is still evaluating (it has not ended
+    /// without one).
+    fn alive(&mut self) -> bool {
+        if self.finished.is_some() {
+            return true;
+        }
+        match self.done.try_recv() {
+            Ok(done) => {
+                self.finished = Some(done);
+                true
+            }
+            Err(mpsc::TryRecvError::Empty) => true,
+            Err(mpsc::TryRecvError::Disconnected) => false,
+        }
     }
 }
 
@@ -185,8 +209,6 @@ pub(crate) struct Ahead<K: Kernel> {
     jobs: BTreeMap<usize, Job<K>>,
     /// The next candidate to give a worker.
     next: usize,
-    /// The share of the item's time each is given (the first round's).
-    share: f64,
     /// No more workers (the kernel has no fork).
     off: bool,
     /// A definition of the list was evaluated (and not taken).
@@ -199,6 +221,13 @@ impl<K: Kernel> Ahead<K> {
         if let Some(job) = self.jobs.remove(&k) {
             job.cancel.cancel();
         }
+    }
+
+    /// Whether candidate `k` gave way at its share and goes on on its
+    /// worker (or has ended there with a result): the second round takes
+    /// it from there, however long it ran already.
+    pub(crate) fn continuing(&mut self, k: usize) -> bool {
+        self.jobs.get_mut(&k).is_some_and(Job::alive)
     }
 }
 
@@ -216,7 +245,7 @@ pub(crate) struct Evaluated {
     /// A worker's: the solids its features left (when added), which the
     /// document does not hold yet ([`Importer::take_over`]).
     pub(crate) bodies: Option<Vec<(BodyUid, Sig)>>,
-    /// A worker's: the seconds it evaluated.
+    /// A worker's: the seconds it evaluated (the import's clock).
     pub(crate) ran: Option<f64>,
 }
 
@@ -240,7 +269,8 @@ pub struct Adding<'p> {
     pub memory: bool,
 }
 
-/// Evaluates a candidate on a worker's document.
+/// Evaluates a candidate on a worker's document, within the item's time
+/// (`item_deadline`) and its own (`own`).
 #[allow(clippy::too_many_arguments)]
 fn evaluate_on<K: Kernel>(
     mut doc: Document<K>,
@@ -250,16 +280,15 @@ fn evaluate_on<K: Kernel>(
     component: ComponentUid,
     parents: Vec<Arc<RecomputeMonitor>>,
     item_deadline: Option<Instant>,
-    share: Option<f64>,
+    own: Option<Instant>,
     progress: Option<Arc<Progress>>,
 ) -> Done<K> {
     let _scope = scope.enter(&doc);
     // Its ticks are the import's (the watchdog's), its kernel calls too.
     let _ticking = Ticking::new(progress.clone());
-    let clock = Instant::now();
-    let own = candidate_seconds(candidate).map(|s| clock + seconds(s));
-    let shared = share.map(|s| clock + seconds(s));
-    let deadline = [item_deadline, own, shared].into_iter().flatten().min();
+    let clock = crate::now();
+    let wall = Instant::now();
+    let deadline = [item_deadline, own].into_iter().flatten().min();
     let adding = Adding {
         component,
         monitor: Some(Arc::new(RecomputeMonitor::within(parents, deadline))),
@@ -272,26 +301,27 @@ fn evaluate_on<K: Kernel>(
     } else {
         Vec::new()
     };
-    let past = |d: Option<Instant>| d.is_some_and(|d| Instant::now() >= d);
+    let ended = crate::now();
+    let past = |d: Option<Instant>| d.is_some_and(|d| ended >= d);
     Done {
         added,
         bodies,
-        ran: clock.elapsed().as_secs_f64(),
+        ran: ended.saturating_duration_since(clock).as_secs_f64(),
+        wall: wall.elapsed(),
+        ended,
         past_item: past(item_deadline),
         past_own: past(own),
-        past_share: past(shared),
         doc,
     }
 }
 
 impl<K: crate::ImportKernel> Importer<'_, K> {
-    /// Workers for a list of candidates tried with `budget` seconds of the
-    /// item's time ([`crate::Options::threads`]); None without.
-    pub(crate) fn ahead(&self, budget: f64) -> Option<Ahead<K>> {
+    /// Workers for a list of candidates ([`crate::Options::threads`]);
+    /// None without.
+    pub(crate) fn ahead(&self) -> Option<Ahead<K>> {
         (self.options.threads > 1).then(|| Ahead {
             jobs: BTreeMap::new(),
             next: 0,
-            share: SHARE * budget,
             off: false,
             tried: false,
         })
@@ -333,58 +363,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         ahead.next = ahead.next.max(k + 1);
         while !ahead.off && ahead.next < until.min(candidates.len()) && self.worker_free() {
             let j = ahead.next;
-            let Some(helper) = self.worker_helper() else {
-                break;
-            };
-            let Some(doc) = self.doc.fork() else {
-                ahead.off = true;
-                break;
-            };
-            let cancel = Arc::new(RecomputeMonitor::new());
-            let mut parents = self.try_parents();
-            parents.push(Arc::clone(&cancel));
-            parents.extend(
-                self.options
-                    .progress
-                    .as_ref()
-                    .and_then(|p| p.ahead_monitor()),
-            );
-            let (sender, done) = mpsc::channel();
-            let candidate = candidates[j].clone();
-            let scope = self.body_scope.scope();
-            let started = Instant::now();
-            let own = candidate_seconds(&candidate).map(|s| started + seconds(s));
-            let owned_name = name.map(str::to_owned);
-            let component = self.component;
-            let deadline = self.deadline;
-            let share = Some(ahead.share);
-            let tolerance = self.options.geometric_tolerance;
-            let progress = self.options.progress.clone();
-            self.workers.fetch_add(1, Ordering::SeqCst);
-            RUNNING.fetch_add(1, Ordering::SeqCst);
-            let running = Running(Arc::clone(&self.workers));
-            let job: WorkerJob = Box::new(move || {
-                let _running = running;
-                let _helper = helper;
-                let _tolerance = crate::refs::GeometricTolerance::set(tolerance);
-                let done = evaluate_on(
-                    doc,
-                    scope,
-                    &candidate,
-                    owned_name.as_deref(),
-                    component,
-                    parents,
-                    deadline,
-                    share,
-                    progress,
-                );
-                // (Nobody waits once the importer has moved on.)
-                let _ = sender.send(done);
-            });
-            let spawner = self.options.spawn.clone().unwrap_or_else(Spawner::threads);
-            // A job that does not start is dropped, and with it its count.
-            if !(spawner.0)(job) {
-                ahead.off = true;
+            if !self.launch_one(ahead, candidates, j, name) {
                 break;
             }
             trace!(
@@ -392,18 +371,82 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 name.unwrap_or("?"),
                 j + 1
             );
-            ahead.jobs.insert(
-                j,
-                Job {
-                    cancel,
-                    done,
-                    share,
-                    started,
-                    own,
-                },
-            );
             ahead.next += 1;
         }
+    }
+
+    /// Gives candidate `j` to a worker: whether one took it.
+    fn launch_one(
+        &mut self,
+        ahead: &mut Ahead<K>,
+        candidates: &[Candidate],
+        j: usize,
+        name: Option<&str>,
+    ) -> bool {
+        let Some(helper) = self.worker_helper() else {
+            return false;
+        };
+        let Some(doc) = self.doc.fork() else {
+            ahead.off = true;
+            return false;
+        };
+        let cancel = Arc::new(RecomputeMonitor::new());
+        let mut parents = self.try_parents();
+        parents.push(Arc::clone(&cancel));
+        parents.extend(
+            self.options
+                .progress
+                .as_ref()
+                .and_then(|p| p.ahead_monitor()),
+        );
+        let (sender, done) = mpsc::channel();
+        let candidate = candidates[j].clone();
+        let scope = self.body_scope.scope();
+        let started = crate::now();
+        let own = candidate_seconds(&candidate, self.options).map(|s| started + seconds(s));
+        let owned_name = name.map(str::to_owned);
+        let component = self.component;
+        let deadline = self.deadline;
+        let tolerance = self.options.geometric_tolerance;
+        let progress = self.options.progress.clone();
+        self.workers.fetch_add(1, Ordering::SeqCst);
+        RUNNING.fetch_add(1, Ordering::SeqCst);
+        let running = Running(Arc::clone(&self.workers));
+        let job: WorkerJob = Box::new(move || {
+            let _running = running;
+            let _helper = helper;
+            let _tolerance = crate::refs::GeometricTolerance::set(tolerance);
+            let done = evaluate_on(
+                doc,
+                scope,
+                &candidate,
+                owned_name.as_deref(),
+                component,
+                parents,
+                deadline,
+                own,
+                progress,
+            );
+            // (Nobody waits once the importer has moved on.)
+            let _ = sender.send(done);
+        });
+        let spawner = self.options.spawn.clone().unwrap_or_else(Spawner::threads);
+        // A job that does not start is dropped, and with it its count.
+        if !(spawner.0)(job) {
+            ahead.off = true;
+            return false;
+        }
+        ahead.jobs.insert(
+            j,
+            Job {
+                cancel,
+                done,
+                finished: None,
+                started,
+                own,
+            },
+        );
+        true
     }
 
     /// Evaluates candidate `k` of `candidates` (the modelling item `index`)
@@ -412,6 +455,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// first, and a worker's result for it stands in where it is the one
     /// the document would give. A worker's result that is accepted must
     /// then be adopted ([`Importer::take_over`]).
+    ///
+    /// A definition given a share in the first round goes to a worker of
+    /// its own when one is free (mitcad#874): cut short at its share it
+    /// goes on there, and the second round (`again`) takes its result from
+    /// there instead of evaluating it again from the start (a pattern of
+    /// threads that takes 37 s in a debug build spent its share of 20 s
+    /// and then the 37 s again, 58 s of its item's 60). The decisions are
+    /// those of the rounds without workers; only the time a definition cut
+    /// short at its share already ran is not lost.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn evaluate(
         &mut self,
@@ -422,18 +474,34 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         index: i64,
         name: Option<&str>,
         share: Option<f64>,
+        again: bool,
     ) -> Evaluated {
         if let Some(ahead) = ahead {
-            // Not before the first definition was rejected: it is usually
-            // the one taken, and workers evaluating the next ones would
-            // only take processors and memory from it.
-            if ahead.tried {
-                self.launch(ahead, candidates, k, until, name);
+            if !again {
+                // The definition itself on a worker, so that it can go on
+                // past its share.
+                if share.is_some()
+                    && !ahead.jobs.contains_key(&k)
+                    && !ahead.off
+                    && self.worker_free()
+                    && self.launch_one(ahead, candidates, k, name)
+                {
+                    trace!(
+                        "{}: definition {} evaluated on a worker, to go on past its share",
+                        name.unwrap_or("?"),
+                        k + 1
+                    );
+                }
+                // The ones after it not before the first definition was
+                // rejected: it is usually the one taken, and workers
+                // evaluating the next ones would only take processors and
+                // memory from it.
+                if ahead.tried {
+                    self.launch(ahead, candidates, k, until, name);
+                }
+                ahead.tried = true;
             }
-            ahead.tried = true;
-            if let Some(job) = ahead.jobs.remove(&k)
-                && let Some(evaluated) = self.take(job, candidates, k, index, name, share)
-            {
+            if let Some(evaluated) = self.take(ahead, candidates, k, index, name, share) {
                 return evaluated;
             }
         }
@@ -445,25 +513,43 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     }
 
     /// A worker's result for candidate `k`, once it is there; None when
-    /// the document must evaluate it (the worker gave way at a share the
-    /// importer would not give it, or ended without a result).
+    /// there is no worker's or the document must evaluate it (the worker
+    /// was cancelled otherwise, or ended without a result). With `share`,
+    /// the importer waits for it until `share` seconds after it began: then
+    /// it gives way, as the document's would (also when its result came
+    /// later than that), and goes on on its worker for the second round.
     fn take(
         &mut self,
-        job: Job<K>,
+        ahead: &mut Ahead<K>,
         candidates: &[Candidate],
         k: usize,
         index: i64,
         name: Option<&str>,
         share: Option<f64>,
     ) -> Option<Evaluated> {
+        let mut job = ahead.jobs.remove(&k)?;
         let halted = |result: String| Evaluated {
             result: Err(result),
             bodies: None,
             ran: None,
         };
         // (Another share of the item's time past the end of its time.)
-        let grace = job.share.unwrap_or(SHARE * self.options.item_seconds);
-        let limit = job.wait_limit(self.deadline, share, grace);
+        let grace = SHARE * self.options.item_seconds;
+        let limit = job.wait_limit(self.deadline, grace);
+        let give_way = share.map(|s| job.started + seconds(s));
+        let gave_way = |job: Job<K>, ahead: &mut Ahead<K>| {
+            trace!(
+                "{}: definition {} gives way at its share and goes on on its worker",
+                name.unwrap_or("?"),
+                k + 1
+            );
+            ahead.jobs.insert(k, job);
+            Some(Evaluated {
+                result: Err(GAVE_WAY.to_owned()),
+                bodies: None,
+                ran: share,
+            })
+        };
         let done = loop {
             if self.abandoned() || self.stopped(index) {
                 job.cancel.cancel();
@@ -473,15 +559,30 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 job.cancel.cancel();
                 return Some(halted(LOW_MEMORY.to_owned()));
             }
-            match job.done.recv_timeout(WAIT_STEP) {
-                Ok(done) => break done,
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                // (Its thread ended without a result.)
-                Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            let received = match job.finished.take() {
+                Some(done) => Some(done),
+                None => match job.done.recv_timeout(WAIT_STEP) {
+                    Ok(done) => Some(done),
+                    Err(mpsc::RecvTimeoutError::Timeout) => None,
+                    // (Its thread ended without a result.)
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+                },
+            };
+            if let Some(done) = received {
+                // Ended past its share: it gave way there all the same,
+                // its result kept for the second round.
+                if give_way.is_some_and(|at| done.ended > at) {
+                    job.finished = Some(done);
+                    return gave_way(job, ahead);
+                }
+                break done;
             }
-            // (A worker that has ended is taken first, however late.)
+            let now = crate::now();
+            if give_way.is_some_and(|at| now >= at) {
+                return gave_way(job, ahead);
+            }
             if let Some(limit) = limit
-                && Instant::now() >= limit
+                && now >= limit
             {
                 // The worker's kernel call did not stop at the end of the
                 // definition's time and has run on for another share since:
@@ -489,8 +590,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 // and the worker is left to end on its own (its thread
                 // counts in `running_workers`).
                 job.cancel.cancel();
-                let ran = job.started.elapsed().as_secs_f64();
-                let past = |d: Option<Instant>| d.is_some_and(|d| Instant::now() >= d);
+                let ran = crate::since(job.started).as_secs_f64();
+                let past = |d: Option<Instant>| d.is_some_and(|d| now >= d);
                 let reason = if past(self.deadline) {
                     OUT_OF_TIME
                 } else if past(job.own) {
@@ -517,21 +618,17 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             Err(_) if self.memory_low() => Err(LOW_MEMORY.to_owned()),
             Err(e) if cancelled(&e) && done.past_item => Err(OUT_OF_TIME.to_owned()),
             Err(e) if cancelled(&e) && done.past_own => Err(CANDIDATE_OUT_OF_TIME.to_owned()),
-            // At the share the document would give it too.
-            Err(e) if cancelled(&e) && done.past_share && share == job.share => {
-                Err(GAVE_WAY.to_owned())
-            }
-            // Given more time on the document, cancelled otherwise (the
-            // memory was short for workers), or out of memory beside the
-            // other workers: evaluated on the document.
+            // Cancelled otherwise (the memory was short for workers), or
+            // out of memory beside the other workers: evaluated on the
+            // document.
             Err(e) if cancelled(&e) || KernelError::is_out_of_memory(&e) => return None,
             added => added,
         };
         trace!(
-            "{}: definition {} evaluated ahead in {:.2} s",
+            "{}: definition {} evaluated ahead in {}",
             name.unwrap_or("?"),
             k + 1,
-            done.ran
+            crate::paced(Duration::from_secs_f64(done.ran), done.wall)
         );
         if let Ok(uids) = &result {
             // As the document would keep them in its cache.

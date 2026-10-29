@@ -542,9 +542,9 @@ drawing the shaded bodies, and the rendered image covers their colour
 but not their depth:
 
 ```
- layout grid │ rendered bodies │ rendered image │ default │ hidden / visible edges │ top
- (underlay)  │ (shaded, depth) │ (no depth test │ (datums,│ (hidden under an image)│ (sketches,
-             │                 │  or write)     │ previews)                       │  highlights)
+ layout grid │ rendered bodies │ rendered image │ default │ hidden / visible edges │ top          │ sketch points
+ (underlay)  │ (shaded, depth) │ (no depth test │ (datums,│ (hidden under an image)│ (sketches,   │ (points, their
+             │                 │  or write)     │ previews)                       │  highlights) │  highlights)
 ```
 
 While the mode is on (`OcctViewer::setRenderedMode`), the bodies are in
@@ -556,7 +556,9 @@ so the overlays in the default and the top layers are depth-tested
 against the bodies' depth, with the bodies' polygon offset: a sketch on
 a face stays in sight, one behind a body is hidden, as in the shaded
 view (the highlight under the pointer too, mitcad#149: it is in the top
-layer, see-through over the image); see-through overlays (datum planes, previews of new bodies) are
+layer, see-through over the image; a sketch's points are in a layer
+after it, mitcad#897, so that a selected or hovered curve's highlight
+does not cover them, depth-tested in the same way); see-through overlays (datum planes, previews of new bodies) are
 drawn with the transparent objects, after the image. The bodies'
 triangles are the ones the renderer gets, so their depth matches the
 render. Between a camera change and its first frame there is no image

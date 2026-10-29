@@ -55,6 +55,8 @@
     "has_face": "F5:thread_chamfer_high(F2:side(c1))"}},
   {"comment": "Its rings start where the cone meets the cylinder, 4 - r = 0.7390825 above the tip."},
   {"expect": {"query": {"query": "threads"}, "result": [{"feature": "F5", "modeled": false, "start": [0, 0, 16], "end": [0, 0, 0.7390823814755202]}]}},
+  {"comment": "A cosmetic thread is among the ones the view draws (mitcad#878)."},
+  {"expect": {"query": {"query": "threads", "cosmetic": true}, "result": [{"feature": "F5", "modeled": false}]}},
 
   {"comment": "Cosmetic, 10 long from the tip with its start chamfered: the rings still end 10 from the tip, and start at the cone."},
   {"cmd": "edit_feature", "uid": "F5", "def": {"type": "thread", "faces": [{"body": "F2.b0", "face": "F2:side(c1)"}],

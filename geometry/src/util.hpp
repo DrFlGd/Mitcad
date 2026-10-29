@@ -175,6 +175,45 @@ ShapeKey shape_key(const TopoDS_Shape& shape);
 // A point in the middle of an edge (by parameter), as a sort key.
 ShapeKey edge_key(const TopoDS_Shape& edge);
 
+// How far apart (mm, and mm^2 or mm^3 for a piece's size) two pieces'
+// places must lie for piece_order to tell them apart by that component:
+// far above the noise of the booleans (nanometres, differing between
+// platforms and upstream rounding), far below the distance between two
+// pieces of one face.
+constexpr double kPieceTie = 1.0e-4;
+
+// The order of the pieces that share a name: the "#k" FaceNamer::finish
+// gives them, and the order Shape::find_faces lists the faces a reference
+// matches (mitcad#895). The positions in `pieces`, ordered by shape_key's
+// components (the centre of mass in X, Y and Z, then the lower corner of
+// the bounding box), then by the piece's size (area, volume or length)
+// and the upper corner of its box, each component telling two pieces
+// apart only where they differ by more than kPieceTie: sorted by the
+// component, the pieces fall into runs whose neighbours lie within
+// kPieceTie of each other, and each run is ordered by the next component.
+// So pieces lying symmetrically (their centres alike in X, differing in Y)
+// are not ordered by the nanometres of rounding noise in X. Pieces alike
+// in every component keep shape_key's order, then their order in
+// `pieces`. Where the components that decide differ by more than
+// kPieceTie, the order is shape_key's, as before mitcad#895, so the pieces
+// of existing designs keep their numbers.
+std::vector<std::size_t> piece_order(const std::vector<TopoDS_Shape>& pieces);
+
+// The order of the edges, or of the vertices, that share a name: the "#k"
+// Shape gives them and the order find_edges and find_vertices list the
+// ones a reference matches (mitcad#896). As piece_order, by the
+// components edge_key and shape_key round (an edge's middle, then its
+// centre of mass; a vertex's point, then the lower corner of its box),
+// each telling two apart only where they differ by more than kPieceTie,
+// then an edge's length and its box. So symmetric edges between the same
+// two faces are not ordered by the nanometres of noise in their middles.
+// Ones alike in every component keep the order of the rounded key, then
+// their order in the list; where the deciding components differ by more
+// than kPieceTie the order is the rounded key's, as before mitcad#896, so
+// existing designs keep their references.
+std::vector<std::size_t> edge_order(const std::vector<TopoDS_Shape>& edges);
+std::vector<std::size_t> vertex_order(const std::vector<TopoDS_Shape>& vertices);
+
 // Throws when OCCT's checker finds the shape invalid. The checker cannot be
 // stopped: asked to stop, this throws Cancelled before it starts.
 void require_valid(const TopoDS_Shape& shape, const char* operation);

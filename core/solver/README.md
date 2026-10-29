@@ -163,6 +163,19 @@ to all equations.
   dependent (the Gram matrix squares the Jacobian's condition number, so with
   nearly dependent rows rounding error can lift the pivot of a dependent row
   above the threshold).
+- **Fixed geometry** (mitcad#883). A row with one column (fixing an
+  unknown: `FixPoint`, `FixEntity`, a radius dimension) puts that unit
+  vector into the span, so later rows leave the column out (measured
+  against their full length, the pivots stay the same), and a dependent
+  row's combination gets the left-out parts back through the rows that
+  fixed them. The implicit equations of entities are factored just before
+  the first row that fixes a column they cannot do without, instead of
+  first; rows factored after rows created after them change no answer
+  while they are independent there, which the analysis checks (else it
+  factors in creation order). A sketch of thousands of projected edges
+  with arcs about shared centres factored a nearly dense matrix of 1 174
+  rows in creation order (0.15 s); this way its factor has no entries
+  below the diagonal (0.4 ms).
 - **Culprits.** For a dependent row the factor gives the coefficients of the
   combination of earlier rows that reproduces it (`L^T c = l`). The
   constraints with non-zero coefficients form the dependent set. The same
@@ -185,6 +198,9 @@ to all equations.
   one column are a clique there; its cost is the sum of the squared column
   counts of `L`, linear for chains and bands (mitcad#677). A factor so
   dense that one forward solve per unknown costs less uses those instead.
+  With fixed unknowns, those are determined, and the others are tested
+  against the accepted rows without the fixed columns (orthogonal to
+  them), factored in a minimum degree order (mitcad#883).
 
 ### Patterns of many copies
 

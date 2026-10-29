@@ -244,6 +244,9 @@ public:
   void editAnalysis(const QJsonObject& analysis) { m_analysis = analysis; }
   // Whether the active input takes items of this kind.
   bool activeTakes(SelectKind kind) const;
+  // Whether the active input also takes the edited sketch's axes
+  // (InputDef::sketchAxes, mitcad#876).
+  bool activeTakesSketchAxes() const;
   // For autosave (P8): the timeline marker the edit restores when it rolled
   // it back (else -1), and whether a sketch command's preview is applied to
   // the model now (its commands are taken back when the panel closes).

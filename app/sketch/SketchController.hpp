@@ -59,6 +59,12 @@ public:
   // dimensions and constraints, and its curves and points a press would
   // drag. `expanded`: Shift is held.
   virtual bool sketchClickable(const SelectionItem& /*item*/, bool /*expanded*/) const { return true; }
+  // Whether the input a command's panel picks for now takes the sketch's
+  // x and y axes (InputDef::sketchAxes, mitcad#876: Mirror's line), and
+  // the axes it holds (their axisPick() ids), which the overlay draws as
+  // selected: the view does not show the axes.
+  virtual bool sketchAxesPickable() const { return false; }
+  virtual QStringList sketchAxisPicks() const { return {}; }
   // Handles the picks of the view that were handed over by a queued call
   // and not delivered yet, so that the selection and a command that starts
   // next are in the order of the clicks (mitcad#488).
@@ -194,14 +200,9 @@ public:
   // Reads the sketch again after the model changed.
   void reload();
   // While a command's panel runs in the sketch, its picks are the view's:
-  // no tools, drags or picking of constraints and dimensions.
-  void setPaused(bool paused) {
-    m_paused = paused;
-    if (!paused) {
-      setSpacingPreview({});
-      setStalePreview({});
-    }
-  }
+  // no tools, drags or picking of constraints and dimensions; only the
+  // sketch's axes for an input that takes them (mitcad#876).
+  void setPaused(bool paused);
   // Turns the view to look at the sketch plane.
   void lookAt();
   // Logs where the sketch origin and axes are in the window, when that
@@ -499,6 +500,13 @@ private:
   // P7), and with it the release: the drag ends when the model is free.
   void interruptDrag();
   void forwardClick(const QMouseEvent* release);
+  // While a command's panel runs (paused): the clicks and the hover on
+  // the sketch's axes for an input that takes them (mitcad#876; the view
+  // does not show them). True when the event was taken.
+  bool axisPickEvent(QEvent* event);
+  // The axis under a view position, as its axisPick() id, when no entity
+  // of the sketch is nearer; empty otherwise.
+  QString axisAt(const QPointF& screen) const;
   int fieldIndex(const QString& id) const;
   QString describeStatus() const;
 
@@ -565,6 +573,10 @@ private:
   // when only m_dragEntity is dragged.
   QStringList m_dragSelection;
   QString m_dragDimension; // a dimension's text
+  // A left press on an axis a command's input takes (axisPickEvent()):
+  // the axis, until the release picks it or a drag hands the press on to
+  // the view.
+  QString m_axisPress;
   V2 m_dragStart;
   V2 m_dragLast;
   V2 m_dragTarget;

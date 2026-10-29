@@ -83,6 +83,7 @@ fn ahead_import(
 
 #[test]
 fn definitions_evaluated_ahead_give_the_same_import() {
+    wall_clock();
     // The history picks the profile and direction; with workers the
     // definitions after the one evaluated are evaluated ahead, and the one
     // taken (here a worker's, as it is not ranked first) comes in with the
@@ -113,6 +114,7 @@ fn definitions_evaluated_ahead_give_the_same_import() {
 
 #[test]
 fn the_first_definition_that_gives_the_state_is_taken() {
+    wall_clock();
     // Every extrusion measures the same here, so each definition gives the
     // state. The first one ranked takes a while; the workers have the
     // others done before it, but it is the one taken, as without workers.
@@ -143,6 +145,7 @@ fn the_first_definition_that_gives_the_state_is_taken() {
 
 #[test]
 fn definitions_after_the_one_taken_are_cut_short() {
+    wall_clock();
     // The definitions of the small rectangle give no state, the third (the
     // large one along the sketch's normal) gives it, and the fourth
     // (against the normal) would take 30 s. Its worker is stopped as soon
@@ -181,14 +184,15 @@ fn definitions_after_the_one_taken_are_cut_short() {
 
 #[test]
 fn a_definition_evaluated_ahead_that_does_not_stop_is_given_up() {
+    wall_clock();
     // The third definition (the large rectangle along the sketch's normal),
     // evaluated ahead, runs 15 s in a kernel call that does not check for a
     // request to stop, as a fillet's contour round a closed chain did for
     // hours (mitcad#434); the fourth (against the normal) gives the state.
     // The importer waits for the third until its share of the item's 6 s
-    // (2 s) and another share have passed, takes it as cut short at its
-    // share, and the fourth comes in. Before, the import waited the 15 s
-    // (or for ever).
+    // (2 s) has passed and takes it as given way there (it goes on on its
+    // worker, mitcad#874), and the fourth comes in. Before mitcad#434, the
+    // import waited the 15 s (or for ever).
     let kernel = || TestKernel {
         directed: true,
         slow: Some(SlowExtrusions {
@@ -208,10 +212,41 @@ fn a_definition_evaluated_ahead_that_does_not_stop_is_given_up() {
     assert!(elapsed < 10.0, "{elapsed} s");
 }
 
+#[test]
+fn a_definition_that_gave_way_goes_on_on_its_worker() {
+    wall_clock();
+    // The first definition (the small rectangle along the sketch's normal)
+    // gives the state but takes 5 s of the item's 6 s: it gives way at its
+    // share (2 s), and the others give no state. Without workers the
+    // second round evaluates it again from the start, which takes longer
+    // than the 4 s left, and the item runs out of its time (mitcad#78).
+    // With workers it went to a worker of its own, went on there past its
+    // share, and the second round takes its result at about 5 s
+    // (mitcad#874): the time it ran is not spent twice.
+    let kernel = || TestKernel {
+        directed: true,
+        slow: Some(SlowExtrusions {
+            regions: &[SMALL],
+            along: true,
+            against: false,
+            seconds: 5.0,
+            deaf: false,
+        }),
+        ..TestKernel::default()
+    };
+    let (report, features, elapsed, _) = ahead_import(8, false, (SMALL, 10.0, false), kernel, 6.0);
+    assert_eq!(report.items[1].verified, Some(true), "{}", report.text());
+    let def = &features.last().unwrap()["def"];
+    assert_eq!(def["profiles"][0]["region"], SMALL, "{}", report.text());
+    assert_ne!(def["flip"], true, "{}", report.text());
+    assert!(elapsed < 10.0, "{elapsed} s");
+}
+
 // Work beside the replay in parallel (mitcad#103).
 
 #[test]
 fn in_order_hands_the_results_over_in_order() {
+    wall_clock();
     for threads in [1, 2, 8] {
         for count in [0, 1, 5, 40] {
             let mut seen = Vec::new();
@@ -249,6 +284,7 @@ fn in_order_passes_a_panic_on() {
 
 #[test]
 fn in_order_shares_its_threads_with_work_beside_it() {
+    wall_clock();
     use std::sync::atomic::{AtomicUsize, Ordering};
     let share = crate::Share::new(4);
     let a = share.take(1).expect("four left");

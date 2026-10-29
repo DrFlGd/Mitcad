@@ -52,7 +52,7 @@ named_enum! {
             /// The next free `<Kind><n>` when left out.
             #[serde(default)]
             name: Option<String>,
-            /// `#rrggbb`; the next of the default colours when left out.
+            /// `#rrggbb` or `auto`; `auto` when left out (mitcad#894).
             #[serde(default)]
             color: Option<String>,
         },
@@ -84,6 +84,11 @@ named_enum! {
             name: Option<String>,
             #[serde(default)]
             names: Option<Vec<String>>,
+        },
+        // The height of the annotations' texts (mitcad#894): mm, or null
+        // for the automatic one.
+        "set_annotation_text_height" => SetAnnotationTextHeight {
+            text_height: Option<f64>,
         },
     }
 }
@@ -197,6 +202,10 @@ impl<K: Kernel> MeasurementsOps<K> for Document<K> {
             MeasurementCommand::DeleteAnnotation { name, names } => {
                 let names = super::annotations::names_of(name, names)?;
                 self.delete_annotations(&names)?;
+                json!({})
+            }
+            MeasurementCommand::SetAnnotationTextHeight { text_height } => {
+                self.set_annotation_text_height(text_height)?;
                 json!({})
             }
         })

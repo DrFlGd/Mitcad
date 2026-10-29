@@ -604,10 +604,11 @@ impl<'g, S: Clone> Oracle<'g, S> {
             return Err(e.clone());
         }
         if self.states[index].is_none() {
-            let clock = (self.watched == Some(index)).then(std::time::Instant::now);
+            // (On the import's clock, as the item's time it is left out of.)
+            let clock = (self.watched == Some(index)).then(crate::now);
             let built = self.build(kernel, index);
             if let Some(clock) = clock {
-                self.watched_time += clock.elapsed();
+                self.watched_time += crate::since(clock);
             }
             built?;
         }
@@ -967,6 +968,9 @@ mod tests {
         let mut geometry = Slow;
         let mut oracle = Oracle::new(&mut geometry);
         let ms = std::time::Duration::from_millis(40);
+        // (Measured on the import's clock, mitcad#874: at the wall clock's
+        // pace on this thread, whatever the load beside the test.)
+        mitcad_model::monitor::pace_for_tests(Some(1.0));
         oracle.watch(Some(1));
         assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
         // Another state than the watched one: not measured.
@@ -987,5 +991,6 @@ mod tests {
         // Watching ends.
         oracle.watch(None);
         assert_eq!(oracle.take_watched(), std::time::Duration::ZERO);
+        mitcad_model::monitor::pace_for_tests(None);
     }
 }

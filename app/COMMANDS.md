@@ -522,8 +522,8 @@ becomes the active one (Extrude's To Object).
 - `canEdit(def)`: whether the inputs can hold all of a definition. A
   feature with more than the panel shows (the importer's fixed planes or
   axes, an asymmetric fillet size, a hole placed by offsets from edges or
-  by sketch coordinates, a partial thread) is not offered for editing,
-  so OK cannot drop the rest.
+  by sketch coordinates, a partial thread, a standard size's thread with
+  starts) is not offered for editing, so OK cannot drop the rest.
 - Fillet's and Chamfer's All Edges (mitcad#793): a check in each set that
   hides the set's Edges and shows a Body input in their place; the set is
   saved as `{"all_edges": true}` (every edge of the body when the feature
@@ -1258,11 +1258,32 @@ read-only window.
   the fourteen symbols and the circled M or L drawn in lines, not taken
   from a font that may lack them: `paintCharacteristic`),
   or, under a dimension, centred just below that dimension's line where
-  its text is (not dragged on its own). Everything has the halo of sketch
-  dimensions (mitcad#633); a highlighted one a wider halo in the
-  selection's blue, and its picks (and its plane's pick) are highlighted
-  in its colour (`MainWindow::addAnnotationHighlights`; they take no
-  clicks). A selection made in the view (or another document) takes the
+  its text is (not dragged on its own).
+  **The look of a technical drawing** (mitcad#894; ISO 129-1, ISO 3098,
+  ISO 1101; `paintMeasurements`), in both background tones: the text
+  plain, regular weight, with no card under it and a thin outline (at
+  most a pixel) in the background tone round its glyphs; it is the
+  model's `text_height` (mm) high in its plane, so it grows and shrinks
+  with the model like the lines, and never under 9 pixels on screen
+  (zoomed out); a dimension's value centred above its line a quarter of
+  that height off. Text reads from the bottom or from the right (ISO
+  129-1): never mirrored, left to right, and a text that would run down
+  within 30 degrees of straight down runs up instead, so vertical and
+  near-vertical texts read bottom to top from every side. Lines are
+  thin (1 pixel times the picture's scale, ISO 128) with no halo;
+  arrowheads closed and filled, 30 degrees, 0.8 text heights long (at
+  least 5 pixels), without a halo (`measurementArrowHead`; a datum
+  label's triangle as high); extension lines start a quarter text height
+  off the measured point and run half a text height past the dimension
+  line; a frame's cells and a datum label's square are outlined thinly,
+  filled in the background tone. An annotation of the colour **Auto**
+  (the model's `auto`, a new one's) is drawn in the neutral annotation
+  colour of the background tone (`measurementAutoColor`: near-black on
+  the light background, light grey on the dark one); its picks are
+  highlighted in it too. A highlighted one has a band of the
+  selection's blue under its lines and its text, and its picks (and its
+  plane's pick) are highlighted in its colour
+  (`MainWindow::addAnnotationHighlights`; they take no clicks). A selection made in the view (or another document) takes the
   highlight away and deselects the window's rows
   (`MainWindow::dropAnnotationHighlight`).
 - **The mouse.** The overlay lets the mouse through, but watches the
@@ -1287,8 +1308,11 @@ read-only window.
   or for Limits **Upper limit** and **Lower limit**, the sizes as they are
   to be written (kept as deviations from the value), in mm or degrees;
   **Fit** an editable list of ISO 286-2's common codes, **Show
-  deviations**), **Colour** (the named colours, Other… with the colour
-  dialog), **Group** (editable, the groups there are), **Shown**; a note
+  deviations**), **Colour** (Auto first, then the named colours —
+  orange, blue, green, magenta, violet, amber, red, black, white, none of
+  them one of the six old rotating defaults the model reads as Auto —,
+  Other… with the colour dialog), **Group** (editable, the groups there
+  are), **Shown**; a note
   has **Text** (several lines) instead of the value's fields, a datum
   label its **Letter**, a feature control frame the frame's fields
   (below) and **Placed** (On its leader, or Under each dimension: `on`).
@@ -1297,7 +1321,8 @@ read-only window.
   the view's when it was kept, or Automatic) — each with a button:
   **Pick Again…** and **Pick…** close the editor (its other changes run
   first) and wait for a click in the view; **Automatic** gives the plane
-  back to the model. A radius, a diameter and an angle have no Plane row
+  back to the model (mitcad#894: a length's dimension line too, `plane`
+  and `line_offset` null: placed outside its bodies again). A radius, a diameter and an angle have no Plane row
   (they lie in their circle's or their sides' plane, and the model takes
   no plane for them); where Kind offers one of them beside a kind that
   takes a plane, choosing it disables the row (`The plane of its
@@ -1360,7 +1385,12 @@ read-only window.
   each one `edit_annotation` with `names`, one undo step), and **Add
   Frame…** for one dimension that is not broken (a feature control frame
   under it: `add_annotation` with its first pick, `on`, its colour and
-  group). Kinds are Distance … Diameter, Note, Datum label and Feature
+  group), and **Text Height…** (Alt+X, mitcad#894; the design's, not the
+  rows'): the **Annotation Text Height** dialog, an editable list of Auto
+  (with the height it gives, `Auto (2.5 mm)`) and the ISO 3098 series
+  2.5, 3.5, 5, 7, 10 mm, a typed height taken from 0.1 to 1000 mm; OK runs
+  `set_annotation_text_height` (`null` for Auto), one undo step. The
+  Colour column shows `Auto` for an annotation in Auto. Kinds are Distance … Diameter, Note, Datum label and Feature
   control frame; a frame's Value is its cells (`⟂ | Ø0.05 Ⓜ | A`, a
   warning in its tooltip for a datum no label has), its Tolerance the
   tolerance cell, its Text `Under <dimension>`. The table has
@@ -1370,13 +1400,15 @@ read-only window.
   editor. The window follows the model after every refresh and keeps the
   whole selection (selected at once, `selectRows`); closing it takes the
   highlight away.
-- **Several at once:** **Annotation Colour** (the named colours and
+- **Several at once:** **Annotation Colour** (Auto, the named colours and
   Other…), **Annotation Group** (editable; empty for none), **Annotation
   Decimals** (Automatic, 0 to 6), **Annotation Tolerance** (the editor's
   tolerance fields; Limits as deviations, the values being several).
-- **Log.** `Annotations drawn: <name> = <label> (#rrggbb) | …` (`none`)
+- **Log.** `Annotations drawn: <name> = <label> (#rrggbb|auto) | …` (`none`)
   when what is drawn changes; `Annotation label <name> at x,y` and
-  `Annotation line <name> at x,y` (a length's line, an angle's arc) when
+  `Annotation line <name> at x,y` (a length's line, an angle's arc; the
+  label's place is its text's middle, or the middle of the part of the
+  text in the view when the middle is past the view's edge) when
   their places change (also when the view's size or the camera moves
   them, `OcctViewer::logAnnotationPlaces`); `Annotations highlighted: <names>` (`none`),
   `Annotation picks highlighted: <name>: <pick>; … | …` (`none`);
@@ -1393,7 +1425,7 @@ read-only window.
   <name> moved: <command>`, `Annotation command: <command>`, `Annotation
   command refused: <why>`, `Context menu: Edit… | Hide | Delete |
   Annotations…`; `Annotations window opened: <n> annotation(s)`,
-  `Annotations row <name>: <kind>, <label>, <tolerance>, <group>, <#colour>,
+  `Annotations row <name>: <kind>, <label>, <tolerance>, <group>, <#colour|auto>,
   shown|hidden|broken: <why>` (`-` for none) when the rows change,
   `Annotations rows: none`, `Annotations shown rows: <names>` (those the
   search and the filters leave, `none`), `Annotations selected: <names>`
@@ -1403,10 +1435,13 @@ read-only window.
   places in the main window's coordinates: `Annotations row <name> at
   x,y`, `Annotations shown <name> at x,y`, `Annotations <search|kind
   filter|group filter|Show Group|Hide Group|Edit|Colour|Group|Decimals|
-  Tolerance|Add Frame|Show|Hide|Delete> at x,y` (` (disabled)`); the dialogs'
+  Tolerance|Add Frame|Show|Hide|Delete|Text Height> at x,y` (` (disabled)`),
+  `Annotations Text Height clicked`; the dialogs'
   `<title> dialog opened: …` and `<title> dialog: <change as JSON>`
   (`Edit Annotation dialog opened: <name> <kind>`, `Annotation Colour
-  dialog opened: <what> <#rrggbb> (<names>)`, `Annotation Group dialog
+  dialog opened: <what> <#rrggbb|auto> (<names>)`, `Annotation Text
+  Height dialog opened: <height|null> (<shown>)`, `Annotation Text Height
+  dialog: <height|null>`, `Annotation Group dialog
   opened: <what> '<group>' (<groups>)`, `Annotation Decimals dialog
   opened: <what> <decimals|null>`, `Annotation Tolerance dialog opened:
   <what> <tolerance|null>`).
@@ -1435,7 +1470,15 @@ without the broken one, the filters, the line drag and the picks again).
 Colour, a named one and Other…, for an annotation whose picks are in an
 occurrence and a root one, with the Measure panel closed and open (the
 window from its Annotations…): the view and the window show it at once,
-it stays as the panel closes, Undo and Redo, saved.
+it stays as the panel closes, Undo and Redo, saved; both stored in the
+old default orange and drawn as Auto, and the window's Text Height…
+setting 5 mm, saved (mitcad#894). `app/tests/measurement_drawing.cpp`
+also checks the look of mitcad#894: the text's direction horizontal,
+vertical and half a degree off vertical from the front, from below and
+from behind (bottom to top or left to right, never mirrored), no box
+painted behind a value, the arrowhead's 30 degrees and its length of 0.8
+text heights, the model's text height on screen and its floor, Auto's
+colour on a light and a dark background.
 
 ## Sketch mode
 
@@ -1907,12 +1950,14 @@ one undo step, named after what the action makes.
   so undo takes it back with the dimension or constraint. The axis lines
   and their far ends are never drawn as geometry (`sketchEntities`
   leaves entities with `axis` out), snapped to, dragged or picked
-  otherwise; a dimension or a constraint's glyph on one is drawn at the
-  axis near the origin, and its extension lines take the axis as
-  infinite. `tools/ui-sketch-axes-test.sh` and
-  `tools/ui-windows-sketch-axes.ps1` dimension a point 30 mm from the x
-  axis, give a line 25° to it and put a point on the y axis in a new
-  sketch.
+  otherwise, but by a command panel's input that takes them (Mirror's
+  Mirror Line, mitcad#876; "Sketch commands with panels" below); a
+  dimension or a constraint's glyph on one is drawn at the axis near the
+  origin, and its extension lines take the axis as infinite.
+  `tools/ui-sketch-axes-test.sh` and
+  `tools/ui-windows-sketch-axes-test.ps1` dimension a point 30 mm from
+  the x axis, give a line 25° to it and put a point on the y axis in a
+  new sketch, and mirror a circle about the y axis (mitcad#876).
 - **Snapping to bodies** (mitcad#258): a tool whose `bodySnaps()` is true
   gives the snapper the body geometry (`SnapSettings::body`), which then
   offers body vertices as `Snap::Kind::BodyVertex` (with the points' rank
@@ -1945,13 +1990,33 @@ when an input changes, OK keeps it as one undo step, Cancel undoes it.
 Their selection inputs take `SelectKind::SketchCurve`/`SketchPoint` of
 the edited sketch (`ofSketch`, `linesOf` in `SketchCommands.cpp`; not
 texts). While a panel is open, sketch mode's mouse handling pauses
-(`SketchController::setPaused`); the window is in `Mode::Command`, but
-the sketch is still what the view shows (`MainWindow::sketchShown`), so
-Hide Above Sketch keeps the bodies cut through the panel, its previews,
-OK and Cancel (mitcad#223). Drive Joint (outside sketches) runs its
-`drive_joint` the same way. A sketch command's `warnings` are the panel's
-message (not red) and the preview's log line (`Preview <name>: ok,
-warning: ...`).
+(`SketchController::setPaused`), but for the sketch's axes while the
+active input takes them (`InputDef::sketchAxes`, Mirror below); the
+window is in `Mode::Command`, but the sketch is still what the view
+shows (`MainWindow::sketchShown`), so Hide Above Sketch keeps the bodies
+cut through the panel, its previews, OK and Cancel (mitcad#223). Drive
+Joint (outside sketches) runs its `drive_joint` the same way. A sketch
+command's `warnings` are the panel's message (not red) and the preview's
+log line (`Preview <name>: ok, warning: ...`).
+
+**Mirror** has Objects (curves and points of the sketch, any number) and
+Mirror Line (one line). `build` leaves the line out of Objects and
+refuses only when nothing else is left (`The mirror line cannot mirror
+itself.`); the model does the same (mitcad#876). Mirror Line also takes
+the sketch's x and y axes (mitcad#876; `InputDef::sketchAxes`): while it
+is the active input, `SketchController::axisPickEvent` hovers and
+picks an axis where `entityAt` with `PickAxes` gives one (the sketch's
+own entities win ties), always as its pick id `x_axis` or `y_axis`, also
+when the model made the line (a preview may have made it, and takes it
+back before it runs again), logged `Sketch axis picked for the command:
+y_axis (y axis)`. A drag that starts on an axis is the view's (a window).
+`build` sends the axis by its name (`"axis": "y"`): the model makes its
+line in the mirror's own undo step, or takes the one there is. The
+overlay draws the picked axis as selected across the view
+(`SketchHost::sketchAxisPicks`), as the view cannot. Other inputs never
+get the axes. `tools/ui-sketch-axes-test.sh` and
+`tools/ui-windows-sketch-axes-test.ps1` mirror a circle about the y
+axis.
 
 Offset's Chain Selection (`chainOf` in `SketchCommands.cpp`) grows the
 picked curves through points where exactly two joinable curves of the
@@ -3248,34 +3313,45 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   (`import_print_profile` with `into` `user` or `project`; 3D Print's
   import, `SlicerImportBar`, mitcad#829). With an installed Bambu-family
   slicer found (mitcad#830, `slicer_presets`: Bambu Studio, OrcaSlicer,
-  QIDI Studio; the Flatpak's too) the button is **Import from Slicer ▾**,
+  QIDI Studio; the Flatpak's too; one with presets of the user's or with
+  printers enabled in its setup) the button is **Import from Slicer ▾**,
   a menu of **From a file…** and **Presets of Bambu Studio…** for each
   slicer found (`OrcaSlicer (Flatpak)`; logged `My Library import menu:
   From a file… | Presets of Bambu Studio…`), looked for again at each
   click; Printers and Processes has the same. Presets of… opens **Import
   Presets** (`print/SlicerPresetsDialog.*`, modal): the slicer at the top
-  (a box when several were found), the user's presets under
-  **Printers**, **Processes** and **Filaments**, then the slicer's own
-  presets the user enabled there (mitcad#871: the printers chosen in its
-  setup, their processes and the filaments chosen there; `system` in
-  `slicer_presets`) under **Printers of Bambu Studio**, **Processes of
-  Bambu Studio** and **Filaments of Bambu Studio**, collapsed at first
-  (Right or the arrow opens one) and unticked, a box each, each group's
-  box ticking all or none of it. A preset whose name the target (the
-  library shown; the design in Printers and Processes) has already is in
-  the warning colour with the tooltip "My library has a process of this
-  name", unticked, with its own **Copy** (the default: `Fine 2`) or
+  (a box when several were found), under it **Filter presets** (a field:
+  the rows whose name contains its text in any case stay, a group with
+  none hides and those with some open while it filters, and clearing it
+  brings back which groups were open; a hidden row keeps its tick, which
+  still counts and imports, and a group's box then ticks only the rows
+  shown; Down or Enter goes to the list, Shift+Tab from the list to it),
+  the user's presets under **My printers**, **My processes** and **My
+  filaments**, then the slicer's own presets the user enabled there
+  (mitcad#871: the printers chosen in its setup, their processes and the
+  filaments chosen there, each kind by name in any case; `system` in
+  `slicer_presets`) under **Bambu Studio printers**, **Bambu Studio
+  processes** and **Bambu Studio filaments**, collapsed at first (Right
+  or the arrow opens one) unless a row in it has a same name, and
+  unticked, a box each, each group's box ticking all or none of it. A
+  preset whose name the target (the library shown; the design in
+  Printers and Processes) has already is in the warning colour with the
+  tooltip "My library has a process of this name", unticked, with
+  **Same name:** and its own **Copy** (the default: `Fine 2`) or
   **Override** (the existing item's next version) beside it (accessible
-  name `Fine: same name`); choosing in it ticks the row. **All same
-  names:** above the list sets every such row's choice (the ticks stay),
-  shows their choice when they agree and no value when they differ, and
-  shows only with such rows. New user presets are ticked. The name column
-  is as wide as the names, each choice beside its name. Keyboard: the list
-  has it at first on its first user preset (else its first group), the
-  current row framed; the
-  arrows move it, Space ticks or unticks it (a group: all of it), Tab
-  goes to the row's choice (Shift+Tab back) and on to Import. **Import**
-  (Alt+I; disabled with nothing ticked) runs `import_slicer_presets` with
+  name `Fine: same name`; the row's and the box's accessible description
+  say what it meets and what Copy and Override do); choosing in it ticks
+  the row. **All same names:** above the list sets every such row's
+  choice (the ticks stay), shows their choice when they agree and no
+  value when they differ, and shows only with such rows. New user
+  presets are ticked. The name column is as wide as the names and the
+  group titles, each choice beside its name. Keyboard: the list has it
+  at first on its first user preset (else its first group), the current
+  row framed; the arrows move it, Space ticks or unticks it (a group:
+  all of it), Tab goes to the row's choice (Shift+Tab back) and on to
+  Import. **Import** says how many are ticked (`Import 1 Preset`,
+  `Import 3 Presets`; plain `Import`, disabled, with nothing ticked;
+  Alt+I) and runs `import_slicer_presets` with
   the ticked ones (their inherited values filled in from the slicer's
   system presets; into the design one undo step `Import Presets of Bambu
   Studio`), the line saying `2 presets imported into My library`, for
@@ -3287,11 +3363,13 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   `Material selected: …`). Cancel imports nothing (`Slicer presets
   cancelled`). Logs `Slicer presets opened: <slicer>, <n> presets`,
   `Slicer presets row: <kind> <name>, ticked|unticked[, system][, same
-  name: <tooltip>, copy|override]`, `Slicer presets ticked: <n>`, `Slicer
-  presets tick: <name> ticked|unticked`, `Slicer presets choice: <name>
-  copy|override`, `Slicer presets same name: copy|override`, `Slicer
-  presets all same names: copy|override|none`, `Slicer presets current:
-  <name>`, `Slicer presets focus: <name> choice` and the places `Slicer
+  name: <tooltip>, copy|override]`, `Slicer presets ticked: <n>, <Import's
+  text>`, `Slicer presets tick: <name> ticked|unticked`, `Slicer presets
+  choice: <name> copy|override`, `Slicer presets same name:
+  copy|override`, `Slicer presets all same names: copy|override|none`,
+  `Slicer presets filter: <text>, <n> shown` (`Slicer presets filter
+  cleared, <n> shown`), `Slicer presets current: <name>`, `Slicer
+  presets focus: <name> choice` and the places `Slicer
   presets <what> at x,y` (`slicer`, `same_all`, `import`, `cancel`,
   `item <name>`: its box) (`tools/ui-my-library-test.sh`). Its line (`plate.3mf
   imported into My library`) and **Details…** (Import Details) beside
@@ -5442,7 +5520,7 @@ UI thread.
 | `print/MyLibraryDialog.*`, `print/PrintItemsHost.*` | My Library (Tools › My Library…, mitcad#704) and what the panels work through: the open design's model (`DesignItemsHost`) or a model of My Library's own (`LibraryItemsHost`) |
 | `print/PrintImportSummary.*`, `print/ImportDetailsDialog.*` | an import's line under Import from slicer… and Details…, each distinct problem once with the number of profiles that had it (mitcad#654, mitcad#655) |
 | `print/SlicerImport.*` | Import from Slicer… (mitcad#829): the one import of 3D Print, Printers and Processes and My Library (file dialog, `import_print_profile`, log) and the windows' row with its line and Details… (`SlicerImportBar`), with the menu of an installed slicer's presets (mitcad#830) |
-| `print/SlicerPresetsDialog.*` | Import Presets (mitcad#830): an installed Bambu-family slicer's user presets, and its own presets the user enabled there (mitcad#871), to tick, same names marked with Copy or Override |
+| `print/SlicerPresetsDialog.*` | Import Presets (mitcad#830): an installed Bambu-family slicer's user presets, and its own presets the user enabled there (mitcad#871), to tick (a name filter, the count on Import), same names marked with Copy or Override |
 | `framework/NoteRow.*`, `view/BuildVolume.cpp` | the panel's note row (mitcad#655); Show Build Volume (mitcad#640) |
 | `update/` | automatic updates ([docs/updates.md](../docs/updates.md)); the download in a private, random-named temp folder on Windows and macOS; on Windows, `mitcad-updater.exe` hashes the installer again through a handle without write or delete sharing and runs it only when it matches `--sha256` from the verified manifest (mitcad#603, `UpdaterChecks.hpp`); on macOS, verified disk image, read-only mount, signature-preserving copy, atomic bundle exchange after quit, rollback and Launch Services relaunch |
 | `report/` | feedback and error reports ([below](#feedback-and-error-reports)): `ReportCenter` (Help › Send Feedback, the offers, the delivery), `ReportDialogs` (the form, the screenshot's crop, the preview), `ReportText` (masking, crash files, duplicate keys, the issue form's address; Qt Core, `app.unit`), `CrashHandler` (the signal and exception handlers, plain C++, also in `mitcad-render`) |
@@ -6085,7 +6163,9 @@ commands.md, "Result store". Every document the window gets
 `MITCAD_RESULT_STORE` for tests, `off` for none; empty when Preferences
 turns it off), with the build id `geometry::kernel_build_id()` and the
 document's name. The open job writes the results that took at least
-100 ms (`MITCAD_RESULT_STORE_MIN_MS`) in the same job; Save writes them as
+100 ms (`MITCAD_RESULT_STORE_MIN_MS`), and the quicker ones whose shapes
+are small for their time (mitcad#882, commands.md "Result store"), in
+the same job; Save writes them as
 a job after the file (`MainWindow::afterSaved` → `persistResults`), under
 the saved name; autosave and recovery do not. At start-up and after
 writes, a pool thread removes the least recently used files beyond the
@@ -7031,6 +7111,18 @@ the topmost layer, which clears the depth), and a polygon offset brings a
 face's highlight just in front of the face. Test:
 `tools/ui-hover-test.sh`.
 
+A sketch's points are drawn after the highlights of its curves
+(mitcad#897): the plain point markers, a selected point's ball and the
+hover of a point are in a layer of their own just after the top layer
+(`OcctViewer` "sketch points", immediate as the top layer is, so OCCT
+draws it after it), against the scene's depth as before, so that a
+selected or hovered line, arc, circle or spline shows its end, centre,
+fit and control points on top of its wider highlight line, and a body in
+front still hides them. In that layer the ball is drawn after the plain
+markers (a higher display priority), so it covers its point's marker.
+Logged as `Sketch layers:` and `Sketch highlights:`; tests:
+`tools/ui-sketch-spline-test.sh`, `app.ui-windows-sketch-spline`.
+
 ### Selection inputs
 
 A command's selection input keeps each model item once (mitcad#199,
@@ -7235,6 +7327,22 @@ SVG at several sizes (`themeIcon`).
   (the wall's angle to the axis), left out when 0 and hidden for tapped
   holes, which the model refuses to taper. Thread and Hole take sizes
   from the model's `thread_sizes`.
+- **Thread and Hole: Custom threads** (mitcad#893): Thread Type Custom
+  (`thread_sizes`' last standard, without sizes or classes) hides Size,
+  Designation and Class and shows Major Diameter (`thread_major`, a
+  length, 10 mm; a shaft picked sets it to its diameter) and Pitch
+  (`thread_pitch`, 1.5 mm), saved as `"custom": {"major", "pitch"}`
+  expressions (the thread feature's top level, a tapped hole's `thread`),
+  `"thread": {"standard": "custom"}` without a designation or class.
+  Modeled shows Starts (`starts`, unitless, 1), saved as `starts`; the
+  end chamfer's Custom size asks `thread_chamfer` with the major diameter
+  and pitch. A tapped hole has Direction (Right Hand, Left Hand: its
+  thread's `right_handed`) like Thread, so a left-handed tapped hole opens
+  for editing. A thread or tapped hole of a standard size with `starts`
+  (made through the API) is not offered for editing (its Starts is
+  Custom's only). The descriptions name the size `custom 10x1.5, 2
+  starts`. Tests: `tools/ui-create-test.sh` (Custom thread),
+  `tools/ui-windows-selection-create-test.ps1` (5.).
   By Pick (mitcad#656) is one hole where Place On puts it ([Placement by
   picked geometry](#notes-on-particular-commands)): into a face at
   distances from two of its edges, at a point, or along a shaft's or a
@@ -8143,6 +8251,8 @@ next screenshot.
 | `Sketch Sketch1: 2 DOF`, `… 0 DOF, fully constrained`, `…, conflicts k3+k5` | the sketch's status changed |
 | `Sketch entities recoloured for a dark background: 8 fully constrained, 1 centre lines` (`light`) | the view's background turned dark or light while sketch entities are shown: fully constrained geometry and centre lines take the background's colours (mitcad#253), their halos too (mitcad#302) |
 | `Sketch halos: 5 dark` (`light`) | the halos shown changed in number or tone: fully constrained curves and centre lines are drawn over a wider line in the background's tone (`OcctViewer::styleSketchHalo`), dark on a dark background and light on a light one, so that they stay readable over a body's face; points, construction and projected geometry and unconstrained curves have none (mitcad#302) |
+| `Sketch layers: halos < curves and highlights < points and point highlights; points keep the scene's depth; point highlights over the markers` | the order OCCT draws the sketch layers in, read from the viewer when sketch entities are shown and it changed (`OcctViewer::logSketchLayers`: the layers that are not immediate first, then the immediate ones, each in its place in the list); whether the points' layer still tests the depth drawn before it (`lose` if it cleared it), and whether a selected point's ball is drawn after the plain markers in it (mitcad#897; `tools/ui-sketch-spline-test.sh`, `app.ui-windows-sketch-spline`) |
+| `Sketch highlights: 1 curve, 0 points` | the selection's highlights of sketch curves (in the top layer) and sketch points (in the points' layer) changed in number (mitcad#897) |
 | `Sketch dimension halos: 3 dark` (`light`) | the dimensions shown in sketch mode changed in number or the halo's tone: every dimension (normal, driven, hovered, selected, and the tool preview's) is painted over a halo under its dimension and extension lines, angle arcs and arrowheads (`SketchOverlay::paintDimensionHalo`: 3 px strokes under the 1 px lines, a 2 px outline round the arrowheads, all halos before any line; the values' boxes unchanged), in the same tone as the geometry's halo (`OcctViewer::sketchHaloColor`, the background's tone, the opposite of the lines'), so that the lines stay readable over a body's face of their own tone (mitcad#633). The lines and arrow tips are moved by less than a device pixel onto whole device pixels, so that a level or upright line is one sharp row in its own tone between whole rows of its halo instead of two half-tone rows blurred into it; `tools/ui-sketch-view-test.sh` also reads the pixels |
 | `Sketch colours: F1 8 fully constrained, 0 unconstrained; F3 in O1 4 fully constrained, 3 unconstrained` (`none`) | the shown sketches changed how they are coloured, in sketch mode and outside it: per sketch (with the occurrence that places a component's sketch) the entities drawn in the fully constrained colour of the background and those in the unconstrained blue; construction, centre lines and projected geometry are not counted (mitcad#286) |
 | `Sketch tool Line`, `Added line c2 from (0, 0) to (40, 0) (horizontal)`, `Line chain closed`, `Added rectangle 40 x 25 mm at (0, 0) [c1, …]`, `Added rounded rectangle 40 x 20 mm, corner radius 5 mm at (0, 0) [c1, …]` (mitcad#867), `Added circle, diameter 20 mm at (x, y) [c5]`, `Added arc …`, `Added polygon (6 sides) …`, `Added slot, width 12 mm …`, `Added ellipse …`, `Added spline c9 through 3 points` (`Added closed spline c9 through 4 points`, mitcad#783), `Added point p4 at …`, `Added text t7 "…" at …` (or `in a frame from (x, y) to (x, y)`), `Trimmed c3 at (x, y)`, `Extended c1 at (x, y)` (with ` (joined p5)` when the end joined an existing point, mitcad#259) | the tools |
@@ -8259,6 +8369,7 @@ next screenshot.
 | `Autosave every 300 s to <folder>`, `Autosave off`, `Autosaved block.mitcad: 2865 bytes to <folder>`, `Autosave removed for block.mitcad`, `Autosave skipped: busy` (or `previewing`), `Autosave of block.mitcad failed: <reason>` | autosave: the timer set at start and by Preferences, a write, the session's files removed, a write put off (`MITCAD_TEST_AUTOSAVE_SECONDS` for tests; `tools/ui-autosave-test.sh`) |
 | `Recovery: none`, `Recovery: 2 document(s) found`, `Recoverable block.mitcad: /path/block.mitcad, autosaved 2026-10-05T03:12:00Z, 2865 bytes` (`never saved`; `, the file has changed since`, `, the file is gone`, `, damaged: <why>`), `Recovery: removed the lock of session <id>`, `Recovery: later, 1 document(s) kept`, `Discarded recovery of block.mitcad`, `Recovered block.mitcad from autosave of 2026-10-05T03:12:00Z`, `Recovered session <id> removed`, `Recovering block.mitcad cancelled`, `Recovery of block.mitcad failed: <reason>`, `Save conflict: <path> changed since it was opened`, `Save conflict: overwrite` (`save as`, `cancelled`) | recovery: what was found, each session, the dialog's choices, the earlier session's files removed once this session wrote the document, and Save over a recovered document's changed file |
 | `Result store: restored 4, evaluated 2; stored 0 (0 bytes) in 0.1 ms; unpacked 1, skipped 3` (restored results whose shapes were unpacked, and those left packed, mitcad#858), `Display meshes of part.mitcad: 2 bodies (180 faces) from the result store in 12 ms; 0 bodies (0 faces) meshed`, `Display meshes of part.mitcad: stored 2 bodies (81234 bytes) in 9 ms`, `Display meshes of part.mitcad: 2 bodies shown, 51234 triangles` (an open, mitcad#858), `Result store: <error>`, `Result store: removed 12 old results (310.5 MB), 4800.0 MB kept`, `Result store cleared: 4 files, 0.2 MB`, `Import stored 17 results`, `Preferences: results on disk on, at most 5120 MB; in memory at most 7726 MB` | the result store: an open's job (restored from the store, evaluated, written) and a Save's, a write that failed, the clean-up beyond the size, Preferences' Clear, the `.f3d` import's worker, the Cache settings saved |
+| `Open part.mitcad: 2221 ms: read 48 ms, recompute 1653 ms (44 restored, 106 evaluated), results stored 0 ms, display meshes 148 ms (4 bodies from the result store, 0 meshed), view 362 ms`, `Open part.mitcad: first frame 2604 ms after it began` | where an open's time went (`MainWindow::installDocument`, mitcad#878), after every open, new design and import into a new document: reading the file (with its links), the recompute (results restored from the store, features evaluated), writing results to the store, the display meshes (`meshOpenedForDisplay`), refreshing the window (presentations, browser, timeline), and once the view drew its next frame, the time from the open's start (`OcctViewer::logFirstFrame`). The total runs from the open's start to the window refreshed; what the parts leave of it is the job's start, the root's activation and the edit lock |
 | `Diagnostics: memory 307830 of 8101298176 bytes (11 results), disk 11238 bytes (4 files), process 355545088 bytes; last recompute 5 evaluated, 0 from the store, 1 cached`, `Diagnostics: cleared memory: 7 results, 120000 bytes`, `Diagnostics: cleared disk: 4 files, 11238 bytes`, `Diagnostics report written to <path>` | Help › Diagnostics: shown or refreshed, Clear Memory, Clear Disk, Export Report |
 | `Version recorded: part.mitcad abc1234 v3: <summary>`, `Version unchanged: part.mitcad (v3)`, `Version not recorded: <why>`, `Version failed: <error>`, `Version warning: <warning>`, `Version status: bracket, main, v3` (`…, no version`; `none` outside projects with history; when it changes), `Version author: Name <email> (git)` (or `(settings)`), `Version author dialog: git has none` (an older project without an author), `Version author dialog cancelled`, `Save with Description dialog: <automatic message's summary>`, `Save with Description cancelled`, `Save with Description: no version history for part.mitcad`, `Save conflict: <path> changed outside Mitcad (the file)` (or `(a newer version)`), `Save conflict: compare: <the diff's lines joined by " \| ">`, `Save conflict: new version` (`save as`, `cancelled`), `Renamed from a.mitcad: its display state moved along` | saving versions: a commit and what it did, the indicator's version (`Version status`), the author, Save with Description, a change outside MitCad before Save, a rename followed at opening |
 | `Version History dialog: part.mitcad, reading its versions`, `Version History: 3 versions of part.mitcad: v3 abc1234 <summary> \| v2 … (renamed from a.mitcad)` (at most 30), `Version History changes: v3 <changes> \| v2 … \| v1 first version`, `Version History selected v2 (abc1234): preview` (or `no preview`), `Version History compare v2 with v1: <heading and text joined by " \| ">` (`with the open design`), `Version History geometry v2 with v1: computing`, `…: <text>`, `…: cancelled`, `Version History open v2 (abc1234)`, `Version History restore v2 (abc1234)`, `Version History save copy v2 (abc1234)`, `Version History closed`, `Version History failed: <error>`, `Version History: no version history for part.mitcad`, `Restore dialog: v2 (abc1234) of part.mitcad` (` (unsaved changes)`), `Restore cancelled`, `Restore: the unsaved changes dropped`, `Version restored: part.mitcad v2 (abc1234) as v4 (def5678)`, `Opened version v2 (abc1234) of part.mitcad as part v2`, `Save Copy As dialog: part v2.mitcad`, `Save Copy As cancelled`, `Saved a copy of part.mitcad v2 (abc1234) as <path>`, `Version preview saved: <blob's 7 digits> (256 x 160)` | Version History: the list, the changes, the selection and its comparison, the geometry, the choice; Restore, Open and Save Copy As; a version's preview |

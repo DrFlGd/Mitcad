@@ -11,6 +11,7 @@
 #include <QFontMetricsF>
 #include <QJsonValue>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
 #include <QPixmap>
 
@@ -18,20 +19,34 @@ namespace mitcad {
 namespace {
 
 // Sizes in the view's pixels, multiplied by a picture's scale.
-constexpr double kOffset = 22.0;      // a length's dimension line from its ends
-constexpr double kGap = 3.0;          // an extension line from its end
-constexpr double kBeyond = 5.0;       // an extension line past the dimension line
-constexpr double kArrowLength = 9.0;  // an arrowhead
-constexpr double kTriangle = 7.0;     // a datum label's filled triangle, base to tip
-constexpr double kArcRadius = 42.0;   // an angle's arc
-constexpr double kCentreMark = 4.0;   // half a circle's centre mark
-constexpr double kLineWidth = 1.5;    // lines
-constexpr double kHaloExtra = 3.0;    // a halo's width beyond its line's
-constexpr double kLabelPixels = 12.0; // the labels' font
-constexpr double kPadding = 3.0;      // around a label's text on its card
-constexpr double kTextGap = 2.0;      // a dimension's text above its line, a note's from its leader
-constexpr double kStackShare = 0.72;  // stacked deviations against the value's size
-constexpr int kCircleSamples = 48;    // points tried for a radius' rim
+constexpr double kOffset = 22.0;        // a length's dimension line from its ends (screen-facing)
+constexpr double kGap = 3.0;            // an extension line from its end (screen-facing)
+constexpr double kBeyond = 5.0;         // an extension line past the dimension line (screen-facing)
+constexpr double kArcRadius = 42.0;     // an angle's arc (screen-facing)
+constexpr double kCentreMark = 4.0;     // half a circle's centre mark, at least
+constexpr double kLineWidth = 1.0;      // lines: ISO 128's thin line
+constexpr double kOutline = 1.0;        // a text's outline in the background tone, at most
+constexpr double kSelectionWidth = 4.0; // a highlighted one's band under its lines
+constexpr double kLabelPixels = 12.0;   // a screen-facing label's font
+constexpr double kPadding = 3.0;        // around a screen-facing label's text
+constexpr double kTextFloor = 9.0;      // a text's least capital height on screen (mitcad#894)
+constexpr double kArrowLeast = 5.0;     // an arrowhead's least length
+// In text heights (the capital height on the picture, mitcad#894).
+constexpr double kCapShare = 0.7;    // a font's capital height against its pixel size, if it does not say
+constexpr double kArrowShare = 0.8;  // an arrowhead's length (and a datum triangle's height)
+constexpr double kGapShare = 0.25;   // an extension line's gap at its point; a text above its line
+constexpr double kBeyondShare = 0.5; // an extension line past the dimension line
+constexpr double kPadShare = 0.3;    // around a text in its frame cell, a note's from its leader
+constexpr double kMarkShare = 0.5;   // half a circle's centre mark
+// An arrowhead's half angle (ISO 129-1: closed, filled, 30 degrees
+// included): its half width against its length is tan 15 degrees.
+constexpr double kArrowTan = 0.26794919243112270;
+// ISO 129-1: a text reads from the bottom or from the right. One that would
+// run down the picture steeper than this (the sine of 60 degrees) reads up
+// instead, from the right: near-vertical texts read bottom to top.
+constexpr double kSteep = 0.86602540378443865;
+constexpr double kStackShare = 0.72; // stacked deviations against the value's size
+constexpr int kCircleSamples = 48;   // points tried for a radius' rim
 constexpr double kPi = 3.14159265358979323846;
 // A plane seen at most this face on (the sine of the angle to the line of
 // sight) is not drawn; from the second it is drawn whole.
@@ -47,23 +62,18 @@ double lengthOf(const QPointF& p) { return std::hypot(p.x(), p.y()); }
 
 double dotOf(const QPointF& a, const QPointF& b) { return a.x() * b.x() + a.y() * b.y(); }
 
-// The arrowhead with its tip at `tip`, pointing along `along`.
-QPolygonF arrowHead(const QPointF& tip, const QPointF& along, double scale) {
-  const QPointF dir = unitOf(along);
-  const QPointF side(-dir.y(), dir.x());
-  const double length = kArrowLength * scale;
-  QPolygonF head;
-  head << tip << tip - dir * length + side * (length * 0.32) << tip - dir * length - side * (length * 0.32);
-  return head;
+// An arrowhead's length for a text this high on the picture.
+double arrowLength(double textPixels, double scale) {
+  return std::max(kArrowShare * textPixels, kArrowLeast * scale);
 }
 
 // A datum label's filled triangle (ISO 5459): its base on the feature at
 // `foot`, square to the leader coming along `along`, its tip back up the
-// leader.
-QPolygonF datumTriangle(const QPointF& foot, const QPointF& along, double scale) {
+// leader; as high as an arrowhead is long.
+QPolygonF datumTriangle(const QPointF& foot, const QPointF& along, double textPixels, double scale) {
   const QPointF dir = unitOf(along);
   const QPointF side(-dir.y(), dir.x());
-  const double height = kTriangle * scale;
+  const double height = arrowLength(textPixels, scale);
   const double half = height / std::sqrt(3.0);
   QPolygonF triangle;
   triangle << foot - dir * height << foot + side * half << foot - side * half;
@@ -73,7 +83,36 @@ QPolygonF datumTriangle(const QPointF& foot, const QPointF& along, double scale)
 // A terminator of a laid out annotation: an arrowhead, or a datum label's
 // triangle.
 QPolygonF terminator(const MeasurementShape& shape, const QPointF& tip, const QPointF& along, double scale) {
-  return shape.datumTerminator ? datumTriangle(tip, along, scale) : arrowHead(tip, along, scale);
+  return shape.datumTerminator ? datumTriangle(tip, along, shape.textPixels, scale)
+                               : measurementArrowHead(tip, along, shape.textPixels, scale);
+}
+
+// The capital height of `font`'s family against its pixel size.
+double capShare(const QFont& font) {
+  QFont probe = font;
+  probe.setPixelSize(100);
+  const double cap = QFontMetricsF(probe).capHeight();
+  return cap > 10.0 && cap < 100.0 ? cap / 100.0 : kCapShare;
+}
+
+// A text at `at` (its baseline's start) in the painter's font: a thin
+// outline in the background tone round the glyphs, at most a pixel past
+// them, then the glyphs in `ink` (mitcad#894: no card under it).
+void outlinedText(QPainter& painter, const QPointF& at, const QString& text, const QColor& ink, const QColor& halo,
+                  double scale) {
+  if (text.isEmpty()) {
+    return;
+  }
+  QPainterPath path;
+  path.addText(at, painter.font(), text);
+  painter.save();
+  painter.setPen(QPen(halo, 2.0 * kOutline * scale, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+  painter.setBrush(Qt::NoBrush);
+  painter.drawPath(path);
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(ink);
+  painter.drawPath(path);
+  painter.restore();
 }
 
 gp_Pnt pointIn(const QJsonValue& value) {
@@ -108,7 +147,7 @@ gp_Vec squareTo(const gp_Vec& axis) {
 }
 
 // The label's middle a little off a line's middle, on the side `normal`
-// points to.
+// points to (screen-facing).
 QPointF besideLine(const QPointF& middle, const QPointF& normal, double scale) {
   return middle + normal * ((kLabelPixels * 0.75 + kPadding + 2.0) * scale);
 }
@@ -150,12 +189,13 @@ void layoutLength(const MeasurementDisplay& m, const MeasurementProjection& proj
   shape.lines.emplace_back(*q + n * (kGap * scale), *q + n * (off + kBeyond * scale));
   shape.lines.emplace_back(a, b);
   const QPointF dir = unitOf(b - a);
-  if (length >= 2.5 * kArrowLength * scale) {
+  const double arrow = arrowLength(shape.textPixels, scale);
+  if (length >= 2.5 * arrow) {
     shape.arrows.emplace_back(a, -dir);
     shape.arrows.emplace_back(b, dir);
   } else {
     // Short: the arrows outside, pointing in.
-    const QPointF tail = dir * (2.0 * kArrowLength * scale);
+    const QPointF tail = dir * (2.0 * arrow);
     shape.lines.emplace_back(a - tail, a);
     shape.lines.emplace_back(b, b + tail);
     shape.arrows.emplace_back(a, dir);
@@ -305,7 +345,7 @@ std::optional<QPointF> pictureDirection(const MeasurementProjection& project, co
 // anchor): the value's line, a stack of deviations, the text after; a
 // note's lines.
 struct LabelBox {
-  QRectF rect;        // with the card's padding
+  QRectF rect;        // with a little room round the text (clicks), a frame's cells
   double mainWidth = 0.0;
   double stackWidth = 0.0;
   double bracket = 0.0; // a bracket's width
@@ -429,9 +469,17 @@ bool drawnSymbol(const QString& key) {
   return std::any_of(std::begin(kKeys), std::end(kKeys), [&key](const char* own) { return key == QLatin1String(own); });
 }
 
+// The height of a shape's text on the picture: the model's in its plane,
+// else a screen-facing label's.
+double textPixelsOf(const MeasurementShape& shape, double scale) {
+  return shape.textPixels > 0.0 ? shape.textPixels : kLabelPixels * kCapShare * scale;
+}
+
 LabelBox labelBox(const MeasurementShape& shape, const QFont& font, double scale) {
   const QFontMetricsF metrics(font);
-  const double pad = kPadding * scale;
+  const double unit = textPixelsOf(shape, scale);
+  const double pad = kPadShare * unit;
+  const double gap = kGapShare * unit;
   LabelBox box;
   box.lineHeight = metrics.height();
   if (!shape.frameCells.isEmpty() || !shape.datumLetter.isEmpty()) {
@@ -455,7 +503,7 @@ LabelBox labelBox(const MeasurementShape& shape, const QFont& font, double scale
     double top = -height / 2.0;
     if (shape.attached) {
       left = -width / 2.0;
-      top = kTextGap * scale;
+      top = gap;
     }
     box.mainWidth = width;
     box.rect = QRectF(left, top, width, height);
@@ -468,8 +516,8 @@ LabelBox labelBox(const MeasurementShape& shape, const QFont& font, double scale
       width = std::max(width, metrics.horizontalAdvance(line));
     }
     const double height = box.lineHeight * static_cast<double>(std::max<qsizetype>(1, shape.noteLines.size()));
-    const double gap = kTextGap * scale + pad;
-    const double left = shape.rightAligned ? -gap - width : gap;
+    const double away = gap + pad;
+    const double left = shape.rightAligned ? -away - width : away;
     box.mainWidth = width;
     box.rect = QRectF(left - pad, -height / 2.0 - pad, width + 2.0 * pad, height + 2.0 * pad);
     box.baseline = -height / 2.0 + metrics.ascent();
@@ -490,8 +538,9 @@ LabelBox labelBox(const MeasurementShape& shape, const QFont& font, double scale
   if (!shape.after.isEmpty()) {
     width += metrics.horizontalAdvance(QLatin1Char(' ') + shape.after);
   }
-  // Centred on the anchor, a little above it (the dimension line).
-  const double bottom = -kTextGap * scale;
+  // Centred on the anchor, a quarter of the text's height above it (the
+  // dimension line, ISO 129-1).
+  const double bottom = -gap;
   box.rect = QRectF(-width / 2.0 - pad, bottom - height - pad, width + 2.0 * pad, height + 2.0 * pad);
   box.baseline = bottom - (height - metrics.height()) / 2.0 - metrics.descent();
   return box;
@@ -540,15 +589,24 @@ void layoutPlanar(const MeasurementDisplay& m, const MeasurementProjection& proj
   const double faceOn = std::abs(det) / (larger * larger);
   shape.opacity = std::clamp((faceOn - kFadeFrom) / (kFadeFull - kFadeFrom), 0.0, 1.0);
   shape.valid = true;
-  // The text's axes, a pixel per pixel face on, and readable: never
-  // mirrored (the picture's y runs down), never running right to left, and
-  // upright text reads upwards.
+  // The text the model's height in its plane (mitcad#894; `larger` is the
+  // plane's pixels per millimetre at the text), never under the floor.
+  shape.textPixels = std::max(m.textHeight * larger, kTextFloor * scale);
+  // The text's axes, a pixel per pixel face on, and readable (ISO 129-1:
+  // from the bottom or from the right): never mirrored (the picture's y
+  // runs down), running left to right, and one that would then run down
+  // steeply (within 30 degrees of straight down) runs up instead, so that
+  // vertical and near-vertical texts read bottom to top from any side.
   QPointF ux = *ex / larger;
   QPointF uy = *ey / larger;
   if (ux.x() * uy.y() - ux.y() * uy.x() > 0.0) {
     uy = -uy;
   }
-  if (ux.x() < -1e-6 || (std::abs(ux.x()) <= 1e-6 && ux.y() > 0.0)) {
+  if (ux.x() < 0.0) {
+    ux = -ux;
+    uy = -uy;
+  }
+  if (ux.y() > kSteep * lengthOf(ux)) {
     ux = -ux;
     uy = -uy;
   }
@@ -573,10 +631,11 @@ void layoutPlanar(const MeasurementDisplay& m, const MeasurementProjection& proj
     if (!p || !q || lengthOf(*q - *p) < 1e-6) {
       continue;
     }
-    // A gap at the measured point, a little past the dimension line.
+    // A gap of a quarter of the text's height at the measured point, half
+    // its height past the dimension line (mitcad#894).
     const QPointF u = unitOf(*q - *p);
-    const double gap = std::min(kGap * scale, lengthOf(*q - *p) / 2.0);
-    shape.lines.emplace_back(*p + u * gap, *q + u * (kBeyond * scale));
+    const double gap = std::min(kGapShare * shape.textPixels, lengthOf(*q - *p) / 2.0);
+    shape.lines.emplace_back(*p + u * gap, *q + u * (kBeyondShare * shape.textPixels));
   }
   const bool length = !shape.leader && m.kind != QLatin1String("angle") && m.kind != QLatin1String("radius") &&
                       m.kind != QLatin1String("diameter");
@@ -630,9 +689,10 @@ void layoutPlanar(const MeasurementDisplay& m, const MeasurementProjection& proj
   if (length && shape.arrows.size() == 2 && !shape.grips.empty()) {
     const QPointF from = shape.grips.front().first();
     const QPointF to = shape.grips.front().last();
-    if (lengthOf(to - from) < 2.5 * kArrowLength * scale && lengthOf(to - from) > 1e-6) {
+    const double arrow = arrowLength(shape.textPixels, scale);
+    if (lengthOf(to - from) < 2.5 * arrow && lengthOf(to - from) > 1e-6) {
       const QPointF dir = unitOf(to - from);
-      const QPointF tail = dir * (2.0 * kArrowLength * scale);
+      const QPointF tail = dir * (2.0 * arrow);
       shape.lines.emplace_back(from - tail, from);
       shape.lines.emplace_back(to, to + tail);
       shape.arrows = {{from, dir}, {to, -dir}};
@@ -640,13 +700,13 @@ void layoutPlanar(const MeasurementDisplay& m, const MeasurementProjection& proj
   }
   if (m.centerMark) {
     if (const std::optional<QPointF> c = project(*m.centerMark)) {
-      const double mark = kCentreMark * scale;
+      const double mark = std::max(kCentreMark * scale, kMarkShare * shape.textPixels);
       shape.lines.emplace_back(*c - QPointF(mark, 0.0), *c + QPointF(mark, 0.0));
       shape.lines.emplace_back(*c - QPointF(0.0, mark), *c + QPointF(0.0, mark));
     }
   }
   // Where the text is, for clicks and the tests' log; the label's middle.
-  const QRectF box = labelBox(shape, measurementFont(QFont(), scale), scale).rect;
+  const QRectF box = labelBox(shape, measurementTextFont(QFont(), shape, scale), scale).rect;
   shape.textArea = shape.textTransform.map(QPolygonF(box));
   shape.labelAt = shape.textTransform.map(box.center());
 }
@@ -665,27 +725,33 @@ QPointF acrossLine(const MeasurementShape& shape, const QPointF& delta) {
   return shape.yPerMillimetre * (*along)[1];
 }
 
+// A label in its plane, in `ink` (mitcad#894): a dimension's value and a
+// note's lines without a card, outlined thinly in the background tone
+// (`halo`); a feature control frame's cells and a datum label's square
+// outlined in thin lines, filled in the background tone.
 void paintPlanarLabel(QPainter& painter, const MeasurementShape& shape, const QFont& font, double scale,
-                      const QColor& card) {
+                      const QColor& ink, const QColor& halo) {
   const LabelBox box = labelBox(shape, font, scale);
   painter.save();
   painter.setTransform(shape.textTransform, true);
-  painter.setPen(Qt::NoPen);
-  painter.setBrush(card);
-  painter.drawRoundedRect(box.rect, 3.0 * scale, 3.0 * scale);
-  painter.setPen(shape.color);
   painter.setFont(font);
-  const double pad = kPadding * scale;
+  const double pad = kPadShare * textPixelsOf(shape, scale);
   if (!box.cells.empty() || !shape.datumLetter.isEmpty()) {
     // The frame's outline and the lines between its cells, each cell's
     // text centred in it; a datum label's letter in its square.
-    painter.setPen(QPen(shape.color, (shape.highlighted ? 1.6 : 1.0) * kLineWidth * scale));
+    QColor cellFill = halo;
+    cellFill.setAlpha(235);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(cellFill);
+    painter.drawRect(box.rect);
+    painter.setPen(QPen(ink, (shape.highlighted ? 1.6 : 1.0) * kLineWidth * scale));
     painter.setBrush(Qt::NoBrush);
     painter.drawRect(box.rect);
     const QFontMetricsF metrics(font);
     if (box.cells.empty()) {
       const double width = metrics.horizontalAdvance(shape.datumLetter);
-      painter.drawText(QPointF(box.rect.center().x() - width / 2.0, box.baseline), shape.datumLetter);
+      outlinedText(painter, QPointF(box.rect.center().x() - width / 2.0, box.baseline), shape.datumLetter, ink, halo,
+                   scale);
       painter.restore();
       return;
     }
@@ -706,7 +772,7 @@ void paintPlanarLabel(QPainter& painter, const MeasurementShape& shape, const QF
       const double circled = circledWidth(shape, i, metrics);
       const double width = metrics.horizontalAdvance(words) + circled;
       const double left = x + (box.cells[i] - width) / 2.0;
-      painter.drawText(QPointF(left, box.baseline), words);
+      outlinedText(painter, QPointF(left, box.baseline), words, ink, halo, scale);
       if (circled > 0.0) {
         // Ⓜ or Ⓛ: the letter in a circle after the tolerance.
         const double diameter = metrics.ascent();
@@ -717,8 +783,10 @@ void paintPlanarLabel(QPainter& painter, const MeasurementShape& shape, const QF
         const QFontMetricsF reducedMetrics(reduced);
         painter.setFont(reduced);
         const double letter = reducedMetrics.horizontalAdvance(shape.modifier);
-        painter.drawText(QPointF(centre.x() - letter / 2.0, centre.y() + reducedMetrics.ascent() / 2.0 - reducedMetrics.descent() / 2.0),
-                         shape.modifier);
+        outlinedText(painter,
+                     QPointF(centre.x() - letter / 2.0,
+                             centre.y() + reducedMetrics.ascent() / 2.0 - reducedMetrics.descent() / 2.0),
+                     shape.modifier, ink, halo, scale);
         painter.setFont(font);
       }
       x += box.cells[i];
@@ -729,7 +797,7 @@ void paintPlanarLabel(QPainter& painter, const MeasurementShape& shape, const QF
   if (shape.note) {
     double y = box.baseline;
     for (const QString& line : shape.noteLines) {
-      painter.drawText(QPointF(box.rect.left() + pad, y), line);
+      outlinedText(painter, QPointF(box.rect.left() + pad, y), line, ink, halo, scale);
       y += box.lineHeight;
     }
     painter.restore();
@@ -738,14 +806,14 @@ void paintPlanarLabel(QPainter& painter, const MeasurementShape& shape, const QF
   const QFontMetricsF metrics(font);
   double x = box.rect.left() + pad;
   const QString main = shape.main.isEmpty() && shape.upper.isEmpty() ? shape.label : shape.main;
-  painter.drawText(QPointF(x, box.baseline), main);
+  outlinedText(painter, QPointF(x, box.baseline), main, ink, halo, scale);
   x += box.mainWidth;
   if (!shape.upper.isEmpty() || !shape.lower.isEmpty()) {
     if (box.mainWidth > 0.0) {
       x += metrics.horizontalAdvance(QLatin1Char(' '));
     }
     if (shape.brackets) {
-      painter.drawText(QPointF(x, box.baseline), QStringLiteral("("));
+      outlinedText(painter, QPointF(x, box.baseline), QStringLiteral("("), ink, halo, scale);
       x += box.bracket;
     }
     const QFont reduced = stackFont(font);
@@ -753,17 +821,17 @@ void paintPlanarLabel(QPainter& painter, const MeasurementShape& shape, const QF
     painter.setFont(reduced);
     // The upper deviation above the lower, both beside the value.
     const double middle = box.baseline - metrics.ascent() / 2.0 + metrics.descent() / 2.0;
-    painter.drawText(QPointF(x, middle - smallMetrics.descent() - 0.5 * scale), shape.upper);
-    painter.drawText(QPointF(x, middle + smallMetrics.ascent() + 0.5 * scale), shape.lower);
+    outlinedText(painter, QPointF(x, middle - smallMetrics.descent() - 0.5 * scale), shape.upper, ink, halo, scale);
+    outlinedText(painter, QPointF(x, middle + smallMetrics.ascent() + 0.5 * scale), shape.lower, ink, halo, scale);
     painter.setFont(font);
     x += box.stackWidth;
     if (shape.brackets) {
-      painter.drawText(QPointF(x, box.baseline), QStringLiteral(")"));
+      outlinedText(painter, QPointF(x, box.baseline), QStringLiteral(")"), ink, halo, scale);
       x += box.bracket;
     }
   }
   if (!shape.after.isEmpty()) {
-    painter.drawText(QPointF(x, box.baseline), QLatin1Char(' ') + shape.after);
+    outlinedText(painter, QPointF(x, box.baseline), QLatin1Char(' ') + shape.after, ink, halo, scale);
   }
   painter.restore();
 }
@@ -821,18 +889,35 @@ QIcon measurementSwatch(const QColor& color) {
   pixmap.fill(Qt::transparent);
   QPainter painter(&pixmap);
   painter.setRenderHint(QPainter::Antialiasing);
-  // A dimension: a line with an arrowhead at each end, in the colour.
-  const QColor ink = color.isValid() ? color : QColor(0xd9, 0x48, 0x0f);
-  painter.setPen(QPen(ink, 1.6));
+  // A dimension: a line with an arrowhead at each end, in the colour (Auto:
+  // a neutral grey that reads in light and dark lists).
+  const QColor ink = color.isValid() ? color : QColor(0x86, 0x8e, 0x96);
+  painter.setPen(QPen(ink, 1.2));
   painter.drawLine(QPointF(2.5, 9.0), QPointF(13.5, 9.0));
   painter.drawLine(QPointF(1.5, 4.0), QPointF(1.5, 14.0));
   painter.drawLine(QPointF(14.5, 4.0), QPointF(14.5, 14.0));
   painter.setPen(Qt::NoPen);
   painter.setBrush(ink);
-  painter.drawPolygon(arrowHead(QPointF(2.0, 9.0), QPointF(-1.0, 0.0), 0.5));
-  painter.drawPolygon(arrowHead(QPointF(14.0, 9.0), QPointF(1.0, 0.0), 0.5));
+  painter.drawPolygon(measurementArrowHead(QPointF(2.0, 9.0), QPointF(-1.0, 0.0), 6.0, 0.5));
+  painter.drawPolygon(measurementArrowHead(QPointF(14.0, 9.0), QPointF(1.0, 0.0), 6.0, 0.5));
   painter.end();
   return QIcon(pixmap);
+}
+
+QColor measurementAutoColor(const QColor& halo) {
+  // Near-black on a light background, light grey on a dark one: apart
+  // from the grid and from light and dark bodies.
+  return halo.lightnessF() >= 0.5 ? QColor(0x21, 0x25, 0x29) : QColor(0xde, 0xe2, 0xe6);
+}
+
+QPolygonF measurementArrowHead(const QPointF& tip, const QPointF& along, double textPixels, double scale) {
+  const QPointF dir = unitOf(along);
+  const QPointF side(-dir.y(), dir.x());
+  const double length = arrowLength(textPixels, scale);
+  const double half = length * kArrowTan;
+  QPolygonF head;
+  head << tip << tip - dir * length + side * half << tip - dir * length - side * half;
+  return head;
 }
 
 std::vector<MeasurementDisplay> measurementDisplays(const QJsonArray& measurements,
@@ -853,9 +938,13 @@ std::vector<MeasurementDisplay> measurementDisplays(const QJsonArray& measuremen
     d.name = m.value(QStringLiteral("name")).toString();
     d.kind = m.value(QStringLiteral("kind")).toString();
     d.group = m.value(QStringLiteral("group")).toString();
-    d.color = QColor(m.value(QStringLiteral("color")).toString());
-    if (!d.color.isValid()) {
-      d.color = QColor(0xd9, 0x48, 0x0f);
+    // Auto (mitcad#894), or none known: the annotation colour of the
+    // background tone, chosen when painted.
+    const QString colour = m.value(QStringLiteral("color")).toString();
+    d.color = QColor(colour);
+    d.autoColor = colour == QLatin1String("auto") || !d.color.isValid();
+    if (d.autoColor) {
+      d.color = QColor();
     }
     const double value = m.value(QStringLiteral("value")).toDouble();
     const QJsonObject label = m.value(QStringLiteral("label")).toObject();
@@ -937,6 +1026,7 @@ std::vector<MeasurementDisplay> measurementDisplays(const QJsonArray& measuremen
       d.textOffset = {offset.at(0).toDouble(), offset.at(1).toDouble()};
       d.datumTerminator = drawing.value(QStringLiteral("terminator")).toString() == QLatin1String("datum");
       d.attached = drawing.value(QStringLiteral("attached")).toString();
+      d.textHeight = drawing.value(QStringLiteral("text_height")).toDouble();
     }
     shown.push_back(d);
   }
@@ -948,7 +1038,10 @@ MeasurementShape layoutMeasurement(const MeasurementDisplay& measurement, const 
   MeasurementShape shape;
   shape.name = measurement.name;
   shape.color = measurement.color;
+  shape.autoColor = measurement.autoColor;
   shape.label = measurement.label;
+  // A screen-facing label's text; one in its plane takes the model's height.
+  shape.textPixels = kLabelPixels * kCapShare * scale;
   if (!project) {
     return shape;
   }
@@ -969,13 +1062,21 @@ MeasurementShape layoutMeasurement(const MeasurementDisplay& measurement, const 
 QFont measurementFont(const QFont& base, double scale) {
   QFont font = base;
   font.setPixelSize(std::max(1, static_cast<int>(std::lround(kLabelPixels * scale))));
-  font.setBold(true);
+  font.setBold(false);
+  return font;
+}
+
+QFont measurementTextFont(const QFont& base, const MeasurementShape& shape, double scale) {
+  QFont font = base;
+  font.setBold(false);
+  const double pixels = textPixelsOf(shape, scale) / capShare(base);
+  font.setPixelSize(std::max(1, static_cast<int>(std::lround(pixels))));
   return font;
 }
 
 QRectF measurementLabelRect(const MeasurementShape& shape, const QFont& font, double scale) {
   if (shape.planar) {
-    return labelBox(shape, font, scale).rect;
+    return labelBox(shape, measurementTextFont(font, shape, scale), scale).rect;
   }
   const QFontMetricsF metrics(font);
   const double w = metrics.horizontalAdvance(shape.label) + 2.0 * kPadding * scale;
@@ -989,17 +1090,17 @@ void paintMeasurements(QPainter& painter, const std::vector<MeasurementShape>& s
   painter.setRenderHint(QPainter::Antialiasing);
   painter.setFont(font);
   const double width = kLineWidth * scale;
+  const QColor selection(0x4d, 0xab, 0xf7);
   const auto drawn = [](const MeasurementShape& shape) { return shape.valid && shape.opacity > 0.0; };
-  // Every halo first: one never cuts another annotation's line. A
-  // highlighted one has a wider halo of the selection's colour.
+  // A highlighted one: a band of the selection's colour under its lines
+  // and arrows, and under its text, first, so that it never covers another
+  // one's line. Nothing else has a halo (mitcad#894).
   for (const MeasurementShape& shape : shapes) {
-    if (!drawn(shape)) {
+    if (!drawn(shape) || !shape.highlighted) {
       continue;
     }
     painter.setOpacity(shape.opacity);
-    const QColor tone = shape.highlighted ? QColor(0x4d, 0xab, 0xf7) : halo;
-    const double extra = (shape.highlighted ? 2.0 : 1.0) * kHaloExtra * scale;
-    painter.setPen(QPen(tone, width + extra, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setPen(QPen(selection, kSelectionWidth * scale, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
     painter.setBrush(Qt::NoBrush);
     for (const QLineF& line : shape.lines) {
       painter.drawLine(line);
@@ -1007,21 +1108,27 @@ void paintMeasurements(QPainter& painter, const std::vector<MeasurementShape>& s
     for (const QPolygonF& arc : shape.arcs) {
       painter.drawPolyline(arc);
     }
-    painter.setPen(QPen(tone, extra * 0.7, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
-    painter.setBrush(tone);
+    painter.setBrush(selection);
     for (const auto& [tip, along] : shape.arrows) {
       painter.drawPolygon(terminator(shape, tip, along, scale));
     }
+    if (shape.planar && !shape.textArea.isEmpty()) {
+      QColor tint = selection;
+      tint.setAlpha(90);
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(tint);
+      painter.drawPolygon(shape.textArea);
+    }
   }
-  QColor card = halo;
-  card.setAlpha(225);
   for (const MeasurementShape& shape : shapes) {
     if (!drawn(shape)) {
       continue;
     }
     painter.setOpacity(shape.opacity);
+    const QColor ink = shape.autoColor || !shape.color.isValid() ? measurementAutoColor(halo) : shape.color;
+    // Thin lines (ISO 128), crisp at their ends.
     const double lineWidth = shape.highlighted ? width * 1.6 : width;
-    painter.setPen(QPen(shape.color, lineWidth, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+    painter.setPen(QPen(ink, lineWidth, Qt::SolidLine, Qt::FlatCap, Qt::MiterJoin));
     painter.setBrush(Qt::NoBrush);
     for (const QLineF& line : shape.lines) {
       painter.drawLine(line);
@@ -1029,25 +1136,24 @@ void paintMeasurements(QPainter& painter, const std::vector<MeasurementShape>& s
     for (const QPolygonF& arc : shape.arcs) {
       painter.drawPolyline(arc);
     }
+    // Closed, filled arrowheads (a datum label's triangle), without an
+    // outline.
     painter.setPen(Qt::NoPen);
-    painter.setBrush(shape.color);
+    painter.setBrush(ink);
     for (const auto& [tip, along] : shape.arrows) {
       painter.drawPolygon(terminator(shape, tip, along, scale));
     }
     if (shape.planar) {
-      QColor cardOf = card;
-      if (shape.highlighted) {
-        cardOf = QColor(0x4d, 0xab, 0xf7);
-        cardOf.setAlpha(90);
-      }
-      paintPlanarLabel(painter, shape, font, scale, cardOf);
+      paintPlanarLabel(painter, shape, measurementTextFont(font, shape, scale), scale, ink, halo);
       continue;
     }
+    // Screen-facing: the label on its own, outlined, in the middle of its
+    // place.
     const QRectF rect = measurementLabelRect(shape, font, scale);
-    painter.setBrush(card);
-    painter.drawRoundedRect(rect, 3.0 * scale, 3.0 * scale);
-    painter.setPen(shape.color);
-    painter.drawText(rect, Qt::AlignCenter, shape.label);
+    const QFontMetricsF metrics(font);
+    const QPointF start(rect.center().x() - metrics.horizontalAdvance(shape.label) / 2.0,
+                        rect.center().y() + (metrics.ascent() - metrics.descent()) / 2.0);
+    outlinedText(painter, start, shape.label, ink, halo, scale);
   }
   painter.restore();
 }

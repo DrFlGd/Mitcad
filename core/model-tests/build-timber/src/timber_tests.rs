@@ -911,6 +911,43 @@ fn a_housing_follows_the_joist_along_its_beam() {
 }
 
 #[test]
+fn a_steel_tube_takes_no_joint() {
+    // A profile without slots that is no timber (mitcad#873): its
+    // junction takes no housing or half lap, and nothing is cut into it.
+    let mut doc = design();
+    let beam = place(
+        &mut doc,
+        json!({"part": part("tube40"), "at": {"point": [0, 0, 0]}, "length": 3000}),
+    );
+    let on = mount(&doc, &beam, "face_xp");
+    let post = place(
+        &mut doc,
+        json!({"part": {"source": "S1"},
+               "at": {"occurrence": beam["occurrence"], "geometry": on, "offset": 1000},
+               "length": 1000}),
+    );
+    all_ok(&doc);
+    let j = junction_of(&doc, &post, &beam);
+    for joint in [
+        json!({"kind": "housing", "depth": 10}),
+        json!({"kind": "half_lap"}),
+    ] {
+        let refused = command(
+            &mut doc,
+            json!({"cmd": "build_connect", "junction": j["id"], "joint": joint}),
+        )
+        .unwrap_err();
+        assert!(refused.contains("is no timber member"), "{refused}");
+    }
+    for part in parts_of(&doc) {
+        assert!(
+            part["cuts"].as_array().is_none_or(|c| c.is_empty()),
+            "{part}"
+        );
+    }
+}
+
+#[test]
 fn a_member_shows_its_sources_wood_and_a_profile_its_own() {
     let mut doc = design();
     let post = place(

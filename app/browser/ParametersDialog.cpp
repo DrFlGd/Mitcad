@@ -40,6 +40,7 @@
 #include "../framework/Numbers.hpp"
 #include "../framework/ParameterField.hpp"
 #include "../framework/FormulaEditor.hpp"
+#include "../framework/IdleCall.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacParameters.hpp"
 #include "../platform/NativeDialogs.hpp"
@@ -927,7 +928,7 @@ void ParametersDialog::cellEdited(QTreeWidgetItem* item, int column) {
     const QString own = item->data(column, kOwnLimitRole).toString();
     const QString fixed = item->data(column, kFixedLimitRole).toString();
     if (text == own || (own.isEmpty() && !fixed.isEmpty() && text == fixed)) {
-      QTimer::singleShot(0, this, &ParametersDialog::refresh);
+      afterEventWhenIdle(m_host, this, [this] { refresh(); });
       return;
     }
     command.insert(QStringLiteral("cmd"), QStringLiteral("set_parameter"));
@@ -954,7 +955,7 @@ void ParametersDialog::submit(const QString& name, int column, const QString& te
                               const QJsonObject& command) {
   // The model command refreshes the window, this table too: not while the
   // table is still handling its edit.
-  QTimer::singleShot(0, this, [this, name, column, text, what, command] {
+  afterEventWhenIdle(m_host, this, [this, name, column, text, what, command] {
     const CommandContext& model = m_host.model();
     // The window logs what the change did to the bodies.
     if (m_host.runParameterCommand(command)) {

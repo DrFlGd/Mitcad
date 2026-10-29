@@ -373,11 +373,19 @@ fn collapse_overlaps(a: &Curve2, b: &Curve2, mut hits: Vec<Hit>, tol: f64) -> Ve
         return hits;
     }
     hits.sort_by(|x, y| x.ta.total_cmp(&y.ta));
-    // Whether `a` between two hits runs along `b`.
+    // Whether `a` between two hits runs along `b`. Along a stretch the
+    // point of `b` is near the same share of the way between the hits'
+    // parameters on it: a local search from there answers most of these
+    // (a run of two overlapping splines has a hit per sampled piece, and
+    // searching the whole of `b` for each took seconds, mitcad#878); the
+    // whole curve is searched only when it finds nothing within reach.
+    let reach = 10.0 * tol;
     let along = |p: &Hit, q: &Hit| {
         [0.25, 0.5, 0.75].iter().all(|f| {
             let t = p.ta + (q.ta - p.ta) * f;
-            b.closest(a.point(t)).1 <= 10.0 * tol
+            let point = a.point(t);
+            b.closest_near(point, p.tb + (q.tb - p.tb) * f).1 <= reach
+                || b.closest(point).1 <= reach
         })
     };
     let mut kept = Vec::with_capacity(hits.len());
@@ -531,5 +539,43 @@ mod tests {
         for hit in &h {
             assert!(ends.iter().any(|e| dist(*e, hit.point) < 1e-9), "{hit:?}");
         }
+    }
+
+    #[test]
+    fn long_splines_drawn_twice_meet_at_their_ends_without_searching_them_whole() {
+        // An imported sketch held the projection of a thread's edge three
+        // times, splines of 190 control points: their hits along each
+        // other were checked by searching the other spline whole, three
+        // times per hit, and the sketch took 6.8 s (mitcad#878). The run is
+        // now followed locally; only the ends' contacts search whole.
+        let control: Vec<P2> = (0..190)
+            .map(|i| {
+                let t = i as f64 * 0.2;
+                [t, 3.0 * t.sin()]
+            })
+            .collect();
+        let spline = |control: Vec<P2>| {
+            Curve2::Nurbs(Nurbs {
+                degree: 3,
+                knots: clamped_uniform_knots(control.len(), 3),
+                control,
+                weights: Vec::new(),
+            })
+        };
+        let a = spline(control.clone());
+        let b = spline(control);
+        crate::geometry::WHOLE_SEARCHES.with(|n| n.set(0));
+        let h = intersections(&a, &b, TOL);
+        let searches = crate::geometry::WHOLE_SEARCHES.with(|n| n.get());
+        assert_eq!(h.len(), 2, "{h:?}");
+        let (start, end) = a.ends().unwrap();
+        for hit in &h {
+            assert!(
+                dist(start, hit.point) < 1e-9 || dist(end, hit.point) < 1e-9,
+                "{hit:?}"
+            );
+        }
+        // Four ends' contacts (each end of each on the other).
+        assert!(searches <= 4, "{searches} whole searches");
     }
 }

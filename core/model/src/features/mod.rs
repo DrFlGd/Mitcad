@@ -279,7 +279,7 @@ use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Kernel;
 use crate::links::OccurrenceLinkExt;
 use crate::parameters::{ParamId, Parameters};
-use crate::recompute::{BodyState, FeatureResult, Read, Versioned};
+use crate::recompute::{BodyState, FeatureResult, Pending, Read, Version, Versioned};
 use crate::topo::EdgeName;
 use crate::transform::Transform;
 
@@ -760,6 +760,10 @@ pub(crate) struct Env<'a, S> {
     pub params: &'a Parameters,
     /// The bodies of the feature's component.
     pub bodies: &'a BodyState<S>,
+    /// The bodies whose states hold a stand-in, with the restored results
+    /// that set them (mitcad#858): a body read is unpacked as it is read
+    /// (mitcad#886, [`EvalContext::body`] and the other readers).
+    pub pending: &'a Pending<S>,
     /// The component of every body at this point, for messages about the
     /// bodies of other components.
     pub owners: &'a BTreeMap<BodyUid, ComponentUid>,
@@ -853,6 +857,9 @@ pub struct EvalContext<'a, K: Kernel> {
     next_body: u32,
     /// The pieces of bodies it splits (mitcad#408).
     pub(crate) pieces: pieces::PieceState,
+    /// How long unpacking the restored shapes it read took (mitcad#886):
+    /// not part of the evaluation's time.
+    pub(crate) unpack_time: std::time::Duration,
 }
 
 impl<'a, K: Kernel> EvalContext<'a, K> {
@@ -874,6 +881,21 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
             objects_before: None,
             geom_links: std::collections::BTreeMap::new(),
             next_body: 0,
+            unpack_time: std::time::Duration::ZERO,
+        }
+    }
+
+    /// Unpacks the shapes of the bodies about to be read (each with the
+    /// version its state holds) whose states hold a stand-in: the restored
+    /// results that set them, on the machine's threads (mitcad#886). The
+    /// bodies the feature does not read stay packed.
+    fn unpack_read(&mut self, read: impl IntoIterator<Item = (BodyUid, Version)>) {
+        if self.env.pending.is_empty() {
+            return;
+        }
+        let start = std::time::Instant::now();
+        if crate::recompute::unpack_read(self.env.pending, read) {
+            self.unpack_time += start.elapsed();
         }
     }
 
@@ -1042,10 +1064,14 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
 
     /// The current shape of a body of the feature's component.
     pub fn body(&mut self, uid: BodyUid) -> Result<K::Shape, String> {
-        let body = self.env.bodies.get(&uid);
+        let env = self.env;
+        let body = env.bodies.get(&uid);
         self.reads.push(Read::Body(uid, body.map(|b| b.version)));
         if let Some(body) = body {
-            let shape = body.value.clone();
+            self.unpack_read([(uid, body.version)]);
+            let shape = crate::recompute::held_shape(env.pending, uid, body)
+                .value
+                .clone();
             // Another piece of a split than before (mitcad#408).
             self.warn_changed_piece(uid);
             return Ok(shape);
@@ -1068,17 +1094,21 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
 
     /// All bodies of the feature's component, in order of their ids.
     pub fn bodies(&mut self) -> Vec<(BodyUid, K::Shape)> {
-        self.reads.push(Read::AllBodies(
-            self.env
-                .bodies
-                .iter()
-                .map(|(u, b)| (*u, b.version))
-                .collect(),
-        ));
-        self.env
-            .bodies
+        let env = self.env;
+        let read: Vec<(BodyUid, Version)> =
+            env.bodies.iter().map(|(u, b)| (*u, b.version)).collect();
+        self.unpack_read(read.iter().copied());
+        self.reads.push(Read::AllBodies(read));
+        env.bodies
             .iter()
-            .map(|(u, b)| (*u, b.value.clone()))
+            .map(|(u, b)| {
+                (
+                    *u,
+                    crate::recompute::held_shape(env.pending, *u, b)
+                        .value
+                        .clone(),
+                )
+            })
             .collect()
     }
 
@@ -1139,14 +1169,20 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         if component == self.component() {
             return self.body(uid);
         }
-        let components = self.env.components;
-        let body = components.get(&component).and_then(|b| b.get(&uid));
+        let env = self.env;
+        let body = env.components.get(&component).and_then(|b| b.get(&uid));
         self.reads
             .push(Read::BodyIn(component, uid, body.map(|b| b.version)));
-        if body.is_some() {
+        if let Some(body) = body {
+            self.unpack_read([(uid, body.version)]);
             self.warn_changed_piece(uid);
         }
-        body.map(|b| b.value.clone()).ok_or_else(|| {
+        body.map(|b| {
+            crate::recompute::held_shape(env.pending, uid, b)
+                .value
+                .clone()
+        })
+        .ok_or_else(|| {
             format!(
                 "body {uid} (from {}) is not in {} at this point of the timeline",
                 self.feature_name(uid.feature),
@@ -1160,20 +1196,28 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         if component == self.component() {
             return self.bodies();
         }
-        let components = self.env.components;
-        let bodies: Vec<(BodyUid, &Versioned<K::Shape>)> = components
+        let env = self.env;
+        let bodies: Vec<(BodyUid, &Versioned<K::Shape>)> = env
+            .components
             .get(&component)
             .into_iter()
             .flat_map(|b| b.iter())
             .map(|(uid, b)| (*uid, b))
             .collect();
-        self.reads.push(Read::BodiesIn(
-            component,
-            bodies.iter().map(|(uid, b)| (*uid, b.version)).collect(),
-        ));
+        let read: Vec<(BodyUid, Version)> =
+            bodies.iter().map(|(uid, b)| (*uid, b.version)).collect();
+        self.unpack_read(read.iter().copied());
+        self.reads.push(Read::BodiesIn(component, read));
         bodies
             .into_iter()
-            .map(|(uid, b)| (uid, b.value.clone()))
+            .map(|(uid, b)| {
+                (
+                    uid,
+                    crate::recompute::held_shape(env.pending, uid, b)
+                        .value
+                        .clone(),
+                )
+            })
             .collect()
     }
 

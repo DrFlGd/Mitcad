@@ -11,9 +11,13 @@
 # frames; the sheet), the profiled boards (mitcad#477: tongue and groove
 # with and without a V-joint, shiplap, feather-edge and a grooved deck
 # board; their board blocks, volumes and tongue and groove frames
-# following rows and parameters), and the pickers: timber only where it
-# is asked for, a junction of members offered the wood fasteners and the
-# connectors that fit its section. Nothing goes over the network.
+# following rows and parameters), the steel tubes (mitcad#873: a round,
+# a square and a furniture tube; their rows' corner radii, masses per
+# metre and tolerances, their volumes against the exact areas and the
+# standards' masses, the furniture tube's bores switched by its rows),
+# and the pickers: timber only where it is asked for, the steel tubes
+# among the profiles, a junction of members offered the wood fasteners and
+# the connectors that fit its section. Nothing goes over the network.
 #
 # cmake -DCLI=<mitcad-cli> -DGIT=<git> -DPYTHON=<python3> -DGENERATOR=<make-profile-library.py>
 #       -DGROUPS=<tools/cli/tests/timber-groups> -DWORK=<folder> -P timber-library-test.cmake
@@ -44,7 +48,10 @@ function(expect pattern what)
 endfunction()
 
 function(same actual wanted what)
-  if(NOT "${actual}" STREQUAL "${wanted}")
+  # A number may come back from string(JSON) with 17 digits
+  # (0.14999999999999999 for 0.15): equal as numbers is the same.
+  if(NOT "${actual}" STREQUAL "${wanted}" AND NOT ("${actual}" MATCHES "^-?[0-9.]+$" AND
+     "${wanted}" MATCHES "^-?[0-9.]+$" AND "${actual}" EQUAL "${wanted}"))
     message(FATAL_ERROR "${what}: '${actual}', not '${wanted}'")
   endif()
 endfunction()
@@ -61,14 +68,16 @@ set(out "${out}${err}")
 if(NOT status EQUAL 0)
   message(FATAL_ERROR "the generator failed (${status}):\n${out}")
 endif()
-expect("mitcad-parts 1.0.0: 12 components" "the generator's summary")
+expect("mitcad-parts 1.0.0: 17 components" "the generator's summary")
 if(out MATCHES "left out|warning")
   message(FATAL_ERROR "a part left out or warned of:\n${out}")
 endif()
 cli(ok library check "${library}")
-expect("mitcad-parts: 12 components, no errors" "the library's check")
+expect("mitcad-parts: 17 components, no errors" "the library's check")
 file(READ "${library}/SOURCES.md" sources)
-if(NOT sources MATCHES "test-board \\(Test timber\\): sizes made up for the test")
+if(NOT sources MATCHES "test-board \\(Test timber\\): sizes made up for the test"
+   OR NOT sources MATCHES "test-shs \\(Test square tube\\): sizes of EN 10219-2 for the test"
+   OR NOT sources MATCHES "test-furniture-tube \\(Test furniture tube\\): sizes of EN 10305-5 for the test")
   message(FATAL_ERROR "SOURCES.md:\n${sources}")
 endif()
 
@@ -298,6 +307,153 @@ file(WRITE "${WORK}/deck.json" "[
 ]")
 cli(ok run "${WORK}/deck.json" --open "${library}/profiled/test-deck.mitcad")
 
+#    Steel tubes (mitcad#873, d-tubes.json): profiles of no slot system and
+#    no supplier, their rows sorted by size and wall; each row's corner
+#    radii by the rules of its sizes (EN 10219-2: 2 T and T up to 6 mm,
+#    2.5 T and 1.5 T up to 10 mm; EN 10305-5: 0.5 T and a sharp inner
+#    corner up to 2.5 mm, 1.75 T and 0.75 T over it), its mass per metre the
+#    exact area times 7850 kg/m3, the furniture tube's tolerances.
+field("test-chs" "the round tube" 12 id)
+field("(none)" "the round tube's supplier" 12 supplier)
+field("(none)" "the round tube's kind" 12 build kind)
+field("(none)" "the round tube's system" 12 build system)
+field("48.3 mm" "the round tube's default section" 12 build section width)
+field("3.559 kg" "CHS 48.3x3.2's mass per metre" 12 build mass_per_metre)
+field("13.478 kg" "CHS 114.3x5's mass per metre" 12 build rows 114.3x5 mass_per_metre)
+field("5 mm" "CHS 114.3x5's wall" 12 build rows 114.3x5 tube thickness)
+field("7850" "the round tube's density" 12 build material density)
+frames(12 "end_a;end_b;axis")
+field("shaft" "the round tube's axis" 12 build frames 2 kind)
+field("3.303 kg" "SHS 40x40x3's mass per metre" 13 build mass_per_metre)
+field("6 mm" "SHS 40x40x3's outer radius (2 T)" 13 build tube outer_radius)
+field("3 mm" "SHS 40x40x3's inner radius (T)" 13 build tube inner_radius)
+field("25 mm" "SHS 100x100x10's outer radius (2.5 T)" 13 build rows 100x100x10 tube outer_radius)
+field("15 mm" "SHS 100x100x10's inner radius (1.5 T)" 13 build rows 100x100x10 tube inner_radius)
+field("25.565 kg" "SHS 100x100x10's mass per metre" 13 build rows 100x100x10 mass_per_metre)
+field("100 mm" "SHS 100x100x10's section" 13 build rows 100x100x10 section height)
+frames(13 "end_a;end_b;face_xp;face_xn;face_yp;face_yn")
+field("1.339 kg" "30x30x1.5's mass per metre" 14 build mass_per_metre)
+field("0.75 mm" "30x30x1.5's outer radius (0.5 T)" 14 build tube outer_radius)
+field("0 mm" "30x30x1.5's sharp inner corner" 14 build tube inner_radius)
+field("-0.25" "30x30x1.5's side tolerance" 14 build tolerance size 0)
+field("0.15" "30x30x1.5's wall tolerance" 14 build tolerance thickness 1)
+field("5.25 mm" "35x35x3's outer radius (1.75 T)" 14 build rows 35x35x3 tube outer_radius)
+field("2.25 mm" "35x35x3's inner radius (0.75 T)" 14 build rows 35x35x3 tube inner_radius)
+field("2.863 kg" "35x35x3's mass per metre" 14 build rows 35x35x3 mass_per_metre)
+field("0.3" "35x35x3's wall tolerance (0.1 T)" 14 build rows 35x35x3 tolerance thickness 1)
+field("4.252 kg" "40x40x4's mass per metre" 14 build rows 40x40x4 mass_per_metre)
+field("0.35" "40x40x4's wall tolerance (at most 0.35)" 14 build rows 40x40x4 tolerance thickness 1)
+field("2000" "the furniture tube's shorter stock length" 14 build length stock 0)
+# The rectangular tubes (mitcad#892): the square ones' rules on a width and
+# a height, the rows `<W>x<H>x<T>`, the face frames on both sides.
+field("test-rhs" "the rectangular tube" 15 id)
+field("8.594 kg" "RHS 100x50x4's mass per metre" 15 build mass_per_metre)
+field("100 mm" "RHS 100x50x4's width" 15 build section width)
+field("50 mm" "RHS 100x50x4's height" 15 build section height)
+field("rectangular" "RHS 100x50x4's shape" 15 build tube shape)
+field("8 mm" "RHS 100x50x4's outer radius (2 T)" 15 build tube outer_radius)
+field("20 mm" "RHS 200x100x8's outer radius (2.5 T)" 15 build rows 200x100x8 tube outer_radius)
+field("12 mm" "RHS 200x100x8's inner radius (1.5 T)" 15 build rows 200x100x8 tube inner_radius)
+field("33.945 kg" "RHS 200x100x8's mass per metre" 15 build rows 200x100x8 mass_per_metre)
+frames(15 "end_a;end_b;face_xp;face_xn;face_yp;face_yn")
+field("1.752 kg" "40x20x2's mass per metre" 16 build mass_per_metre)
+field("0 mm" "40x20x2's sharp inner corner" 16 build tube inner_radius)
+field("-0.3" "40x20x2's width tolerance" 16 build tolerance width 0)
+field("0.3" "40x20x2's height tolerance" 16 build tolerance height 1)
+field("0.2" "40x20x2's wall tolerance (0.1 T)" 16 build tolerance thickness 1)
+field("2.392 kg" "35x25x3's mass per metre" 16 build rows 35x25x3 mass_per_metre)
+
+#    Their designs: the volume the exact area times the length, 1000 mm by
+#    default, in every row; and within 1 % of the standards' masses (CHS
+#    48.3x3.2 3.56 kg/m, 114.3x5 13.5; SHS 40x40x3 3.30, 100x100x10 25.6;
+#    EN 10305-5 30x30x1.5 1.34, 35x35x3 2.86, 40x40x4 4.25) at 7850 kg/m3.
+#    The round tube's axis (mount:axis F8) on Z; the square tube's face
+#    frames follow its size (mount:face_xp F9). The furniture tube's rows
+#    switch its bores: the rounded one (F4) suppressed at a sharp inner
+#    corner, the sharp one (F6) at a rounded one; its face_xp is F11.
+file(WRITE "${WORK}/chs.json" "[
+  {\"expect\": {\"total_volume\": 453394.65177, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 453503.18471, \"tolerance\": 0.01}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"appearance\": \"steel_satin\", \"bbox\": {\"min\": [-24.15, -24.15, 0], \"max\": [24.15, 24.15, 1000]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F8\"}, \"result\": {\"origin\": [0, 0, 0], \"normal\": [0, 0, 1]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"114.3x5\"},
+  {\"expect\": {\"total_volume\": 1716880.38519, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 1719745.22293, \"tolerance\": 0.01}},
+  {\"cmd\": \"set_parameter\", \"name\": \"L\", \"expression\": \"500 mm\"},
+  {\"expect\": {\"total_volume\": 858440.19259, \"tolerance\": 1e-6}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F7\"}, \"result\": {\"origin\": [0, 0, 500], \"normal\": [0, 0, 1]}}}
+]")
+cli(ok run "${WORK}/chs.json" --open "${library}/steel-tubes/test-chs.mitcad")
+file(WRITE "${WORK}/shs.json" "[
+  {\"expect\": {\"total_volume\": 420823.00165, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 420382.16561, \"tolerance\": 0.01}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-20, -20, 0], \"max\": [20, 20, 1000]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F9\"}, \"result\": {\"origin\": [20, 0, 0], \"normal\": [1, 0, 0], \"x_axis\": [0, 0, 1]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"100x100x10\"},
+  {\"expect\": {\"total_volume\": 3256637.06143, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 3261146.49682, \"tolerance\": 0.01}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F9\"}, \"result\": {\"origin\": [50, 0, 0], \"normal\": [1, 0, 0]}}}
+]")
+cli(ok run "${WORK}/shs.json" --open "${library}/steel-tubes/test-shs.mitcad")
+file(WRITE "${WORK}/furniture.json" "[
+  {\"expect\": {\"total_volume\": 170517.14587, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 170700.63694, \"tolerance\": 0.01}},
+  {\"expect\": {\"feature\": \"F4\", \"status\": \"suppressed\"}},
+  {\"expect\": {\"feature\": \"F6\", \"status\": \"ok\"}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-15, -15, 0], \"max\": [15, 15, 1000]}}]}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"35x35x3\"},
+  {\"expect\": {\"total_volume\": 364685.83471, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 364331.21019, \"tolerance\": 0.01}},
+  {\"expect\": {\"feature\": \"F4\", \"status\": \"ok\"}},
+  {\"expect\": {\"feature\": \"F6\", \"status\": \"suppressed\"}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"40x40x4\"},
+  {\"expect\": {\"total_volume\": 541663.70615, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 541401.27389, \"tolerance\": 0.01}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F11\"}, \"result\": {\"origin\": [20, 0, 0], \"normal\": [1, 0, 0]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"30x30x1.5\"},
+  {\"expect\": {\"total_volume\": 170517.14587, \"tolerance\": 1e-6}},
+  {\"expect\": {\"feature\": \"F4\", \"status\": \"suppressed\"}}
+]")
+cli(ok run "${WORK}/furniture.json" --open "${library}/steel-tubes/test-furniture-tube.mitcad")
+#    The rectangular tubes (mitcad#892): the volume the exact area times
+#    the length (RHS 100x50x4 8.59 kg/m, 200x100x8 33.9; EN 10305-5 40x20x2
+#    1.75, 35x25x3 2.39), the box of the width and height, the face frames
+#    on half the width (face_xp F9) and half the height (face_yp F13); the
+#    furniture tube's bores switched as the square one's, its face_yp F15.
+file(WRITE "${WORK}/rhs.json" "[
+  {\"expect\": {\"total_volume\": 1094796.44737, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 1094267.51592, \"tolerance\": 0.01}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-50, -25, 0], \"max\": [50, 25, 1000]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F9\"}, \"result\": {\"origin\": [50, 0, 0], \"normal\": [1, 0, 0]}}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F13\"}, \"result\": {\"origin\": [0, 25, 0], \"normal\": [0, 1, 0], \"x_axis\": [0, 0, 1]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"200x100x8\"},
+  {\"expect\": {\"total_volume\": 4324247.71932, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 4318471.33758, \"tolerance\": 0.01}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F9\"}, \"result\": {\"origin\": [100, 0, 0], \"normal\": [1, 0, 0]}}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F13\"}, \"result\": {\"origin\": [0, 50, 0], \"normal\": [0, 1, 0]}}}
+]")
+cli(ok run "${WORK}/rhs.json" --open "${library}/steel-tubes/test-rhs.mitcad")
+file(WRITE "${WORK}/rect-furniture.json" "[
+  {\"expect\": {\"total_volume\": 223141.59265, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 222929.93631, \"tolerance\": 0.01}},
+  {\"expect\": {\"feature\": \"F4\", \"status\": \"suppressed\"}},
+  {\"expect\": {\"feature\": \"F6\", \"status\": \"ok\"}},
+  {\"expect\": {\"query\": {\"query\": \"bodies\", \"properties\": true},
+               \"result\": [{\"bbox\": {\"min\": [-20, -10, 0], \"max\": [20, 10, 1000]}}]}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F15\"}, \"result\": {\"origin\": [0, 10, 0], \"normal\": [0, 1, 0]}}},
+  {\"cmd\": \"apply_configuration\", \"name\": \"35x25x3\"},
+  {\"expect\": {\"total_volume\": 304685.83471, \"tolerance\": 1e-6}},
+  {\"expect\": {\"total_volume\": 304458.59873, \"tolerance\": 0.01}},
+  {\"expect\": {\"feature\": \"F4\", \"status\": \"ok\"}},
+  {\"expect\": {\"feature\": \"F6\", \"status\": \"suppressed\"}},
+  {\"expect\": {\"query\": {\"query\": \"datum\", \"uid\": \"F15\"}, \"result\": {\"origin\": [0, 12.5, 0], \"normal\": [0, 1, 0]}}}
+]")
+cli(ok run "${WORK}/rect-furniture.json" --open "${library}/steel-tubes/test-rect-furniture-tube.mitcad")
+
 # 4. The pickers: fetched, timber only where asked for.
 cli(ok library fetch "${library}")
 cli(ok library candidates --role profile --kind timber)
@@ -305,10 +461,17 @@ expect("mitcad-parts/test-board" "the Timber picker")
 foreach(id test-floorboard test-panel test-shiplap test-feather-edge test-deck)
   expect("mitcad-parts/${id}" "the Timber picker's profiled boards")
 endforeach()
+if(out MATCHES "test-chs|test-shs|test-furniture-tube|test-rhs|test-rect-furniture-tube")
+  message(FATAL_ERROR "the Timber picker lists steel tubes:\n${out}")
+endif()
 cli(ok library candidates --role profile)
 if(out MATCHES "test-board|test-floorboard|test-shiplap|test-deck")
   message(FATAL_ERROR "the Profile picker lists timber:\n${out}")
 endif()
+# The steel tubes are profiles of no slot system (mitcad#873).
+foreach(id test-chs test-shs test-furniture-tube test-rhs test-rect-furniture-tube)
+  expect("mitcad-parts/${id}" "the Profile picker's steel tubes")
+endforeach()
 cli(ok library candidates --role panel --mount face)
 expect("mitcad-parts/test-sheet" "the sheets on a face")
 cli(ok library candidates --role panel)

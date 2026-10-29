@@ -283,17 +283,14 @@ ShapePtr deserialize_shape(std::string_view data) {
   if (faceMap.Extent() != faces || edgeMap.Extent() != edges || vertexMap.Extent() != vertices) {
     throw std::runtime_error("stored shape: the faces do not match their names");
   }
-  std::vector<Shape::NamedFace> named;
-  named.reserve(static_cast<std::size_t>(faces));
-  for (int i = 1; i <= faces; ++i) {
+  // The faces' names by face index; the shape takes the maps (mitcad#887:
+  // mapped once).
+  std::vector<NameList> face_names(static_cast<std::size_t>(faces));
+  for (NameList& names : face_names) {
     const std::uint32_t count = in.u32();
-    NameList names;
     names.reserve(count);
     for (std::uint32_t k = 0; k < count; ++k) {
       names.push_back(in.text());
-    }
-    if (!names.empty()) {
-      named.push_back({faceMap(i), std::move(names)});
     }
   }
   // A face as its index + 1, 0 for none; the shape checks the indices.
@@ -332,7 +329,8 @@ ShapePtr deserialize_shape(std::string_view data) {
     derived.vertex_faces.push_back(std::move(at));
     derived.vertex_names.push_back(in.text());
   }
-  auto shape = std::make_shared<Shape>(std::move(occt), named, std::move(derived));
+  auto shape = std::make_shared<Shape>(std::move(occt), faceMap, edgeMap, vertexMap, std::move(face_names),
+                                       std::move(derived));
   const std::uint32_t notes = in.u32();
   for (std::uint32_t i = 0; i < notes; ++i) {
     shape->add_note(in.text());

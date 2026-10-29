@@ -469,11 +469,16 @@ pub fn check_component(
         .and_then(Value::as_array)
         .is_some_and(|a| !a.is_empty());
     // Timber parts (mitcad#478) have no slot system: a member, an outer
-    // connector fitted by the members' sections.
+    // connector fitted by the members' sections. Nor has a profile without
+    // slots (a steel tube, mitcad#873).
     let timber = part.is_timber();
     let outer = part.is_outer();
+    let slotted = part
+        .frames()
+        .iter()
+        .any(|(_, f)| f.get("kind").and_then(Value::as_str) == Some("slot"));
     match role {
-        "profile" if build.get("system").is_none() && !timber => out.error(format!(
+        "profile" if build.get("system").is_none() && !timber && slotted => out.error(format!(
             "{label}: a profile names its slot system (build.system)"
         )),
         "connector" | "cap" if !has_systems && build.get("system").is_none() && !outer => {
@@ -527,7 +532,7 @@ pub fn check_component(
                     length_field(slot, key, "slot.", false, label, out);
                 }
             }
-            None if timber => {}
+            None if timber || !slotted => {}
             None => out.warn(format!(
                 "{label}: no build.slot (depth, opening, inner width): panels and nuts cannot \
                  be fitted to it"
@@ -721,7 +726,12 @@ fn check_frames(part: &BuildPart<'_>, role: &str, label: &str, out: &mut Problem
                 out.error(format!("{label}: a profile has the frame {end}"));
             }
         }
-        if !part.is_timber() && !names.iter().any(|n| slot_frame(n).is_some()) {
+        // A profile without slots (a steel tube, mitcad#873) names no slot
+        // system either; one that names a system needs its slot frames.
+        if !part.is_timber()
+            && part.value.get("system").is_some()
+            && !names.iter().any(|n| slot_frame(n).is_some())
+        {
             out.warn(format!(
                 "{label}: the profile has no slot frames: nothing can be placed on its sides"
             ));

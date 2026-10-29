@@ -95,7 +95,9 @@
 #   --corpus-tests N, --corpus-jobs N
 #                   corpus tests at once (ctest -j) and the files each
 #                   imports at once (MITCAD_CORPUS_JOBS). By default, with
-#                   the test runner, the runner gives each corpus test its
+#                   the test runner, the runner gives each corpus test
+#                   (also those of the ctest step, rvt.corpus and
+#                   dwg.corpus, mitcad#875) its
 #                   files at once from its profile (mitcad-testrun
 #                   --corpus-children, mitcad#832): every run records each
 #                   file's time and peak in its child process, and the
@@ -909,7 +911,12 @@ if wanted ctest || [ -n "$(ctest_named)" ]; then
   elif [ -z "$regex" ]; then
     record ctest 0 skipped
   else
-    test_step ctest "$CTEST_JOBS" -R "$regex" -E "$CORPUS_TESTS"
+    # The corpus tests outside the corpus group (rvt.corpus, dwg.corpus)
+    # import their files in children too: the runner gives them theirs
+    # from the files' history (mitcad#875), unless --corpus-jobs fixes them.
+    ctest_children=1
+    [ -z "$CORPUS_JOBS" ] || ctest_children=""
+    TESTRUN_CORPUS=$ctest_children test_step ctest "$CTEST_JOBS" -R "$regex" -E "$CORPUS_TESTS"
     ctest_rows "$LOGS/ctest.log"
     if [ "$BUILT" = 1 ]; then
       python3 tools/ctest-fingerprints.py record --plan "$LOGS/ctest-plan.tsv" --log "$LOGS/ctest.log" \

@@ -347,7 +347,10 @@ files in child processes, several at once (`core/tests/parallel_runs.hpp`:
 `test_f3d_import`, `test_brep_import`, `test_exchange`, and
 `mitcad_run_parallel` for the scripts' corpora, `f3d.corpus_designs`
 among them, its imports with a debug build's own-start time, mitcad#847),
-mitcad#832:
+mitcad#832. `rvt.corpus` (its project and its link check, keyed by the
+content ids they import) and `dwg.corpus` (a drawing each) do so too
+since mitcad#875; they run in `tools/check-all.sh`'s ctest step, which
+gives them `--corpus-children` as the corpus step does its tests:
 
 - **Each file's time and peak.** For every corpus test the runner names
   a table in `MITCAD_CORPUS_RECORD` (`<out>/corpus/<test>.runs.tsv`), to
@@ -386,10 +389,10 @@ mitcad#832:
   test that passes while its children recorded nothing, although its
   profile has files, imports in one process now, and its files go from
   the profile (`corpus::one_process`), so that the next run predicts it
-  by its own history. `f3d.corpus_designs` checks its designs one after
-  another again since 0.32.0; planned by its files it was predicted at
-  its longest design's 314 s with two children's 7 GiB held for it, and
-  took 498 s.
+  by its own history. `f3d.corpus_designs` checked its designs one after
+  another from 0.32.0 until mitcad#874 put them back on children;
+  planned by its files it was predicted at its longest design's 314 s
+  with two children's 7 GiB held for it, and took 498 s.
 - **Children wait for memory** (mitcad#872): with the budget from the
   free memory the runner gives each corpus test `MITCAD_CORPUS_RESERVE`
   (the reserve, unless the caller set it); a child beside others then

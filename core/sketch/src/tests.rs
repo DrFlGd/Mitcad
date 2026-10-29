@@ -1172,3 +1172,121 @@ fn a_seeded_corner_of_two_arcs_of_one_circle_stays_on_the_circle() {
         }
     }
 }
+
+/// The corners of an offset made by constraints that the solve holds where
+/// the results touch (mitcad#890): where the sources touch by their
+/// definition (fixed curves that touch at their shared point, curves
+/// tangent by a constraint, results of an offset whose corner is held so),
+/// between a line and an arc or two arcs; not a corner of fixed curves that
+/// meet at an angle, nor one of free curves that only happen to touch.
+#[test]
+fn tangent_corners_of_offsets_are_those_whose_sources_touch_by_definition() {
+    use super::offset::{SketchOffset, tangent_corners};
+    use super::pattern::{Binding, BindingKind};
+    let r = 12.2;
+    let offset_of = |id: u32, curves: Vec<EntityUid>, results: Vec<EntityUid>| SketchOffset {
+        id: ConstraintUid(id),
+        curves,
+        distance: ParamId::from_raw(0),
+        left: false,
+        results,
+        corners: Vec::new(),
+        helpers: Vec::new(),
+        derived: false,
+    };
+    let held = |b: &[Binding]| -> Vec<(u32, u32, u32, u32)> {
+        b.iter()
+            .map(|b| match b.kind {
+                BindingKind::TangentAt { a, b: o, at } => (b.owner.0, a.0, o.0, at.0),
+                other => panic!("{other:?}"),
+            })
+            .collect()
+    };
+    // A line going on tangentially into an arc (fixed, as projected), its
+    // offset in by 2, and that in by 1 again.
+    let mut b = Builder::new();
+    let line = b.line([60.0, 0.0], [0.0, 0.0]); // c1
+    let arc = b.arc([0.0, r], [-r, r], [0.0, 0.0]); // c2
+    let first_line = b.line([60.0, 2.0], [0.0, 2.0]); // c3
+    let first_arc = b.arc([0.0, r], [2.0 - r, r], [0.0, 2.0]); // c4
+    let second_line = b.line([60.0, 3.0], [0.0, 3.0]); // c5
+    let second_arc = b.arc([0.0, r], [3.0 - r, r], [0.0, 3.0]); // c6
+    for e in b.def.entities.iter_mut() {
+        e.fixed = e.id == line || e.id == arc;
+    }
+    let offsets = vec![
+        offset_of(1, vec![line, arc], vec![first_line, first_arc]),
+        offset_of(
+            2,
+            vec![first_line, first_arc],
+            vec![second_line, second_arc],
+        ),
+    ];
+    let corner = |b: &Builder, x: f64, y: f64| {
+        b.def
+            .entities
+            .iter()
+            .find(|e| matches!(e.kind, EntityKind::Point { at } if at == [x, y]))
+            .unwrap()
+            .id
+            .0
+    };
+    let (c1, c2) = (corner(&b, 0.0, 2.0), corner(&b, 0.0, 3.0));
+    assert_eq!(
+        held(&tangent_corners(&offsets, &b.def.entities, &[])),
+        [(1, 3, 4, c1), (2, 5, 6, c2)]
+    );
+    // Free source curves that only touch: nothing held, also not the
+    // offset of their offset.
+    let mut free = b.def.entities.clone();
+    for e in &mut free {
+        e.fixed = false;
+    }
+    assert!(tangent_corners(&offsets, &free, &[]).is_empty());
+    // Tangent by a constraint: held.
+    let tangent = [Constraint::new(
+        ConstraintUid(9),
+        ConstraintKind::Tangent {
+            a: line,
+            b: arc,
+            at: None,
+        },
+    )];
+    assert_eq!(held(&tangent_corners(&offsets, &free, &tangent)).len(), 2);
+    // Fixed curves that meet at an angle (the arc a degree turned from the
+    // line where they meet): nothing held.
+    let mut b = Builder::new();
+    let (s, c) = (1f64.to_radians().sin(), 1f64.to_radians().cos());
+    let line = b.line([60.0, 0.0], [0.0, 0.0]);
+    let arc = b.arc([r * s, r * c], [r * s - r, r * c], [0.0, 0.0]);
+    let result_line = b.line([60.0, 2.0], [0.0, 2.0]);
+    let result_arc = b.arc([r * s, r * c], [r * s - r + 2.0, r * c], [0.0, 2.0]);
+    for e in b.def.entities.iter_mut() {
+        e.fixed = e.id == line || e.id == arc;
+    }
+    let offsets = vec![offset_of(1, vec![line, arc], vec![result_line, result_arc])];
+    assert!(tangent_corners(&offsets, &b.def.entities, &[]).is_empty());
+    // Two arcs of one circle, each with a centre of its own a rounding
+    // apart (a projected circle, mitcad#709), and a third arc touching the
+    // second from outside: only the corner of the two circles that touch is
+    // held.
+    let mut b = Builder::new();
+    let (upper, lower) = ([0.0, 9e-16], [0.0, -7e-16]);
+    let left = b.arc(upper, [10.0, 0.0], [-10.0, 0.0]);
+    let right = b.arc(lower, [-10.0, 0.0], [10.0, 0.0]);
+    let beyond = b.arc([15.0, 0.0], [15.0, -5.0], [10.0, 0.0]);
+    let results = [
+        b.arc(upper, [12.0, 0.0], [-12.0, 0.0]),
+        b.arc(lower, [-12.0, 0.0], [12.0, 0.0]),
+        b.arc([15.0, 0.0], [15.0, -3.0], [12.0, 0.0]),
+    ];
+    for e in b.def.entities.iter_mut() {
+        e.fixed = [left, right, beyond].contains(&e.id);
+    }
+    let offsets = vec![offset_of(1, vec![left, right, beyond], results.to_vec())];
+    let at = corner(&b, 12.0, 0.0);
+    assert_eq!(
+        held(&tangent_corners(&offsets, &b.def.entities, &[])),
+        [(1, results[1].0, results[2].0, at)]
+    );
+}

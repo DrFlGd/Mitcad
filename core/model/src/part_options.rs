@@ -130,6 +130,8 @@ pub struct ConfiguredSource {
 /// The source's design in the row `config` (else its default row) with
 /// `values` set and the source's cascade run: the `pinned` values (those
 /// bound to the design's parameters) are never moved, the others may be.
+/// Its bound values (a feature suppressed by a condition, an appearance
+/// that follows a text) then follow the parameters.
 pub fn configure(
     source: &LibrarySourceDef,
     config: Option<&str>,
@@ -166,6 +168,10 @@ pub fn configure_state(
     let broken_before = violations(&state)?;
     set_values(&mut state.parameters, label, values)?;
     let (moves, broken) = cascade(&mut state, pinned)?;
+    // The source's bindings follow its parameters (mitcad#800), as they do
+    // in the design itself: a row that rounds a steel tube's inner corners
+    // suppresses its sharp bore (mitcad#873).
+    state.settle_bindings();
     // A rule the source broke in its row already is not the values' fault.
     let broken = broken
         .into_iter()

@@ -95,6 +95,8 @@ mod linked;
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+// The import's clock (mitcad#874): every time limit of the replay is on it.
+pub(crate) use mitcad_model::monitor::{now, since};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use mitcad_dump::ItemState;
@@ -139,7 +141,9 @@ pub struct Options {
     /// mitcad#847): a debug build's checks give their slowdown, so that an
     /// item that gives its state that way (a path pattern of 372 copies,
     /// 18 s in a debug build) does not run out of its time on a busy
-    /// machine. The item's other routes keep their times: an item that
+    /// machine. It scales the other short time of a route tried first too,
+    /// a thread's sizing offset's ([`Options::sizing_offset_seconds`],
+    /// mitcad#874). The item's other routes keep their times: an item that
     /// falls back spends each of them in full, and scaled they made it
     /// several times as slow. 1 by default.
     pub own_start_scale: f64,
@@ -264,13 +268,23 @@ impl Options {
     /// ([`Options::own_start_scale`]): half of `item_seconds`, scaled by a
     /// factor above 0 (else 1).
     pub fn own_start_seconds(&self) -> f64 {
+        self.item_seconds / 2.0 * self.first_route_scale()
+    }
+
+    /// The time a thread on faces sized by offsets is given
+    /// ([`SIZING_OFFSET_SECONDS`], [`Options::own_start_scale`]).
+    pub fn sizing_offset_seconds(&self) -> f64 {
+        SIZING_OFFSET_SECONDS * self.first_route_scale()
+    }
+
+    /// [`Options::own_start_scale`] when above 0, else 1.
+    fn first_route_scale(&self) -> f64 {
         let scale = self.own_start_scale;
-        let scale = if scale.is_finite() && scale > 0.0 {
+        if scale.is_finite() && scale > 0.0 {
             scale
         } else {
             1.0
-        };
-        self.item_seconds / 2.0 * scale
+        }
     }
 }
 
@@ -431,7 +445,8 @@ pub struct Importer<'a, K: Kernel> {
     pub defined: std::collections::HashSet<i64>,
     /// Without a history: the bodies were replaced by the stored design.
     pub at_final: bool,
-    /// When the import started (for `Options::time_limit`).
+    /// When the import started (for `Options::time_limit`; on the
+    /// import's clock, [`now`]).
     pub started: std::time::Instant,
     /// The file's components as Mitcad's, and the items in them.
     pub components: components::Components,
@@ -623,7 +638,7 @@ impl<'a, K: Kernel> Importer<'a, K> {
             pending: Vec::new(),
             defined: std::collections::HashSet::new(),
             at_final: false,
-            started: std::time::Instant::now(),
+            started: now(),
             components: components::Components::default(),
             component: ComponentUid::ROOT,
             sketch_copies: HashMap::new(),
@@ -1069,13 +1084,31 @@ fn seeks_closer(c: &Candidate) -> bool {
 /// How long a thread on faces sized by offsets may take (`ops.rs`,
 /// threads), s: offsetting a face of a large or stored body can take long
 /// or not build, where the tube tried next takes a second (mitcad#68).
+/// Seconds of the import's clock ([`now`], mitcad#874), in a release
+/// build (a debug build's checks scale it,
+/// [`Options::sizing_offset_seconds`]): in a debug build such a thread
+/// takes 0.9 s, and beside other imports on a busy machine it ran past
+/// 2 s of the wall clock; the thread then took the tube's route, whose
+/// faces a rounding along the thread later failed on.
 pub const SIZING_OFFSET_SECONDS: f64 = 2.0;
 
-/// The seconds a candidate is given of its item's time, when fewer.
-fn candidate_seconds(c: &Candidate) -> Option<f64> {
+/// A time on the import's clock for the trace, with the wall clock's
+/// where the load made it notably longer (mitcad#874).
+fn paced(paced: std::time::Duration, wall: std::time::Duration) -> String {
+    let (paced, wall) = (paced.as_secs_f64(), wall.as_secs_f64());
+    if wall > paced * 1.1 + 0.05 {
+        format!("{paced:.2} s ({wall:.2} s of the wall clock)")
+    } else {
+        format!("{paced:.2} s")
+    }
+}
+
+/// The seconds a candidate is given of its own, when fewer than its
+/// item's.
+fn candidate_seconds(c: &Candidate, options: &Options) -> Option<f64> {
     let sizing = c.defs.last().is_some_and(|d| d["type"] == "thread")
         && c.defs.iter().any(|d| d["type"] == "offset_face");
-    sizing.then_some(SIZING_OFFSET_SECONDS)
+    sizing.then(|| options.sizing_offset_seconds())
 }
 
 /// The part of an item's time a definition is given in the first round
@@ -1152,8 +1185,20 @@ impl Turns {
     /// The next definition to try again with `remaining` seconds: those
     /// that ran as long already are passed over.
     pub fn again(&mut self, remaining: f64) -> Option<usize> {
+        self.again_or_going_on(remaining, |_| false)
+    }
+
+    /// [`Turns::again`], where a definition that goes on on its worker
+    /// since it gave way (`going_on`, mitcad#874) is not passed over: it
+    /// does not start again, so what it ran already is not to be run
+    /// again in the time left.
+    pub fn again_or_going_on(
+        &mut self,
+        remaining: f64,
+        mut going_on: impl FnMut(usize) -> bool,
+    ) -> Option<usize> {
         while let Some((k, ran)) = self.waiting.pop_front() {
-            if remaining > ran {
+            if remaining > ran || going_on(k) {
                 return Some(k);
             }
         }
@@ -1919,7 +1964,8 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             }
             return;
         }
-        let started = std::time::Instant::now();
+        let started = now();
+        let wall = std::time::Instant::now();
         let lows = self.memory_lows();
         // The item's time; the parts of it that are given their own set
         // theirs (`Importer::within`).
@@ -2056,9 +2102,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             });
         }
         trace!(
-            "{name}: {} in {:.2} s",
+            "{name}: {} in {}",
             self.report.items[at].outcome.as_str(),
-            started.elapsed().as_secs_f64()
+            paced(since(started), wall.elapsed())
         );
     }
 
@@ -2176,9 +2222,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// `budget` seconds from now, for a part of an item that has a time of
     /// its own.
     fn within<T>(&mut self, budget: f64, f: impl FnOnce(&mut Self) -> T) -> T {
-        let outer = self
-            .deadline
-            .replace(std::time::Instant::now() + seconds(budget));
+        let outer = self.deadline.replace(now() + seconds(budget));
         let result = f(self);
         self.deadline = outer;
         result
@@ -2186,8 +2230,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
 
     /// Whether the item's time is over ([`Importer::deadline`]).
     fn past_deadline(&self) -> bool {
-        self.deadline
-            .is_some_and(|d| std::time::Instant::now() >= d)
+        self.deadline.is_some_and(|d| now() >= d)
     }
 
     /// Adds a candidate of the modelling item `index` (see
@@ -2219,11 +2262,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         }
         let lows = self.memory_lows();
         self.trying = true;
-        let clock = std::time::Instant::now();
+        let clock = now();
+        let wall = std::time::Instant::now();
         // A candidate given fewer seconds than its item has left: its own
         // (a sizing offset's), or its share.
         let item_deadline = self.deadline;
-        let own = candidate_seconds(candidate).map(|s| clock + seconds(s));
+        let own = candidate_seconds(candidate, self.options).map(|s| clock + seconds(s));
         let shared = share.map(|s| clock + seconds(s));
         self.deadline = [item_deadline, own, shared].into_iter().flatten().min();
         trace!(
@@ -2235,12 +2279,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         self.deadline = item_deadline;
         self.trying = false;
         trace!(
-            "{}: evaluated in {:.2} s",
+            "{}: evaluated in {}",
             name.unwrap_or("?"),
-            clock.elapsed().as_secs_f64()
+            paced(since(clock), wall.elapsed())
         );
-        let past =
-            |d: Option<std::time::Instant>| d.is_some_and(|d| std::time::Instant::now() >= d);
+        let past = |d: Option<std::time::Instant>| d.is_some_and(|d| now() >= d);
         match added {
             Err(_) if self.abandoned() || self.stopped(index) => Err(STOPPED.to_owned()),
             // Cut short (or failed) as the memory ran low: also when it has
@@ -3371,12 +3414,16 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             let mut position = 0;
             // The definitions after the one evaluated, evaluated ahead by
             // workers on these bodies (mitcad#95).
-            let mut ahead = self.ahead(budget);
+            let mut ahead = self.ahead();
             loop {
                 let again = if position < limit {
                     None
                 } else {
-                    let Some(k) = turns.again(budget - started.elapsed().as_secs_f64()) else {
+                    let Some(k) = turns
+                        .again_or_going_on(budget - started.elapsed().as_secs_f64(), |k| {
+                            ahead.as_mut().is_some_and(|a| a.continuing(k))
+                        })
+                    else {
                         break;
                     };
                     Some(k)
@@ -3404,21 +3451,19 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 attempts += 1;
                 let inner = self.doc.undo_depth();
                 let share = turns.share(budget, position == limit, again.is_some());
-                let tried = std::time::Instant::now();
+                let tried = now();
                 let until = limit.min(k + 1 + self.options.max_attempts.saturating_sub(attempts));
-                let first_round = ahead.as_mut().filter(|_| again.is_none());
                 let evaluated = self.evaluate(
-                    first_round,
+                    ahead.as_mut(),
                     &candidates,
                     k,
                     until,
                     index,
                     item.name(),
                     share,
+                    again.is_some(),
                 );
-                let ran = evaluated
-                    .ran
-                    .unwrap_or_else(|| tried.elapsed().as_secs_f64());
+                let ran = evaluated.ran.unwrap_or_else(|| since(tried).as_secs_f64());
                 match evaluated.result.clone() {
                     Ok(uids) => {
                         let current = match &evaluated.bodies {
@@ -4279,7 +4324,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 let mut next = 0;
                 // The definitions after the one evaluated, evaluated ahead
                 // by workers (mitcad#95).
-                let mut ahead = self.ahead(budget);
+                let mut ahead = self.ahead();
                 loop {
                     let mut again = None;
                     if next == candidates.len() {
@@ -4325,7 +4370,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             // The first round is over: those that gave way.
                             second_round = true;
                             let remaining = budget - started.elapsed().as_secs_f64();
-                            let Some(k) = turns.again(remaining) else {
+                            let Some(k) = turns.again_or_going_on(remaining, |k| {
+                                ahead.as_mut().is_some_and(|a| a.continuing(k))
+                            }) else {
                                 break;
                             };
                             again = Some(k);
@@ -4402,7 +4449,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     let inner = self.doc.undo_depth();
                     let last = next == candidates.len() && guesses.as_ref().is_none_or(|g| g.done);
                     let share = turns.share(budget, last, again.is_some());
-                    let tried = std::time::Instant::now();
+                    let tried = crate::now();
                     // Those a later one may still need: within the
                     // attempts, and the closer definitions after a loose
                     // match.
@@ -4410,19 +4457,17 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     if loose.is_some() {
                         until = until.min(k + 1 + LOOSE_RETRIES.saturating_sub(closer_tries));
                     }
-                    let first_round = ahead.as_mut().filter(|_| again.is_none());
                     let mut evaluated = self.evaluate(
-                        first_round,
+                        ahead.as_mut(),
                         &candidates,
                         k,
                         until,
                         index,
                         item.name(),
                         share,
+                        again.is_some(),
                     );
-                    let ran = evaluated
-                        .ran
-                        .unwrap_or_else(|| tried.elapsed().as_secs_f64());
+                    let ran = evaluated.ran.unwrap_or_else(|| since(tried).as_secs_f64());
                     // The item's state, asked for once its first definition
                     // was evaluated, whatever came of it (mitcad#701): its
                     // building (or healing ahead) overlaps the evaluation,
@@ -4912,7 +4957,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     fn out_of_time(&self) -> bool {
         self.options
             .time_limit
-            .is_some_and(|t| self.started.elapsed().as_secs_f64() > t)
+            .is_some_and(|t| since(self.started).as_secs_f64() > t)
     }
 
     /// Why no definitions are tried for the item: the geometry kernel hung

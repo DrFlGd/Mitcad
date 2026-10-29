@@ -191,12 +191,26 @@ pub fn candidate_folders(env: &PresetEnv) -> Vec<SlicerFolder> {
 }
 
 /// The data folders of the slicers installed in `env`: those that have a
-/// user presets' folder.
+/// user presets' folder, or system presets and an app config that enables
+/// printers (mitcad#871: a slicer set up but with no preset of the user's
+/// yet still has presets to import).
 pub fn slicer_folders(env: &PresetEnv) -> Vec<SlicerFolder> {
     candidate_folders(env)
         .into_iter()
-        .filter(|s| s.folder.join(USER_DIR).is_dir())
+        .filter(|s| s.folder.join(USER_DIR).is_dir() || enables_printers(&s.folder, s.dialect))
         .collect()
+}
+
+/// Whether a data folder has system presets and its app config lists
+/// printer models (`models`).
+fn enables_printers(folder: &Path, dialect: Dialect) -> bool {
+    folder.join(SYSTEM_DIR).is_dir()
+        && app_config(folder, dialect).is_some_and(|config| {
+            config
+                .get("models")
+                .and_then(Value::as_array)
+                .is_some_and(|models| !models.is_empty())
+        })
 }
 
 /// A preset found in a slicer's data folder: a user preset, or a system
@@ -481,7 +495,8 @@ fn listed_filaments(config: &Map<String, Value>) -> Vec<String> {
 /// app config's `models`, the processes for one of them, and the
 /// filaments of its `filaments` (with the printer models' default
 /// materials where none listed suits a printer) that suit one of them;
-/// only presets meant to be chosen, never the bases. By kind, then name.
+/// only presets meant to be chosen, never the bases. By kind, then name
+/// in any case.
 /// None without an app config.
 pub fn system_presets(folder: &Path, dialect: Dialect) -> Vec<FoundPreset> {
     let Some(config) = app_config(folder, dialect) else {
@@ -596,7 +611,11 @@ pub fn system_presets(folder: &Path, dialect: Dialect) -> Vec<FoundPreset> {
         (PrintSet::Process, processes),
         (PrintSet::Filament, filaments),
     ] {
-        list.sort_by(|&a, &b| index.presets[a].name.cmp(&index.presets[b].name));
+        // By name in any case, then as written.
+        list.sort_by_cached_key(|&i| {
+            let name = &index.presets[i].name;
+            (name.to_lowercase(), name.clone())
+        });
         for i in list {
             let preset = &index.presets[i];
             out.push(FoundPreset {
@@ -1144,5 +1163,45 @@ mod tests {
                 (PrintSet::Filament, "Acme PLA @Y"),
             ]
         );
+    }
+
+    #[test]
+    fn a_slicer_with_enabled_system_presets_and_no_user_folder_is_installed() {
+        // QIDI Studio set up for Acme Y but no preset of the user's yet: no
+        // `user/`, still offered (mitcad#871 review). Y gets a second
+        // process whose name sorts first in any case, last byte-wise.
+        let config =
+            r#"{"models": [{"vendor": "Acme", "model": "Acme Y", "nozzle_diameter": "0.4"}]}"#;
+        let folder = system_folder("no-user", Some(config));
+        std::fs::remove_dir_all(folder.join("user")).unwrap();
+        write(
+            &folder.join("system/Acme/process/0.20mm fine @Acme Y.json"),
+            &json!({"type": "process", "name": "0.20mm fine @Acme Y", "instantiation": "true",
+                    "inherits": "fdm_process_common",
+                    "compatible_printers": ["Acme Y 0.4 nozzle"]}),
+        );
+        let mut linux = env(Platform::Linux, "/no-such-home");
+        linux.config_home = folder.parent().map(Path::to_path_buf);
+        assert_eq!(
+            slicer_folders(&linux),
+            vec![SlicerFolder {
+                dialect: Dialect::QidiStudio,
+                folder: folder.clone(),
+                flatpak: false,
+            }]
+        );
+        assert_eq!(
+            listed(&system_presets(&folder, Dialect::QidiStudio)),
+            vec![
+                (PrintSet::Printer, "Acme Y 0.4 nozzle"),
+                (PrintSet::Process, "0.20mm fine @Acme Y"),
+                (PrintSet::Process, "0.20mm Standard @Acme Y"),
+            ]
+        );
+        assert!(user_presets(&folder).is_empty());
+
+        // With no printer enabled there is nothing to import: not offered.
+        std::fs::write(folder.join("QIDIStudio.conf"), r#"{"models": []}"#).unwrap();
+        assert!(slicer_folders(&linux).is_empty());
     }
 }

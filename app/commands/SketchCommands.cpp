@@ -228,13 +228,18 @@ void addMirror(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.mirror", QObject::tr("Mirror"), "mirror", "CREATE/Patterns",
                                  CommandDef::Kind::Feature);
   def.sketchCommand = true;
-  def.tooltip = QObject::tr("Mirrored copies about a line, kept symmetric");
+  def.tooltip = QObject::tr("Mirrored copies about a line or a sketch axis, kept symmetric");
+  // The line, or the sketch's x or y axis (mitcad#876), which sketch mode
+  // picks for this input only, as its pick id.
+  InputDef mirrorLine =
+      selectionInput(QStringLiteral("axis"), QObject::tr("Mirror Line"), SelectKind::SketchCurve, 1, 1)
+          .withAccepts(linesOf(c));
+  mirrorLine.sketchAxes = true;
   def.inputs = {
       selectionInput(QStringLiteral("entities"), QObject::tr("Objects"),
                      SelectKind::SketchCurve | SelectKind::SketchPoint, 1, 0)
           .withAccepts(ofSketch(c)),
-      selectionInput(QStringLiteral("axis"), QObject::tr("Mirror Line"), SelectKind::SketchCurve, 1, 1)
-          .withAccepts(linesOf(c)),
+      mirrorLine,
   };
   def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
     const QString axis = s.items(QStringLiteral("axis")).first().name;
@@ -249,13 +254,17 @@ void addMirror(CommandRegistry& registry, SketchController& c) {
     }
     QJsonObject cmd = base(c, "sketch.mirror");
     cmd.insert(QStringLiteral("entities"), entities);
-    cmd.insert(QStringLiteral("axis"), axis);
+    // An axis by its name: the mirror makes its line in its own step when
+    // the sketch has none.
+    cmd.insert(QStringLiteral("axis"), sketch::isAxisPick(axis) ? sketch::axisPickName(axis) : axis);
     return Built::of(cmd);
   };
-  def.describe = [](const CommandState& s, const CommandContext&) {
+  def.describe = [&c](const CommandState& s, const CommandContext&) {
+    const QString line = s.items(QStringLiteral("axis")).first().name;
+    const QString axis = c.model().axisOf(line);
     return QStringLiteral("Mirrored %1 object(s) about %2")
         .arg(s.items(QStringLiteral("entities")).size())
-        .arg(s.items(QStringLiteral("axis")).first().name);
+        .arg(axis.isEmpty() ? line : QStringLiteral("the %1 axis").arg(axis));
   };
   registry.add(def);
 }

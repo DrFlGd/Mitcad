@@ -4,8 +4,9 @@
 //! sparse structure. The result is cached until the structure changes.
 
 use std::collections::HashSet;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
+use crate::analysis_plan::AnalysisPlans;
 use crate::equations::{CurvTerm, EqKind, Interval, P, Rad, SplineEq, TParam};
 use crate::sparse::{GramPlan, Rows};
 use crate::system::{ConstraintRec, EntityData, System};
@@ -62,9 +63,11 @@ pub(crate) struct Component {
     pub dcol: Vec<f64>,
     /// Gram matrix assembly in a minimum degree order.
     pub plan: Arc<GramPlan>,
-    /// Gram matrix assembly in equation order (rank analysis), built on
-    /// first use.
-    pub analysis_plan: OnceLock<Arc<GramPlan>>,
+    /// The rank analysis's plans, built on first use.
+    pub analysis_plans: AnalysisPlans,
+    /// The entity of each leading row that is an implicit equation (the
+    /// rank analysis may factor these later, mitcad#883).
+    pub implicit: Vec<usize>,
 }
 
 #[derive(Clone, Debug)]
@@ -1389,13 +1392,21 @@ fn components(sys: &System, eqs: &[Equation]) -> (Vec<Component>, Vec<usize>) {
         jac.val = vec![0.0; jac.col.len()];
         let plan = GramPlan::shared(&row_cols, cv.len(), None);
         let dcol = cv.iter().map(|&g| 1.0 / sys.weights[g]).collect();
+        let implicit = ce
+            .iter()
+            .map_while(|&i| match eqs[i].owner {
+                Owner::Entity(e) => Some(e),
+                Owner::Constraint(_) => None,
+            })
+            .collect();
         comps.push(Component {
             eqs: ce,
             vars: cv,
             jac,
             dcol,
             plan,
-            analysis_plan: OnceLock::new(),
+            analysis_plans: AnalysisPlans::default(),
+            implicit,
         });
     }
     // Free unknowns: point coordinates and entity scalars without equations.

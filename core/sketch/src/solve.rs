@@ -422,6 +422,11 @@ impl Built {
                 angle,
             },
             BindingKind::EqualSize(a, b) => S::EqualSize(c(a)?, c(b)?),
+            BindingKind::TangentAt { a, b, at } => S::TangentAt {
+                a: c(a)?,
+                b: c(b)?,
+                at: p(at)?,
+            },
         })
     }
 

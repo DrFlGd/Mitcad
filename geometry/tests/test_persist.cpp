@@ -9,6 +9,8 @@
 #include <string>
 #include <vector>
 
+#include <TopExp.hxx>
+
 #include "check.hpp"
 #include "mitcad/geometry/persist.hpp"
 
@@ -83,6 +85,31 @@ void test_derived_names_are_kept() {
   }
   const Shape checked(copy->occt(), named_faces(*copy), wrong);
   check_same(*original, checked);
+  // mitcad#887: made of the shape's maps and its faces' names by index (as
+  // a stored shape is read), the same shape; the maps are taken. Names of
+  // another count than the faces name none.
+  const auto maps = [&copy](ShapeMap& faces, ShapeMap& edges, ShapeMap& vertices) {
+    TopExp::MapShapes(copy->occt(), TopAbs_FACE, faces);
+    TopExp::MapShapes(copy->occt(), TopAbs_EDGE, edges);
+    TopExp::MapShapes(copy->occt(), TopAbs_VERTEX, vertices);
+  };
+  ShapeMap faces;
+  ShapeMap edges;
+  ShapeMap vertices;
+  maps(faces, edges, vertices);
+  std::vector<NameList> names;
+  for (int i = 0; i < copy->face_count(); ++i) {
+    names.push_back(copy->face_names(i));
+  }
+  const Shape mapped(copy->occt(), faces, edges, vertices, names, Shape::DerivedNames{});
+  check_same(*original, mapped);
+  CHECK(faces.IsEmpty() && edges.IsEmpty() && vertices.IsEmpty());
+  maps(faces, edges, vertices);
+  const Shape unnamed(copy->occt(), faces, edges, vertices, std::vector<NameList>(1), Shape::DerivedNames{});
+  CHECK(unnamed.face_count() == original->face_count());
+  for (int i = 0; i < unnamed.face_count(); ++i) {
+    CHECK(unnamed.face_names(i).empty());
+  }
 }
 
 void test_round_trip_keeps_names_and_measures() {

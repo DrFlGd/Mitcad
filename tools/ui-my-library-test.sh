@@ -25,8 +25,10 @@
 #      Library shows it on the Processes tab, selected. Then again, with
 #      both names in My library: the keyboard moves to Fine, Space ticks
 #      and unticks it, Tab reaches its choice; Override ticks the row and
-#      All same names shows no value while the rows differ; Copy again,
-#      Import brings Fine in as Fine 2, named in the line and selected.
+#      All same names shows no value while the rows differ; Copy again;
+#      Import names the count ("Import 1 Preset"); the filter "bench"
+#      hides Fine, and Import still brings the ticked Fine in as Fine 2,
+#      named in the line and selected.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-my-library-test.sh
@@ -201,6 +203,7 @@ ui_expect_new "Slicer presets opened: Bambu Studio, 2 presets" "the slicer's pre
 ui_expect_new "Slicer presets row: process Fine, ticked" "a new one ticked"
 ui_expect_new "Slicer presets row: printer Bench X, unticked, same name: My library has a printer of this name, copy" \
   "the name My library has: marked, unticked, Copy"
+ui_expect_new "Slicer presets ticked: 1, Import 1 Preset" "Import says how many"
 ui_expect_new "Slicer presets all same names: copy" "All same names shows the rows' Copy"
 ui_focus_dialog '^Import Presets$'
 ui_step "Import (Alt+I)"                   ui_key alt+i
@@ -224,7 +227,7 @@ ui_expect_new "My Library import menu: From a fileâ€¦ | Presets of Bambu Studioâ
 ui_key Down Down Return
 ui_expect_new "Slicer presets row: process Fine, unticked, same name: My library has a process of this name, copy" \
   "Fine is now a name My library has: unticked, Copy"
-ui_expect_new "Slicer presets ticked: 0" "nothing ticked"
+ui_expect_new "Slicer presets ticked: 0, Import" "nothing ticked: plain Import"
 ui_expect_new "Slicer presets all same names: copy" "All same names: Copy, as both rows"
 ui_focus_dialog '^Import Presets$'
 # The list has the keyboard on its first preset, Bench X: down past the
@@ -245,12 +248,18 @@ ui_mark
 ui_step "Down (Override)"                  ui_key Down
 ui_expect_new "Slicer presets choice: Fine override" "Override chosen"
 ui_expect_new "Slicer presets tick: Fine ticked" "the choice ticked its unticked row"
-ui_expect_new "Slicer presets ticked: 1" "only Fine ticked"
+ui_expect_new "Slicer presets ticked: 1, Import 1 Preset" "only Fine ticked: Import 1 Preset"
 ui_expect_new "Slicer presets all same names: none" "the rows differ: All same names shows no value"
 ui_mark
 ui_step "Up (Copy)"                        ui_key Up
 ui_expect_new "Slicer presets choice: Fine copy" "Copy chosen again"
 ui_expect_new "Slicer presets all same names: copy" "the rows agree again: Copy"
+# The filter (mitcad#871 review): Shift+Tab back to the row, again to the
+# filter; "bench" hides Fine, which stays ticked and is imported.
+ui_mark
+ui_step "Shift+Tab Shift+Tab (filter)"     ui_key shift+Tab shift+Tab
+ui_step "type bench"                       xdotool type --delay 40 "bench"
+ui_expect_new "Slicer presets filter: bench, 1 shown" "the filter shows Bench X alone"
 ui_mark
 ui_step "Import (Alt+I)"                   ui_key alt+i
 ui_expect_new "My Library import: Fine imported into My library as Fine 2" "the line names the copy's name"

@@ -39,7 +39,12 @@
 # child may commit the larger of MITCAD_CORPUS_MEMORY and 4G (a design's
 # import has taken over 2G) and has no time limit of its own (the designs'
 # limits above and ctest's TIMEOUT hold); each child gets SLOWER, for
-# its time limit and its own-start time.
+# its time limit and its own-start time. (With the designs at once, a
+# thread's sizing offset ran past its 2 s of wall time beside the others
+# and the thread took another route, on whose faces db73863f's Fillet4
+# failed. Since mitcad#874 the import's time limits are on a clock that
+# leaves the load out, the offset's 2 s SLOWER times as long, and a
+# definition cut short at its share goes on on its worker.)
 #
 #   cmake -DCLI=<mitcad-cli> -DWORK=<dir> [-DSLOWER=<factor>] [-DRUNNER=<mitcad_run_parallel>]
 #         -P f3d-designs.cmake

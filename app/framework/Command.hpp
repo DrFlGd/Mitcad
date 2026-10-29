@@ -67,8 +67,11 @@ public:
   QString valueText(const QJsonValue& slot, const QString& owner) const;
   // Number of edges a selection of faces and edges stands for.
   int edgeCount(const Selection& items) const;
-  // The document's length unit ("mm", "in", ...) and its size in mm.
-  QString lengthUnit() const;
+  // The document's length unit ("mm", "in", ...) and its size in mm. The
+  // window answers it also while a job computes the model, from what it
+  // last read (mitcad#888): a value box closed then gives its value the
+  // unit without reading the document.
+  virtual QString lengthUnit() const;
   double unitMillimetres() const;
   // The size of one pixel of the 3D view in mm at a point of the design:
   // snap distances that keep their size on the screen (BUILD's `at.snap`,
@@ -287,6 +290,12 @@ struct InputDef {
   // the bodies' faces, edges and vertices there, except those of the sketch
   // that sketch mode edits (Measure's Faces, Edges and Vertices).
   bool sketchesBehind = false;
+  // Selection: also the x and y axes of the sketch that sketch mode edits
+  // (mitcad#876: Mirror's line), which the view does not show: sketch mode
+  // picks them where no entity of the sketch is nearer, as their pick ids
+  // (axisPick(): "x_axis", "y_axis"), also where the model made the line.
+  // Other inputs never get them.
+  bool sketchAxes = false;
   // Selection of bodies the command consumes (Combine's tools without Keep
   // Tools, mitcad#561): while the input is active, a picked body that the
   // preview removes stays drawn where other occurrences show it, as a tool

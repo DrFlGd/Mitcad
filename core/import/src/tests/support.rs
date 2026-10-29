@@ -234,6 +234,38 @@ pub(super) fn slow_call_for(mock: &MockKernel, seconds: f64) -> bool {
     false
 }
 
+/// A kernel call that works on the processor for up to `seconds` (its
+/// thread's own time, as a long offset does; [`slow_call_for`] waits
+/// instead), stopping early on a cancel as the kernel's long operations
+/// do: whether it was cancelled.
+pub(super) fn busy_call_for(mock: &MockKernel, seconds: f64) -> bool {
+    mock.stop_on_cancel.set(true);
+    let begun = std::time::Instant::now();
+    let mut spin = 0u64;
+    while begun.elapsed().as_secs_f64() < seconds {
+        if mock
+            .interrupt
+            .borrow()
+            .as_ref()
+            .is_some_and(|m| m.is_cancelled())
+        {
+            return true;
+        }
+        for i in 0..100_000u64 {
+            spin = std::hint::black_box(spin.wrapping_mul(31).wrapping_add(i));
+        }
+    }
+    false
+}
+
+/// The import's clock at the wall clock's pace for the whole test process
+/// (mitcad#874): a test whose outcome hangs on a time limit (the item's,
+/// a share, the design's, a definition's own) calls it first, so that the
+/// limit runs out when the test expects however loaded the machine is.
+pub(super) fn wall_clock() {
+    mitcad_model::monitor::wall_pace_for_tests();
+}
+
 /// Feature numbers left out: `F12` becomes `F`.
 pub(super) fn without_uids(text: &str) -> String {
     let mut out = String::new();

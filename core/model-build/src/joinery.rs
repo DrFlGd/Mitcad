@@ -96,7 +96,9 @@ impl<K: Kernel> JoineryBuild<K> for Document<K> {
             .member(junction.b.component)
             .ok_or_else(|| refuse("the junction's parts are gone"))?;
         for m in [&a, &b] {
-            if !m.info.is_cut_to_length() || m.info.meta.system.is_some() {
+            // A timber member by its kind: a profile without slots that is
+            // no timber (a steel tube, mitcad#873) takes no joint.
+            if !m.info.is_cut_to_length() || !m.info.is_timber() {
                 return Err(refuse(format!(
                     "{} is no timber member: joinery is cut into members",
                     m.info.name

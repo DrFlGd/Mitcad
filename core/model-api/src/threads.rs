@@ -12,7 +12,7 @@ use super::ApiError;
 use mitcad_model::Document;
 use mitcad_model::FeatureStatus;
 use mitcad_model::features::hole::hole_face;
-use mitcad_model::features::thread::{DEFAULT_CHAMFER_ANGLE, default_chamfer_diameter};
+use mitcad_model::features::thread::{CustomSize, DEFAULT_CHAMFER_ANGLE, default_chamfer_diameter};
 use mitcad_model::features::thread_table;
 use mitcad_model::features::{
     FeatureDef, FeatureEntry, ThreadData, ThreadEnd, ThreadSize, ThreadStandard,
@@ -30,6 +30,11 @@ type Part = Option<(f64, f64, bool)>;
 struct ThreadOf<'a> {
     entry: &'a FeatureEntry,
     size: ThreadSize,
+    /// The size's dimensions: the table's, or a custom thread's of its
+    /// parameters' values (mitcad#893); None when there are none.
+    data: Option<ThreadData>,
+    /// The number of starts (mitcad#893).
+    starts: u32,
     modeled: bool,
     part: Part,
     /// The end chamfers asked for (mitcad#304): the angle and the diameter
@@ -49,13 +54,38 @@ struct ThreadOf<'a> {
 /// extension trait (mitcad#777): the api can then live in a crate above
 /// the model.
 pub(super) trait ThreadsOps<K: Kernel> {
-    fn threads_json(&self) -> Value;
+    fn threads_json(&self) -> Value {
+        self.threads_json_of(false)
+    }
+
+    /// The `threads` query; with `cosmetic`, only the threads a view draws
+    /// (cosmetic ones): a modelled thread is in the geometry, and measuring
+    /// its face (on the body before it, too) is what made the query cost
+    /// the window 0.3-0.6 s each time it showed a design with modelled
+    /// threads (mitcad#878).
+    fn threads_json_of(&self, cosmetic: bool) -> Value;
 }
 
 impl<K: Kernel> ThreadsOps<K> for Document<K> {
-    fn threads_json(&self) -> Value {
+    fn threads_json_of(&self, cosmetic: bool) -> Value {
         let params = self.parameters();
         let value = |id: Option<ParamId>| id.and_then(|id| params.value(id));
+        // A size's dimensions and starts: a custom thread's of its values,
+        // else the table's; the starts given, else the designation's
+        // (mitcad#893).
+        let sized = |size: &ThreadSize, custom: Option<&CustomSize>, starts: Option<ParamId>| {
+            let data = match custom {
+                Some(c) => value(Some(c.major))
+                    .zip(value(Some(c.pitch)))
+                    .and_then(|(major, pitch)| ThreadData::custom(major, pitch).ok()),
+                None => size.data().ok(),
+            };
+            let starts = value(starts)
+                .map(|n| n.round().max(1.0) as u32)
+                .or(data.as_ref().map(|d| d.starts))
+                .unwrap_or(1);
+            (data, starts)
+        };
         let mut threads = Vec::new();
         for entry in self.features() {
             if self.status(entry.uid) != Some(&FeatureStatus::Ok) {
@@ -63,6 +93,9 @@ impl<K: Kernel> ThreadsOps<K> for Document<K> {
             }
             match &entry.def {
                 FeatureDef::Thread(def) => {
+                    if cosmetic && def.modeled {
+                        continue;
+                    }
                     let part = value(def.length).map(|length| {
                         (
                             length,
@@ -80,9 +113,12 @@ impl<K: Kernel> ThreadsOps<K> for Document<K> {
                         .diameters
                         .as_ref()
                         .and_then(|d| Some((value(Some(d.major))?, value(Some(d.minor))?)));
+                    let (data, starts) = sized(&def.thread, def.custom.as_ref(), def.starts);
                     let of = ThreadOf {
                         entry,
                         size: def.thread.clone(),
+                        data,
+                        starts,
                         modeled: def.modeled,
                         part,
                         chamfer,
@@ -95,16 +131,21 @@ impl<K: Kernel> ThreadsOps<K> for Document<K> {
                     }
                 }
                 FeatureDef::Hole(def) => {
-                    let Some(thread) = &def.thread else {
+                    let Some(thread) = def.thread.as_ref().filter(|t| !(cosmetic && t.modeled))
+                    else {
                         continue;
                     };
                     // Measured from the hole's start: the low end of the wall's
                     // axis, which points into the material.
                     let part = value(thread.length)
                         .map(|length| (length, value(thread.offset).unwrap_or(0.0), false));
+                    let size = thread.size();
+                    let (data, starts) = sized(&size, thread.custom.as_ref(), thread.starts);
                     let of = ThreadOf {
                         entry,
-                        size: thread.size(),
+                        size,
+                        data,
+                        starts,
                         modeled: thread.modeled,
                         part,
                         chamfer: None,
@@ -130,6 +171,8 @@ impl<K: Kernel> ThreadsOps<K> for Document<K> {
                     let of = ThreadOf {
                         entry,
                         size: thread.clone(),
+                        data: thread.data().ok(),
+                        starts: 1,
                         modeled: false,
                         part: None,
                         chamfer: None,
@@ -159,9 +202,12 @@ impl<K: Kernel> ThreadsOps<K> for Document<K> {
                         }
                     }
                     for (size, face) in faces {
+                        let data = size.data().ok();
                         let of = ThreadOf {
                             entry,
                             size,
+                            data,
+                            starts: 1,
                             modeled: false,
                             part: None,
                             chamfer: None,
@@ -207,7 +253,7 @@ impl<K: Kernel> ThreadsLocal<K> for Document<K> {
         let kernel = self.kernel();
         let entry = of.entry;
         let size = &of.size;
-        let data = size.data().ok()?;
+        let data = of.data.clone()?;
         // The face on the body at the marker. It shows where the thread
         // runs (less the cones of its end chamfers) when pieces of it stay
         // between the grooves: a cosmetic thread's face, or a modelled
@@ -258,6 +304,11 @@ impl<K: Kernel> ThreadsLocal<K> for Document<K> {
         // A taper pipe thread's taper on the diameter (mitcad#733).
         if let Some(taper) = data.taper.filter(|_| of.tapers) {
             thread["taper"] = json!(taper.per_length);
+        }
+        // A multi-start thread's starts and lead (mitcad#893).
+        if of.starts > 1 {
+            thread["starts"] = json!(of.starts);
+            thread["lead"] = json!(data.pitch * f64::from(of.starts));
         }
         if let Some(cylinder) = cylinder {
             // The cones of end chamfers take `low` and `high` off the face's
@@ -357,11 +408,15 @@ impl<K: Kernel> ThreadsLocal<K> for Document<K> {
 }
 
 /// A modelled thread's crest and root diameters on a face (internal or
-/// external): the size's major and minor diameters or the class's given
+/// external): the size's major and minor diameters (a trapezoidal thread's
+/// with its crest clearance, `ThreadData::profile`) or the class's given
 /// ones, moved by the radial clearance.
 fn profile_diameters(of: &ThreadOf<'_>, data: &ThreadData, internal: bool) -> (f64, f64) {
     let (diameters, radial) = of.profile;
-    let (major, minor) = diameters.unwrap_or((data.major, data.minor));
+    let (major, minor) = diameters.unwrap_or_else(|| {
+        let (major, minor, _) = data.profile(internal);
+        (major, minor)
+    });
     if internal {
         (minor + 2.0 * radial, major + 2.0 * radial)
     } else {
@@ -400,7 +455,7 @@ fn derived(entry: &FeatureEntry, role: &str, face: &FaceName) -> FaceName {
 /// Thread panels, every standard (or the one asked for), ISO metric first
 /// and the default.
 pub(super) fn thread_sizes_json(standard: Option<ThreadStandard>) -> Value {
-    let standards: Vec<Value> = ThreadStandard::ALL
+    let mut standards: Vec<Value> = ThreadStandard::ALL
         .into_iter()
         .filter(|s| standard.is_none_or(|wanted| wanted == *s))
         .map(|s| {
@@ -434,6 +489,22 @@ pub(super) fn thread_sizes_json(standard: Option<ThreadStandard>) -> Value {
             })
         })
         .collect();
+    // A custom thread (mitcad#893) last: no sizes and no classes, its major
+    // diameter and pitch given.
+    if standard.is_none_or(|wanted| wanted == ThreadStandard::Custom) {
+        let custom = ThreadStandard::Custom;
+        standards.push(json!({
+            "standard": custom,
+            "title": custom.title(),
+            "default": false,
+            "custom": true,
+            "sizes": [],
+            "classes_external": [],
+            "classes_internal": [],
+            "default_class_external": custom.default_class(false),
+            "default_class_internal": custom.default_class(true),
+        }));
+    }
     json!({"standards": standards})
 }
 
@@ -444,13 +515,28 @@ pub(super) fn thread_sizes_json(standard: Option<ThreadStandard>) -> Value {
 pub(crate) struct ThreadChamferQuery {
     #[serde(default)]
     standard: ThreadStandard,
+    #[serde(default)]
     designation: String,
     #[serde(default)]
     internal: bool,
+    /// A custom thread's major diameter and pitch (mitcad#893).
+    #[serde(default)]
+    major: Option<f64>,
+    #[serde(default)]
+    pitch: Option<f64>,
 }
 
 pub(super) fn thread_chamfer_json(query: &ThreadChamferQuery) -> Result<Value, ApiError> {
-    let data = thread_table::lookup(query.standard, &query.designation).map_err(ApiError)?;
+    let data = if query.standard == ThreadStandard::Custom {
+        let (Some(major), Some(pitch)) = (query.major, query.pitch) else {
+            return Err(ApiError(
+                "a custom thread's chamfer needs its `major` diameter and `pitch`".to_owned(),
+            ));
+        };
+        ThreadData::custom(major, pitch).map_err(ApiError)?
+    } else {
+        thread_table::lookup(query.standard, &query.designation).map_err(ApiError)?
+    };
     Ok(json!({
         "diameter": default_chamfer_diameter(&data, query.internal, None),
         "angle": DEFAULT_CHAMFER_ANGLE.to_degrees(),

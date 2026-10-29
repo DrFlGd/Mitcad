@@ -133,6 +133,7 @@ impl<K: Kernel> CacheOps<K> for Document<K> {
                 "writes": stats.writes, "write_bytes": stats.write_bytes,
                 "write_ms": stats.write_ns as f64 / 1.0e6, "write_errors": stats.write_errors,
                 "deferred": stats.deferred, "unpacked": stats.unpacked,
+                "unpack_bytes": stats.unpack_bytes,
                 "unpack_ms": stats.unpack_ns as f64 / 1.0e6,
                 "display_meshes": {
                     "lookups": stats.mesh_lookups, "hits": stats.mesh_hits,

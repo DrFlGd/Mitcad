@@ -17,6 +17,8 @@
   {"expect": {"query": {"query": "threads"}, "result": [{"feature": "F3", "face": "F3:hole0.wall", "designation": "M6x1",
     "class": "6H", "modeled": true, "internal": true, "major_diameter": 6, "minor_diameter": 4.917468245269452,
     "radius": 2.458734122634726, "start": [15, 15, 12], "end": [15, 15, 0]}]}},
+  {"comment": "Only the cosmetic threads, which the view draws (mitcad#878): none, the hole's is modelled."},
+  {"expect": {"query": {"query": "threads", "cosmetic": true}, "result": []}},
 
   {"comment": "A radial clearance of 0.1 puts the crest off the wall (D1 + 0.2), so no piece of the wall is left, and the hole made the wall in the same step: the thread is listed just the same, on the wall as the hole measured it before cutting the thread."},
   {"cmd": "edit_feature", "uid": "F3", "def": {"type": "hole",

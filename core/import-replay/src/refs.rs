@@ -1656,7 +1656,8 @@ pub(crate) fn compare_bodies<K: Kernel>(
     // The boolean differences are slow on large bodies: the first bodies
     // of moderate size only, for a minute at most, the others by volume.
     let mut compared = 0;
-    let started = std::time::Instant::now();
+    // (On the import's clock, mitcad#874.)
+    let started = crate::now();
     for ((body, sig), pair) in finals.iter().zip(pairs) {
         tick();
         let file = body.name.clone().unwrap_or_else(|| body.source.clone());
@@ -1684,7 +1685,7 @@ pub(crate) fn compare_bodies<K: Kernel>(
             // coincident ones may never return (a corpus design: 192
             // against 209 faces, the volumes 7e-5 apart).
             let identical = mine.distance(sig) <= 1e-4;
-            let in_time = started.elapsed().as_secs_f64() < COMPARE_SECONDS;
+            let in_time = crate::since(started).as_secs_f64() < COMPARE_SECONDS;
             if compare
                 && !identical
                 && in_time
@@ -1697,7 +1698,7 @@ pub(crate) fn compare_bodies<K: Kernel>(
                 // minute: one boolean of nearly coincident bodies alone can
                 // take many minutes. The deviations come first (about a
                 // second); the booleans get the rest of the time.
-                let left = COMPARE_SECONDS - started.elapsed().as_secs_f64();
+                let left = COMPARE_SECONDS - crate::since(started).as_secs_f64();
                 let options = CompareOptions {
                     samples: 600,
                     seconds: Some(left.clamp(1.0, BODY_COMPARE_SECONDS)),

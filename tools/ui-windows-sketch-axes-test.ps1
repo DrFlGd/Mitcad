@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/framework/ModelShapes.cpp
 # check-all sources: core/sketch core/model-api/src/sketch.rs core/solver tools/cli
+# check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp
 # Input-driven Windows UI test of the sketch's axes and origin as picks of
 # Sketch Dimension and the constraint tools (mitcad#500) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), as
@@ -16,6 +17,12 @@
 #      the y axis made, p5 on it (5 DOF); undo takes both back, redo makes
 #      them again.
 #   5. The saved design: the axes' lines, the values, p5 at x = 0.
+#   6. Mirror about the y axis (mitcad#876; Shift+F6 in the test's
+#      settings): Sketch2 has a free point at (-8, 5) and a free circle
+#      about (10, 12) radius 3. The circle selected, Mirror opens with
+#      Mirror Line active; a click on the y axis picks it, the preview and
+#      OK mirror the circle to (-10, 12), the y axis made in the same step;
+#      the saved sketch has the copy symmetric about the axis.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-sketch-axes-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -25,9 +32,9 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-# Coincident has no default shortcut (the command search's popup closes at
-# once in session 0).
-Ui-Init $App $Out $QtBin @{ 'sketch.constraint.coincident' = 'Shift+F5' } -StepPause 0
+# Coincident and Mirror have no default shortcut (the command search's
+# popup closes at once in session 0).
+Ui-Init $App $Out $QtBin @{ 'sketch.constraint.coincident' = 'Shift+F5'; 'sketch.mirror' = 'Shift+F6' } -StepPause 0
 $cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
   ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
@@ -41,7 +48,10 @@ Set-Content -Encoding ascii $script @'
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_point", "sketch": "F1", "at": [20, 12]},
   {"cmd": "sketch.add_line", "sketch": "F1", "start": [40, 5], "end": [70, 20]},
-  {"cmd": "sketch.add_point", "sketch": "F1", "at": [-8, 15]}
+  {"cmd": "sketch.add_point", "sketch": "F1", "at": [-8, 15]},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_point", "sketch": "F2", "at": [-8, 5]},
+  {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [10, 12], "radius": 3}
 ]
 '@
 $made = & $cli run $script --save $design
@@ -152,5 +162,55 @@ Set-Content -Encoding ascii $check @'
 $checked = & $cli run $check --open $design
 if ($LASTEXITCODE -ne 0) { Ui-Fail "the saved axes, dimensions and constraint: $($checked -join ' / ')" }
 Write-Host 'ok   the axes, dimensions and constraint saved'
+
+Write-Host '--- 5. Mirror a circle about the y axis (mitcad#876)'
+Ui-Mark
+Ui-Step 'edit Sketch2 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch2' }
+Ui-ExpectNew 'Editing sketch F2 (Sketch2)' 'Sketch2 is edited' 30
+Ui-ExpectNew 'Sketch Sketch2: 5 DOF' 'a free point and a free circle'
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Start-Sleep -Milliseconds 800
+Ui-Step 'zoom out to show the axes'      { Ui-ZoomOut 2 }
+Ui-Mark
+Ui-Step 'select the circle'              { Ui-SketchClick 10 15 }
+Ui-ExpectNew 'Selected: 1 sketch curve' 'the circle selected'
+Ui-Mark
+Ui-Step 'mirror (Shift+F6)'              { Ui-Key 'shift+F6'; Ui-Sync }
+Ui-Step 'pick the y axis'                { Ui-SketchClick 0 18 }
+Ui-ExpectNew 'Sketch axis picked for the command: y_axis (y axis)' 'the y axis picked as the mirror line'
+Ui-ExpectNew 'Mirror Mirror Line: 1 sketch curve [sketch curve y_axis of F2]' 'Mirror Line holds the y axis'
+Ui-ExpectNew 'Preview Mirror: ok' 'the mirror previewed'
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Mirrored 1 object(s) about the y axis' 'the circle mirrored about the y axis'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'Sketch2 finished'
+Ui-Mark
+Ui-Step 'save (Ctrl+S)'                  { Ui-Key 'ctrl+s' }
+Ui-ExpectNew 'Saved ' 'saved'
+# The point, the circle's centre and the circle, then what the mirror
+# made in its step: the origin point, the y axis's far end and line, the
+# copy's centre and the copy.
+$checkMirror = Join-Path $work 'check-mirror.json'
+Set-Content -Encoding ascii $checkMirror @'
+[
+  {"expect": {"sketch": "Sketch2", "dof": 5}},
+  {"expect": {"query": {"query": "sketch", "uid": "F2"}, "result": {
+    "entities": [
+      {"id": "p1", "at": [-8, 5]},
+      {"id": "p3", "at": [10, 12]},
+      {"id": "c2", "type": "circle", "center": "p3", "radius": 3},
+      {"id": "p4", "at": [0, 0], "fixed": true},
+      {"id": "p6", "axis": "y", "fixed": true},
+      {"id": "c5", "type": "line", "start": "p4", "end": "p6", "axis": "y", "construction": true, "fixed": true},
+      {"id": "p8", "at": [-10, 12]},
+      {"id": "c7", "type": "circle", "center": "p8", "radius": 3}],
+    "constraints": [{"type": "symmetric", "a": "c2", "b": "c7", "axis": "c5"}]}}}
+]
+'@
+$mirrored = & $cli run $checkMirror --open $design
+if ($LASTEXITCODE -ne 0) { Ui-Fail "the saved mirror about the y axis: $($mirrored -join ' / ')" }
+Write-Host 'ok   the copy saved symmetric about the y axis'
 
 Ui-Finish 'UI Windows sketch axes test'

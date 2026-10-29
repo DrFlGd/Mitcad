@@ -319,8 +319,9 @@ The fields of the block:
 - `role`: `profile`, `connector`, `fastener`, `panel`, `linear` or
   `cap`. Every role but `fastener` has `frames`.
 - `system`: `type` (`I` or `B`), `slot` (the slot width in mm: 5, 6, 8,
-  10) and `grid` (the series: 20, 30, 40, 45 and others). A profile has
-  `system`. A connector, a nut or a cap lists the systems that it fits
+  10) and `grid` (the series: 20, 30, 40, 45 and others). A profile with
+  slot frames has `system`. A profile without slots (a steel tube,
+  mitcad#873) has no `system` and no `slot`. A connector, a nut or a cap lists the systems that it fits
   in `systems`. `systems` is an array of the same objects. A system
   without `grid` fits every series of its type and slot.
 - `length`: for cut-to-length components (profiles, rails, shafts, screws,
@@ -882,13 +883,30 @@ that MitCad offers. It is kept in a repository of its own
   - Deck boards with rounded edges, smooth or grooved (`decking`)
 
   Each is one component with its sizes as rows.
+- The steel tubes (mitcad#873). They are MitCad's own, in the sizes of
+  the standards, and name no supplier:
+  - Round tubes to EN 10219-2 (outside diameters of EN 10220 series 1),
+    21.3x2 to 323.9x16
+  - Square tubes to EN 10219-2, 20x20x2 to 300x300x16
+  - Square furniture tubes to EN 10305-5 Table 6, 15x15x1 to 100x100x4
+  - Rectangular tubes to EN 10219-2, 40x20x2 to 400x300x16 (mitcad#892)
+  - Rectangular furniture tubes to EN 10305-5 Table 6, 20x10x1 to
+    120x60x4 (mitcad#892)
+  - Round stainless steel tubes in the sizes of EN ISO 1127 Table 3
+    (EN 10216-5 seamless, EN 10217-7 welded), 6x1 to 323.9x12.5, at the
+    standard's conventional density 7970 kg/m³ (mitcad#892)
+
+  Each is one component with its outside size and wall thickness as rows.
+  The section is exact, with the standard's corner radii. Thus a row's
+  mass per metre is the standard's. The Build tab cuts them to length as
+  profiles.
 - The base library of materials and print profiles (mitcad#640,
   [Materials and print profiles](#materials-and-print-profiles)): the
   generic filaments PLA, PETG, ABS, ASA, TPU and PA, the common Bambu Lab
   and QIDI printers with a 0.4 mm nozzle, and four process profiles for
   that nozzle.
 
-Its categories are those of both kinds of component, in six main groups
+Its categories are those of both kinds of component, in seven main groups
 ([Groups](#groups)), in this order:
 
 - **Wood**: sawn, planed and dimensioned timber, tongue and groove,
@@ -897,6 +915,7 @@ Its categories are those of both kinds of component, in six main groups
 - **Slot profile**: profiles, connectors, mounting plates, panels,
   caps, covers, tubes and spacers, accessories, and the nuts and
   screws made for the slot (`slot-nuts`, `slot-screws`)
+- **Steel**: the steel tubes (`steel-tubes`, `Steel/Tubes`)
 - **Motion**: the linear parts (rails, carriages, shafts, lead screws
   and threaded rods, belts, gears), ball bearings and motors
 - **General fasteners**: the ISO screws, nuts and washers (`screws`,
@@ -928,7 +947,7 @@ Three generators make the library with `mitcad-cli`:
 
 ```
 tools/libraries/make-parts-library.py --cli <mitcad-cli> --source <folder of the supplier's files>
-    --out <clone of the parts repository> [--groups <folder>] [--version 2.3.0] [--work <folder>]
+    --out <clone of the parts repository> [--groups <folder>] [--version 2.7.0] [--work <folder>]
     [--render-worker <mitcad-render>] [--no-render] [--rerender] [--commit]
 tools/libraries/make-fastener-library.py --cli <mitcad-cli> --out <folder> [--sizes M3,M5]
     [--standards iso4762,iso4032] [--version 1.0.0] [--render-worker <mitcad-render>] [--no-render]
@@ -945,7 +964,7 @@ tools/libraries/library_previews.py   the fasteners' studio and finishes (both g
   `LICENSE`, `README.md` and `SOURCES.md`. Then it checks the folder.
   `--out` is a clone of the components repository, so that its versions
   stay. `--commit` records the result on top of them and tags it. The
-  default tag is `v2.3.0`, the next version to publish.
+  default tag is `v2.7.0`, the next version to publish.
 - `make-fastener-library.py` builds the fasteners from the standards'
   dimension tables. Each fastener has its finish as its appearance and
   a rendered preview ([Previews](#previews)).
@@ -1255,8 +1274,34 @@ The [timber components](#timber-components)' shapes:
   `hole_b_<n>` (into b). A frame's origin can also name a parameter in
   its x or y, when its z is along X or Y.
 
-**`sizes`** (instead of `rows`, for a `board`, a `fastener` or a
-`sheet`) makes the rows from a compact table:
+The steel tubes' shapes (mitcad#873). Each size names a parameter of the
+design, and the rows set them:
+
+- A `round_tube` (`diameter`, `thickness`, `length`) is a circle of the
+  diameter on XY, extruded by the length along +Z. Its bore, of the
+  diameter less twice the thickness, is cut along all of it. Its frames
+  are `end_a`, `end_b` and `axis` (kind `shaft`, on the Z axis).
+- A `square_tube` (`size`, `thickness`, `outer_radius`, `inner_radius`,
+  `length`) is a square of the size centred on XY, its corners rounded by
+  the outer radius, extruded by the length along +Z. Its bore is a square
+  of the size less twice the thickness, its corners rounded by the inner
+  radius, cut along all of it. An inner radius of 0 is a sharp corner.
+  When some rows have sharp corners and others rounded ones, the design
+  has both bores. A condition of the inner radius suppresses the one that
+  a row does not use ([Bindings](configurations.md#bindings-appearance-material-suppression-visibility)).
+  Its frames are `end_a`, `end_b` and the four face frames, on planes
+  offset by half the size. Thus they follow a row.
+- A `rect_tube` (`width`, `height`, `thickness`, `outer_radius`,
+  `inner_radius`, `length`; mitcad#892) is a `square_tube` of the width
+  along X and the height along Y. Its face frames are offset by half the
+  width (`face_xp`, `face_xn`) and half the height (`face_yp`, `face_yn`).
+- The section's points are dimensioned from a fixed point at the origin,
+  as a profiled board's are. The generator checks the design's volume
+  against the exact area of the section in its default row. With both
+  bores, it also checks a row of the other kind of corner.
+
+**`sizes`** (instead of `rows`, for a `board`, a `fastener`, a `sheet`
+or a tube) makes the rows from a compact table:
 
 - A board's
   `{"species": {name: density}, "species_default", "resawn": 2, "tolerance": {"thickness": [[up_to, minus, plus], …], "width": …}, "rows": [{"thickness", "widths": [...], "species", "availability", "resawn": true}]}`
@@ -1283,6 +1328,29 @@ The [timber components](#timber-components)' shapes:
   values are D, L, DK and K, and `wood.diameter` and `wood.length`.
 - A sheet's `{"rows": [{"thickness", "availability"}]}` makes a row of
   each thickness (T).
+- A round tube's `{"rows": [{"diameter", "thicknesses": [...]}]}` makes a
+  row `<D>x<T>` for each wall thickness. The options are Diameter and
+  Thickness.
+- A square tube's
+  `{"radii": [[up_to, outer, inner], …], "tolerance": {"thickness": [[up_to, plus_minus, factor], …]}, "rows": [{"size", "thicknesses": [...], "tolerance"}]}`
+  makes a row `<B>x<B>x<T>` for each wall thickness. The options are Size
+  and Thickness. The corner radii are the first rule of `radii` whose
+  `up_to` is the thickness or more, or null. `outer` and `inner` are
+  factors of the thickness: `[[6, 2.0, 1.0], [10, 2.5, 1.5], [null, 3.0, 2.0]]`
+  for EN 10219-2. An inner factor of 0 makes a sharp corner. The
+  thickness tolerance is plus or minus `plus_minus`, or `factor` times
+  the thickness when that is smaller. A row's `tolerance` is plus or
+  minus that on its size.
+- A rectangular tube's sizes are a square tube's whose rows have
+  `width` and `height` for `size`. They make a row `<W>x<H>x<T>`; the
+  options are Size (`<W>x<H>`) and Thickness. A row's `tolerance` is on
+  both sides.
+- A tube's rows are sorted by size, then by wall. The values are its
+  sizes' parameters (a square tube's radii too). Each row has its own
+  block: `section`, `mass_per_metre` (the exact area times the density,
+  which the component or its group file names), `tolerance` and `tube`
+  (`shape`, `thickness`, a square tube's `outer_radius` and
+  `inner_radius`, and `area` in mm²).
 
 A row's `build`, as `sizes` makes it or as written, is the row's own
 block: the manifest's `build.rows`. The component's block takes its default
@@ -1365,6 +1433,8 @@ is the default.
   names only the member (`on`) that they go into.
 - A profiled board's `build.board`: its rows', and without rows, the
   component's.
+- A tube's rows' `section`, `mass_per_metre`, `tolerance` and `tube`,
+  from its `sizes`.
 
 **The designs.** The designs hold their features in the root, as a
 component: no components, occurrences, active component or root policy. Each
@@ -1377,7 +1447,8 @@ left out. Their timelines:
   `Holes at the pitch`.
 - A solid has its base feature and `Placed` (the move, with `place`).
 - A model has its boxes and `Centred`. A rod has its `Rod` and, with a
-  thread, `Thread`.
+  thread, `Thread`. A tube has `Section` and `Tube` (its outside), then
+  `Bore section` and `Bore`, and `Sharp bore section` and `Sharp bore`.
 - Then the joint origins come: `mount:end_a`, `End B plane` and
   `mount:end_b`, then the others in their order. A joint origin that
   follows a parameter comes after its plane (`Plane of <name>`).
@@ -1446,6 +1517,9 @@ MitCad's one library of components. MitCad fetches it when you ask.
   - Slot nuts in their M5 rows and a cover cap
   - A precision shaft with its bearing and support
   - A lead screw with its nut
+  - The steel tubes in the standards' check sizes. Their cut-list masses
+    are within 1 % of the standards'. A square tube goes on another's
+    face.
 - ctest `cli.timber-library` (`tools/cli/timber-library-test.cmake`)
   runs the generator on small timber group files: a board family with a
   re-sawn and a less common size, wood screws, a bracket, a hanger, a
@@ -1460,6 +1534,13 @@ MitCad's one library of components. MitCad fetches it when you ask.
   V-joint, shiplap, feather-edge and a grooved deck board. It checks
   their `board` blocks per row, their volumes, and their `tongue` and
   `groove` frames that follow a row and a changed parameter.
+
+  It also runs on a round, a square and a furniture tube, a rectangular
+  tube and a rectangular furniture tube (mitcad#892). It checks
+  their rows' corner radii, masses per metre and tolerances, and their
+  volumes against the exact areas and the standards' masses. It checks
+  that the furniture tube's rows switch its bores, and that the tubes are
+  among the profiles in the pickers.
 - ctest `build.timber` (`tools/cli/build-timber-test.cmake`, on
   `MITCAD_PROFILES_LIBRARY`) checks every timber part of the generated
   library:

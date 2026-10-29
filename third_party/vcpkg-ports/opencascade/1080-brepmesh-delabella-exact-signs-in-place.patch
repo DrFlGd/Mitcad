@@ -1,0 +1,398 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Delabella's exact signs (patch 1070) without the heap and with fewer
+components where the points are near each other (mitcad#884). The signs
+and so the triangulations are the same; only the time differs.
+
+The case: a perforated plate (a plane face with 1,187 round holes, 172,924
+boundary nodes), whose base triangulation took 1.1 s in Delabella. Of its
+14 million in-circle tests 334,000 (the points of one hole are nearly
+cocircular) reach the exact evaluation, which built every expansion in a
+std::vector: dozens of heap allocations per test, about half of
+Delabella's time.
+The face's triangulation is the same before and after (each triangle's
+nodes compared); Delabella's time on it falls from 1.1 s to 0.49 s.
+
+- Expansions are held in place (Expansion<N>, N the most components the
+  operation can give), with the same operations in the same order as
+  before (grow, sum, scale, multiply, negate, difference).
+- The exact evaluations (orientExact, incircleExactDifferences,
+  incircleExactAny) are not inlined, so that their frames (the expansions
+  in place, tens of kilobytes) are set up only when the filter cannot
+  decide; inlined, every in-circle test set one up.
+- incircleSign: when the six differences of the points are exact in
+  floating point (as between near points), the determinant is evaluated
+  from them directly: (adx^2 + ady^2) bc + (bdx^2 + bdy^2) ca +
+  (cdx^2 + cdy^2) ab, each product exact (Shewchuk's stage B, here exact
+  because no difference is rounded). Otherwise the expansions of the
+  differences as before.
+- The faces made once the hull is no longer flat get only the sign of
+  their normal's z (Face::turn): Triangulate() reads nothing else of them.
+  Their normal's x and y, in long double, are left out.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp b/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp
+--- a/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp
++++ b/src/ModelingAlgorithms/TKMesh/BRepMesh/delabella.cpp
+@@ -41,7 +41,7 @@
+ 
+ #include <algorithm>
+ #include <cmath>
+-#include <vector>
++#include <Standard_Macro.hxx>
+ #include "delabella.pxx" // we just need LOG() macro
+ 
+ // assuming BITS is max(X_BITS,Y_BITS)
+@@ -82,8 +82,6 @@
+ // forever or crashes.
+ namespace
+ {
+-typedef std::vector<double> Expansion;
+-
+ const double THE_EPSILON = 1.1102230246251565e-16; // 2^-53
+ // Shewchuk's error bounds of the floating-point orient2d and incircle,
+ // doubled for the fused multiply-adds a compiler may form.
+@@ -106,114 +104,233 @@
+   y = std::fma(a, b, -x);
+ }
+ 
+-// e + b, both exact, components in increasing magnitude, zeros dropped.
+-Expansion growExpansion(const Expansion& e, double b)
++// An exact value held in place (no heap): at most N components, in
++// increasing magnitude, zeros dropped except a lone zero.
++template <int N>
++struct Expansion
+ {
+-  Expansion h;
+-  h.reserve(e.size() + 1);
+-  double q = b;
+-  for (const double c : e)
++  int    size = 0;
++  double c[N];
++
++  // this + b, in place (as Shewchuk's grow_expansion_zeroelim, whose
++  // output may be its input): the k-th component is written only after
++  // it has been read.
++  void grow(double b)
+   {
+-    double sum = 0.0, err = 0.0;
+-    twoSum(q, c, sum, err);
+-    if (err != 0.0)
++    double q = b;
++    int    h = 0;
++    for (int k = 0; k < size; ++k)
+     {
+-      h.push_back(err);
++      double sum = 0.0, err = 0.0;
++      twoSum(q, c[k], sum, err);
++      if (err != 0.0)
++      {
++        c[h++] = err;
++      }
++      q = sum;
+     }
+-    q = sum;
+-  }
+-  if (q != 0.0 || h.empty())
+-  {
+-    h.push_back(q);
++    if (q != 0.0 || h == 0)
++    {
++      c[h++] = q;
++    }
++    size = h;
+   }
+-  return h;
+-}
++};
+ 
+-Expansion sumExpansions(const Expansion& e, const Expansion& f)
++// e + f.
++template <int M, int N>
++Expansion<M + N> sumExpansions(const Expansion<M>& e, const Expansion<N>& f)
+ {
+-  Expansion h = e;
+-  for (const double c : f)
++  Expansion<M + N> h;
++  h.size = e.size;
++  for (int k = 0; k < e.size; ++k)
++  {
++    h.c[k] = e.c[k];
++  }
++  for (int k = 0; k < f.size; ++k)
+   {
+-    h = growExpansion(h, c);
++    h.grow(f.c[k]);
+   }
+   return h;
+ }
+ 
+ // e * b exactly.
+-Expansion scaleExpansion(const Expansion& e, double b)
++template <int M>
++Expansion<2 * M> scaleExpansion(const Expansion<M>& e, double b)
+ {
+-  Expansion h;
+-  h.reserve(2 * e.size());
+-  double q = 0.0;
+-  for (const double c : e)
++  Expansion<2 * M> h;
++  double           q = 0.0;
++  for (int k = 0; k < e.size; ++k)
+   {
+     double product = 0.0, productErr = 0.0;
+-    twoProduct(c, b, product, productErr);
++    twoProduct(e.c[k], b, product, productErr);
+     double sum = 0.0, err = 0.0;
+     twoSum(q, productErr, sum, err);
+     if (err != 0.0)
+     {
+-      h.push_back(err);
++      h.c[h.size++] = err;
+     }
+     twoSum(product, sum, q, err);
+     if (err != 0.0)
+     {
+-      h.push_back(err);
++      h.c[h.size++] = err;
+     }
+   }
+-  if (q != 0.0 || h.empty())
++  if (q != 0.0 || h.size == 0)
+   {
+-    h.push_back(q);
++    h.c[h.size++] = q;
+   }
+   return h;
+ }
+ 
+-Expansion multiplyExpansions(const Expansion& e, const Expansion& f)
++// e * f exactly: the sum of e scaled by each component of f.
++template <int M, int N>
++Expansion<2 * M * N + 1> multiplyExpansions(const Expansion<M>& e, const Expansion<N>& f)
+ {
+-  Expansion h(1, 0.0);
+-  for (const double c : f)
++  Expansion<2 * M * N + 1> h;
++  h.c[0] = 0.0;
++  h.size = 1;
++  for (int k = 0; k < f.size; ++k)
+   {
+-    h = sumExpansions(h, scaleExpansion(e, c));
++    const Expansion<2 * M> s = scaleExpansion(e, f.c[k]);
++    for (int j = 0; j < s.size; ++j)
++    {
++      h.grow(s.c[j]);
++    }
+   }
+   return h;
+ }
+ 
+-Expansion negateExpansion(Expansion e)
++template <int N>
++Expansion<N> negateExpansion(Expansion<N> e)
+ {
+-  for (double& c : e)
++  for (int k = 0; k < e.size; ++k)
+   {
+-    c = -c;
++    e.c[k] = -e.c[k];
+   }
+   return e;
+ }
+ 
+ // a - b exactly.
+-Expansion difference(double a, double b)
++Expansion<2> difference(double a, double b)
+ {
+   double x = 0.0, y = 0.0;
+   twoSum(a, -b, x, y);
+-  return growExpansion(Expansion(1, y), x);
++  Expansion<2> h;
++  h.c[0] = y;
++  h.size = 1;
++  h.grow(x);
++  return h;
+ }
+ 
+ // The sign of an expansion: that of its largest component, the last one.
+-int expansionSign(const Expansion& e)
++template <int N>
++int expansionSign(const Expansion<N>& e)
+ {
+-  for (size_t k = e.size(); k > 0; --k)
++  for (int k = e.size; k > 0; --k)
+   {
+-    if (e[k - 1] != 0.0)
++    if (e.c[k - 1] != 0.0)
+     {
+-      return e[k - 1] > 0.0 ? 1 : -1;
++      return e.c[k - 1] > 0.0 ? 1 : -1;
+     }
+   }
+   return 0;
+ }
+ 
++// Whether a - b is exact in floating point.
++inline bool exactDifferences(double a, double b)
++{
++  double x = 0.0, y = 0.0;
++  twoSum(a, -b, x, y);
++  return y == 0.0;
++}
++
++// a * b exactly.
++Expansion<2> product(double a, double b)
++{
++  double x = 0.0, y = 0.0;
++  twoProduct(a, b, x, y);
++  Expansion<2> h;
++  h.size = 0;
++  if (y != 0.0)
++  {
++    h.c[h.size++] = y;
++  }
++  if (x != 0.0 || h.size == 0)
++  {
++    h.c[h.size++] = x;
++  }
++  return h;
++}
++
+ // p x q exactly, of differences.
+-Expansion crossExact(const Expansion& px, const Expansion& py, const Expansion& qx, const Expansion& qy)
++Expansion<18> crossExact(const Expansion<2>& px,
++                         const Expansion<2>& py,
++                         const Expansion<2>& qx,
++                         const Expansion<2>& qy)
+ {
+   return sumExpansions(multiplyExpansions(px, qy), negateExpansion(multiplyExpansions(py, qx)));
+ }
+ 
++// The exact signs, kept out of the floating-point filters below (not
++// inlined) so that their frames, the expansions held in place, are set up
++// only when the filter cannot decide.
++Standard_NOINLINE int orientExact(double ax, double ay, double bx, double by, double cx, double cy)
++{
++  return expansionSign(
++    crossExact(difference(bx, ax), difference(by, ay), difference(cx, ax), difference(cy, ay)));
++}
++
++// The determinant of incircleSign when the rounded differences are exact
++// (as they are between near points, nearly cocircular ones among them):
++// (adx^2 + ady^2) bc + (bdx^2 + bdy^2) ca + (cdx^2 + cdy^2) ab of them,
++// each term an exact product, far fewer components than from the
++// differences' expansions.
++Standard_NOINLINE int incircleExactDifferences(double adx,
++                                               double ady,
++                                               double bdx,
++                                               double bdy,
++                                               double cdx,
++                                               double cdy)
++{
++  const Expansion<4>  bc = sumExpansions(product(bdx, cdy), product(-cdx, bdy));
++  const Expansion<4>  ca = sumExpansions(product(cdx, ady), product(-adx, cdy));
++  const Expansion<4>  ab = sumExpansions(product(adx, bdy), product(-bdx, ady));
++  const Expansion<32> adet =
++    sumExpansions(scaleExpansion(scaleExpansion(bc, adx), adx), scaleExpansion(scaleExpansion(bc, ady), ady));
++  const Expansion<32> bdet =
++    sumExpansions(scaleExpansion(scaleExpansion(ca, bdx), bdx), scaleExpansion(scaleExpansion(ca, bdy), bdy));
++  const Expansion<32> cdet =
++    sumExpansions(scaleExpansion(scaleExpansion(ab, cdx), cdx), scaleExpansion(scaleExpansion(ab, cdy), cdy));
++  return expansionSign(sumExpansions(sumExpansions(adet, bdet), cdet));
++}
++
++// The determinant of incircleSign from any points, the differences
++// exact too.
++Standard_NOINLINE int incircleExactAny(double ax,
++                                       double ay,
++                                       double bx,
++                                       double by,
++                                       double cx,
++                                       double cy,
++                                       double dx,
++                                       double dy)
++{
++  const Expansion<2> eadx = difference(ax, dx), eady = difference(ay, dy);
++  const Expansion<2> ebdx = difference(bx, dx), ebdy = difference(by, dy);
++  const Expansion<2> ecdx = difference(cx, dx), ecdy = difference(cy, dy);
++  const auto ealift =
++    sumExpansions(multiplyExpansions(eadx, eadx), multiplyExpansions(eady, eady));
++  const auto eblift =
++    sumExpansions(multiplyExpansions(ebdx, ebdx), multiplyExpansions(ebdy, ebdy));
++  const auto eclift =
++    sumExpansions(multiplyExpansions(ecdx, ecdx), multiplyExpansions(ecdy, ecdy));
++  const auto a = multiplyExpansions(ealift, crossExact(ebdx, ebdy, ecdx, ecdy));
++  const auto b = multiplyExpansions(eblift, crossExact(ecdx, ecdy, eadx, eady));
++  const auto c = multiplyExpansions(eclift, crossExact(eadx, eady, ebdx, ebdy));
++  return expansionSign(sumExpansions(sumExpansions(a, b), c));
++}
++
+ // The sign of (b - a) x (c - a): positive when a, b, c turn
+ // counterclockwise.
+ int orientSign(double ax, double ay, double bx, double by, double cx, double cy)
+@@ -230,8 +347,7 @@
+   {
+     return -1;
+   }
+-  return expansionSign(
+-    crossExact(difference(bx, ax), difference(by, ay), difference(cx, ax), difference(cy, ay)));
++  return orientExact(ax, ay, bx, by, cx, cy);
+ }
+ 
+ // The sign of the determinant of the rows (x, y, x^2 + y^2) of a - d,
+@@ -273,19 +389,12 @@
+     return -1;
+   }
+ 
+-  const Expansion eadx = difference(ax, dx), eady = difference(ay, dy);
+-  const Expansion ebdx = difference(bx, dx), ebdy = difference(by, dy);
+-  const Expansion ecdx = difference(cx, dx), ecdy = difference(cy, dy);
+-  const Expansion ealift =
+-    sumExpansions(multiplyExpansions(eadx, eadx), multiplyExpansions(eady, eady));
+-  const Expansion eblift =
+-    sumExpansions(multiplyExpansions(ebdx, ebdx), multiplyExpansions(ebdy, ebdy));
+-  const Expansion eclift =
+-    sumExpansions(multiplyExpansions(ecdx, ecdx), multiplyExpansions(ecdy, ecdy));
+-  const Expansion a = multiplyExpansions(ealift, crossExact(ebdx, ebdy, ecdx, ecdy));
+-  const Expansion b = multiplyExpansions(eblift, crossExact(ecdx, ecdy, eadx, eady));
+-  const Expansion c = multiplyExpansions(eclift, crossExact(eadx, eady, ebdx, ebdy));
+-  return expansionSign(sumExpansions(sumExpansions(a, b), c));
++  if (exactDifferences(ax, dx) && exactDifferences(ay, dy) && exactDifferences(bx, dx)
++      && exactDifferences(by, dy) && exactDifferences(cx, dx) && exactDifferences(cy, dy))
++  {
++    return incircleExactDifferences(adx, ady, bdx, bdy, cdx, cdy);
++  }
++  return incircleExactAny(ax, ay, bx, by, cx, cy, dx, dy);
+ }
+ } // namespace
+ 
+@@ -434,6 +543,18 @@
+       aNorm.z    = (Signed31)orientSign(v[0]->x, v[0]->y, v[1]->x, v[1]->y, v[2]->x, v[2]->y);
+       return aNorm;
+     }
++
++    // The normal's z sign alone (orientSign), all that is read of the faces
++    // made once the hull is no longer flat: Triangulate()'s last pass tells
++    // the lower (Delaunay) faces from the upper ones by it.
++    Norm turn() const
++    {
++      Norm aNorm;
++      aNorm.x = 0;
++      aNorm.y = 0;
++      aNorm.z = (Signed31)orientSign(v[0]->x, v[0]->y, v[1]->x, v[1]->y, v[2]->x, v[2]->y);
++      return aNorm;
++    }
+   };
+ 
+   Vert* vert_alloc;
+@@ -995,7 +1116,7 @@
+               added_last = s;
+               ++added;
+ 
+-              s->n    = s->cross();
++              s->n    = s->turn();
+               s->f[2] = n;
+ 
+               // change neighbour's adjacency from old visible face to cone side

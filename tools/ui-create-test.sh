@@ -21,6 +21,11 @@
 #     suggests M6x1 6H, offers only a hole's classes, and keeps 6H when the
 #     size changes; selected before Thread from the view's context menu it
 #     suggests M6x1 6H too, and the modelled thread is made.
+#   - Custom thread (mitcad#893): Thread Type Custom with a typed major
+#     diameter (10) and pitch (1.5), Starts 2, modelled, its printed-fit
+#     clearances set to 0: the two-start
+#     thread of the M10x1.5 profile, whose volume is the single-start one's
+#     (thread_modeled in f1_thread.json).
 #   - Box, Cylinder, Sphere and Torus placed with a click on XY; New
 #     Component.
 #   - Emboss (mitcad#458): a rectangle wrapped onto a rod's side and
@@ -437,6 +442,42 @@ ui_focus_main
 ui_mark
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Added modeled thread M6x1 6H on 1 face(s)" "M6x1 6H modelled in the 5 mm hole" 60
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+ui_stop_app
+
+echo "=== Custom thread (mitcad#893)"
+# Its profile in every section through the axis is a single-start thread's
+# of the same pitch, so two starts of 10 x 1.5 leave the rod with the
+# modelled M10x1.5's volume (below); the geometry tests check the lead.
+ui_start_app --open "$WORK/rod.mitcad"
+ui_step "fit (F6)"                         ui_key F6
+ui_mark
+ui_step "thread (search)"                  ui_command "Thread"
+ui_step "pick the rod's side"              ui_click_pick "face F2.b0/F2:side(c1)"
+ui_expect_new "Thread Faces: 1 face" "cylinder picked"
+ui_expect_new "Preview Thread: ok" "the suggested size previewed"
+ui_mark
+ui_step "Thread Type: Custom (the last)"   ui_choose "Panel Thread input standard" 8
+ui_expect_new "Thread: Thread Type = Custom" "a custom thread"
+ui_step "major diameter 10"                ui_type_in "Panel Thread input thread_major" "10"
+ui_step "pitch 1.5"                        ui_type_in "Panel Thread input thread_pitch" "1.5"
+ui_mark
+ui_step "Modeled"                          ui_click_logged "Panel Thread input modeled"
+ui_expect_new "Thread: Modeled = on" "modelled"
+ui_step "Starts 2"                         ui_type_in "Panel Thread input starts" "2"
+# A new modelled thread starts with the printed-fit clearances (radial 0.1,
+# flank 0.1 capped at 0.0682 for this pitch: 1198.223 mm3 left); without
+# them it is the plain profile of thread_modeled.
+ui_step "radial clearance 0"               ui_type_in "Panel Thread input radial_clearance" "0"
+ui_step "flank clearance 0"                ui_type_in "Panel Thread input flank_clearance" "0"
+ui_expect_new "Preview Thread: ok" "the two-start thread previewed" 120
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -F "Preview Thread: failed" && ui_fail "the custom thread was refused"
+ui_focus_main
+ui_mark
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Added modeled thread custom 10x1.5, 2 starts on 1 face(s)" "custom 10 x 1.5 on two starts, modelled" 60
+ui_expect_volume "Body Body1 (F2.b0): volume 1570.796 -> \([0-9.]*\) mm3" 1302.830611500115 \
+  "two starts of the M10x1.5 profile: the single-start thread's volume (thread_modeled)" 1e-3
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_stop_app
 

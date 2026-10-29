@@ -378,6 +378,13 @@ pub(super) struct MeasuredPicks {
     pub(super) between: Option<Separation>,
     /// Each pick's plane, axis, line or point in the design's coordinates.
     pub(super) elements: [Option<Element>; 2],
+    /// What an annotation's automatic place looks at (mitcad#894), in the
+    /// design's coordinates: the corners of the bounding boxes of the
+    /// picks' bodies (none for datums), and the unit normals of the planar
+    /// faces at the picks (a planar face picked and the faces it meets,
+    /// the two faces an edge lies between, the faces at a vertex).
+    pub(super) extent: Vec<Vec3>,
+    pub(super) faces: Vec<Vec3>,
 }
 
 /// How many measured picks [`MeasureCache`] keeps at least.
@@ -1107,6 +1114,13 @@ trait AnalysisLocal<K: Kernel> {
         b: Option<&MeasurePick>,
     ) -> Result<MeasuredPicks, ApiError>;
 
+    /// What an annotation of these picks is placed by (mitcad#894,
+    /// [`MeasuredPicks::extent`] and [`MeasuredPicks::faces`]): the corners
+    /// of their bodies' boxes and the normals of the planar faces at them,
+    /// in the design's coordinates. What the kernel cannot give is left
+    /// out.
+    fn pick_surroundings(&self, picks: &[&MeasurePick]) -> (Vec<Vec3>, Vec<Vec3>);
+
     fn plane_of(&self, input: &GeomRef) -> Result<DatumPlane, ApiError>;
 
     /// An occurrence-aware display request receives a design-space plane
@@ -1408,10 +1422,13 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
                 .kernel()
                 .measure(&ra.selection())
                 .map_err(kernel_error(&a_arg.describe()))?;
+            let (extent, faces) = self.pick_surroundings(&[a]);
             return Ok(MeasuredPicks {
                 single: Some(single),
                 between: None,
                 elements: [ra.element, None],
+                extent,
+                faces,
             });
         };
         let rb = self.resolve_selection(&selection_arg(b))?;
@@ -1419,11 +1436,74 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
             .kernel()
             .measure_between(&ra.selection(), &rb.selection())
             .map_err(kernel_error("measure"))?;
+        let (extent, faces) = self.pick_surroundings(&[a, b]);
         Ok(MeasuredPicks {
             single: None,
             between: Some(between),
             elements: [ra.element, rb.element],
+            extent,
+            faces,
         })
+    }
+
+    fn pick_surroundings(&self, picks: &[&MeasurePick]) -> (Vec<Vec3>, Vec<Vec3>) {
+        let kernel = self.kernel();
+        let mut extent = Vec::new();
+        let mut normals: Vec<Vec3> = Vec::new();
+        for pick in picks {
+            let Some(body) = pick.body else {
+                continue;
+            };
+            let Some(local) = self.body_shape(body) else {
+                continue;
+            };
+            let Ok(transform) = self.selection_transform(
+                self.body_component(body),
+                pick.occurrence.as_ref(),
+                &format!("body {body}"),
+            ) else {
+                continue;
+            };
+            // The body's box in its own coordinates, its corners placed.
+            if let Ok(Some(bounds)) = kernel.bounding_box(local) {
+                extent.extend(bounds.corners().map(|c| transform.apply_point(c)));
+            }
+            let mut faces: Vec<FaceName> = Vec::new();
+            if let Some(face) = &pick.face {
+                faces.push(face.clone());
+                // The faces it meets: those its edges lie between.
+                for edge in kernel.edges(local).unwrap_or_default() {
+                    let Some(name) = edge.name.and_then(|n| n.parse::<EdgeName>().ok()) else {
+                        continue;
+                    };
+                    let [first, second] = name.faces();
+                    if first == face && second != face {
+                        faces.push(second.clone());
+                    } else if second == face && first != face {
+                        faces.push(first.clone());
+                    }
+                }
+            }
+            if let Some(edge) = &pick.edge {
+                faces.extend(edge.faces().iter().cloned());
+            }
+            if let Some(vertex) = &pick.vertex {
+                faces.extend(vertex.faces().iter().cloned());
+            }
+            for face in &faces {
+                let Ok(plane) = kernel.face_plane(local, face) else {
+                    continue;
+                };
+                if let Some(normal) = mitcad_vec3::unit(transform.apply_vector(plane.normal))
+                    && !normals
+                        .iter()
+                        .any(|n| (mitcad_vec3::dot(*n, normal).abs() - 1.0).abs() < 1e-12)
+                {
+                    normals.push(normal);
+                }
+            }
+        }
+        (extent, normals)
     }
 
     fn plane_of(&self, input: &GeomRef) -> Result<DatumPlane, ApiError> {

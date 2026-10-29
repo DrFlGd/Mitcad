@@ -1,20 +1,25 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework app/view core/model-api/src tools/cli
+# check-all sources: app/commands app/framework app/view core/model-api/src core/model/src/document core/model/src/file tools/cli
 # check-all sources: app/MainWindowAnnotations.cpp app/MainWindowMeasurements.cpp app/MainWindowVisibility.cpp
 # Edit Annotation's Colour through the real UI (mitcad#764), in the Docked
 # layout, with the Measure panel closed and open. Box:1 (O1) is a 30 x 20 x
 # 10 block moved 60 along X; the root has a 10 x 10 x 15 block. Offset1 is
 # the offset between the top and bottom faces of Box's block in O1 (its
 # picks in an occurrence), Offset2 the same of the root's block; both
-# Orange.
+# stored in the old default orange #d9480f, which the model reads as Auto
+# (mitcad#894: the six rotating defaults were the program's choice).
 #   - Measure closed (the Annotations window from the command search):
-#     Offset1 made Blue and Offset2 #5c940d through Other… (the colour
-#     dialog); the model's annotations, the view and the window show the new
-#     colours at once; Undo and Redo take Offset2's back and again.
+#     Offset1 made Blue (two rows down from Auto) and Offset2 #5c940d
+#     through Other… (the colour dialog); the model's annotations, the view
+#     and the window show the new colours at once; Undo and Redo take
+#     Offset2's back and again.
 #   - Measure open (its panel's Annotations…): Offset1 made Green and
 #     Offset2 #862e9c through Other…; shown at once; kept when the panel
 #     closes; Undo and Redo after it; saved, the design file has them.
+#   - The Annotations window's Text Height… (mitcad#894): Auto (2.5 mm for
+#     these small blocks) offered, 5 mm chosen; saved, the design file has
+#     it.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-annotation-colour-test.sh
@@ -117,7 +122,7 @@ saved_colour() { jq -r --arg n "$1" '(.annotations // .measurements)[] | select(
 
 ui_start_display
 ui_start_app --open "$FILE"
-ui_expect_log "Annotations drawn: Offset1 = 10 (#d9480f) | Offset2 = 15 (#d9480f)" "both drawn in Orange"
+ui_expect_log "Annotations drawn: Offset1 = 10 (auto) | Offset2 = 15 (auto)" "both stored in the old orange, drawn as Auto"
 ui_step "fit (F6)"                         ui_key F6
 
 echo "--- Measure closed"
@@ -125,16 +130,16 @@ ui_mark
 ui_step "Annotations (search)"             ui_command "Annotations"
 ui_expect_new "Annotations window opened: 2 annotation(s)" "the window opened"
 ui_expect_new "Annotations row Offset2 at" "its rows laid out"
-edit_named Offset1 1 "#1971c2" 10 "Offset1 (in O1), Measure closed"
+edit_named Offset1 2 "#1864ab" 10 "Offset1 (in O1), Measure closed"
 edit_other Offset2 "#5c940d" 15 "Offset2 (root), Measure closed"
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
 ui_mark
 ui_step "undo (Ctrl+Z)"                    ui_key ctrl+z
-ui_expect_new "Annotations drawn: Offset1 = 10 (#1971c2) | Offset2 = 15 (#d9480f)" "Undo takes Offset2's colour back"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#1864ab) | Offset2 = 15 (auto)" "Undo takes Offset2's colour back"
 ui_mark
 ui_step "redo (Ctrl+Y)"                    ui_key ctrl+y
-ui_expect_new "Annotations drawn: Offset1 = 10 (#1971c2) | Offset2 = 15 (#5c940d)" "Redo gives it again"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#1864ab) | Offset2 = 15 (#5c940d)" "Redo gives it again"
 
 echo "--- Measure open"
 ui_mark
@@ -146,7 +151,7 @@ ui_expect_new "Annotations window opened: 2 annotation(s)" "the window opened fr
 # Its rows where they were laid out before (logged when they move).
 ui_sync
 # Blue is the second row: Green one down from it.
-edit_named Offset1 1 "#2f9e44" 10 "Offset1 (in O1), Measure open"
+edit_named Offset1 1 "#2b8a3e" 10 "Offset1 (in O1), Measure open"
 edit_other Offset2 "#862e9c" 15 "Offset2 (root), Measure open"
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
@@ -154,29 +159,54 @@ ui_mark
 ui_step "close Measure (Enter)"            ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
 ui_sync
-tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Annotations drawn: " | grep -vqF "Offset1 = 10 (#2f9e44) | Offset2 = 15 (#862e9c)" &&
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Annotations drawn: " | grep -vqF "Offset1 = 10 (#2b8a3e) | Offset2 = 15 (#862e9c)" &&
   ui_fail "closing Measure changed the colours: $(grep "^Annotations drawn: " "$UI_LOG" | tail -1)"
 echo "ok   the colours kept as Measure closed"
 ui_mark
 ui_step "undo (Ctrl+Z)"                    ui_key ctrl+z
 ui_expect_new "Undo: Edit Offset2" "its own undo step"
-ui_expect_new "Annotations drawn: Offset1 = 10 (#2f9e44) | Offset2 = 15 (#5c940d)" "Undo takes Offset2's colour back"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#2b8a3e) | Offset2 = 15 (#5c940d)" "Undo takes Offset2's colour back"
 ui_mark
 ui_step "undo (Ctrl+Z)"                    ui_key ctrl+z
 ui_expect_new "Undo: Edit Offset1" "Offset1's edit its own undo step too"
-ui_expect_new "Annotations drawn: Offset1 = 10 (#1971c2) | Offset2 = 15 (#5c940d)" "and Offset1's"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#1864ab) | Offset2 = 15 (#5c940d)" "and Offset1's"
 ui_mark
 ui_step "redo (Ctrl+Y)"                    ui_key ctrl+y
 ui_step "redo (Ctrl+Y)"                    ui_key ctrl+y
-ui_expect_new "Annotations drawn: Offset1 = 10 (#2f9e44) | Offset2 = 15 (#862e9c)" "Redo gives both again"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#2b8a3e) | Offset2 = 15 (#862e9c)" "Redo gives both again"
 
 echo "--- Saved"
 ui_mark
 ui_step "save (Ctrl+S)"                    ui_key ctrl+s
 ui_expect_new "Saved $FILE" "saved"
-[ "$(saved_colour Offset1)" = "#2f9e44" ] || ui_fail "the file has Offset1 in $(saved_colour Offset1), not #2f9e44"
+[ "$(saved_colour Offset1)" = "#2b8a3e" ] || ui_fail "the file has Offset1 in $(saved_colour Offset1), not #2b8a3e"
 [ "$(saved_colour Offset2)" = "#862e9c" ] || ui_fail "the file has Offset2 in $(saved_colour Offset2), not #862e9c"
 echo "ok   the design file has both new colours"
+
+echo "--- The annotations' text height"
+ui_mark
+ui_step "Annotations (search)"             ui_command "Annotations"
+ui_expect_new "Annotations window opened: 2 annotation(s)" "the window opened"
+wait_enabled "Annotations Text Height"
+ui_focus_dialog '^Annotations$'
+ui_step "Text Height… (Alt+X)"             ui_key alt+x
+ui_expect_new "Annotations Text Height clicked" "Text Height clicked"
+ui_expect_new "Annotation Text Height dialog opened: null (Auto (2.5 mm))" "Auto offered, 2.5 mm for the small blocks"
+ui_focus_dialog '^Annotation Text Height$'
+ui_step "5 mm (Down x3, Enter)"            ui_key Down Down Down Return
+ui_expect_new "Annotation Text Height dialog: 5" "5 mm chosen"
+ui_expect_new 'Annotation command: {"cmd":"set_annotation_text_height","text_height":5}' "sent to the model"
+no_refusal "the height not refused"
+ui_focus_dialog '^Annotations$'
+ui_step "close the window (Escape)"        ui_key Escape
+ui_focus_main
+ui_mark
+ui_step "save (Ctrl+S)"                    ui_key ctrl+s
+ui_expect_new "Saved $FILE" "saved again"
+# A number as the file's other millimetres are written (5.0).
+jq -e '.annotation_text_height == 5' "$FILE" > /dev/null ||
+  ui_fail "the file has the text height $(jq -r '.annotation_text_height' "$FILE"), not 5"
+echo "ok   the design file has the text height"
 
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_finish "UI annotation colour test"

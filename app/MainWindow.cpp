@@ -2370,7 +2370,10 @@ void MainWindow::showThreads(const std::vector<BodyDisplay>& bodies) {
   QJsonArray threads;
   if (threaded) {
     try {
-      threads = queryArray(QStringLiteral("threads"));
+      // Only the cosmetic ones, which the view draws: measuring modelled
+      // threads cost an open 0.3-0.6 s (mitcad#878).
+      threads = query({{QStringLiteral("query"), QStringLiteral("threads")}, {QStringLiteral("cosmetic"), true}})
+                    .toArray();
     } catch (const std::exception&) {
       // Drawn again after the next change.
     }
@@ -2517,6 +2520,18 @@ QJsonValue MainWindow::query(const QJsonObject& request) const {
     m_sketchQueries->insert(uid, value);
   }
   return value;
+}
+
+// While a job computes the model, the unit the window last read with the
+// document's structure (its snapshot): the document is the worker's then
+// (docs/architecture.md, "Background computation"). A value box closed by
+// Enter while a preview computes gives its value the unit (mitcad#888);
+// the read refused would have given millimetres in any design.
+QString MainWindow::lengthUnit() const {
+  if (modelBusy()) {
+    return m_snapshot.lengthUnit;
+  }
+  return CommandContext::lengthUnit();
 }
 
 int MainWindow::undoDepth() const {
@@ -5477,6 +5492,11 @@ bool MainWindow::maybeSave() {
 }
 
 bool MainWindow::isModified() const {
+  // While a job computes the model: as the title last showed it, without
+  // reading the document (mitcad#888).
+  if (modelBusy()) {
+    return isWindowModified();
+  }
   // The model compares its revision with the one marked saved (P8), so no
   // design file is made for it.
   return query({{QStringLiteral("query"), QStringLiteral("document")}})
@@ -5514,6 +5534,44 @@ QString MainWindow::dialogFolder(DialogGroup group) const {
   return dialogStartFolder(group, fileDialogDirectory());
 }
 
+// Where an open's time went (mitcad#878), on one line: "Open part.mitcad:
+// 2221 ms: read 48 ms, recompute 1653 ms (44 restored, 106 evaluated),
+// results stored 0 ms, display meshes 148 ms (4 bodies from the result
+// store, 0 meshed, 0 to store after the open), view 362 ms". The total
+// runs from the open's start to the window refreshed; what the parts leave
+// of it is the job's start, the root's activation and the previous
+// design's edit lock. The display meshes' time holds their store write
+// only when it is made in the job (MITCAD_DISPLAY_MESH_WRITER=0); else the
+// writer's own line says how long storing them took after the open
+// (mitcad#880). Bodies meshed while the recompute went on (mitcad#881)
+// are counted apart, "..., 0 meshed, 20 meshed during the recompute in
+// 9000 ms, 300 ms of it after the recompute, ...": the meshing's time
+// beside the recompute is the first less the second; the second ran beside
+// the open's own meshing, within the display meshes' time.
+static void logOpenTimes(const QString& label, qint64 totalMs, qint64 readMs, double recomputeMs,
+                         const QJsonObject& recomputed, const QJsonObject& persisted, const DisplayMeshing& meshing,
+                         qint64 viewMs) {
+  qInfo().noquote() << QStringLiteral("Open %1: %2 ms: read %3 ms, recompute %4 ms (%5 restored, %6 evaluated), "
+                                      "results stored %7 ms, display meshes %8 ms (%9 bodies from the result "
+                                      "store, %10 meshed, %13 meshed during the recompute in %14 ms, %15 ms of it "
+                                      "after the recompute, %12 to store after the open), view %11 ms")
+                           .arg(label)
+                           .arg(totalMs)
+                           .arg(readMs)
+                           .arg(recomputeMs, 0, 'f', 0)
+                           .arg(std::max(0, recomputed.value(QStringLiteral("restored")).toInt()))
+                           .arg(recomputed.value(QStringLiteral("recomputed")).toInt())
+                           .arg(persisted.value(QStringLiteral("ms")).toDouble(), 0, 'f', 0)
+                           .arg(meshing.milliseconds)
+                           .arg(static_cast<qulonglong>(meshing.restored))
+                           .arg(static_cast<qulonglong>(meshing.bodies))
+                           .arg(viewMs)
+                           .arg(static_cast<qulonglong>(meshing.deferred))
+                           .arg(static_cast<qulonglong>(meshing.during))
+                           .arg(meshing.duringMilliseconds)
+                           .arg(meshing.duringAfterMilliseconds);
+}
+
 bool MainWindow::installDocument(const QString& label, const QString& path, const DocumentMaker& make,
                                  QString& error, const QString& handedOver) {
   std::optional<rust::Box<Document>> made;
@@ -5534,9 +5592,27 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   const QByteArray handOff = handedOver.toUtf8();
   const double minMs = resultStoreMinMs();
   const auto memoryMb = static_cast<std::uint64_t>(CacheSettings::load().memoryMegabytes);
+  // Display meshes stored after the open (mitcad#880) count toward the
+  // store's size too: the writer's thread starts the clean-up.
+  DisplayMeshWrites* const writes = displayMeshWrites();
+  if (writes != nullptr) {
+    writes->setReporter([](const DisplayMeshWriteReport& report) {
+      if (report.stored > 0) {
+        collectResultStoreGarbage();
+      }
+    });
+  }
+  // Where an open's time goes (mitcad#878): the summary line below, and
+  // the first frame after it.
+  QElapsedTimer opening;
+  opening.start();
+  qint64 readMs = 0;
   try {
     const bool done = runJob(label, tr("Opening %1").arg(label), [&](ModelJob& job) {
+      QElapsedTimer reading;
+      reading.start();
       rust::Box<Document> document = make(job);
+      readMs = reading.elapsed();
       // Every design opens with its root active (mitcad#426), whatever the
       // file stores: no undo step, no new revision, so not modified. A new
       // design of a project keeps its Component1 active (mitcad#844), as
@@ -5558,6 +5634,9 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
       document->set_result_store(rustStr(handOff.isEmpty() ? store : handOff), rustStr(buildId),
                                  rustStr(storeLabel));
       document->set_memory_cache_budget(memoryMb);
+      // The bodies no later feature changes are meshed while the
+      // recompute goes on (mitcad#881); stopped, should the open fail.
+      const std::unique_ptr<RecomputeMeshing> during = RecomputeMeshing::start(*document, job);
       {
         const AttachedJob attached(*document, job);
         QElapsedTimer timer;
@@ -5575,8 +5654,10 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
       }
       // The view's meshes, here rather than on the UI thread (mitcad#398):
       // those the result store keeps for the bodies' shapes taken from it,
-      // the others made and kept there (mitcad#858).
-      meshing = meshOpenedForDisplay(*document, job, !store.isEmpty());
+      // the others made and kept there (mitcad#858) after the open, by
+      // the writer's thread (mitcad#880); those meshed during the
+      // recompute first take theirs (mitcad#881).
+      meshing = meshOpenedForDisplay(*document, job, !store.isEmpty(), writes, label, during.get());
       made.emplace(std::move(document));
     });
     if (!done) {
@@ -5646,7 +5727,12 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   // Its first bodies are fitted into the view once (mitcad#467): a new
   // design's first body, not bodies shown again after all were hidden.
   m_viewer->expectFirstBodies();
+  QElapsedTimer showing;
+  showing.start();
   refreshScene();
+  const qint64 viewMs = showing.elapsed();
+  logOpenTimes(label, opening.elapsed(), readMs, milliseconds, recomputed, persisted, meshing, viewMs);
+  m_viewer->logFirstFrame(QStringLiteral("Open %1").arg(label), opening);
   if (newDesign) {
     const DocumentSnapshot::Component* active = m_snapshot.component(m_snapshot.activeComponent);
     qInfo().noquote() << QStringLiteral("Opened the new design with %1 active")

@@ -462,13 +462,16 @@ void FaceNamer::finish() {
     if (faces.size() < 2) {
       continue;
     }
-    std::vector<std::pair<ShapeKey, int>> keyed;
+    // In piece_order, so that rounding noise does not swap pieces lying
+    // symmetrically (mitcad#895).
+    std::vector<TopoDS_Shape> holding;
+    holding.reserve(faces.size());
     for (int face : faces) {
-      keyed.emplace_back(shape_key(m_faces(face + 1)), face);
+      holding.push_back(m_faces(face + 1));
     }
-    std::sort(keyed.begin(), keyed.end());
-    for (std::size_t k = 0; k < keyed.size(); ++k) {
-      NameList& names = m_names[static_cast<std::size_t>(keyed[k].second)];
+    const std::vector<std::size_t> order = piece_order(holding);
+    for (std::size_t k = 0; k < order.size(); ++k) {
+      NameList& names = m_names[static_cast<std::size_t>(faces[order[k]])];
       std::replace(names.begin(), names.end(), name, name + '#' + std::to_string(k));
     }
   }

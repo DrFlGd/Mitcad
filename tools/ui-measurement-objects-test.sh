@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/framework app/browser app/view core/model-api/src tools/cli
+# check-all sources: app/commands app/framework app/browser app/view core/model-api/src core/model/src/document tools/cli
 # check-all sources: app/MainWindowMeasurements.cpp app/MainWindowMeasureHistory.cpp app/MainWindowAnnotations.cpp
 # Measurement objects (mitcad#649), now annotations (mitcad#702), through
 # the real UI, in the Docked layout, on two cylinders of radius 5, 20 high
 # (Body1 about Z through the origin, Body2 through (30, 40)) and a block
 # (Body3):
 #   - Keep in the Measure panel: the two round faces kept as AxisDistance1
-#     (the axes 50 apart), drawn in its plane in the first colour.
+#     (the axes 50 apart), drawn in its plane in Auto (mitcad#894).
 #   - Keep Row in the history: Body1's top rim shown again from its row and
-#     kept as Diameter1 (Ø10), in the second colour.
+#     kept as Diameter1 (Ø10), in Auto too.
 #   - The browser's Annotations folder lists them in one row.
 #   - View > Export Snapshot at 4 x the view with a transparent background:
 #     a PNG of four times the view's width with an alpha channel, the shown
@@ -87,7 +87,7 @@ ui_step "Keep"                             ui_click_logged "Measure Keep"
 ui_expect_new "Measure Keep clicked" "Keep clicked"
 ui_expect_new "Annotation kept: AxisDistance1" "kept as the axes' distance"
 ui_expect_new "Annotations: AxisDistance1 axis_distance" "listed by the model"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50 (#d9480f)" "drawn in its plane in the first colour"
+ui_expect_new "Annotations drawn: AxisDistance1 = 50 (auto)" "drawn in its plane, in Auto"
 ui_expect_new "Annotation label AxisDistance1 at" "its label placed in the view"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
@@ -108,8 +108,8 @@ ui_mark
 ui_step "Keep Row"                         ui_click_logged "Measure history Keep"
 ui_expect_new "Measure history Keep clicked: row 2" "Keep Row clicked"
 ui_expect_new "Annotation kept: Diameter1" "kept as the rim's diameter"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50 (#d9480f) | Diameter1 = Ø10 (#1971c2)" \
-  "both drawn, the second in the second colour"
+ui_expect_new "Annotations drawn: AxisDistance1 = 50 (auto) | Diameter1 = Ø10 (auto)" \
+  "both drawn, in Auto"
 [ -n "$SHOT" ] && ui_capture "$SHOT"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
@@ -147,7 +147,7 @@ grep -q '"annotations"' "$WORK/axes.mitcad" || ui_fail "the design file has no a
 ui_stop_app
 ui_start_app --open "$WORK/axes.mitcad"
 ui_expect_log "Annotations: AxisDistance1 axis_distance | Diameter1 diameter" "both read back"
-ui_expect_log "Annotations drawn: AxisDistance1 = 50 (#d9480f) | Diameter1 = Ø10 (#1971c2)" "and drawn"
+ui_expect_log "Annotations drawn: AxisDistance1 = 50 (auto) | Diameter1 = Ø10 (auto)" "and drawn"
 ui_expect_log "Browser Root/Annotations at" "the browser has the Annotations folder"
 
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"

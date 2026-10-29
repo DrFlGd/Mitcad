@@ -168,6 +168,11 @@ AnnotationsWindow::AnnotationsWindow(QWidget* parent) : QDialog(parent) {
     buttons->addWidget(button);
   }
   buttons->addStretch(1);
+  // The design's texts, not the selected rows' (mitcad#894).
+  m_textHeight = new QPushButton(tr("Te&xt Height…"), this);
+  m_textHeight->setAutoDefault(false);
+  m_textHeight->setToolTip(tr("The height of all the annotations' texts in the design"));
+  buttons->addWidget(m_textHeight);
   auto* close = new QPushButton(tr("Close"), this);
   close->setAutoDefault(false);
   buttons->addWidget(close);
@@ -226,6 +231,12 @@ AnnotationsWindow::AnnotationsWindow(QWidget* parent) : QDialog(parent) {
     qDebug().noquote() << QStringLiteral("Annotations Delete clicked: %1").arg(names.join(QStringLiteral(", ")));
     if (!names.isEmpty() && m_actions.remove) {
       m_actions.remove(names);
+    }
+  });
+  connect(m_textHeight, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Annotations Text Height clicked");
+    if (m_actions.textHeight) {
+      m_actions.textHeight();
     }
   });
   connect(m_showGroup, &QPushButton::clicked, this, [this] { showGroup(true); });
@@ -356,7 +367,8 @@ void AnnotationsWindow::fill() {
     m_table->setItem(row, kValue, valueItem);
     m_table->setItem(row, kTolerance, cell(tolerance));
     m_table->setItem(row, kText, cell(text));
-    QTableWidgetItem* colourItem = cell(colour.name());
+    // Auto (mitcad#894): no colour of its own.
+    QTableWidgetItem* colourItem = cell(colour.isValid() ? colour.name() : tr("Auto"));
     colourItem->setIcon(measurementSwatch(colour));
     m_table->setItem(row, kColour, colourItem);
     m_table->setItem(row, kGroup, cell(ownGroup));
@@ -615,7 +627,7 @@ void AnnotationsWindow::logLayout() {
       {"Show Group", m_showGroup}, {"Hide Group", m_hideGroup}, {"Edit", m_edit},
       {"Colour", m_colour},       {"Group", m_groupButton}, {"Decimals", m_decimals},
       {"Tolerance", m_tolerance}, {"Add Frame", m_addFrame}, {"Show", m_show},
-      {"Hide", m_hide},           {"Delete", m_delete}};
+      {"Hide", m_hide},           {"Delete", m_delete},     {"Text Height", m_textHeight}};
   for (const auto& [name, widget] : places) {
     lines << QStringLiteral("Annotations %1 at %2%3")
                  .arg(QLatin1String(name), at(widget, widget->rect().center()),

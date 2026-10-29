@@ -1,0 +1,77 @@
+{
+  "categories": [{"id": "steel-tubes", "name": "Tubes"}],
+  "density": 7850,
+  "parts": [
+    {
+      "id": "test-chs", "name": "Test round tube", "category": "steel-tubes", "make": "model",
+      "data_source": "sizes of EN 10219-2 for the test",
+      "designation": "CHS {Diameter}x{Thickness} L={L}",
+      "dimensions": {"shape": "round_tube", "diameter": "D", "thickness": "T", "length": "L",
+                     "parameters": {"L": 1000}},
+      "default": "48.3x3.2",
+      "sizes": {"rows": [{"diameter": 114.3, "thicknesses": [5]}, {"diameter": 48.3, "thicknesses": [3.2]}]},
+      "appearance": "steel_satin",
+      "build": {"role": "profile", "material": {"density": 7850},
+                "length": {"parameter": "L", "min": 10, "max": 6000, "default": 1000, "stock": [6000]}}
+    },
+    {
+      "id": "test-shs", "name": "Test square tube", "category": "steel-tubes", "make": "model",
+      "data_source": "sizes of EN 10219-2 for the test",
+      "designation": "SHS {Size}x{Size}x{Thickness} L={L}",
+      "dimensions": {"shape": "square_tube", "size": "B", "thickness": "T", "outer_radius": "RO",
+                     "inner_radius": "RI", "length": "L", "parameters": {"L": 1000}},
+      "default": "40x40x3",
+      "sizes": {"radii": [[6, 2.0, 1.0], [10, 2.5, 1.5], [null, 3.0, 2.0]],
+                "rows": [{"size": 100, "thicknesses": [10]}, {"size": 40, "thicknesses": [3]}]},
+      "appearance": "steel_satin",
+      "build": {"role": "profile", "material": {"density": 7850},
+                "length": {"parameter": "L", "min": 10, "max": 6000, "default": 1000, "stock": [6000]}}
+    },
+    {
+      "id": "test-furniture-tube", "name": "Test furniture tube", "category": "steel-tubes", "make": "model",
+      "data_source": "sizes of EN 10305-5 for the test",
+      "designation": "Square tube {Size}x{Size}x{Thickness} EN 10305-5 L={L}",
+      "dimensions": {"shape": "square_tube", "size": "B", "thickness": "T", "outer_radius": "RO",
+                     "inner_radius": "RI", "length": "L", "parameters": {"L": 1000}},
+      "default": "30x30x1.5",
+      "sizes": {"radii": [[2.5, 0.5, 0], [null, 1.75, 0.75]],
+                "tolerance": {"thickness": [[1.5, 0.15], [null, 0.35, 0.1]]},
+                "rows": [{"size": 30, "thicknesses": [1.5], "tolerance": 0.25},
+                         {"size": 35, "thicknesses": [3], "tolerance": 0.25},
+                         {"size": 40, "thicknesses": [4], "tolerance": 0.3}]},
+      "appearance": "steel_satin",
+      "build": {"role": "profile", "material": {"density": 7850},
+                "length": {"parameter": "L", "min": 10, "max": 6000, "default": 1000, "stock": [2000, 6000]}}
+    },
+    {
+      "id": "test-rhs", "name": "Test rectangular tube", "category": "steel-tubes", "make": "model",
+      "data_source": "sizes of EN 10219-2 for the test",
+      "designation": "RHS {Size}x{Thickness} L={L}",
+      "dimensions": {"shape": "rect_tube", "width": "W", "height": "H", "thickness": "T", "outer_radius": "RO",
+                     "inner_radius": "RI", "length": "L", "parameters": {"L": 1000}},
+      "default": "100x50x4",
+      "sizes": {"radii": [[6, 2.0, 1.0], [10, 2.5, 1.5], [null, 3.0, 2.0]],
+                "rows": [{"width": 200, "height": 100, "thicknesses": [8]},
+                         {"width": 100, "height": 50, "thicknesses": [4]}]},
+      "appearance": "steel_satin",
+      "build": {"role": "profile", "material": {"density": 7850},
+                "length": {"parameter": "L", "min": 10, "max": 6000, "default": 1000, "stock": [6000]}}
+    },
+    {
+      "id": "test-rect-furniture-tube", "name": "Test rectangular furniture tube", "category": "steel-tubes",
+      "make": "model",
+      "data_source": "sizes of EN 10305-5 for the test",
+      "designation": "Rectangular tube {Size}x{Thickness} EN 10305-5 L={L}",
+      "dimensions": {"shape": "rect_tube", "width": "W", "height": "H", "thickness": "T", "outer_radius": "RO",
+                     "inner_radius": "RI", "length": "L", "parameters": {"L": 1000}},
+      "default": "40x20x2",
+      "sizes": {"radii": [[2.5, 0.5, 0], [null, 1.75, 0.75]],
+                "tolerance": {"thickness": [[1.5, 0.15], [null, 0.35, 0.1]]},
+                "rows": [{"width": 40, "height": 20, "thicknesses": [2], "tolerance": 0.3},
+                         {"width": 35, "height": 25, "thicknesses": [3], "tolerance": 0.25}]},
+      "appearance": "steel_satin",
+      "build": {"role": "profile", "material": {"density": 7850},
+                "length": {"parameter": "L", "min": 10, "max": 6000, "default": 1000, "stock": [2000, 6000]}}
+    }
+  ]
+}

@@ -562,6 +562,11 @@ constexpr float kDatumPreviewTransparency = 0.2f;
 constexpr float kExtendedToolTransparency = 0.6f;
 // OCCT's own selection highlight; the selections shown are setHighlights'.
 const Quantity_Color kSelectedColor(0x1f / 255.0, 0x7a / 255.0, 0xff / 255.0, Quantity_TOC_sRGB);
+// In the sketch points' layer (mitcad#897), a selected point's ball is
+// drawn after the plain markers, which keep the default priority, so that
+// it covers its point's marker at the same depth.
+constexpr Graphic3d_DisplayPriority kSketchPointPriority = Graphic3d_DisplayPriority_Normal;
+constexpr Graphic3d_DisplayPriority kSketchPointHighlightPriority = Graphic3d_DisplayPriority_Above;
 
 // One of OCCT's highlight styles (the hover and OCCT's own selection) with
 // the look of setHighlights(): faces see-through in a colour that light
@@ -727,7 +732,9 @@ occ::handle<AIS_Shape> makeBodyObject(const geometry::Shape& named, BodyDisplay:
 // A body's presentation. One with faces OCCT's mesher failed on when the
 // job meshed it for display is never meshed here, on the UI thread
 // (viewMeshes, mitcad#589): its presentation and selection draw the faces
-// that have a triangulation.
+// that have a triangulation. Nor is one a job meshed to the end (or an
+// open gave its stored meshes, drawerMeshes, mitcad#878): its drawers would
+// run the mesher over it again, only to keep every face.
 // Whether a face of the shape has a triangulation (a job meshed it).
 bool hasAnyTriangulation(const TopoDS_Shape& shape) {
   for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
@@ -743,7 +750,7 @@ occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style
                                 const std::vector<BodyDisplay::FaceLook>& faceLooks, VisualStyle visual,
                                 const QColor& paper, bool sectioned) {
   occ::handle<AIS_Shape> body = makeBodyObject(named, style, color, faceLooks, visual, paper, sectioned);
-  if (!viewMeshes(named)) {
+  if (!drawerMeshes(named)) {
     body->Attributes()->SetAutoTriangulation(false);
   }
   return body;
@@ -1153,6 +1160,21 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   sketchHalos.SetName("sketch halos");
   sketchHalos.SetClearDepth(false);
   m_viewer->InsertLayerBefore(m_sketchHaloLayer, sketchHalos, Graphic3d_ZLayerId_Top);
+  // The sketch points and their selection highlights (mitcad#897): just
+  // after the top layer, so that a point's marker is drawn over the
+  // selection and hover highlights of the curve it lies on. In the top
+  // layer with them, at the same depth, the wider highlight line was drawn
+  // after the marker and covered it (a selected spline's fit points could
+  // not be seen). Immediate, as the top layer is: OCCT draws the immediate
+  // layers after all the others, so a layer that is not would come before
+  // the top layer wherever it is in the list. Against the scene's depth as
+  // the top layer, so that the model hides points behind it as before; its
+  // depth writes stay on, so it is one group with the top layer for picking.
+  Graphic3d_ZLayerSettings sketchPoints;
+  sketchPoints.SetName("sketch points");
+  sketchPoints.SetImmediate(true);
+  sketchPoints.SetClearDepth(false);
+  m_viewer->InsertLayerAfter(m_sketchPointLayer, sketchPoints, Graphic3d_ZLayerId_Top);
   // Image references drawn through the bodies (mitcad#782): over the
   // bodies and their edges, without depth, before the sketches, their
   // halos, previews and highlights, so that what is traced stays on top.
@@ -1273,6 +1295,11 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_context->SetPixelTolerance(qRound(kPickTolerance * devicePixelRatioF()));
   m_pickFilter = new Filter(this);
   m_context->AddFilter(m_pickFilter);
+  // The hover of a sketch point, in the points' layer (mitcad#897): in the
+  // top layer, under the plain marker drawn after it, it would not show.
+  // Linked to OCCT's own hover style for the aspects it does not set.
+  m_sketchPointHover = new Prs3d_Drawer();
+  m_sketchPointHover->SetLink(m_context->HighlightStyle(Prs3d_TypeOfHighlight_Dynamic));
   setHoverColor(QColor(0x2f, 0x9b, 0xff));
   // OCCT's own selection is cleared as soon as it is made
   // (OnSelectionChanged); should it show, it looks as setHighlights' does.
@@ -2266,9 +2293,17 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     markInactive(object, isInactiveItem(info.item)); // pale outside the active component (mitcad#420)
     styleSketchEntity(object, look);
     m_sketchEntityLooks[object.get()] = look;
+    if (isPoint) {
+      // Its hover in the points' layer too (mitcad#897).
+      object->SetDynamicHilightAttributes(m_sketchPointHover);
+    }
     display(object, AIS_WireFrame, std::move(info), true);
-    // Over the faces a sketch lies on.
-    m_context->SetZLayer(object, Graphic3d_ZLayerId_Top);
+    // Over the faces a sketch lies on; points after the curves and their
+    // highlights (mitcad#897).
+    m_context->SetZLayer(object, isPoint ? m_sketchPointLayer : Graphic3d_ZLayerId_Top);
+    if (isPoint) {
+      m_context->SetDisplayPriority(object, kSketchPointPriority);
+    }
     if (hasSketchHalo(look)) {
       // In a layer of its own just before the top layer: at the same depth
       // as the entity, whose line passes OCCT's depth test (less or equal)
@@ -2297,6 +2332,7 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     remove(entry.second);
   }
   logSketchHalos();
+  logSketchLayers();
   // For UI tests (mitcad#286): per shown sketch (and the occurrence placing
   // it), how many of its entities take the fully constrained colour and how
   // many the unconstrained blue; construction, centre lines and projected
@@ -2380,6 +2416,44 @@ void OcctViewer::logSketchHalos() {
   if (line != m_loggedSketchHalos) {
     m_loggedSketchHalos = line;
     qDebug().noquote() << QStringLiteral("Sketch halos: %1").arg(line);
+  }
+}
+
+void OcctViewer::logSketchLayers() {
+  // The order OCCT draws the sketch layers in, read from the viewer: the
+  // layers that are not immediate first, in their order in the list, then
+  // the immediate ones (the top layer and the points') over them in theirs.
+  NCollection_Sequence<int> layers;
+  m_viewer->GetAllZLayers(layers);
+  QStringList order;
+  for (const bool immediate : {false, true}) {
+    for (NCollection_Sequence<int>::Iterator it(layers); it.More(); it.Next()) {
+      const Graphic3d_ZLayerId layer = it.Value();
+      if (m_viewer->ZLayerSettings(layer).IsImmediate() != immediate) {
+        continue;
+      }
+      if (layer == m_sketchHaloLayer) {
+        order << QStringLiteral("halos");
+      } else if (layer == Graphic3d_ZLayerId_Top) {
+        order << QStringLiteral("curves and highlights");
+      } else if (layer == m_sketchPointLayer) {
+        order << QStringLiteral("points and point highlights");
+      }
+    }
+  }
+  // Whether the model's depth still hides the points behind it: the
+  // points' layer tests depth and keeps the depth drawn before it.
+  const Graphic3d_ZLayerSettings& points = m_viewer->ZLayerSettings(m_sketchPointLayer);
+  const bool sceneDepth = points.ToEnableDepthTest() && !points.ToClearDepth();
+  const QString line =
+      QStringLiteral("%1; points %2 the scene's depth; point highlights %3 the markers")
+          .arg(order.join(QStringLiteral(" < ")),
+               sceneDepth ? QStringLiteral("keep") : QStringLiteral("lose"),
+               kSketchPointHighlightPriority > kSketchPointPriority ? QStringLiteral("over")
+                                                                    : QStringLiteral("under"));
+  if (line != m_loggedSketchLayers) {
+    m_loggedSketchLayers = line;
+    qDebug().noquote() << QStringLiteral("Sketch layers: %1").arg(line);
   }
 }
 
@@ -2481,6 +2555,9 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
   // bounding box in the design, mitcad#432).
   const bool logPlaces = qEnvironmentVariableIsSet("MITCAD_LOG_PICKS");
   QStringList places;
+  // The sketch curves and points highlighted, for the log (mitcad#897).
+  int sketchCurveHighlights = 0;
+  int sketchPointHighlights = 0;
   for (const HighlightDisplay& highlight : highlights) {
     if (highlight.shape.IsNull()) {
       continue;
@@ -2580,9 +2657,30 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
     info.highlight = true;
     info.body = boundaryPicks ? highlight.body : nullptr;
     display(object, mode, std::move(info), highlight.pickable);
-    // A light tint stays with the bodies, under the highlights on top.
-    m_context->SetZLayer(object, highlight.light ? Graphic3d_ZLayerId_Default : Graphic3d_ZLayerId_Top);
+    if (kind == SelectKind::SketchPoint) {
+      // With the plain markers, after the curves' highlights, and drawn
+      // after them in that layer, so that the ball covers its point's
+      // marker (mitcad#897).
+      m_context->SetZLayer(object, m_sketchPointLayer);
+      m_context->SetDisplayPriority(object, kSketchPointHighlightPriority);
+      ++sketchPointHighlights;
+    } else {
+      // A light tint stays with the bodies, under the highlights on top.
+      m_context->SetZLayer(object, highlight.light ? Graphic3d_ZLayerId_Default : Graphic3d_ZLayerId_Top);
+      if (kind == SelectKind::SketchCurve) {
+        ++sketchCurveHighlights;
+      }
+    }
     m_highlights.push_back(object);
+  }
+  const QString loggedSketch = QStringLiteral("%1 curve%2, %3 point%4")
+                                   .arg(sketchCurveHighlights)
+                                   .arg(sketchCurveHighlights == 1 ? QString() : QStringLiteral("s"))
+                                   .arg(sketchPointHighlights)
+                                   .arg(sketchPointHighlights == 1 ? QString() : QStringLiteral("s"));
+  if (loggedSketch != m_loggedSketchHighlights) {
+    m_loggedSketchHighlights = loggedSketch;
+    qDebug().noquote() << QStringLiteral("Sketch highlights: %1").arg(loggedSketch);
   }
   const QString logged = bodies.isEmpty() ? QStringLiteral("none") : bodies.join(QStringLiteral(", "));
   if (logged != m_loggedBodyHighlights) {
@@ -2667,6 +2765,12 @@ void OcctViewer::setPreview(const TopoDS_Shape& shape, PreviewStyle style) {
     }
   }
   sceneChanged();
+}
+
+void OcctViewer::logFirstFrame(const QString& what, const QElapsedTimer& started) {
+  m_firstFrameOf = what;
+  m_firstFrameClock = started;
+  update();
 }
 
 void OcctViewer::setSketchPreview(const TopoDS_Shape& shape) {
@@ -2785,6 +2889,10 @@ void OcctViewer::setHoverColor(const QColor& color) {
   for (const Prs3d_TypeOfHighlight type :
        {Prs3d_TypeOfHighlight_Dynamic, Prs3d_TypeOfHighlight_LocalDynamic}) {
     setHighlightStyle(m_context->HighlightStyle(type), occtColor(color), kHoverTransparency);
+  }
+  if (!m_sketchPointHover.IsNull()) {
+    setHighlightStyle(m_sketchPointHover, occtColor(color), kHoverTransparency);
+    m_sketchPointHover->SetZLayer(m_sketchPointLayer);
   }
   m_hoverColor = color;
   sceneChanged();
@@ -5054,6 +5162,21 @@ void OcctViewer::paintGL() {
       viewer.m_windowShowPending = false;
     }
   } windowShown{*this};
+  // The first frame after an open (logFirstFrame, mitcad#878), logged once
+  // the frame is drawn.
+  struct FirstFrame {
+    OcctViewer& viewer;
+    bool drawn = false;
+    ~FirstFrame() {
+      if (drawn && !viewer.m_firstFrameOf.isEmpty() && viewer.m_firstFrameClock.isValid()) {
+        qInfo().noquote() << QStringLiteral("%1: first frame %2 ms after it began")
+                                 .arg(viewer.m_firstFrameOf)
+                                 .arg(viewer.m_firstFrameClock.elapsed());
+        viewer.m_firstFrameOf.clear();
+        viewer.m_firstFrameClock.invalidate();
+      }
+    }
+  } firstFrame{*this};
   ScopedTiming timing("frame");
   if (m_view->Window()->NativeHandle() != occtDrawable()) {
     // Qt recreated its surface, e.g. after re-parenting: attach again.
@@ -5061,6 +5184,7 @@ void OcctViewer::paintGL() {
     return;
   }
   ++m_framesDrawn;
+  firstFrame.drawn = true;
 
   const occ::handle<OpenGl_Context> glContext = glContextOf(m_view);
   occ::handle<OpenGl_FrameBuffer> framebuffer = glContext->DefaultFrameBuffer();

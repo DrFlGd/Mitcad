@@ -23,7 +23,8 @@ namespace mitcad {
 // group, light bulb — sortable, with a search field and filters by kind
 // and by group. Several rows selected change together (Colour…, Group…,
 // Decimals…, Tolerance…, Show, Hide, Delete); Add Frame… puts a feature
-// control frame under one dimension; a group is shown or hidden at once;
+// control frame under one dimension; Text Height… sets the height of all
+// the design's annotations' texts (mitcad#894); a group is shown or hidden at once;
 // Edit… or a double-click opens one's editor; a broken one (a pick gone) is marked with the reason. It follows
 // the model (setAnnotations after every refresh, its selection and where
 // the list is scrolled kept, mitcad#759); what it changes goes
@@ -45,6 +46,9 @@ public:
     std::function<void(const QStringList& names)> remove;
     // Add Frame… on one dimension: a feature control frame under it.
     std::function<void(const QString& dimension)> frame;
+    // Text Height…: the height of the design's annotations' texts
+    // (mitcad#894), asked for and set.
+    std::function<void()> textHeight;
   };
 
   explicit AnnotationsWindow(QWidget* parent);
@@ -96,6 +100,7 @@ private:
   QPushButton* m_show = nullptr;
   QPushButton* m_hide = nullptr;
   QPushButton* m_delete = nullptr;
+  QPushButton* m_textHeight = nullptr;
   bool m_filling = false;
   QString m_loggedRows;
   QString m_loggedPlaces;

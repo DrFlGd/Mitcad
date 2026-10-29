@@ -1311,6 +1311,11 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
       }
     }
   }
+  // The axes a command's input holds (Mirror's line, mitcad#876), which
+  // the view's highlight cannot show.
+  for (const QString& axis : m_c.host().sketchAxisPicks()) {
+    paintEntityHighlight(painter, axis, kSelectedColor);
+  }
   // What a picking tool points at and has picked.
   for (const QString& entity : m_c.picked()) {
     paintEntityHighlight(painter, entity, kPickColor);

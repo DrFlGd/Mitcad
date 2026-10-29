@@ -4,14 +4,20 @@
 //! results from it, and `persist_results` writes what was costly to
 //! evaluate.
 
+use std::collections::HashMap;
 use std::path::Path;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use mitcad_model::BodyUid;
+use cxx::SharedPtr;
 use mitcad_model::store::{self, GcReport, PersistReport, ResultStore};
+use mitcad_model::{BodyUid, FinalBodies};
 use serde_json::json;
 
 use crate::Document;
+use crate::kernel::Shape;
+use crate::kernel::shape::ffi::ShapeList;
 
 fn gc_json(report: &GcReport) -> String {
     json!({"files": report.files, "bytes": report.bytes, "removed": report.removed,
@@ -127,6 +133,102 @@ impl Document {
                "ms": start.elapsed().as_secs_f64() * 1000.0})
         .to_string()
     }
+
+    pub(crate) fn display_mesh_write(&self, request: &str) -> Box<DisplayMeshWrite> {
+        let (bodies, options) = mesh_request(request);
+        let versions = bodies
+            .into_iter()
+            .filter_map(|uid| Some((uid.to_string(), self.0.body_version(uid)?)))
+            .collect();
+        Box::new(DisplayMeshWrite {
+            store: self.0.result_store().cloned(),
+            options,
+            versions,
+        })
+    }
+
+    pub(crate) fn display_feed(&mut self, options: &str) -> Box<DisplayFeed> {
+        let feed = FinalBodies::new();
+        self.0.feed_final_bodies(feed.clone());
+        Box::new(DisplayFeed {
+            feed,
+            store: self.0.result_store().cloned(),
+            options: options.to_owned(),
+            left_to_store: AtomicUsize::new(0),
+        })
+    }
+}
+
+/// The bodies of an open's recompute that no later feature changes, as
+/// they become so (mitcad#881), for the application's mesher thread: the
+/// recompute puts them in on the model's thread, the mesher takes them on
+/// its own. A body whose display meshes the result store keeps is left to
+/// the store (read once the recompute is over).
+pub struct DisplayFeed {
+    feed: FinalBodies<SharedPtr<Shape>>,
+    store: Option<ResultStore>,
+    options: String,
+    left_to_store: AtomicUsize,
+}
+
+impl DisplayFeed {
+    pub(crate) fn take(&self, wait_ms: u32, mut shapes: Pin<&mut ShapeList>) -> Vec<String> {
+        let mut uids = Vec::new();
+        for body in self.feed.take(Duration::from_millis(u64::from(wait_ms))) {
+            if self
+                .store
+                .as_ref()
+                .is_some_and(|store| store.has_display_mesh(body.version, &self.options))
+            {
+                self.left_to_store.fetch_add(1, Ordering::Relaxed);
+                continue;
+            }
+            uids.push(body.uid.to_string());
+            shapes.as_mut().push(body.shape);
+        }
+        uids
+    }
+
+    pub(crate) fn is_done(&self) -> bool {
+        self.feed.is_done()
+    }
+
+    pub(crate) fn given(&self) -> usize {
+        self.feed.given()
+    }
+
+    pub(crate) fn left_to_store(&self) -> usize {
+        self.left_to_store.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn changed_later(&self) -> usize {
+        self.feed.changed_later()
+    }
+}
+
+/// Display meshes written after an open (mitcad#880): the document's store
+/// and the bodies' versions as the open's job left them, so that the
+/// application's writer stores the triangulations it took there on its own
+/// thread, whatever the document does meanwhile (changed, closed).
+pub struct DisplayMeshWrite {
+    store: Option<ResultStore>,
+    options: String,
+    versions: HashMap<String, u128>,
+}
+
+impl DisplayMeshWrite {
+    pub(crate) fn has_body(&self, uid: &str) -> bool {
+        self.store.is_some() && self.versions.contains_key(uid)
+    }
+
+    pub(crate) fn write_body(&self, uid: &str, mesh: &[u8]) -> Result<u64, String> {
+        let (Some(store), Some(version)) = (&self.store, self.versions.get(uid)) else {
+            return Err(format!("{uid}: no store or no such body"));
+        };
+        store
+            .write_display_mesh_data(*version, &self.options, mesh)
+            .map_err(|error| format!("{uid}: {error}"))
+    }
 }
 
 /// The bodies and the meshing options of a display mesh request; bodies
@@ -148,7 +250,7 @@ fn mesh_request(request: &str) -> (Vec<BodyUid>, String) {
 
 fn persist_json(report: &PersistReport) -> String {
     json!({"results": report.results, "shapes": report.shapes, "bytes": report.bytes,
-           "failed": report.failed, "errors": report.errors,
+           "quick": report.quick, "failed": report.failed, "errors": report.errors,
            "ms": report.time.as_secs_f64() * 1000.0})
     .to_string()
 }

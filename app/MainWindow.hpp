@@ -201,6 +201,7 @@ public:
 
   // CommandHost
   QJsonValue query(const QJsonObject& query) const override;
+  QString lengthUnit() const override; // mitcad#888
   std::shared_ptr<geometry::Shape> bodyShape(const QString& uid) const override;
   OcctViewer& viewer() override { return *m_viewer; }
   QJsonObject modelCommand(const QJsonObject& request) override { return command(request); }
@@ -252,6 +253,8 @@ public:
   void pick(const Selection& items, Qt::KeyboardModifiers modifiers) override;
   void showError(const QString& message) override;
   bool sketchClickable(const SelectionItem& item, bool expanded) const override; // mitcad#217
+  bool sketchAxesPickable() const override;                                      // mitcad#876
+  QStringList sketchAxisPicks() const override;                                  // mitcad#876
   void deliverPendingPicks() override;                                           // mitcad#488
 
   // DocumentHost (the browser, the timeline and the parameters dialog)
@@ -1204,6 +1207,9 @@ private:
   // Save as New Version writes a read-only window's file all the same, and
   // the editing that ends when the window turns read-only finishes.
   bool m_writeAnyway = false;
+  // The lock changed while a job computed the model: the window follows it
+  // once the job ends (mitcad#888).
+  bool m_readOnlyChangePending = false;
   // The next document installed keeps the camera (a read-only window
   // following the editor's versions).
   bool m_keepView = false;

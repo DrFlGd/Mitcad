@@ -48,6 +48,7 @@
 //! ```
 
 mod analysis;
+mod analysis_plan;
 mod direction;
 mod equations;
 mod prepare;

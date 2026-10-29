@@ -65,7 +65,7 @@ use mitcad_model_api::{AnalysisApi, DocumentApi, ReportApi, ScriptApi};
 
 use jobs::{JobControl, new_job_control};
 use kernel::{OcctKernel, Shape};
-use result_store::{result_store_clear, result_store_gc};
+use result_store::{DisplayFeed, DisplayMeshWrite, result_store_clear, result_store_gc};
 use vcs::{
     Project, create_project_repository, git_repository_root, init_project_history, load_version,
     open_project,
@@ -387,6 +387,44 @@ mod ffi {
         /// their versions and those options; returns JSON {"stored",
         /// "bytes", "failed", "errors", "ms"}.
         fn persist_display_meshes(self: &Document, request: &str) -> String;
+        /// Display meshes written after an open (mitcad#880): the store,
+        /// the options and the versions of the bodies of `request` (the
+        /// same form) as the document has them now, for the application's
+        /// writer, which stores the triangulations it took meanwhile on
+        /// its own thread; the document may change or go meanwhile.
+        fn display_mesh_write(self: &Document, request: &str) -> Box<DisplayMeshWrite>;
+        type DisplayMeshWrite;
+        /// Whether the body (a uid of the request) can be written: the
+        /// document had a store and the body a version.
+        fn has_body(self: &DisplayMeshWrite, uid: &str) -> bool;
+        /// Writes `mesh`, the body's triangulations as
+        /// io::triangulation_bytes gives them, under its version and the
+        /// options (whole or not at all); the bytes of the file. Any
+        /// thread.
+        fn write_body(self: &DisplayMeshWrite, uid: &str, mesh: &[u8]) -> Result<u64>;
+        /// Display meshes made during an open's recompute (mitcad#881):
+        /// the next recompute through the whole timeline (the open's) puts
+        /// each shown body into the feed once no later feature can change
+        /// it (mitcad_model::FinalBodies), and closes it when it ends.
+        /// `options` are the display meshes' in the store (as in a
+        /// request): a body whose version has meshes stored with them is
+        /// left to the store.
+        fn display_feed(self: &mut Document, options: &str) -> Box<DisplayFeed>;
+        type DisplayFeed;
+        /// The bodies put in since the last take, waiting up to `wait_ms`
+        /// for the first: their uids, and their shapes pushed to `shapes`
+        /// in the same order (shared with the document's body states, to
+        /// be read only); none once the recompute ended and all were
+        /// taken (`is_done`). Any thread.
+        fn take(self: &DisplayFeed, wait_ms: u32, shapes: Pin<&mut ShapeList>) -> Vec<String>;
+        /// The recompute ended and every body was taken.
+        fn is_done(self: &DisplayFeed) -> bool;
+        /// Bodies put in, those of them left to the store's meshes, and
+        /// those a later feature changed all the same (0 unless the
+        /// classification missed one).
+        fn given(self: &DisplayFeed) -> usize;
+        fn left_to_store(self: &DisplayFeed) -> usize;
+        fn changed_later(self: &DisplayFeed) -> usize;
         /// The most memory the document's cached results may take,
         /// estimated; beyond it the results used longest ago go (they can
         /// still come from the store). 0: no limit.

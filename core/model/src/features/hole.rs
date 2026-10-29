@@ -25,8 +25,9 @@ use super::geom_ref::{GeomRef, Want};
 use super::place_at::PlaceAt;
 use super::reference::{ExtentObject, normalized};
 use super::thread::{
-    ThreadSize, check_clearance, clearance_value, fitted_clearance, flank_from_fit,
-    thread_clearance, thread_part,
+    CustomSize, ThreadSize, check_clearance, check_custom, check_starts, clearance_value,
+    fitted_clearance, flank_from_fit, size_of, starts_value, thread_clearance, thread_part,
+    thread_starts,
 };
 use super::thread_table::ThreadStandard;
 use super::{
@@ -179,6 +180,8 @@ pub enum HoleExtent<P = ParamId> {
 pub struct HoleThread<P = ParamId> {
     #[serde(default, skip_serializing_if = "is_iso")]
     pub standard: ThreadStandard,
+    /// None for a custom thread (mitcad#893).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub designation: String,
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub class: Option<String>,
@@ -204,6 +207,15 @@ pub struct HoleThread<P = ParamId> {
     /// minor diameter and nothing tapers.
     #[serde(default, skip_serializing_if = "is_false")]
     pub taper: bool,
+    /// A custom thread's size (`standard` `custom`, mitcad#893): its major
+    /// diameter and pitch, as the thread feature's; the bore is its minor
+    /// diameter.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub custom: Option<CustomSize<P>>,
+    /// The number of starts of a modelled thread (mitcad#893), as the
+    /// thread feature's; 1 without (or the designation's).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub starts: Option<P>,
 }
 
 fn yes() -> bool {
@@ -383,6 +395,12 @@ impl<P> HoleDef<P> {
                 )?,
                 flank_clearance: map_option("thread.flank_clearance", &thread.flank_clearance, f)?,
                 taper: thread.taper,
+                custom: thread
+                    .custom
+                    .as_ref()
+                    .map(|c| c.map_params("thread.custom.", &mut *f))
+                    .transpose()?,
+                starts: map_option("thread.starts", &thread.starts, f)?,
             }),
         };
         let taper = map_option("taper", &self.taper, f)?;
@@ -557,7 +575,10 @@ impl FeatureInfo for HoleDef {
             } else if thread.radial_clearance.is_some() || thread.flank_clearance.is_some() {
                 return Err("only a modelled thread has extra clearance".to_owned());
             }
-            thread.size().check(Some(true))?;
+            check_custom(&thread.size(), thread.custom.is_some())?;
+            if thread.custom.is_none() {
+                thread.size().check(Some(true))?;
+            }
         }
         check_participants(ctx, Operation::Cut, &self.participants)
     }
@@ -656,6 +677,15 @@ impl FeatureInfo for HoleDef {
         if let Some(thread) = &self.thread {
             clearance_value("radial clearance", thread.radial_clearance.map(value))?;
             clearance_value("flank clearance", thread.flank_clearance.map(value))?;
+            if let Some(custom) = &thread.custom {
+                super::thread_table::ThreadData::custom(value(custom.major), value(custom.pitch))?;
+            }
+            if let Some(starts) = thread.starts {
+                let starts = starts_value(value(starts))?;
+                if let Ok(data) = thread.size().data() {
+                    check_starts(starts, &data)?;
+                }
+            }
         }
         Ok(())
     }
@@ -932,8 +962,12 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let positions = self.positions(ctx)?;
         let participants = participant_bodies(ctx, Operation::Cut, &self.participants)?;
+        // The size: the table's, or a custom thread's (mitcad#893).
         let thread = match &self.thread {
-            Some(thread) => Some((thread, thread.size().check(Some(true))?)),
+            Some(thread) => {
+                let data = size_of(ctx, &thread.size(), thread.custom.as_ref(), Some(true))?;
+                Some((thread, data))
+            }
             None => None,
         };
         // A tapering taper pipe thread's hole is drilled at its diameter,
@@ -1027,13 +1061,16 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             return Ok(output);
         };
         // A taper pipe thread's diameters where it starts, at the hole's
-        // start (mitcad#733).
+        // start (mitcad#733); a trapezoidal thread's with its crest
+        // clearance (mitcad#893).
         let (major, minor, pitch_diameter) = (if thread.tapers() {
             data.taper_start(true)
         } else {
             None
         })
-        .unwrap_or((data.major, data.minor, data.pitch_diameter));
+        .unwrap_or_else(|| data.profile(true));
+        let flank_angle = data.flank_angle();
+        let starts = thread_starts(ctx, thread.starts, &data)?;
         // Cut the thread into the walls each body has: from the holes' start,
         // which is the low end of the walls' axes when they point inwards.
         let walls: Vec<FaceName> = (0..positions.len())
@@ -1049,8 +1086,15 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             true,
             clearance,
             flank_from_fit(ctx, thread.flank_clearance),
+            flank_angle,
         );
-        check_clearance(data.pitch, (major, minor, pitch_diameter), true, clearance)?;
+        check_clearance(
+            data.pitch,
+            (major, minor, pitch_diameter),
+            true,
+            clearance,
+            flank_angle,
+        )?;
         let (radial_clearance, flank_clearance) = clearance;
         let mut threaded = Vec::new();
         for change in &mut output.changes {
@@ -1104,6 +1148,8 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
                     per_length: t.per_length,
                     high_end: start_high,
                 }),
+                starts,
+                flank_angle,
             };
             let cut = ctx
                 .kernel

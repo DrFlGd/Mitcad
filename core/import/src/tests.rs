@@ -64,11 +64,11 @@ mod support;
 #[allow(unused_imports)]
 use support::{
     LARGE, SMALL, SlowExtrusions, TestGeometry, TestKernel, add, assembly_dump, assert_parametric,
-    at, block_dump, block_history, circle_sketch, decoded_small_rectangle, dump, edge_point,
-    entity, extrude, extrusion_of, face_point, fillet_item, gcircle, gfixed, gline, gpoint,
-    group_sketch_dump, hash, import, param, point_at, radius, rectangle_sketch, reference, shapes,
-    sketch_query, slow_call, slow_call_for, slow_profile_import, thread_item, timeline_dump,
-    two_rectangles, without_uids,
+    at, block_dump, block_history, busy_call_for, circle_sketch, decoded_small_rectangle, dump,
+    edge_point, entity, extrude, extrusion_of, face_point, fillet_item, gcircle, gfixed, gline,
+    gpoint, group_sketch_dump, hash, import, param, point_at, radius, rectangle_sketch, reference,
+    shapes, sketch_query, slow_call, slow_call_for, slow_profile_import, thread_item,
+    timeline_dump, two_rectangles, wall_clock, without_uids,
 };
 
 // The topics.

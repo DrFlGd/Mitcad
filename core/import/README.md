@@ -181,7 +181,11 @@ mitcad-cli import-f3d part.f3d --time-limit 300 --report report.json
   corpus tests. The item's other routes keep their times: an item that
   falls back by design spends each of them in full, and scaled as well
   they made the test's longest design about 270 s slower (a sweep that
-  passes over itself took 362 s instead of 95 s).
+  passes over itself took 362 s instead of 95 s). The factor scales the
+  other short time of a route tried first too, a thread's offset of the
+  faces it sizes (2 s, mitcad#874: 0.9 s alone in a debug build). The
+  times are on the import's clock, which leaves the machine's load out
+  ([time limits](docs/f3d-performance.md#time-limit-stop-and-hangs)).
 - The ctest `f3d.corpus_timeline` (`core/CMakeLists.txt`) runs `--every 4
   --max-items 30 --time-limit 60` to stay quick in debug builds. Run the
   full corpus with the release build, e.g. `--time-limit 300 --hang-limit

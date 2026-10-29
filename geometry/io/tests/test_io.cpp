@@ -18,6 +18,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -32,6 +33,8 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepMesh_Context.hxx>
+#include <BRepMesh_FaceChecker.hxx>
 #include <BRepMesh_MeshAlgoFactory.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
@@ -47,7 +50,9 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <IMeshData_Edge.hxx>
 #include <IMeshData_Face.hxx>
+#include <IMeshData_Model.hxx>
 #include <IMeshTools_MeshAlgo.hxx>
 #include <IMeshTools_MeshAlgoFactory.hxx>
 #include <IMeshTools_Parameters.hxx>
@@ -928,6 +933,25 @@ void test_display_mesh_bytes() {
   for (const TopoDS_Shape& meshed : {perforated_plate(), holed_block(), filleted_block(), TopoDS_Shape(twice)}) {
     CHECK(mitcad::io::mesh_in_place(meshed, view));
     const std::string bytes = mitcad::io::triangulation_bytes(meshed);
+    // Taken for writing later (mitcad#880): the same bytes, also once the
+    // shape's faces are meshed again (other triangulations, other edge
+    // polygons) and after the shape is gone.
+    {
+      std::shared_ptr<const mitcad::io::TriangulationCapture> taken;
+      std::string own;
+      {
+        const TopoDS_Shape held = BRepBuilderAPI_Copy(meshed, false, false).Shape();
+        CHECK(mitcad::io::mesh_in_place(held, view));
+        own = mitcad::io::triangulation_bytes(held);
+        taken = mitcad::io::capture_triangulations(held);
+        CHECK(mitcad::io::triangulation_bytes(*taken) == own);
+        BRepTools::Clean(held);
+        const MeshOptions coarse{0.5, 20.0 * std::atan(1.0) / 45.0, false, 20000, false, false};
+        CHECK(mitcad::io::mesh_in_place(held, coarse));
+        CHECK(mitcad::io::triangulation_bytes(held) != own);
+      }
+      CHECK(!own.empty() && mitcad::io::triangulation_bytes(*taken) == own);
+    }
     const TopoDS_Shape copy = BRepBuilderAPI_Copy(meshed, false, false).Shape();
     CHECK(mitcad::io::mesh_stats(copy).triangles == 0);
     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faces;
@@ -956,6 +980,24 @@ void test_display_mesh_bytes() {
     }
     CHECK(refused);
     CHECK(mitcad::io::mesh_stats(again).triangles == 0);
+    // From a capture of a meshed copy instead of bytes (mitcad#881): the
+    // body takes the copy's triangulations and edge polygons, the same
+    // handles, as if it had been meshed itself.
+    {
+      const TopoDS_Shape body = BRepBuilderAPI_Copy(meshed, false, false).Shape();
+      const TopoDS_Shape meshedCopy = BRepBuilderAPI_Copy(body, false, false).Shape();
+      CHECK(mitcad::io::mesh_in_place(meshedCopy, view));
+      const auto capture = mitcad::io::capture_triangulations(meshedCopy);
+      CHECK(mitcad::io::restore_triangulations(body, *capture) == static_cast<std::size_t>(count(body, TopAbs_FACE)));
+      CHECK(mitcad::io::has_triangulation(body));
+      CHECK(mitcad::io::mesh_stats(body).triangles == mitcad::io::mesh_stats(meshed).triangles);
+      CHECK(edge_polygons(body) == edge_polygons(meshed));
+      TopLoc_Location here;
+      TopLoc_Location there;
+      CHECK(BRep_Tool::Triangulation(TopoDS::Face(TopExp_Explorer(body, TopAbs_FACE).Current()), here) ==
+            BRep_Tool::Triangulation(TopoDS::Face(TopExp_Explorer(meshedCopy, TopAbs_FACE).Current()), there));
+      CHECK(mitcad::io::restore_triangulations(body, *capture) == 0);
+    }
   }
   // The cylinder twice again, sharing its TShape as the meshed compound
   // does: the repeated faces take the triangulations through it.
@@ -977,6 +1019,15 @@ void test_display_mesh_bytes() {
   bool refused = false;
   try {
     mitcad::io::restore_triangulations(other, mitcad::io::triangulation_bytes(block));
+  } catch (const std::runtime_error&) {
+    refused = true;
+  }
+  CHECK(refused);
+  CHECK(mitcad::io::mesh_stats(other).triangles == 0);
+  // So too a capture of another shape (mitcad#881).
+  refused = false;
+  try {
+    mitcad::io::restore_triangulations(other, *mitcad::io::capture_triangulations(block));
   } catch (const std::runtime_error&) {
     refused = true;
   }
@@ -1184,6 +1235,61 @@ void test_nearly_cocircular_planes() {
       CHECK(report.meshed == 1 && report.failed == 0);
       CHECK(report.planes_redone == 0);
       CHECK(planes_fit(plate, 1e-4) == 1);
+    }
+  }
+}
+
+// The search of BRepMesh's healer for crossing segments of a plane's wires
+// (BRepMesh_FaceChecker, OCCT port patch 1081, mitcad#884) no longer
+// searches wires whose boxes are apart against each other; the crossings
+// it finds are the same. A 100 mm square with 64 holes apart from each
+// other and from it: no crossings. With two more holes that overlap each
+// other: their two edges cross, and no others. (The overlapping holes'
+// centres are offset in both directions: with them on one line 2 mm apart,
+// both polygons have a point where the circles cross, which is a touch and
+// not a crossing.)
+void test_face_checker_wire_boxes() {
+  const auto circle = [](double x, double y) {
+    const TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(x, y, 0.0), gp::DZ()), 2.0)).Edge();
+    return BRepBuilderAPI_MakeWire(edge).Wire();
+  };
+  for (const bool overlapping : {false, true}) {
+    BRepBuilderAPI_MakeFace maker(gp_Pln(gp::XOY()), 0.0, 100.0, 0.0, 100.0);
+    for (int i = 0; i < 8; ++i) {
+      for (int j = 0; j < 8; ++j) {
+        maker.Add(TopoDS::Wire(circle(10.0 + 10.0 * i, 10.0 + 10.0 * j).Reversed()));
+      }
+    }
+    std::vector<TopoDS_Edge> crossing;
+    if (overlapping) {
+      for (const gp_Pnt2d& centre : {gp_Pnt2d(45.0, 95.0), gp_Pnt2d(47.3, 95.4)}) {
+        const TopoDS_Wire hole = circle(centre.X(), centre.Y());
+        crossing.push_back(TopoDS::Edge(TopExp_Explorer(hole, TopAbs_EDGE).Current()));
+        maker.Add(TopoDS::Wire(hole.Reversed()));
+      }
+    }
+    const occ::handle<BRepMesh_Context> context = new BRepMesh_Context();
+    context->SetShape(maker.Face());
+    context->ChangeParameters().Deflection = 0.01;
+    context->ChangeParameters().Angle = 5.0 * std::atan(1.0) / 45.0;
+    context->ChangeParameters().InParallel = false;
+    // What BRepMesh_IncrementalMesh fills in for those left unset.
+    context->ChangeParameters().DeflectionInterior = 0.01;
+    context->ChangeParameters().AngleInterior = 10.0 * std::atan(1.0) / 45.0;
+    context->ChangeParameters().MinSize = 0.001;
+    CHECK(context->BuildModel());
+    CHECK(context->DiscretizeEdges());
+    const occ::handle<IMeshData_Model>& model = context->GetModel();
+    CHECK(model->FacesNb() == 1);
+    CHECK(model->GetFace(0)->WiresNb() == (overlapping ? 67 : 65));
+    BRepMesh_FaceChecker checker(model->GetFace(0), context->GetParameters());
+    CHECK(checker.Perform() == !overlapping);
+    const occ::handle<IMeshData::MapOfIEdgePtr>& found = checker.GetIntersectingEdges();
+    CHECK(found->Extent() == static_cast<int>(crossing.size()));
+    for (IMeshData::MapOfIEdgePtr::Iterator it(*found); it.More(); it.Next()) {
+      const TopoDS_Edge& edge = it.Key()->GetEdge();
+      CHECK(std::any_of(crossing.begin(), crossing.end(),
+                        [&edge](const TopoDS_Edge& hole) { return hole.IsSame(edge); }));
     }
   }
 }
@@ -1705,6 +1811,7 @@ int main(int argc, char** argv) {
     test_checked_planes();
     test_abandoned_face();
     test_nearly_cocircular_planes();
+    test_face_checker_wire_boxes();
     test_building_scale_round_faces();
     test_stl(dir);
     test_indexed_mesh(dir);

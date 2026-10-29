@@ -1,24 +1,34 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/framework/CommandSessionAuto app/commands/ExtrudeCommands.cpp core/model/src/document/auto_operation.rs
-# Edits keep their stored operation (mitcad#868) through the Qt panel:
+# check-all sources: app/platform/macos/NativeForms app/platform/macos/NativeMacWindow app/platform/macos/NativeTestInput
+# Edits keep their stored operation (mitcad#868) through the chosen panel:
 # a Join going into its bodies, deliberate choices, target scope, an
 # input while the first preview computes.
-# Usage: bash tools/ui-macos-edit-auto-operation-test.sh <app> [out directory]
+# Usage: bash tools/ui-macos-edit-auto-operation-test.sh <app> [out directory] [qt|native]
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/ui-macos-lib.sh"
-if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-  echo "usage: $0 <app> [out directory]" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+  echo "usage: $0 <app> [out directory] [qt|native]" >&2
   exit 2
 fi
+frontend=${3:-qt}
+case "$frontend" in
+  qt) schemes=default ;;
+  native) schemes='light dark' ;;
+  *) echo "unknown frontend: $frontend" >&2; exit 2 ;;
+esac
 ui_init "$1" "${2:-ui-macos-edit-auto-operation}"
 UI_TIMEOUT=150
 cli=${MITCAD_UI_CLI:-$(dirname "$UI_APP")/../../../../tools/cli/mitcad-cli}
 export MITCAD_TEST_WORK=$UI_OUT/files
 mkdir -p "$MITCAD_TEST_WORK"
 
-for phase in automatic new-body participants overrides scope early; do
+for scheme in $schemes; do
+ for phase in automatic new-body participants overrides scope early; do
+  run=$phase
+  if [ "$frontend" = native ]; then run=$phase-$scheme; fi
   # Variants keep identical geometry; only the stored Operation/Objects
   # differ, and each edit keeps them.
   python3 - "$here/ui-scripts/edit-auto-operation.json" "$MITCAD_TEST_WORK/setup.json" "$phase" <<'PY'
@@ -48,25 +58,38 @@ with open(sys.argv[2], 'w', encoding='utf-8') as target:
 PY
   [ "$?" = 0 ] || exit 1
   "$cli" run "$MITCAD_TEST_WORK/setup.json" --save "$MITCAD_TEST_WORK/edit-auto.mitcad" \
-    > "$UI_OUT/setup-$phase.log" 2>&1 || { cat "$UI_OUT/setup-$phase.log" >&2; exit 1; }
+    > "$UI_OUT/setup-$run.log" 2>&1 || { cat "$UI_OUT/setup-$run.log" >&2; exit 1; }
   case "$phase" in
     automatic) driver=edit-auto-operation; delay=0 ;;
     new-body|participants) driver=edit-auto-operation-retained; delay=0 ;;
     early) driver=edit-auto-operation-early; delay=0,preview=1500 ;;
     *) driver=edit-auto-operation-$phase; delay=0 ;;
   esac
+  input=$here/ui-scripts/$driver.mitcad-ui
+  if [ "$frontend" = native ]; then
+    input=$UI_OUT/$run.mitcad-ui
+    python3 "$here/ui-scripts/edit-auto-operation-native-script.py" "$phase" > "$input" || exit 1
+    export MITCAD_TEST_COLOR_SCHEME=$scheme
+    export MITCAD_SETTINGS_DIR=$UI_ROOT/settings-$run
+    mkdir -p "$MITCAD_SETTINGS_DIR"
+  fi
   MITCAD_TEST_STEP_MS=20 MITCAD_TEST_RECOMPUTE_DELAY_MS=$delay \
-    MITCAD_TEST_INPUT=$here/ui-scripts/$driver.mitcad-ui \
-    ui_run_app "$phase" --ui=qt --no-recovery --no-mcp --open "$MITCAD_TEST_WORK/edit-auto.mitcad"
-  ui_expect_log '^TestDriver: done' "$phase: completed every driver assertion"
-  ui_expect_no_log 'TestDriver: FAIL' "$phase: no driver failure"
-  ui_expect_no_log 'Native UI: AppKit shell with embedded OCCT viewport' "$phase: primary Qt frontend"
+    MITCAD_TEST_INPUT=$input \
+    ui_run_app "$run" --ui="$frontend" --no-recovery --no-mcp --open "$MITCAD_TEST_WORK/edit-auto.mitcad"
+  ui_expect_log '^TestDriver: done' "$run: completed every driver assertion"
+  ui_expect_no_log 'TestDriver: FAIL' "$run: no driver failure"
+  if [ "$frontend" = native ]; then
+    ui_expect_log 'Native UI: AppKit shell with embedded OCCT viewport' "$run: actual AppKit frontend"
+    ui_expect_log 'Native pointer double click: native.history.F4 click-count=2' "$run: actual history edit input"
+  else
+    ui_expect_no_log 'Native UI: AppKit shell with embedded OCCT viewport' "$run: primary Qt frontend"
+  fi
   # Ignore echoed driver expressions; expect-never checks runtime messages
   # in a separate recording that excludes TestDriver lines.
   for message in 'The document was read while a job computes it' 'OCCT view event failed' 'Recompute failed'; do
     if awk -v text="$message" 'index($0,"TestDriver:") != 1 && index($0,text) { found=1 }
         END { exit !found }' "$UI_LOG_FILE"; then
-      ui_fail "$phase: $message"
+      ui_fail "$run: $message"
     fi
   done
   [ "$UI_FAILURES" = 0 ] || exit 1
@@ -84,7 +107,11 @@ if phase == 'scope':
     assert targets['type'] == 'automatic' and not targets['excluded'], targets
     assert targets['excluded_bodies'] == [{'component': 'C0', 'occurrence': '', 'body': 'F2.b0'}], targets
 PY
-    [ "$?" = 0 ] || { ui_fail "$phase: persisted policy changed"; exit 1; }
+    [ "$?" = 0 ] || { ui_fail "$run: persisted policy changed"; exit 1; }
+    if [ "$frontend" = native ]; then
+      cp "$MITCAD_TEST_WORK/edit-auto.mitcad" "$MITCAD_TEST_WORK/edit-auto-$run.mitcad" || exit 1
+    fi
   fi
+ done
 done
-echo "PASS: Qt edit automatic operation; logs in $UI_OUT"
+echo "PASS: $frontend edit automatic operation; logs in $UI_OUT"

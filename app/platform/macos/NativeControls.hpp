@@ -46,7 +46,10 @@ class NativeExpressionField {
 public:
   // `host` is nativeExpressionHost's window; `options` says what the field
   // is now (its own parameter's name follows the command's state).
-  NativeExpressionField(QWidget* host, NSTextField* field, std::function<ParameterFieldOptions()> options);
+  // An inline child panel restores its own key field after a menu/modal tool;
+  // ordinary document forms need no additional focus handling.
+  NativeExpressionField(QWidget* host, NSTextField* field, std::function<ParameterFieldOptions()> options,
+                        std::function<void()> restoreFocus = {});
   ~NativeExpressionField();
   NativeExpressionField(const NativeExpressionField&) = delete;
   NativeExpressionField& operator=(const NativeExpressionField&) = delete;
@@ -93,6 +96,7 @@ private:
   QPointer<QWidget> m_host;
   NSTextField* __weak m_field = nil;
   std::function<ParameterFieldOptions()> m_options;
+  std::function<void()> m_restoreFocus;
   MitcadNativeExpressionTarget* __strong m_target = nil;
   NSButton* __strong m_button = nil;
   QPointer<QLineEdit> m_proxy;

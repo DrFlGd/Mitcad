@@ -478,21 +478,26 @@ if(APPLE)
   set_source_files_properties(platform/macos/MacChrome.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
   target_link_libraries(mitcad PRIVATE "-framework AppKit")
   if(MITCAD_MACOS_NATIVE_UI)
-    target_link_libraries(mitcad PRIVATE "-framework UniformTypeIdentifiers")
+    target_link_libraries(mitcad PRIVATE "-framework UniformTypeIdentifiers" "-framework CoreGraphics")
     target_compile_definitions(mitcad PRIVATE MITCAD_MACOS_NATIVE_UI=1)
     target_sources(mitcad PRIVATE
       MainWindowNative.cpp
       platform/NativeMacWindow.hpp platform/macos/NativeMacWindow.mm
       platform/NativeForms.hpp platform/macos/NativeForms.mm
       platform/NativeDialogs.hpp platform/macos/NativeDialogs.mm
+      platform/NativeBindingsCard.hpp platform/macos/NativeBindingsCard.mm
       platform/NativeInlineEditor.hpp platform/macos/NativeInlineEditor.mm
       platform/NativeTestInput.hpp platform/macos/NativeTestInput.mm
-      platform/macos/NativeTableCells.hpp platform/macos/NativeTableCells.mm)
+      platform/macos/NativeTableCells.hpp platform/macos/NativeTableCells.mm
+      platform/macos/NativeRuleCanvas.hpp platform/macos/NativeRuleCanvas.mm
+      platform/macos/NativeNavigationGuide.hpp platform/macos/NativeNavigationGuide.mm)
     set_source_files_properties(
       platform/macos/NativeMacWindow.mm platform/macos/NativeForms.mm
       platform/macos/NativeDialogs.mm platform/macos/NativeTestInput.mm
+      platform/macos/NativeBindingsCard.mm
       platform/macos/NativeInlineEditor.mm
-      platform/macos/NativeTableCells.mm
+      platform/macos/NativeTableCells.mm platform/macos/NativeRuleCanvas.mm
+      platform/macos/NativeNavigationGuide.mm
       PROPERTIES COMPILE_OPTIONS -fobjc-arc)
     # The native Projects outline's name editor (mitcad#816).
     target_sources(mitcad PRIVATE platform/macos/NativeProjects.hpp platform/macos/NativeProjects.mm)
@@ -1709,6 +1714,29 @@ if(BUILD_TESTING)
   # projection: plain Qt Gui and OCCT's points.
   target_sources(test_app PRIVATE tests/measurement_drawing.cpp view/MeasurementDrawing.cpp
                  view/MeasurementDrawing.hpp)
+endif()
+# The annotations' technical lettering (mitcad#902, an ISO 3098 type B style
+# font in third_party/fonts/iso-lettering, LGPL-3.0 with the font exception):
+# a file of its own beside the executables, loaded at run time
+# (measurementFontFamily), never linked in. A macOS bundle takes it into
+# Resources/fonts (packaging/macos/Bundle.cmake). Without the file the
+# annotations take the UI's font.
+set(MITCAD_LETTERING "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/lettering.ttf")
+if(EXISTS "${MITCAD_LETTERING}")
+  if(NOT APPLE)
+    add_custom_command(TARGET mitcad POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:mitcad>/fonts"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MITCAD_LETTERING}" "$<TARGET_FILE_DIR:mitcad>/fonts/lettering.ttf"
+      VERBATIM)
+  endif()
+  if(BUILD_TESTING)
+    add_custom_command(TARGET test_app POST_BUILD
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:test_app>/fonts"
+      COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${MITCAD_LETTERING}" "$<TARGET_FILE_DIR:test_app>/fonts/lettering.ttf"
+      VERBATIM)
+  endif()
+else()
+  message(STATUS "No annotation lettering (${MITCAD_LETTERING}): the annotations take the UI's font")
 endif()
 
 # Opaque, correctly placed rename editors on transparent trees (mitcad#685).

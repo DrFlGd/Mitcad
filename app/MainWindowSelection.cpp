@@ -109,6 +109,11 @@ SelectionScope* MainWindow::activeSelectionScope() {
 
 FilterRow MainWindow::sketchRowOf(const SelectionItem& item) const {
   const sketch::SketchModel& model = m_sketch->model();
+  // The sketch's axes and origin, which a click selects with no tool
+  // running (mitcad#899), as construction geometry.
+  if (sketch::isAxisSelection(item)) {
+    return FilterRow::ConstructionGeometry;
+  }
   if (item.kind == SelectKind::SketchPoint) {
     if (const sketch::PointData* point = model.point(item.name)) {
       return point->reference      ? FilterRow::ProjectedGeometry

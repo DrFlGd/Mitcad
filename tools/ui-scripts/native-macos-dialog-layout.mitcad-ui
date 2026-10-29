@@ -36,6 +36,12 @@ native-dialog-resize 400 300
 expect-native-bounds parametersFilter 180
 expect-native-button-order '^Import' '^Export' '^Edit Formula'
 expect-native-button-order '^OK$'
+native-pointer-click parametersFilter
+expect-native-control-focus parametersFilter
+type 'narrow search'
+expect-native-text parametersFilter '^narrow search$'
+key Ctrl+a
+key Backspace
 screenshot '${MITCAD_TEST_WORK}/parameters-narrow-${MITCAD_TEST_APPEARANCE}.png'
 native-pointer-button '^OK$'
 expect-native-dialog-gone '^Parameters$'
@@ -47,7 +53,13 @@ focus-main
 mark
 native-action file.new_project
 focus-dialog '^New Project$'
+# Start wider than the shared minimum so the later narrow request checks
+# a genuinely different supported width, even when 400 is clamped.
+native-dialog-resize 900 600
 expect-native-button-order '^Cancel$' '^Create$'
+# Check the whole form without scrolling each field into the same viewport
+# slot: that used to pass four individual bounds checks while hiding Folder.
+expect-native-form-layout 'projectFolder=Folder:' 'projectDisplayName=Display name:' 'projectAuthorName=Author:' 'projectAuthorEmail=Author:'
 expect-native-bounds projectFolder 300 '^Folder:$'
 expect-native-bounds projectDisplayName 100 '^Display name:$'
 expect-native-bounds projectAuthorName 100 '^Author:$'
@@ -63,11 +75,25 @@ type 'layout@example.invalid'
 key Tab
 expect-native-text projectAuthorName '^Layout Tester$'
 expect-native-text projectAuthorEmail '^layout@example\.invalid$'
+expect-native-form-layout 'projectFolder=Folder:' 'projectDisplayName=Display name:' 'projectAuthorName=Author:' 'projectAuthorEmail=Author:'
 screenshot '${MITCAD_TEST_WORK}/new-project-${MITCAD_TEST_APPEARANCE}.png'
 native-dialog-resize 400 400
+expect-native-form-layout 'projectAuthorName=Author:' 'projectAuthorEmail=Author:'
 expect-native-bounds projectAuthorName 100 '^Author:$'
 expect-native-bounds projectAuthorEmail 100 '^Author:$'
 expect-native-button-order '^Cancel$' '^Create$'
+native-pointer-click projectAuthorName
+expect-native-control-focus projectAuthorName
+key Ctrl+a
+type 'Narrow Layout Tester'
+key Tab
+expect-native-control-focus projectAuthorEmail
+key Ctrl+a
+type 'narrow-layout@example.invalid'
+key Tab
+expect-native-text projectAuthorName '^Narrow Layout Tester$'
+expect-native-text projectAuthorEmail '^narrow-layout@example\.invalid$'
+expect-native-form-layout 'projectAuthorName=Author:' 'projectAuthorEmail=Author:'
 screenshot '${MITCAD_TEST_WORK}/new-project-narrow-${MITCAD_TEST_APPEARANCE}.png'
 native-pointer-click projectAuthorName
 key Ctrl+a
@@ -80,30 +106,146 @@ key Escape
 expect-native-dialog-gone '^New Project$'
 focus-main
 
+# Settings > Cloud: capped wrapping form fields retain their shared reading
+# hints, not merely the longest word. The complete paragraph stays readable
+# without a hardcoded Cloud width, at normal and reduced window sizes.
+mark
+command tools.preferences.cloud
+focus-dialog '^Settings$'
+expect-native-text cloudAuthorNote '^When git has none[.].*history sees them[.]$'
+expect-native-bounds cloudAuthorNote shared
+expect-native-bounds cloudGitStatus shared
+expect-native-columns cloudKnownBrokers fit
+screenshot '${MITCAD_TEST_WORK}/settings-cloud-${MITCAD_TEST_APPEARANCE}.png'
+native-dialog-resize 400 400
+# A preferred reading width may yield at a smaller window. Require actual
+# complete control exposure after scrolling, without imposing a hard floor.
+expect-native-bounds cloudAuthorNote 0
+expect-native-bounds cloudGitStatus 0
+expect-native-columns cloudKnownBrokers fit
+screenshot '${MITCAD_TEST_WORK}/settings-cloud-narrow-${MITCAD_TEST_APPEARANCE}.png'
+key Ctrl+w
+expect-native-dialog-gone '^Settings$'
+focus-main
+
 # Settings > Navigation: both columns of speed sliders keep a usable track,
 # take a real drag to their end and reset through their own button.
 mark
 command tools.preferences.navigation
 focus-dialog '^Settings$'
+# Embedded table choices have the cell's padding, not dialog margins; their
+# full selected titles and the speed captions must be readable together.
+expect-native-form-layout navigationBinding0 navigationBinding1 navigationBinding2 navigationBinding3
+expect-native-form-layout 'navigationOrbitSpeed=Orbit speed:' 'navigationPanSpeed=Pan speed:' 'navigationZoomSpeed=Zoom speed:' 'navigationTrackpadSpeed=Trackpad scroll speed:'
+# The native guide must draw its actual vector artwork and describe the
+# current bindings; the old generic adapter left this entire area blank.
+expect-native-visible navigationGuide true
+expect-native-style navigationGuide artwork
+native-choice navigationScheme 'Middle orbits, ⌘ + middle pans, Shift + middle zooms'
+expect-native-text navigationGuide 'Middle drag: Orbit'
+expect-native-style navigationGuide artwork
+native-choice navigationScheme 'Trackpad (two-finger scroll pans, pinch zooms, ⌥ orbits)'
+expect-native-text navigationGuide 'Two-finger scroll: Pan'
+expect-native-style navigationGuide artwork
 expect-native-bounds navigationOrbitSpeed 70 '^Orbit speed:$'
 expect-native-bounds navigationPanSpeed 70 '^Pan speed:$'
 expect-native-bounds navigationZoomSpeed 70 '^Zoom speed:$'
 expect-native-bounds navigationTrackpadSpeed 70 '^Trackpad scroll speed:$'
-native-pointer-drag navigationZoomSpeed 0.5 1.5
+# Grab the actual knob at its current value of 100; a midpoint track click
+# starts at 205 and is a different AppKit gesture from dragging the knob.
+native-pointer-drag navigationZoomSpeed knob 1.5
 expect-widget-property navigationZoomSpeed value 400
 native-pointer-click navigationZoomSpeedReset
 expect-widget-property navigationZoomSpeed value 100
+# Real Tab/Shift+Tab reaches the slider again after its adjacent action.
+# Home establishes its documented minimum; Right/Left use the shared step
+# (10), with actual native value, presenter value and retained focus checked.
+native-pointer-click navigationZoomSpeed
+expect-native-control-focus navigationZoomSpeed
+key Tab
+expect-native-control-focus navigationZoomSpeedReset
+key Shift+Tab
+expect-native-control-focus navigationZoomSpeed
+key Home
+expect-native-text navigationZoomSpeed '^10$'
+expect-widget-property navigationZoomSpeed value 10
+key Right
+expect-native-control-focus navigationZoomSpeed
+expect-native-text navigationZoomSpeed '^20$'
+expect-widget-property navigationZoomSpeed value 20
+key Left
+expect-native-control-focus navigationZoomSpeed
+expect-native-text navigationZoomSpeed '^10$'
+expect-widget-property navigationZoomSpeed value 10
+native-pointer-click navigationZoomSpeedReset
+expect-native-text navigationZoomSpeed '^100$'
+expect-widget-property navigationZoomSpeed value 100
 screenshot '${MITCAD_TEST_WORK}/settings-navigation-${MITCAD_TEST_APPEARANCE}.png'
 native-dialog-resize 400 400
+expect-native-style navigationGuide artwork
 expect-native-bounds navigationOrbitSpeed 70 '^Orbit speed:$'
+expect-native-bounds navigationPanSpeed 70 '^Pan speed:$'
+expect-native-bounds navigationZoomSpeed 70 '^Zoom speed:$'
 expect-native-bounds navigationTrackpadSpeed 70 '^Trackpad scroll speed:$'
-native-pointer-drag navigationTrackpadSpeed 0.5 -0.5
+native-pointer-drag navigationTrackpadSpeed knob -0.5
 expect-widget-property navigationTrackpadSpeed value 10
 native-pointer-click navigationTrackpadSpeedReset
+expect-widget-property navigationTrackpadSpeed value 100
+native-pointer-click navigationTrackpadSpeed
+expect-native-control-focus navigationTrackpadSpeed
+key Tab
+expect-native-control-focus navigationTrackpadSpeedReset
+key Shift+Tab
+expect-native-control-focus navigationTrackpadSpeed
+key Home
+expect-native-text navigationTrackpadSpeed '^10$'
+expect-widget-property navigationTrackpadSpeed value 10
+key Right
+expect-native-control-focus navigationTrackpadSpeed
+expect-native-text navigationTrackpadSpeed '^20$'
+expect-widget-property navigationTrackpadSpeed value 20
+key Left
+expect-native-control-focus navigationTrackpadSpeed
+expect-native-text navigationTrackpadSpeed '^10$'
+expect-widget-property navigationTrackpadSpeed value 10
+native-pointer-click navigationTrackpadSpeedReset
+expect-native-text navigationTrackpadSpeed '^100$'
 expect-widget-property navigationTrackpadSpeed value 100
 screenshot '${MITCAD_TEST_WORK}/settings-navigation-narrow-${MITCAD_TEST_APPEARANCE}.png'
 key Ctrl+w
 expect-native-dialog-gone '^Settings$'
+focus-main
+
+# The Overview keeps both content-sized columns and full-width headings.
+# Short common actions remain readable at its default width. A real pointer
+# scroll exposes a complete long reason, then a wider window fits the rows.
+mark
+native-action help.shortcuts
+focus-dialog '^Keyboard and Mouse Overview$'
+expect-native-columns shortcutOverviewTable scroll
+expect-native-text shortcutOverview.mouse.0.1 '^Pan$'
+expect-native-style shortcutOverview.mouse.0.1 untruncated
+expect-native-text shortcutOverview.mouse.1.1 '^Orbit$'
+expect-native-style shortcutOverview.mouse.1.1 untruncated
+expect-native-text shortcutOverview.mouse.2.1 '^Zoom$'
+expect-native-style shortcutOverview.mouse.2.1 untruncated
+screenshot '${MITCAD_TEST_WORK}/overview-${MITCAD_TEST_APPEARANCE}.png'
+native-type shortcutOverviewFilter 'Cancel the command'
+expect-native-columns shortcutOverviewTable any
+native-pointer-click shortcutOverview.key.1.1
+expect-native-text shortcutOverview.key.1.1 '^Cancel the command, step back in a sketch tool, clear the selection$'
+expect-native-style shortcutOverview.key.1.1 untruncated,in-view
+screenshot '${MITCAD_TEST_WORK}/overview-reason-${MITCAD_TEST_APPEARANCE}.png'
+native-type shortcutOverviewFilter ''
+native-dialog-resize 900 620
+expect-native-columns shortcutOverviewTable fit
+expect-native-spanned-heading shortcutOverviewTable '^Mouse '
+native-pointer-click shortcutOverview.key.1.1
+expect-native-text shortcutOverview.key.1.1 '^Cancel the command, step back in a sketch tool, clear the selection$'
+expect-native-style shortcutOverview.key.1.1 untruncated,in-view
+screenshot '${MITCAD_TEST_WORK}/overview-wide-${MITCAD_TEST_APPEARANCE}.png'
+native-pointer-button '^Close$'
+expect-native-dialog-gone '^Keyboard and Mouse Overview$'
 focus-main
 
 # Insert from Library: helpers on the left, Close and Insert on the right.

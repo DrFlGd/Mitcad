@@ -2,13 +2,21 @@
 // The sketch's origin and axes as picks (mitcad#500): the pick ids, the
 // fixed line and point a tool's view of the sketch gets for each the sketch
 // lacks (once, however often it is asked), and the entities the model made
-// for them found again instead.
+// for them found again instead. With no tool running (mitcad#899): what a
+// click on an axis or the origin selects, the selection's items for them,
+// and the picks a preselection of a point and an axis gives Coincident and
+// Sketch Dimension.
 #include "sketch/SketchModel.hpp"
 
 #include <cmath>
 #include <cstdio>
+#include <optional>
 
+#include <QPointF>
 #include <QString>
+#include <QStringList>
+
+#include "framework/Selection.hpp"
 
 namespace {
 
@@ -150,6 +158,145 @@ void madeAxesTests() {
   CHECK(model.axisLine(QStringLiteral("x")) == QStringLiteral("c2"));
 }
 
+// A new sketch with one free point p1 at (12, 20).
+SketchModel freePointSketch() {
+  SketchModel model;
+  PointData free;
+  free.id = QStringLiteral("p1");
+  free.at = V2{12.0, 20.0};
+  model.points.push_back(free);
+  return model;
+}
+
+// A click with no tool running (mitcad#899): how far it is from an axis
+// across the view, and what it selects of what entityAt() found there.
+void clickTests() {
+  // The view: the origin at (400, 300), 1 px per mm, y up the screen.
+  const QPointF origin(400.0, 300.0);
+  const QPointF xAlong(100.0, 0.0);
+  const QPointF yAlong(0.0, -100.0);
+  const auto about = [](std::optional<double> d, double want) { return d.has_value() && std::abs(*d - want) < 1e-9; };
+  CHECK(about(axisScreenDistance(QPointF(520.0, 302.0), origin, xAlong), 2.0));
+  // Across the view: beyond the line the model would make.
+  CHECK(about(axisScreenDistance(QPointF(-900.0, 297.0), origin, xAlong), 3.0));
+  CHECK(about(axisScreenDistance(QPointF(400.0, 250.0), origin, xAlong), 50.0));
+  CHECK(about(axisScreenDistance(QPointF(403.0, 40.0), origin, yAlong), 3.0));
+  // The sketch plane seen edge on: no axis to click.
+  CHECK(!axisScreenDistance(QPointF(400.0, 300.0), origin, QPointF(0.5, 0.0)).has_value());
+
+  // A new sketch: entityAt() gives the picks there.
+  const SketchModel fresh = freePointSketch();
+  CHECK(fresh.axisSelectionPick(QStringLiteral("x_axis")) == QStringLiteral("x_axis"));
+  CHECK(fresh.axisSelectionPick(QStringLiteral("y_axis")) == QStringLiteral("y_axis"));
+  CHECK(fresh.axisSelectionPick(QStringLiteral("origin")) == QStringLiteral("origin"));
+  // The sketch's own point, and nothing: the view's to pick.
+  CHECK(fresh.axisSelectionPick(QStringLiteral("p1")).isEmpty());
+  CHECK(fresh.axisSelectionPick(QString()).isEmpty());
+
+  // The model made the x axis c2 and the origin point p1: a click on the
+  // line still selects the axis by its pick id; the origin point is a
+  // point of the sketch.
+  SketchModel made;
+  PointData originPoint;
+  originPoint.id = QStringLiteral("p1");
+  originPoint.fixed = true;
+  made.points.push_back(originPoint);
+  CurveData line;
+  line.id = QStringLiteral("c2");
+  line.type = QStringLiteral("line");
+  line.curve = Curve2::line(V2{}, V2{kAxisLineLength, 0.0});
+  line.start = QStringLiteral("p1");
+  line.end = QStringLiteral("p3");
+  line.axis = QStringLiteral("x");
+  made.curves.push_back(line);
+  CHECK(made.axisSelectionPick(QStringLiteral("c2")) == QStringLiteral("x_axis"));
+  CHECK(made.axisSelectionPick(QStringLiteral("p1")).isEmpty());
+  CHECK(made.axisEntity(QStringLiteral("x_axis")) == QStringLiteral("c2"));
+  CHECK(made.axisEntity(QStringLiteral("origin")) == QStringLiteral("p1"));
+  CHECK(made.axisEntity(QStringLiteral("y_axis")) == QStringLiteral("y_axis"));
+  CHECK(made.axisEntity(QStringLiteral("c2")) == QStringLiteral("c2"));
+
+  // The selection's items: an axis a sketch line, the origin a sketch
+  // point, by their pick ids.
+  const mitcad::SelectionItem y = axisSelectionItem(QStringLiteral("F1"), QStringLiteral("y_axis"), QString());
+  CHECK(y.kind == mitcad::SelectKind::SketchCurve && y.owner == QStringLiteral("F1"));
+  CHECK(y.name == QStringLiteral("y_axis") && y.geometry == QStringLiteral("line"));
+  CHECK(isAxisSelection(y));
+  const mitcad::SelectionItem o = axisSelectionItem(QStringLiteral("F1"), QStringLiteral("origin"), QStringLiteral("O1"));
+  CHECK(o.kind == mitcad::SelectKind::SketchPoint && o.name == QStringLiteral("origin"));
+  CHECK(o.geometry == QStringLiteral("point") && o.occurrence == QStringLiteral("O1"));
+  CHECK(isAxisSelection(o));
+  // The sketch's own entities are not.
+  mitcad::SelectionItem own;
+  own.kind = mitcad::SelectKind::SketchPoint;
+  own.owner = QStringLiteral("F1");
+  own.name = QStringLiteral("p1");
+  CHECK(!isAxisSelection(own));
+  mitcad::SelectionItem edge;
+  edge.kind = mitcad::SelectKind::Edge;
+  edge.name = QStringLiteral("x_axis");
+  CHECK(!isAxisSelection(edge));
+}
+
+// A preselected point and axis (mitcad#899): the picks the constraint
+// tools and Sketch Dimension take, and the values they decide on in the
+// sketch with the picks added.
+void preselectionTests() {
+  const SketchModel fresh = freePointSketch();
+  const QStringList coincident =
+      fresh.selectionPicks({QStringLiteral("p1"), QStringLiteral("y_axis")}, true);
+  CHECK(coincident == QStringList({QStringLiteral("p1"), QStringLiteral("y_axis")}));
+  // Fix/Unfix: the axes left out.
+  CHECK(fresh.selectionPicks({QStringLiteral("p1"), QStringLiteral("y_axis")}, false) ==
+        (QStringList() << QStringLiteral("p1")));
+  CHECK(fresh.selectionPicks({QStringLiteral("origin")}, false).isEmpty());
+
+  SketchModel view = fresh;
+  view.addAxisPicks();
+  // Coincident: a point and a line, one of them the sketch's axes; the
+  // point goes onto the y axis, 12 mm from it now.
+  const PointData* point = pointOf(view, coincident[0]);
+  const CurveData* axis = curveOf(view, coincident[1]);
+  CHECK(point != nullptr && axis != nullptr);
+  if (point != nullptr && axis != nullptr) {
+    CHECK(axis->isLine() && axis->axis == QStringLiteral("y"));
+    CHECK(!view.isAxisOrOrigin(coincident[0]) && view.isAxisOrOrigin(coincident[1]));
+    CHECK(std::abs(axis->curve.distanceTo(point->at) - 12.0) < 1e-9);
+  }
+  // Sketch Dimension: the point and the x axis give the point's distance
+  // from the axis, its y coordinate.
+  const QStringList dimension = fresh.selectionPicks({QStringLiteral("p1"), QStringLiteral("x_axis")}, true);
+  const CurveData* x = curveOf(view, dimension.value(1));
+  CHECK(x != nullptr && x->isLine() && x->axis == QStringLiteral("x"));
+  if (x != nullptr) {
+    CHECK(std::abs(x->curve.distanceTo(V2{12.0, 20.0}) - 20.0) < 1e-9);
+  }
+  // The origin and the point: the distances between two points.
+  const QStringList distance = fresh.selectionPicks({QStringLiteral("origin"), QStringLiteral("p1")}, true);
+  const PointData* at = pointOf(view, distance.value(0));
+  CHECK(at != nullptr && norm(at->at) < 1e-12);
+  if (at != nullptr) {
+    CHECK(std::abs(dist(at->at, V2{12.0, 20.0}) - std::hypot(12.0, 20.0)) < 1e-9);
+  }
+
+  // The model made the x axis c2 and the origin point p1 since the
+  // selection: the picks are those entities; the y axis is still a pick.
+  SketchModel made;
+  PointData originPoint;
+  originPoint.id = QStringLiteral("p1");
+  originPoint.fixed = true;
+  made.points.push_back(originPoint);
+  CurveData line;
+  line.id = QStringLiteral("c2");
+  line.type = QStringLiteral("line");
+  line.axis = QStringLiteral("x");
+  made.curves.push_back(line);
+  CHECK(made.selectionPicks({QStringLiteral("p4"), QStringLiteral("x_axis"), QStringLiteral("origin"),
+                             QStringLiteral("y_axis")},
+                            true) == QStringList({QStringLiteral("p4"), QStringLiteral("c2"), QStringLiteral("p1"),
+                                                  QStringLiteral("y_axis")}));
+}
+
 } // namespace
 
 int sketchAxesTests() {
@@ -157,5 +304,7 @@ int sketchAxesTests() {
   pickIdTests();
   emptySketchTests();
   madeAxesTests();
+  clickTests();
+  preselectionTests();
   return failures;
 }

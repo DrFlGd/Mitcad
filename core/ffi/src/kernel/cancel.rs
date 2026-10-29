@@ -23,6 +23,7 @@ pub mod ffi {
 
     unsafe extern "C++" {
         include!("bridge/cancel.hpp");
+        include!("bridge/trycatch.hpp");
 
         /// While it lives, the geometry's operations on the thread that
         /// made it stop when its check asks.

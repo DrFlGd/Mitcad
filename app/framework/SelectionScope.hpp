@@ -14,7 +14,8 @@
 //
 // A scope is one context of rows: the sketch's (`SelectionScope::sketch`,
 // active while a sketch is edited) and Project's (`project`, while the
-// Project command runs in the sketch). Body edges have two rows, visible and
+// Project command runs in the sketch). Other sketches' curves and points
+// have a row only in Project's (mitcad#904). Body edges have two rows, visible and
 // occluded: which one governs an edge depends on whether the part of it the
 // click or the window hit is in sight (`EdgeSight`, from the view).
 
@@ -53,8 +54,11 @@ enum class FilterRow {
   Bodies,
   Components,
   ReferenceGeometry, // planes, axes and points (origin and construction)
+  // Other sketches' curves and points (mitcad#904): only Project's scope
+  // has the row; everywhere else they are never selectable.
+  OtherSketchGeometry,
 };
-constexpr int kFilterRowCount = 12;
+constexpr int kFilterRowCount = 13;
 
 // "sketch-geometry", "visible-edges", ... (logs, tests, action names).
 QString filterRowId(FilterRow row);
@@ -88,7 +92,8 @@ public:
   // constraints, profiles and visible body edges square; the rest empty.
   static SelectionScope sketch();
   // Project's source rows: visible edges cross, occluded edges empty, faces
-  // and vertices square.
+  // and vertices square, other sketches' curves and points cross
+  // (mitcad#904).
   static SelectionScope project();
 
   const QString& name() const { return m_name; }
@@ -131,8 +136,10 @@ private:
 using SketchRowOf = std::function<FilterRow(const SelectionItem&)>;
 
 // The row that governs an item; none when no row may let it be picked:
-// another sketch's geometry, kinds the view does not offer. Body edges give
-// VisibleEdges (the scope decides with allowsEdge).
+// another sketch's profiles, dimensions and constraints, kinds the view
+// does not offer. Another sketch's curves and points give
+// OtherSketchGeometry, which only Project's scope has (mitcad#904). Body
+// edges give VisibleEdges (the scope decides with allowsEdge).
 std::optional<FilterRow> filterRowOf(const SelectionItem& item, const QString& activeSketch,
                                      const SketchRowOf& sketchRow);
 

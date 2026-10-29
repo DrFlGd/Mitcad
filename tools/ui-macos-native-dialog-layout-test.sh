@@ -34,6 +34,29 @@ for appearance in light dark; do
   ui_expect_log 'TestDriver: done' "$appearance: native dialog layout workflow completed"
   ui_expect_log 'Native bounds: native .navigationTrackpadSpeed' "$appearance: slider bounds recorded"
   ui_expect_log 'Native button order: .*Close .*Insert' "$appearance: Insert from Library button bounds recorded"
+  # A form can keep every field visible by opening much taller than its
+  # content. Compare the initial New Project height with the shared form's
+  # own size, allowing AppKit's different control metrics and window chrome.
+  if python3 - "$UI_LOG_FILE" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+presenter = re.search(r"New Project dialog: layout .*\(dialog height (\d+),", text)
+native = re.search(r"Native bounds: native 'projectFolder'.* in \d+x(\d+)", text)
+if not presenter or not native:
+    raise SystemExit("FAIL: missing New Project size measurements")
+shared_height = int(presenter.group(1))
+native_height = int(native.group(1))
+if native_height > shared_height * 1.25:
+    raise SystemExit(f"FAIL: New Project height {native_height} exceeds shared form height {shared_height} by over 25%")
+print(f"PASS: New Project compact height {native_height}, shared form {shared_height}")
+PY
+  then
+    :
+  else
+    ui_fail "$appearance: New Project opens at its content height"
+  fi
   for problem in 'TestDriver: FAIL' 'Unable to simultaneously satisfy constraints' 'Native Mac canvas:' \
     'OCCT view event failed' 'New Project: created'; do
     ui_expect_no_log "$problem" "$appearance: no $problem"

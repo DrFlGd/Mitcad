@@ -5,6 +5,7 @@
 wait-idle
 window-resize 1400 990
 mark
+hold-model-preview true
 dblclick-logged '^Timeline Extrude1 at '
 expect-log 'Extrude: editing keeps the stored operation' 30
 wait-idle
@@ -16,6 +17,7 @@ qt-type-now input_distance '7 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 qt-type-now input_distance '5 mm'
+hold-model-preview false
 wait-log '^Extrude Distance: 5 mm' 30
 wait-idle 30
 expect-no-log 'Extrude: automatic Operation'

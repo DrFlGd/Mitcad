@@ -522,7 +522,7 @@ the menus of the groups.
 | Delete | Delete | Delete the selected sketch geometry, constraints and dimensions |
 | Copy, Cut, Paste | Ctrl+C, Ctrl+X, Ctrl+V | In a sketch: copy or cut the selected sketch geometry with its constraints and dimensions, and paste it into this or another sketch ([Copy, Cut and Paste](#copy-cut-and-paste)) |
 | Extrude | E | Extrude profiles, also directly from sketch mode, or one planar face of a body. Set the direction, the extent, the taper, a thin wall and the Operation ([Extrude](#extrude), [Thin Extrude](#thin-extrude)) |
-| Hole | H | Click a face for the hole positions. Types: simple, counterbore, countersink, counterdrill, taper, thread ([Hole](#hole)) |
+| Hole | H | Click a face for the hole positions. Types: simple, counterbore, countersink, counterdrill, taper, thread, clearance for a screw size ([Hole](#hole)) |
 | Fillet | F | Round edges or faces, in several radius sets ([Fillet](#fillet)) |
 | Press Pull | Q | Offset a face, fillet an edge or extrude a profile ([Press Pull](#press-pull)) |
 | Move/Copy | M | Move bodies or components: a free move with handles, a move along axes, a rotation, or a move from point to point |
@@ -883,6 +883,31 @@ A tapped hole has a *Direction*, right hand or left hand, and can take a
 custom thread with a number of starts, as Thread does (below). Its bore
 is the thread's minor diameter.
 
+**Clearance holes.** With *Hole Tap Type* **Clearance** the hole is for
+an ISO metric screw: choose its *Screw Size* (M1.6 to M24) and its *Fit*
+(Fine, Normal or Coarse, the series of ISO 273; Normal by default). The
+size fills in the fields:
+
+| Field | What the size gives | M6, Fit Normal |
+|---|---|---|
+| Diameter | the clearance hole of ISO 273 for the fit | 6.6 mm (Fine 6.4, Coarse 7) |
+| Counterbore Diameter and Depth | the counterbore for the socket head of an ISO 4762 screw (DIN 974-1), deep enough to put the head just below the face | 11 mm, 6.4 mm |
+| Countersink Diameter and Angle | the countersink for the 90° head of an ISO 10642 screw (or ISO 15065's, where that is larger), so that the head is at the face | 13.44 mm, 90° |
+| Counterdrill Diameter, Depth and Angle | as the counterbore, with a 90° cone | 11 mm, 6.4 mm, 90° |
+
+M24 has no countersink in the tables, so a countersink keeps its
+values. A tapped hole's countersink is filled in too: just over the
+thread's major diameter, at 90° (6.6 mm for M6x1).
+
+A field the size fills keeps following the size, the fit and the hole
+type until you type a value in it. Your value then stays when the size
+changes, and so does an expression (`d1 + 2`). Choosing a *Hole Tap
+Type* fills in every field again, except expressions. When you edit a
+clearance hole, it opens with its screw size and fit, and the values you
+typed stay as they are. The hole keeps its values as numbers, so a
+change to the tables in a later version does not change it. Holes made
+in earlier versions open as they were.
+
 ### Thread
 
 **Thread** makes a thread that is cosmetic or modelled. The options
@@ -1223,6 +1248,19 @@ instead. With
 one face, edge or vertex picked, *Note…* adds a *leader note* instead:
 an arrow to the pick and a text of one or more lines.
 
+**Hole callouts.** Pick a hole in the Measure panel — its wall, its
+counterbore's or countersink's face, or its rim — and click *Hole
+Callout*. MitCad writes the hole as a drawing does, from the hole
+feature, in the symbols of ISO 129-1: how many holes the feature has
+(`4x`), the drill's diameter (`Ø6.6`) or a tapped hole's thread (`M8x1.25
+- 6H`, a custom thread's size and number of starts), `THRU` or the depth
+(`↧ 15`), and on a second line the counterbore (`⌴ Ø11 ↧ 6.8`) or the
+countersink (`⌵ Ø12 × 90°`). The arrow points at the hole's edge where
+you clicked it. The callout follows the hole: change its size, depth or
+thread and the text changes too. A round face that is not from a hole
+feature gets its diameter. To add a position frame under it, as on a
+drawing, select it in the Annotations window and click *Add Frame…*.
+
 **Datum labels and feature control frames.** For geometric tolerances
 (ISO 1101), pick one face, edge, datum plane or datum axis in the
 Measure panel and click *Datum Label…* or *Frame…* (not a vertex or a
@@ -1251,25 +1289,38 @@ drawings. A frame refers to single datum labels: common datums (A-B)
 are not supported yet.
 
 **How annotations look.** Annotations are drawn as a technical
-drawing's dimensions are (ISO 129-1, ISO 3098, ISO 1101), on a light and
-on a dark background alike: plain text with no box behind it, thin
-lines, closed filled arrowheads, extension lines that stop a little short
-of the measured point and run a little past the dimension line. Feature
-control frames and datum labels are outlined in the same thin lines; the
-datum label's leader ends in a filled triangle.
+drawing's dimensions are (ISO 129-1, ISO 3098, ISO 128, ISO 1101), on a
+light and on a dark background alike: technical lettering in the style of
+ISO 3098 type B (a bundled font) with no box behind it, crisp thin
+lines, small closed filled arrowheads that lie in the annotation's plane
+like its text, extension lines that start a little off the edge, corner
+or face you picked and run a little past the dimension line. Feature
+control frames and datum labels are outlined in the same thin lines, two
+text heights high; the datum label stands on a short stem square to its
+face, ending in a filled triangle on the face (on a flat face, on its
+outline as you see it, the triangle's base along it), a note's or a frame's
+leader on a face ends in a dot, one on an edge in an arrow. A selected
+annotation is drawn in the selection's blue, one under the mouse in the
+hover's blue, with the same thin lines and text; the faces and edges it
+measures are not filled in.
 
 - *Colour.* A new annotation is drawn in *Auto*: near-black on a light
-  background, light grey on a dark one. Choose another colour in its
-  editor or with *Colour…* in the Annotations window; *Auto* is the first
-  choice there. Designs saved by older versions, whose annotations took
-  orange, blue, green, magenta, violet and amber in turn, open with those
-  in *Auto*; other colours stay.
+  background or over a light body, a light grey over a dark background:
+  a line takes the one that shows over what it crosses, a text the one
+  for what lies behind most of it. In its editor or with *Colour…*
+  in the Annotations window choose *Auto*, *Black*, *Dark Grey* or
+  *Custom…* for any other. Designs saved by older versions, whose
+  annotations took orange, blue, green, magenta, violet and amber in
+  turn, open with those in *Auto*; a colour an annotation has of its own
+  stays and is offered in the list. Snapshots and Render Image draw *Auto*
+  for the background of the picture itself.
 - *Text height.* All texts of a design's annotations are one height in
   millimetres, lying in the annotation's plane, so they grow and shrink
   with the model as you zoom, like the lines. *Auto* takes 2.5, 3.5, 5, 7
-  or 10 mm by the size of what is annotated. Choose another with *Text
-  Height…* in the Annotations window. When you zoom far out, the texts
-  stay at least about 9 pixels high so that they stay readable.
+  or 10 mm by the size of the design. Choose another with *Text Height…*
+  in the Annotations window. On screen a text stays between about 9
+  pixels (zoomed far out, so that it stays readable) and 16 pixels high
+  (zoomed far in, so that it keeps the proportions of a drawing).
 - *Reading direction.* A text reads from the bottom or from the right of
   the screen from any side you look at it: never upside down or
   mirrored; a vertical or nearly vertical dimension reads from bottom to
@@ -1278,12 +1329,22 @@ datum label's leader ends in a filled triangle.
 A dimension lies in a plane, not facing the screen: a length in a plane
 of the part that holds it — a flat face at a picked point, or else a
 coordinate plane through the points — the one most facing you when you
-kept it; a radius or a diameter in its circle's plane, an angle in the
-plane of its sides. A length's dimension line is placed outside the
-body, on the side away from it, one and a half text heights clear of its
-outline, so that its extension lines leave the body at its edge; a
-second dimension parallel to it on the same side goes a little further
-out. *Automatic* in the editor places it so again. An annotation whose
+kept it; a radius in its circle's plane, an angle in the plane of its
+sides; a diameter added in the view faces you as a note does, otherwise
+in its circle's plane. A length's dimension line is placed outside the
+body, on the side towards you when you kept it, six text heights clear
+of its outline, so that its extension lines leave the body at its edge;
+a length between two flat faces moves along them to their edge on that
+side and to their far edge, so that it stands outside the part as on a
+drawing. A second dimension parallel to it on the same side goes two
+and a half text heights further out. A diameter is a leader from outside
+the circle with its arrow on the rim, its text level on a short landing.
+Notes, feature control frames and hole callouts put their text out of
+the part the shortest way on an oblique leader (up and out to a side, or
+down and out), with a short landing level with the first line, without
+crossing those placed before it and off the dimension lines; their lines
+are set flush left. A datum label stands on its stem off the face. A
+frame added to a hole callout hangs under its lines, flush with them. *Automatic* in the editor places it so again. An annotation whose
 plane you see edge on fades away. Drag the text of an annotation to move
 it, or drag a length's dimension line (an angle's arc) to move it
 farther from or nearer the measured points; a place you dragged it to is
@@ -1825,6 +1886,15 @@ Constraints use the axes and the origin in these ways:
 The Mirror Line of Mirror also takes the x and y axes (refer to
 [Sketch curve tools](#sketch-curve-tools)).
 
+You can also select an axis or the origin before you start a tool, as
+you select construction geometry: click it, and Ctrl+click to add other
+geometry. For example, select a point and the y axis, then push
+Coincident: the point goes onto the axis. Select a point and the x axis,
+then push D: the dimension is the point's distance from the axis. A
+selected axis also becomes the Mirror Line of Mirror. Selecting an axis
+or the origin adds nothing to the sketch. Delete, Copy, Cut and
+Fix/Unfix ignore them, and you cannot drag them.
+
 The first time something refers to an axis or the origin, MitCad adds
 it to the sketch as fixed construction geometry. This occurs in the
 same undo step. Afterwards MitCad uses it again. It never bounds a profile. It is not
@@ -1959,6 +2029,25 @@ Projected geometry obeys these rules:
   sketch geometry (refer to [Sketch curve tools](#sketch-curve-tools)).
 - Project has selection rows of its own while it runs (refer to
   [Selection in sketch mode](#selection-in-sketch-mode)).
+
+Project also takes the curves and points of other sketches: lines,
+arcs, circles, ellipses, splines and points, also construction and
+projected geometry. Click them in the view while Project runs, or select
+a whole sketch in the browser to get all its curves. The sketch must come
+before the edited sketch in the timeline. If you select geometry of a
+later sketch, the panel shows the reason and OK is not available. You can
+also select the sketches of other components.
+
+- With *Projection Link* on, the projected curves follow the other
+  sketch: when you edit it or change its dimensions or parameters, they
+  move with it. If you delete a curve there, its projection keeps its
+  last place and the sketch shows a warning, as for a body edge that is
+  gone. With *Projection Link* off, you get fixed copies.
+- The sketches can be on any planes. On the same plane you get exact
+  copies. On a parallel plane you get the same shapes. On a plane at an
+  angle, MitCad flattens the curves along the sketch normal, as for
+  body edges: a circle becomes an ellipse, and a line across the angle
+  becomes shorter.
 
 **Intersect** (Create › References) adds the curves where the sketch
 plane cuts the bodies and faces that you select. It adds points where
@@ -2103,7 +2192,8 @@ changes. For an edge that is partly hidden, the part that you click or
 that is inside the window counts.
 
 The rows only concern the edited sketch. You cannot select the geometry
-of other sketches, and you cannot select hidden bodies. *Reset to
+of other sketches, except while Project runs, and you cannot select
+hidden bodies. *Reset to
 Defaults* restores the rows. The Solid tab's filters are kept apart.
 They apply again after the sketch.
 
@@ -2125,10 +2215,11 @@ control:
 | Visible body edges | cross |
 | Occluded edges | empty |
 | Faces and vertices | square |
+| Other sketches' curves and points | cross |
 
 You can change the rows while Project runs. Shift+click
 reaches an edge behind faces. Project takes nothing but edges, faces and
-vertices. OK and Cancel bring back the sketch's rows as they were. The
+vertices of the bodies, and curves and points of other sketches. OK and Cancel bring back the sketch's rows as they were. The
 projected geometry then follows the projected geometry row.
 
 ### Copy, Cut and Paste
@@ -2298,13 +2389,14 @@ In the floating layout (the default), the **Browser background**
 setting in Preferences › Display selects between the Browser's card
 and **Rows**. Refer to [Layouts](#layouts).
 
-**When a design opens.** A design opens with its root active. The
-component that was active when the design was saved makes no
-difference. This also applies to a version, a copy, a recovered
+**When a design opens.** A design that opens from a file opens with
+its root active. The component that was active when the design was
+saved makes no difference. This also applies to a version, a copy, a recovered
 design and an import. This is not an Undo step, and it does not mark
-the design as modified. A new design that you make with New Design in
-a project opens with its Component1 active, so its first sketch and
-feature go into Component1.
+the design as modified. A new design starts with its Component1
+active, so its first sketch and feature go into Component1. This
+applies to the untitled design at the start, to New, to the empty
+design after Close, and to New Design in a project.
 
 When the Browser tree is longer than the Browser, the design opens with
 the root open. Every row under the root is folded. Thus the components
@@ -5956,7 +6048,8 @@ MitCad's parts library has these components:
 - Washers (ISO 7089)
 - The slot profiles, connectors and other parts of the Build tab
 
-The screws, nuts and washers have the sizes M3 to M12. Up to its version
+The screws, nuts and washers have the sizes M1.6 to M24 (the
+countersunk screws M3 to M20). Up to its version
 1.0.0, this library was the fastener library. Designs made with the
 fastener library keep their components.
 
@@ -6265,7 +6358,11 @@ Each format is imported in its own way:
   unit.
 - DXF is imported into a new sketch on a plane that you select (Insert
   DXF). In sketch mode, MitCad imports it into the sketch that you
-  edit.
+  edit. Block references are expanded: an array insert gives its
+  block once per cell, at most 100 000 cells (its first rows), and at
+  most a million entities and block references are placed in all,
+  counting the contents of every reference. The import's warnings say
+  what was left out.
 - SVG is imported into a sketch in the same way (Insert SVG). Refer to
   the paragraph that follows.
 - Another MitCad design is imported as a component, linked or as a

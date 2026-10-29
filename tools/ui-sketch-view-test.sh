@@ -563,8 +563,8 @@ expect_centred() {
 
 # sketch_on_origin plane: Create Sketch on an origin plane, clicked in the
 # view: Create Sketch shows the origin planes in every design (mitcad#844),
-# also after New Design, which opens with the root active beside its
-# Component1 (mitcad#426).
+# also after New Design, which starts with its Component1 active
+# (mitcad#898).
 sketch_on_origin() {
   local plane=$1 before
   before=$(grep -c "Sketch started on $plane" "$UI_LOG")
@@ -593,6 +593,7 @@ centred_round() {
   ui_mark
   ui_step "$layout: new design (Ctrl+N)" ui_key ctrl+n
   ui_expect_new "New document" "$layout: a new design"
+  ui_expect_new "Opened the new design with Component1 active" "$layout: the new design has Component1 active"
   ui_wait_idle
   ui_sync
   for plane in xy xz yz; do

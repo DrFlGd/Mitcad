@@ -102,6 +102,34 @@ bool TestDriver::runWindowFitStep(const QString& name, const QStringList& a, int
     }
     return true;
   };
+  if (name == QLatin1String("fit-main-frame") || name == QLatin1String("expect-main-frame")) {
+    int width = 0;
+    int height = 0;
+    if (mac::test::active() || !m_main || !toInt(a.at(0), width) || !toInt(a.at(1), height) ||
+        width < 300 || height < 200 || width > 10000 || height > 10000) {
+      fail(line, QStringLiteral("%1 requires a Qt main window and a frame of at least 300x200").arg(name));
+      return true;
+    }
+    const QSize available(width, height);
+    if (name == QLatin1String("fit-main-frame")) {
+      // A process-local available-frame scenario: use this window's real
+      // titlebar/border size, without changing the display or user settings.
+      const QSize frame = m_main->frameGeometry().size() - m_main->size();
+      m_main->resize(available - frame);
+      m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+    } else {
+      whenReady([this, available] {
+        const QSize frame = m_main->frameGeometry().size();
+        m_waitDetail = QStringLiteral("actual frame %1x%2, client %3x%4, minimum %5x%6, available %7x%8")
+            .arg(frame.width()).arg(frame.height()).arg(m_main->width()).arg(m_main->height())
+            .arg(m_main->minimumSizeHint().width()).arg(m_main->minimumSizeHint().height())
+            .arg(available.width()).arg(available.height());
+        qInfo().noquote() << QStringLiteral("Compact main frame: %1").arg(m_waitDetail);
+        return frame.width() <= available.width() && frame.height() <= available.height();
+      }, 6, QStringLiteral("the main window does not fit the requested available frame"));
+    }
+    return true;
+  }
   if (name == QLatin1String("expect-dialog-fits")) {
     QSize most;
     int width = 0;

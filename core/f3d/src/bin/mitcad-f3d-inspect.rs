@@ -149,7 +149,7 @@ fn cmd_info(path: &str) -> Result<(), String> {
         }
         let refs = doc.blob_references();
         for b in doc.body_blobs() {
-            let data = doc.read(&b.entry).map_err(|e| e.to_string())?;
+            let data = doc.read_large(&b.entry).map_err(|e| e.to_string())?;
             let mine: Vec<_> = refs.iter().filter(|r| r.blob == b.entry).collect();
             let n = mine.len();
             let context = mine
@@ -194,7 +194,10 @@ fn cmd_extract(path: &str, out: &str) -> Result<(), String> {
         if e.is_dir() {
             continue;
         }
-        match f.archive().read(e) {
+        match f
+            .archive()
+            .read_with_limit(e, mitcad_f3d::zip::LARGE_ENTRY_LIMIT)
+        {
             Ok(data) => {
                 let p = Path::new(out).join(&e.name);
                 if let Some(parent) = p.parent() {
@@ -216,7 +219,7 @@ fn cmd_extract(path: &str, out: &str) -> Result<(), String> {
 }
 
 fn cmd_dump(path: &str, entry: &str, max: Option<usize>) -> Result<(), String> {
-    let data = open(path)?.read(entry).map_err(|e| e.to_string())?;
+    let data = open(path)?.read_large(entry).map_err(|e| e.to_string())?;
     let f = AsmFile::parse(&data).map_err(|e| e.to_string())?;
     println!("{:?}", f.header);
     let n = max.unwrap_or(usize::MAX).min(f.records.len());
@@ -240,7 +243,7 @@ fn cmd_names(path: &str, entry: &str, cylinders: bool) -> Result<(), String> {
             .into_iter()
             .filter(|b| b.entry.ends_with(entry))
         {
-            let data = doc.read(&blob.entry).map_err(|e| e.to_string())?;
+            let data = doc.read_large(&blob.entry).map_err(|e| e.to_string())?;
             let file = AsmFile::parse(&data).map_err(|e| e.to_string())?;
             let history = History::parse(&file).map_err(|e| e.to_string())?;
             let steps = history.as_ref().map_or(0, |h| h.states.len());
@@ -534,7 +537,7 @@ fn cmd_history(path: &str) -> Result<(), String> {
     let opt = Options::default();
     for (name, doc) in documents(path)? {
         for blob in doc.body_blobs().into_iter().filter(|b| b.history) {
-            let data = doc.read(&blob.entry).map_err(|e| e.to_string())?;
+            let data = doc.read_large(&blob.entry).map_err(|e| e.to_string())?;
             let file = AsmFile::parse(&data).map_err(|e| e.to_string())?;
             let short = blob.entry.rsplit('/').next().unwrap_or(&blob.entry);
             let history = match History::parse(&file) {
@@ -867,7 +870,7 @@ fn cmd_blob_bodies(path: &str, entry: &str) -> Result<(), String> {
         .find(|b| b.entry.ends_with(entry))
         .ok_or_else(|| format!("no blob {entry}"))?
         .entry;
-    let data = f.read(&name).map_err(|e| e.to_string())?;
+    let data = f.read_large(&name).map_err(|e| e.to_string())?;
     let file = AsmFile::parse(&data).map_err(|e| e.to_string())?;
     let state = mitcad_f3d::names::NamedState::new(&file, None);
     let tops = mitcad_f3d::convert::body_records(&file);
@@ -912,7 +915,7 @@ fn cmd_face_boundary(path: &str, entry: &str, guid: &str) -> Result<(), String> 
         .find(|b| b.entry.ends_with(entry))
         .ok_or_else(|| format!("no blob {entry}"))?
         .entry;
-    let data = f.read(&name).map_err(|e| e.to_string())?;
+    let data = f.read_large(&name).map_err(|e| e.to_string())?;
     let file = AsmFile::parse(&data).map_err(|e| e.to_string())?;
     let state = mitcad_f3d::names::NamedState::new(&file, None);
     for i in 0..state.faces.len() {

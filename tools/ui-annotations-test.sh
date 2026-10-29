@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands app/framework app/browser app/view core/model-api/src core/model/src/document tools/cli
 # check-all sources: app/MainWindowMeasurements.cpp app/MainWindowMeasureHistory.cpp app/MainWindowAnnotations.cpp core/model-base/src/iso286.rs app/MainWindowVisibility.cpp
+# check-all sources: core/model-drawing/src
 # Annotations (mitcad#702) through the real UI, in the Docked layout, on
 # two cylinders of radius 5, 20 high (Body1 about Z through the origin,
 # Body2 through (30, 40)), with an offset Gone of a block that is deleted
@@ -14,7 +15,7 @@
 #     moved, kept relative to its picks.
 #   - The Annotations window (command search): Gone marked broken;
 #     Diameter1's row double-clicked, an H7 fit; the kind filter and the
-#     search; both rows selected and changed together (violet, kept
+#     search; both rows selected and changed together (Dark Grey, kept
 #     selected through the refresh, two decimals, the group Shop);
 #     Diameter1 put in the group Inspect; the group Shop hidden and shown
 #     again.
@@ -42,10 +43,13 @@
 #   - 40 annotations on a block (mitcad#759): the Annotations window
 #     scrolled to its last row, a light bulb there clicked off; the list
 #     stays where it was after the refresh.
+#   - Hole Callout in the Measure panel (mitcad#902) on a plate with four
+#     counterbored through holes: HoleCallout1 "4x Ø6.6 THRU / ⌴ Ø11 ↧ 6.8"
+#     written from the hole's feature, drawn in the bundled lettering, saved.
 # tools/ui-windows-annotations-test.ps1 does the editor (Diameter1's
 # without a Plane row too), the drag, the window's changes, the datum
-# label and both frames in the Windows VM (not the picks again: its input
-# reaches the main window's places only).
+# label, both frames and a hole callout in the Windows VM (not the picks
+# again: its input reaches the main window's places only).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-annotations-test.sh [screenshot.png] (with it, also
@@ -230,11 +234,12 @@ ui_expect_new "Annotations selected: AxisDistance1, Diameter1" "both rows select
 ui_expect_new "Annotations highlighted: AxisDistance1, Diameter1" "both highlighted in the view"
 ui_mark
 ui_step "Colour… (Alt+C)"                  ui_key alt+c
-ui_expect_new "Annotation Colour dialog opened: 2 annotation(s) auto (Auto | Orange | Blue | Green |" "the colours offered"
+ui_expect_new "Annotation Colour dialog opened: 2 annotation(s) auto (Auto | Black | Dark Grey | Custom…)" \
+  "the colours offered: a technical drawing's, no bright presets (mitcad#902)"
 ui_focus_dialog '^Annotation Colour$'
-ui_step "Violet (Down x5, Enter)"          ui_key Down Down Down Down Down Return
-ui_expect_new "Annotations drawn: AxisDistance1 = 50 ±0.1 (#5f3dc4) | Diameter1 = Ø10 H7 (#5f3dc4)" "both violet"
-ui_expect_new "Annotations row Diameter1: diameter, Ø10 H7, H7, -, #5f3dc4, shown" "the rows refreshed"
+ui_step "Dark Grey (Down x2, Enter)"       ui_key Down Down Return
+ui_expect_new "Annotations drawn: AxisDistance1 = 50 ±0.1 (#495057) | Diameter1 = Ø10 H7 (#495057)" "both dark grey"
+ui_expect_new "Annotations row Diameter1: diameter, Ø10 H7, H7, -, #495057, shown" "the rows refreshed"
 # The refresh keeps both rows selected.
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Annotations selected: " | grep -vqF "Annotations selected: AxisDistance1, Diameter1" &&
   ui_fail "the selection changed with the refresh: $(grep "^Annotations selected: " "$UI_LOG" | tail -1)"
@@ -245,7 +250,7 @@ ui_step "Decimals… (Alt+D)"                ui_key alt+d
 ui_expect_new "Annotation Decimals dialog opened: 2 dimension(s) null" "the decimals offered"
 ui_focus_dialog '^Annotation Decimals$'
 ui_step "2 (Down x3, Enter)"               ui_key Down Down Down Return
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#5f3dc4) | Diameter1 = Ø10.00 H7 (#5f3dc4)" \
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#495057) | Diameter1 = Ø10.00 H7 (#495057)" \
   "both with two decimals"
 ui_mark
 focus_window
@@ -272,12 +277,12 @@ ui_step "Group filter: Shop (Alt+G, Down x3)" ui_key alt+g Down Down Down
 ui_expect_new "Annotations group filter: Shop" "the filter on Shop"
 ui_step "Hide Group (Alt+U)"               ui_key alt+u
 ui_expect_new "Annotations hide group Shop: AxisDistance1" "the group hidden"
-ui_expect_new "Annotations drawn: Diameter1 = Ø10.00 H7 (#5f3dc4)" "only Inspect's drawn"
+ui_expect_new "Annotations drawn: Diameter1 = Ø10.00 H7 (#495057)" "only Inspect's drawn"
 ui_mark
 focus_window
 ui_step "Show Group (Alt+W)"               ui_key alt+w
 ui_expect_new "Annotations show group Shop: AxisDistance1" "the group shown"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#5f3dc4) | Diameter1 = Ø10.00 H7 (#5f3dc4)" \
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#495057) | Diameter1 = Ø10.00 H7 (#495057)" \
   "both drawn again"
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
@@ -308,7 +313,7 @@ done
 ui_stop_app
 ui_start_app --open "$WORK/axes.mitcad"
 ui_expect_log "| AxisDistance1 axis_distance in Shop | Diameter1 diameter in Inspect" "read back in their groups"
-ui_expect_log "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#5f3dc4) | Diameter1 = Ø10.00 H7 (#5f3dc4)" \
+ui_expect_log "Annotations drawn: AxisDistance1 = 50.00 ±0.1 (#495057) | Diameter1 = Ø10.00 H7 (#495057)" \
   "drawn as they were"
 
 echo "--- Limits typed as sizes, and a colour alone"
@@ -324,15 +329,15 @@ ui_step "OK (Enter)"                       ui_key Return
 # 50.1 and 49.9 as typed, read back as deviations without rounding noise.
 ui_expect_new 'Edit Annotation dialog: {"tolerance":{"lower":-0.1,"type":"limits","upper":0.1}}' \
   "the limits as exact deviations"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#5f3dc4)" "drawn as the limit sizes"
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#495057)" "drawn as the limit sizes"
 ui_double_click_expect "Annotations row AxisDistance1" "Edit Annotation dialog opened: AxisDistance1 axis_distance" \
   "its editor opened again"
 ui_mark
 ui_focus_dialog '^Edit Annotation$'
-ui_step "Colour: Amber (Alt+C, Down)"      ui_key alt+c Down
+ui_step "Colour: Black (Alt+C, Up)"        ui_key alt+c Up
 ui_step "OK (Enter)"                       ui_key Return
-ui_expect_new 'Edit Annotation dialog: {"color":"#f08c00"}' "only the colour sent, the tolerance untouched"
-ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#f08c00)" "the limits as they were"
+ui_expect_new 'Edit Annotation dialog: {"color":"#212529"}' "only the colour sent, the tolerance untouched"
+ui_expect_new "Annotations drawn: AxisDistance1 = 50.10/49.90 (#212529)" "the limits as they were"
 focus_window
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
@@ -405,9 +410,9 @@ ui_step "OK (Alt+M, Enter)"                ui_key alt+m Return
 ui_expect_new 'Feature Control Frame dialog: {"characteristic":"parallelism","datums":["A"],"value":0.05}' \
   "parallelism of 0.05 to A"
 ui_expect_new "Frame added under AxisDistance1" "the frame under the dimension"
-ui_expect_new "Annotations row Frame2: frame, ∥ | 0.05 | A, 0.05, Shop, #f08c00, shown" \
+ui_expect_new "Annotations row Frame2: frame, ∥ | 0.05 | A, 0.05, Shop, #212529, shown" \
   "in the dimension's group and colour"
-ui_expect_new "| Frame2 = ∥ | 0.05 | A (#f08c00)" "drawn under the dimension"
+ui_expect_new "| Frame2 = ∥ | 0.05 | A (#212529)" "drawn under the dimension"
 # The rows' places are logged when they change (with Frame2's row): the
 # last ones, once the window has settled, are the rows' now.
 ui_sync
@@ -689,6 +694,55 @@ echo "ok   the list kept its place: Row38's light bulb still at $ax,$ay"
 focus_window
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
+
+echo "--- A hole callout from the Measure panel (mitcad#902)"
+# A 60 x 40 x 10 plate with four counterbored through holes (the hole
+# feature F3): Hole Callout on one hole's counterbore writes all four.
+cat > "$WORK/holes.json" << EOF
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "hole",
+    "placement": {"type": "face", "body": "F2.b0", "face": "F2:end($R)",
+                  "points": [[10, 10, 10], [50, 10, 10], [10, 30, 10], [50, 30, 10]]},
+    "diameter": 6.6, "extent": {"type": "through_all"},
+    "kind": {"type": "counterbore", "diameter": 11, "depth": 6.8}}}
+]
+EOF
+"$CLI" run "$WORK/holes.json" --save "$WORK/holes.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli (the plate)"; }
+ui_stop_app
+ui_start_app --open "$WORK/holes.mitcad"
+ui_expect_log "Annotations: none" "the plate opened without annotations"
+ui_step "fit (F6)"                         ui_key F6
+ui_mark
+ui_step "measure (I)"                      ui_key i
+ui_expect_new "Command Measure started" "measure started"
+ui_step "pick a hole's counterbore wall"   ui_click_pick "face F2.b0/F3:hole0.cbore_wall"
+wait_enabled "Measure Hole Callout"
+ui_mark
+ui_step "Hole Callout"                     ui_click_logged "Measure Hole Callout"
+ui_expect_new "Measure Hole Callout clicked" "Hole Callout clicked"
+ui_expect_new "Annotation kept: HoleCallout1" "the hole callout added"
+ui_expect_new "Annotations drawn: HoleCallout1 = 4x Ø6.6 THRU / ⌴ Ø11 ↧ 6.8 (auto)" \
+  "written from the hole's feature: the count, THRU, the counterbore"
+ui_expect_log "Annotation lettering: " "the annotations' lettering chosen"
+# The bundled lettering when the build has it (third_party/fonts/iso-lettering).
+if [ -e "$(dirname "$UI_APP")/fonts/lettering.ttf" ]; then
+  grep -F "Annotation lettering: " "$UI_LOG" | head -1 | grep -qF "fonts/lettering.ttf" ||
+    ui_fail "not the bundled lettering: $(grep -F "Annotation lettering: " "$UI_LOG" | head -1)"
+  echo "ok   drawn in the bundled technical lettering"
+fi
+ui_expect_new "Annotation label HoleCallout1 at" "its text placed in the view"
+ui_step "close (Enter)"                    ui_key Return
+ui_expect_new "Closed Measure" "measure closed"
+ui_mark
+ui_step "save (Ctrl+S)"                    ui_key ctrl+s
+ui_expect_new "Saved $WORK/holes.mitcad" "saved"
+grep -qF '"kind": "hole_callout"' "$WORK/holes.mitcad" || ui_fail "the design file has no hole callout"
+echo "ok   the hole callout in the design file"
 
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_finish "UI annotations test"

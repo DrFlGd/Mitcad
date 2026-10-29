@@ -23,7 +23,115 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
       COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-configurations-test.sh"
               "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-configurations")
     set_tests_properties(app.ui-macos-configurations PROPERTIES TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-bindings-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-bindings-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-bindings-parity" qt)
+    set_tests_properties(app.ui-macos-bindings-parity PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-binding-card-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-binding-card-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-binding-card-parity" qt)
+    set_tests_properties(app.ui-macos-binding-card-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-configuration-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-configuration-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-configuration-parity" qt)
+    set_tests_properties(app.ui-macos-configuration-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-configuration-tables-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-configuration-tables-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-configuration-tables-parity" qt)
+    set_tests_properties(app.ui-macos-configuration-tables-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-material-color-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-material-color-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" qt "${CMAKE_BINARY_DIR}/ui-macos-material-color-parity")
+    set_tests_properties(app.ui-macos-material-color-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-sketch-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-sketch-parity" qt)
+    set_tests_properties(app.ui-macos-sketch-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-sketch-new-main-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-new-main-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-sketch-new-main-parity" qt)
+    set_tests_properties(app.ui-macos-sketch-new-main-parity PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-command-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-command-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-command-parity" qt)
+    set_tests_properties(app.ui-macos-command-parity PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-print-occurrences
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-print-occurrences-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-print-occurrences" qt)
+    set_tests_properties(app.ui-macos-print-occurrences PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-cut-sheet-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-cut-sheet-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-cut-sheet-parity" qt)
+    set_tests_properties(app.ui-macos-cut-sheet-parity PROPERTIES TIMEOUT 660 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-slicer-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-slicer-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-slicer-parity" qt)
+    set_tests_properties(app.ui-macos-slicer-parity PROPERTIES TIMEOUT 1000 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+    add_test(NAME app.ui-macos-move-proxy-parity
+      COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-move-proxy-parity-test.sh"
+              "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-move-proxy-parity" qt)
+    set_tests_properties(app.ui-macos-move-proxy-parity PROPERTIES TIMEOUT 2000 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
     if(MITCAD_MACOS_NATIVE_UI)
+      add_test(NAME app.ui-macos-native-bindings-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-bindings-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-bindings-parity" native)
+      set_tests_properties(app.ui-macos-native-bindings-parity PROPERTIES TIMEOUT 900 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-formula-input
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-formula-input-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-formula-input")
+      set_tests_properties(app.ui-macos-native-formula-input PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-binding-card-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-binding-card-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-binding-card-parity" native)
+      set_tests_properties(app.ui-macos-native-binding-card-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-print-occurrences
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-print-occurrences-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-print-occurrences" native)
+      set_tests_properties(app.ui-macos-native-print-occurrences PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-cut-sheet-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-cut-sheet-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-cut-sheet-parity" native)
+      set_tests_properties(app.ui-macos-native-cut-sheet-parity PROPERTIES TIMEOUT 660 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-slicer-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-slicer-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-slicer-parity" native)
+      set_tests_properties(app.ui-macos-native-slicer-parity PROPERTIES TIMEOUT 1000 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-move-proxy-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-move-proxy-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-move-proxy-parity" native)
+      set_tests_properties(app.ui-macos-native-move-proxy-parity PROPERTIES TIMEOUT 2000 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-command-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-command-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-command-parity" native)
+      set_tests_properties(app.ui-macos-native-command-parity PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-sketch-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-sketch-parity" native)
+      set_tests_properties(app.ui-macos-native-sketch-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-sketch-new-main-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-sketch-new-main-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-sketch-new-main-parity" native)
+      set_tests_properties(app.ui-macos-native-sketch-new-main-parity PROPERTIES TIMEOUT 1200 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-print-history
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-native-print-history-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-print-history")
+      set_tests_properties(app.ui-macos-native-print-history PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-table-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-table-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-table-parity")
+      set_tests_properties(app.ui-macos-table-parity PROPERTIES TIMEOUT 1000 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-configuration-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-configuration-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-configuration-parity" native)
+      set_tests_properties(app.ui-macos-native-configuration-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-configuration-tables-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-configuration-tables-parity-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-configuration-tables-parity" native)
+      set_tests_properties(app.ui-macos-native-configuration-tables-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      add_test(NAME app.ui-macos-native-material-color-parity
+        COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-material-color-test.sh"
+                "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" native "${CMAKE_BINARY_DIR}/ui-macos-native-material-color-parity")
+      set_tests_properties(app.ui-macos-native-material-color-parity PROPERTIES TIMEOUT 600 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
       add_test(NAME app.ui-macos-native-print-fits
         COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-print-fits-test.sh"
                 "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-native-print-fits" native)
@@ -54,6 +162,14 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
     endif()
   endif()
   find_package(Python3 COMPONENTS Interpreter QUIET)
+  if(Python3_Interpreter_FOUND AND BASH_EXECUTABLE)
+    # No windows: real child processes verify cross-checkout GUI exclusion
+    # and lock cleanup without substituting a different production path.
+    add_test(NAME repo.macos-ui-lock
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/test-macos-ui-lock.py"
+              --bash "${BASH_EXECUTABLE}" --lib "${CMAKE_SOURCE_DIR}/tools/ui-macos-lib.sh")
+    set_tests_properties(repo.macos-ui-lock PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE)
+  endif()
   if(Python3_Interpreter_FOUND AND TARGET mitcad-cli)
     if(TARGET mitcad-render)
       add_test(NAME app.render_metal_scenes
@@ -229,6 +345,13 @@ set_tests_properties(app.ui-macos-native-familiar PROPERTIES TIMEOUT 300 SKIP_RE
                 "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-edit-auto-operation")
       set_tests_properties(app.ui-macos-edit-auto-operation PROPERTIES
         TIMEOUT 960 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      if(MITCAD_MACOS_NATIVE_UI)
+        add_test(NAME app.ui-macos-native-edit-auto-operation
+          COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-edit-auto-operation-test.sh"
+                  "$<TARGET_FILE:mitcad>" "${CMAKE_BINARY_DIR}/ui-macos-native-edit-auto-operation" native)
+        set_tests_properties(app.ui-macos-native-edit-auto-operation PROPERTIES
+          TIMEOUT 1920 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE)
+      endif()
     endif()
     add_test(NAME app.ui-macos-command-cancel
       COMMAND "${BASH_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-command-cancel-test.sh"

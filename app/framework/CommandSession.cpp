@@ -24,6 +24,7 @@
 #include <QWidget>
 #include <QtLogging>
 
+#include "../sketch/SketchModel.hpp"
 #include "Diagnostics.hpp"
 #include "DisplayMeshes.hpp"
 #include "HybridAssembly.hpp"
@@ -379,10 +380,14 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     const QVector<Slot> all = slotsOf(false);
     const ItemResolver resolve = resolver();
     for (const SelectionItem& picked : preselection) {
+      // A sketch axis or the origin selected in sketch mode (mitcad#899)
+      // goes only to an input that takes the sketch's axes (Mirror's
+      // Mirror Line): it is no entity of the sketch until a step makes it.
+      const bool sketchAxis = sketch::isAxisSelection(picked);
       for (const Slot& slot : all) {
         const InputDef& input = *slot.def;
         if (input.type != InputDef::Type::Selection || !input.takesIn(picked, scopeOf(slot)) ||
-            !isReferable(picked)) {
+            !isReferable(picked) || (sketchAxis && !input.sketchAxes)) {
           continue;
         }
         const SelectionItem item = input.convert ? input.convert(picked) : picked;
@@ -1095,11 +1100,13 @@ void CommandSession::applyPickFilter(const InputDef* input) {
   }
   // Through the host's selection filter context (mitcad#217): its rows
   // decide clicks and windows, Shift widens a click to its empty rows; the
-  // input's own test always holds.
+  // input's own test always holds. Sketches other than the edited one have
+  // a row of their own (Project's, mitcad#904).
+  const QString edited = m_host.editedSketch();
   viewer.setPickScope(kinds & scope->kinds(false), kinds & scope->kinds(true),
-                      [this, input, scope](const SelectionItem& item, const PickCase& how) {
+                      [this, input, scope, edited](const SelectionItem& item, const PickCase& how) {
                         return acceptsNow(input, item) && isReferable(item) &&
-                               scopeAccepts(*scope, item, how, QString(), SketchRowOf());
+                               scopeAccepts(*scope, item, how, edited, SketchRowOf());
                       });
 }
 
@@ -4257,7 +4264,11 @@ void CommandSession::finish(bool committed) {
             finish(committed);
           });
     };
-    if (committed) { release({}); }
+    // An application panel has no model preview. Its companion editors
+    // and choices commit independent undo steps while it is open (3D
+    // Print's profiles); cancelling that panel must keep those changes,
+    // as the synchronous path does, while releasing its checkpoint.
+    if (committed || m_def.accept) { release({}); }
     else { restoreCheckpointAsync(release); }
     return;
   }

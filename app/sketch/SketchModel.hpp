@@ -9,11 +9,16 @@
 #include <vector>
 
 #include <QJsonObject>
+#include <QPointF>
 #include <QString>
 #include <QStringList>
 
 #include "SketchGeometry.hpp"
 #include "mitcad/geometry/profile.hpp"
+
+namespace mitcad {
+struct SelectionItem;
+}
 
 namespace mitcad::sketch {
 
@@ -229,6 +234,21 @@ public:
   // as the fixed entities the model would make, so that the tools decide
   // with them as with any line and point; SketchOp::axisInput makes them.
   void addAxisPicks();
+  // The axes and origin selected with no tool running (mitcad#899): the
+  // selection keeps them by their pick ids. The entity that stands for a
+  // pick in this sketch is the one the model made, or the pick id until a
+  // step makes it (a tool's view adds it, addAxisPicks); any other id as
+  // it is.
+  QString axisEntity(const QString& id) const;
+  // What a click with no tool running selects of what entityAt() found
+  // there: an axis by its pick id (also where the model made its line),
+  // the origin's pick; empty for anything else, which is the view's to
+  // pick.
+  QString axisSelectionPick(const QString& entity) const;
+  // The picks a selection's curve and point ids of this sketch give a tool,
+  // in their order: an axis or origin pick as axisEntity(); with `axes`
+  // false (Fix/Unfix), the axes and origin left out.
+  QStringList selectionPicks(const QStringList& names, bool axes) const;
   // Curves with a point as an end (or their centre, with `centers`).
   QStringList curvesAt(const QString& point, bool centers = false) const;
   // Whether everything is constrained (and there is something).
@@ -251,6 +271,19 @@ bool isAxisPick(const QString& id);
 QString axisPickName(const QString& id);
 // How long the model makes an axis line (core/sketch/src/axes.rs).
 constexpr double kAxisLineLength = 100.0;
+// The selection's item for an axis or origin pick of sketch `sketch`
+// (mitcad#899): a sketch curve of geometry "line" for an axis (what a line
+// input such as Mirror's Mirror Line takes, mitcad#876), a sketch point for
+// the origin.
+SelectionItem axisSelectionItem(const QString& sketch, const QString& pick, const QString& occurrence);
+// Whether a selection item is such a pick: no entity of the sketch (yet),
+// so only the tools and the inputs that take the axes take it; Delete,
+// drags, copies, Fix/Unfix and other commands' inputs leave it out.
+bool isAxisSelection(const SelectionItem& item);
+// How far a view position is from an axis drawn across the view through
+// `origin` (view pixels) along `along` (the view offset of a step along the
+// axis); none when the sketch plane is seen edge on.
+std::optional<double> axisScreenDistance(const QPointF& screen, const QPointF& origin, const QPointF& along);
 
 // The sketch point of a 3D frame point and back.
 V2 toSketch(const geometry::Frame& frame, const gp_Pnt& point);

@@ -178,8 +178,14 @@ QImage OcctViewer::snapshot(const QSize& size, bool transparent, bool withMeasur
     }
     shapes.push_back(layoutMeasurement(m, project, scale));
   }
+  // In the tone of the picture's own background (mitcad#902); a transparent
+  // one's that of the view.
+  // Auto's ink against the picture itself (mitcad#902).
+  const QColor tone = measurementPictureTone(image);
+  const MeasurementBackdrop backdrop{image.convertToFormat(QImage::Format_ARGB32), 1.0};
   QPainter painter(&image);
-  paintMeasurements(painter, shapes, sketchHaloColor(), measurementFont(font(), scale), scale);
+  paintMeasurements(painter, shapes, tone.isValid() ? tone : sketchHaloColor(), measurementFont(font(), scale), scale,
+                    transparent ? nullptr : &backdrop);
   return image;
 }
 

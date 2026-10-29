@@ -31,6 +31,7 @@
 #include <QTimer>
 
 #include "../framework/Theme.hpp"
+#include "../framework/Dialogs.hpp"
 
 namespace mitcad::rules {
 
@@ -604,6 +605,8 @@ RulePalette::RulePalette(QWidget* parent) : QTreeWidget(parent) {
   connect(verticalScrollBar(), &QScrollBar::valueChanged, this, [this] { logPlaces(); });
 }
 
+RuleCanvas* RulePalette::canvas() const { return m_canvas.data(); }
+
 void RulePalette::setCanvas(RuleCanvas* canvas) {
   m_canvas = canvas;
 }
@@ -870,6 +873,11 @@ int RuleCanvas::pieceAt(const QPointF& scene) const {
   return best;
 }
 
+bool RuleCanvas::isBlockAtScene(const QPointF& scene) const {
+  const int index = pieceAt(scene);
+  return index >= 0 && m_pieces[static_cast<std::size_t>(index)].role == Piece::Role::Block;
+}
+
 int RuleCanvas::targetAt(const QPointF& scene, BlockKind kind, const std::optional<BlockPath>& from) const {
   const auto candidate = [&](const Piece& piece) {
     const bool placeable = piece.role == Piece::Role::Socket || piece.role == Piece::Role::Add ||
@@ -1094,15 +1102,29 @@ void RuleCanvas::dragOver(const QPoint& global, const QString& paletteId) {
     setHighlight(-1);
     return;
   }
+  dragOverScene(mapToScene(local), paletteId);
+}
+
+void RuleCanvas::dragOverScene(const QPointF& scene, const QString& paletteId) {
+  if (!m_hasRule) { setHighlight(-1); return; }
   if (isRuleEntry(paletteId)) {
     setHighlight(m_pieces.empty() ? -1 : 0);
     return;
   }
-  setHighlight(targetAt(mapToScene(local), kindOf(paletteId), std::nullopt));
+  setHighlight(targetAt(scene, kindOf(paletteId), std::nullopt));
 }
 
 bool RuleCanvas::dropAt(const QPoint& global, const QString& paletteId) {
   dragOver(global, paletteId);
+  return takeHighlightedDrop(paletteId);
+}
+
+bool RuleCanvas::dropAtScene(const QPointF& scene, const QString& paletteId) {
+  dragOverScene(scene, paletteId);
+  return takeHighlightedDrop(paletteId);
+}
+
+bool RuleCanvas::takeHighlightedDrop(const QString& paletteId) {
   const int target = m_highlight;
   endDrag();
   if (target < 0) {
@@ -1293,9 +1315,23 @@ void RuleCanvas::openEditor(int index) {
   connect(m_editor, &QLineEdit::returnPressed, this, [this] { commitEditor(); });
   connect(m_editor, &QLineEdit::editingFinished, this, [this] { commitEditor(); });
   m_editing = piece.name();
-  m_editor->show();
-  m_editor->setFocus(Qt::OtherFocusReason);
+  // In a native canvas the line edit is only a value presenter. Giving
+  // it Qt focus would take the native field's responder and immediately
+  // finish the shared edit when AppKit restores that responder.
+  if (property("nativeRuleArtwork").toBool()) {
+    m_editor->setAttribute(Qt::WA_DontShowOnScreen);
+  } else {
+    m_editor->show();
+    m_editor->setFocus(Qt::OtherFocusReason);
+  }
   qDebug().noquote() << QStringLiteral("Rule canvas editing %1: %2").arg(m_editing, text);
+}
+
+void RuleCanvas::cancelEditor() {
+  if (m_editor == nullptr) return;
+  qDebug().noquote() << QStringLiteral("Rule canvas editing %1 cancelled").arg(m_editing);
+  closeEditor();
+  flushPending(); // a new block keeps the value it came with
 }
 
 void RuleCanvas::closeEditor() {
@@ -1402,7 +1438,10 @@ void RuleCanvas::chooseOperator(int index) {
     entries << operatorLabel(op);
   }
   qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
-  const QAction* chosen = menu.exec(viewport()->mapToGlobal(mapFromScene(piece.rect.bottomLeft())));
+  const QVariant nativePoint = property("nativeRuleMenuPoint");
+  const QPoint point = nativePoint.isValid() ? nativePoint.toPoint()
+                                            : viewport()->mapToGlobal(mapFromScene(piece.rect.bottomLeft()));
+  const QAction* chosen = execMenu(&menu, point);
   if (chosen == nullptr) {
     return;
   }
@@ -1467,11 +1506,14 @@ void RuleCanvas::chooseColumns(int index) {
   }
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   buttons->button(QDialogButtonBox::Ok)->setDefault(true);
+  buttons->button(QDialogButtonBox::Ok)->setObjectName(QStringLiteral("ruleTableColumnsOK"));
+  buttons->button(QDialogButtonBox::Cancel)->setObjectName(QStringLiteral("ruleTableColumnsCancel"));
   form->addRow(buttons);
   connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   qDebug().noquote() << QStringLiteral("Rule canvas columns dialog for %1 of %2").arg(piece.path.id(), table->name);
-  if (dialog.exec() != QDialog::Accepted) {
+  prepareModal(&dialog);
+  if (execDialog(&dialog) != QDialog::Accepted) {
     return;
   }
   QJsonObject columns;
@@ -1665,7 +1707,7 @@ void RuleCanvas::showMenu(int index, const QPoint& global) {
     return;
   }
   qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
-  menu.exec(global);
+  execMenu(&menu, global);
 }
 
 QWidget* RuleCanvas::logWindow() const {
@@ -1703,7 +1745,7 @@ void RuleCanvas::logPlaces() {
 }
 
 void RuleCanvas::mousePressEvent(QMouseEvent* event) {
-  setFocus(Qt::MouseFocusReason);
+  if (!property("nativeRuleArtwork").toBool()) setFocus(Qt::MouseFocusReason);
   const QPointF scene = mapToScene(event->position().toPoint());
   const int index = pieceAt(scene);
   m_pressed = -1;
@@ -1886,9 +1928,7 @@ bool RuleCanvas::eventFilter(QObject* watched, QEvent* event) {
   if (watched == m_editor && event->type() == QEvent::KeyPress) {
     const int key = static_cast<QKeyEvent*>(event)->key();
     if (key == Qt::Key_Escape) {
-      qDebug().noquote() << QStringLiteral("Rule canvas editing %1 cancelled").arg(m_editing);
-      closeEditor();
-      flushPending(); // a new block keeps the value it came with
+      cancelEditor();
       return true;
     }
     // Enter ends the edit here: it neither reaches the canvas (which would

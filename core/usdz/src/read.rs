@@ -104,8 +104,10 @@ pub fn read_package(data: &[u8]) -> Result<Package, Error> {
                 entry.name
             )));
         }
+        // Stored, so no larger than the package itself: the zip reader's
+        // large entry limit (mitcad#923).
         let data = archive
-            .read(entry)
+            .read_with_limit(entry, mitcad_zip::LARGE_ENTRY_LIMIT)
             .map_err(|e| fail(format!("{}: {e}", entry.name)))?;
         files.push(PackageFile {
             name: entry.name.clone(),

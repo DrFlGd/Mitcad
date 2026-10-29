@@ -97,21 +97,8 @@ fn add_circle(d: &mut Document<MockKernel>, center: [f64; 2], radius: f64) -> St
     made["made"][0].as_str().unwrap().to_owned()
 }
 
-/// The sketch solves, without conflicting constraints, and redundant only
-/// where an axis line's own fix repeats its fixed end points: that is so
-/// for any sketch with an axis line (mitcad#500), mirrored or not.
-fn assert_clean_but_axes(s: &Value) {
-    assert!(s["error"].is_null(), "{s}");
-    for id in strings(&s["redundant"]) {
-        assert!(entity(s, &id).get("axis").is_some(), "{id} redundant: {s}");
-    }
-    assert!(
-        s["conflicts"].as_array().is_none_or(|c| c.is_empty()),
-        "{s}"
-    );
-}
-
-/// The sketch solves, without redundant or conflicting constraints.
+/// The sketch solves, without redundant or conflicting constraints (an
+/// axis line included, mitcad#877).
 fn assert_clean(s: &Value) {
     assert!(s["error"].is_null(), "{s}");
     assert_eq!(s["redundant"], json!([]), "{s}");
@@ -296,7 +283,7 @@ fn circles_mirrored_about_the_sketch_axes() {
     assert_eq!(d.undo_depth(), depth + 1);
     let copy = strings(&mirrored["made"])[0].clone();
     let s = sketch(&d);
-    assert_clean_but_axes(&s);
+    assert_clean(&s);
     let (_, centre, radius) = circle(&s, &copy);
     assert!(
         close(centre[0], 20.0) && close(centre[1], -10.0) && close(radius, 4.0),
@@ -335,7 +322,7 @@ fn circles_mirrored_about_the_sketch_axes() {
     );
     let copy = strings(&mirrored["made"])[0].clone();
     let s = sketch(&d);
-    assert_clean_but_axes(&s);
+    assert_clean(&s);
     let (_, centre, _) = circle(&s, &copy);
     assert!(close(centre[0], -20.0) && close(centre[1], 10.0), "{s}");
     let y = axis_lines(&s, "y");
@@ -345,7 +332,7 @@ fn circles_mirrored_about_the_sketch_axes() {
         json!({"cmd": "sketch.mirror", "sketch": "F1", "entities": [copy], "axis": "y"}),
     );
     let s = sketch(&d);
-    assert_clean_but_axes(&s);
+    assert_clean(&s);
     assert_eq!(axis_lines(&s, "y"), y, "{s}");
     // The made axis line works as any line: the first copy about it.
     let mirrored = command(
@@ -354,7 +341,7 @@ fn circles_mirrored_about_the_sketch_axes() {
     );
     let copy = strings(&mirrored["made"])[0].clone();
     let s = sketch(&d);
-    assert_clean_but_axes(&s);
+    assert_clean(&s);
     let (_, centre, _) = circle(&s, &copy);
     assert!(close(centre[0], -20.0) && close(centre[1], 10.0), "{s}");
     // The copies follow the original about both axes.
@@ -363,7 +350,7 @@ fn circles_mirrored_about_the_sketch_axes() {
         json!({"cmd": "sketch.drag", "sketch": "F1", "entity": c, "radius": 6}),
     );
     let s = sketch(&d);
-    assert_clean_but_axes(&s);
+    assert_clean(&s);
     let circles = s["entities"]
         .as_array()
         .unwrap()

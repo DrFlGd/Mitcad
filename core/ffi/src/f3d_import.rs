@@ -434,7 +434,7 @@ impl StoredFile {
         };
         for blob in doc.body_blobs() {
             let data = doc
-                .read(&blob.entry)
+                .read_large(&blob.entry)
                 .map_err(|e| format!("{}: {e}", blob.entry))?;
             let file = AsmFile::parse(&data).map_err(|e| format!("{}: {e}", blob.entry))?;
             let file_name = blob
@@ -2586,6 +2586,9 @@ pub(crate) struct MemoryGuard {
     /// The allocations in the geometry kernel that had failed when last
     /// measured.
     failed_allocations: u64,
+    /// When the allocator's free memory is given back to the system
+    /// (mitcad#885).
+    release: mitcad_import::FreeMemoryRelease,
 }
 
 impl MemoryGuard {
@@ -2596,17 +2599,31 @@ impl MemoryGuard {
     /// A guard with the import's own limit in MiB (none or 0: the
     /// process's limits only).
     pub(crate) fn with_limit(memory_limit: Option<f64>) -> Self {
+        let memory = crate::memory::memory_use();
         Self {
             limit: memory_limit
                 .filter(|m| *m > 0.0)
                 .map(|m| (m * f64::from(1u32 << 20)) as u64),
             next_tight: MEMORY_TIGHT,
-            failed_allocations: crate::memory::memory_use().failed_allocations,
+            failed_allocations: memory.failed_allocations,
+            release: mitcad_import::FreeMemoryRelease::new(memory.resident),
         }
     }
 
     pub(crate) fn check(&mut self, progress: &mitcad_import::Progress) {
-        let memory = crate::memory::memory_use().within(self.limit);
+        let mut memory = crate::memory::memory_use().within(self.limit);
+        // The allocator's free memory back to the system first (mitcad#885):
+        // what is resident beyond what the process uses counts against its
+        // limits.
+        let now = Instant::now();
+        if self
+            .release
+            .due(memory.resident, memory.share() >= MEMORY_TIGHT, now)
+        {
+            crate::memory::release_free_memory();
+            memory = crate::memory::memory_use().within(self.limit);
+            self.release.done(memory.resident, now);
+        }
         let share = memory.share();
         let text = memory.describe();
         progress.set_memory(&text);
@@ -2687,53 +2704,61 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
     let fail = |e: String| ApiError(e);
     let clock = Instant::now();
     let package = mitcad_f3d_design::package(std::path::Path::new(path)).map_err(fail)?;
-    let (documents, root) = (package.documents, package.root);
-    if documents.is_empty() {
+    if package.is_empty() {
         return Err(ApiError(format!("{path} holds no design")));
     }
-    // Each design's streams, to choose one; only the chosen one's inputs
-    // are found in the bodies' history (mitcad#103).
-    let mut designs = Vec::new();
-    for (label, doc) in &documents {
-        let design = mitcad_f3d_design::decode_streams(doc, label).map_err(fail)?;
-        designs.push((label.clone(), doc, design));
-    }
-    let chosen = match &options.design {
-        Some(wanted) => designs
+    let labels: Vec<String> = package.labels().map(str::to_owned).collect();
+    // The design asked for, else a package's root design where its
+    // manifest names it (mitcad#229).
+    let named = match &options.design {
+        Some(wanted) => Some(
+            labels
+                .iter()
+                .position(|label| label == wanted || label.ends_with(&format!("!{wanted}")))
+                .ok_or_else(|| {
+                    ApiError(format!(
+                        "no design {wanted}; the file has {}",
+                        labels.join(", ")
+                    ))
+                })?,
+        ),
+        None => labels
             .iter()
-            .position(|(label, _, _)| label == wanted || label.ends_with(&format!("!{wanted}")))
-            .ok_or_else(|| {
-                let labels: Vec<&str> = designs.iter().map(|(l, _, _)| l.as_str()).collect();
-                ApiError(format!(
-                    "no design {wanted}; the file has {}",
-                    labels.join(", ")
-                ))
-            })?,
-        // A package's root design where its manifest names it (mitcad#229).
-        None => match designs
-            .iter()
-            .position(|(label, _, _)| Some(label) == root.as_ref())
-        {
-            Some(i) => i,
-            None => (0..designs.len())
-                .max_by_key(|&i| {
-                    designs[i]
-                        .2
-                        .dump
-                        .as_ref()
-                        .map_or(0, |d| d.timeline_items().len())
-                })
-                .unwrap_or(0),
-        },
+            .position(|label| Some(label) == package.root.as_ref()),
     };
-    let others: Vec<String> = designs
+    // The design's streams; without one named, each design's, to choose
+    // the one with the most timeline items (the last of equals). Only the
+    // chosen one's inputs are found in the bodies' history (mitcad#103).
+    // A package's designs are inflated one at a time, the best so far kept
+    // (mitcad#923).
+    let (chosen, opened, mut decoded) = match named {
+        Some(index) => {
+            let doc = package.open(index).map_err(fail)?;
+            let design = mitcad_f3d_design::decode_streams(&doc, &labels[index]).map_err(fail)?;
+            (index, doc, design)
+        }
+        None => {
+            let mut best: Option<(usize, usize, mitcad_f3d_design::PackageDocument<'_>, _)> = None;
+            for (index, label) in labels.iter().enumerate() {
+                let doc = package.open(index).map_err(fail)?;
+                let design = mitcad_f3d_design::decode_streams(&doc, label).map_err(fail)?;
+                let items = design.dump.as_ref().map_or(0, |d| d.timeline_items().len());
+                if best.as_ref().is_none_or(|b| items >= b.1) {
+                    best = Some((index, items, doc, design));
+                }
+            }
+            let (index, _, doc, design) = best.expect("the package holds a design");
+            (index, doc, design)
+        }
+    };
+    let doc: &F3dFile = &opened;
+    let label = labels[chosen].clone();
+    let others: Vec<String> = labels
         .iter()
         .enumerate()
         .filter(|(i, _)| *i != chosen)
-        .map(|(_, (l, _, _))| l.clone())
+        .map(|(_, l)| l.clone())
         .collect();
-    let (label, doc, mut decoded) = designs.swap_remove(chosen);
-    drop(designs);
     trace_reading("design streams decoded", clock);
     // (An external dump stands in for the file's design.)
     let resolve = options.dump.is_none();

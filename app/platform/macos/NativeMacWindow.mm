@@ -65,6 +65,19 @@ struct NativeMacWindowState;
 @implementation MITCADCommandButton
 @end
 
+// A binding badge is its own native hit target, preserving row selection
+// and timeline dragging everywhere outside the small fx pill.
+@interface MITCADBindingBadge : MITCADCommandButton {
+@public
+  mitcad::mac::NativeMacWindowState* state;
+  bool history;
+  NSTimer* __strong hoverTimer;
+  NSTrackingArea* __strong tracking;
+}
+- (void)requestCard:(BOOL)pinned;
+- (void)pinCard:(id)sender;
+@end
+
 // The outer view owns the shadow; the system material owns its content.
 @interface MITCADFloatingCard : NSView
 @property(nonatomic, strong) NSView* body;
@@ -89,6 +102,11 @@ struct NativeMacWindowState;
 @public
   mitcad::mac::NativeMacWindowState* state;
 }
+@end
+
+// The timeline has one scrolling axis. A vertical wheel, including over a
+// feature button, moves along that axis just like the shared Qt timeline.
+@interface MITCADHistoryScroll : NSScrollView
 @end
 
 @interface MITCADHistoryFeatureButton : NSButton <NSDraggingSource> {
@@ -120,7 +138,7 @@ struct NativeMacWindowState;
 - (BOOL)isFlipped { return YES; }
 @end
 
-// The inspector's scrolled document. A change of its content's height (the
+// A bounded card's scrolled document. A change of its content's height (the
 // selection card's text and Create row filled in after the card is shown)
 // lays the cards out again, so the card follows its content (mitcad#815).
 @interface MITCADInspectorContentView : MITCADInspectorDocumentView {
@@ -420,6 +438,10 @@ struct NativeMacWindowState {
   NSView* __strong projectsContent = nil;
   NSScrollView* __strong browserScroll = nil;
   NSStackView* __strong browserIssues = nil;
+  NSScrollView* __strong configurationScroll = nil;
+  NSView* __strong configurationContent = nil;
+  MITCADInspectorContentView* __strong configurationDocument = nil;
+  NSLayoutConstraint* __strong configurationHeight = nil;
   NSArray<NSButton*>* __strong browserIssueButtons = nil;
   NSLayoutConstraint* __strong browserTreeTop = nil;
   bool updatingSelection = false;
@@ -490,6 +512,7 @@ struct NativeMacWindowState {
   NSMenu* __strong previousServicesMenu = nil;
   NSMenu* __strong previousWindowsMenu = nil;
   id<NSApplicationDelegate> __strong previousAppDelegate = nil;
+  NSHashTable<MITCADBindingBadge*>* __strong bindingBadges = [NSHashTable weakObjectsHashTable];
 
   explicit NativeMacWindowState(QWidget* widget, NativeMacWindowCallbacks calls)
       : viewport(widget), callbacks(std::move(calls)) {
@@ -514,6 +537,10 @@ struct NativeMacWindowState {
   ~NativeMacWindowState() {
     finishHistoryMarkerDrag();
     closing = true;
+    for (MITCADBindingBadge* badge in bindingBadges.allObjects) {
+      badge->state = nullptr;
+      [badge->hoverTimer invalidate];
+    }
     [NSNotificationCenter.defaultCenter removeObserver:delegate name:NSMenuDidBeginTrackingNotification object:nil];
     [NSNotificationCenter.defaultCenter removeObserver:delegate name:NSMenuDidEndTrackingNotification object:nil];
     delegate->state = nullptr;
@@ -522,6 +549,7 @@ struct NativeMacWindowState {
     canvasRoot->state = nullptr;
     if ([inspectorDocument isKindOfClass:MITCADInspectorContentView.class])
       ((MITCADInspectorContentView*)inspectorDocument)->state = nullptr;
+    if (configurationDocument) configurationDocument->state = nullptr;
     tree->state = nullptr;
     history->state = nullptr;
     historyMarkerButton->state = nullptr;
@@ -615,8 +643,13 @@ struct NativeMacWindowState {
     NSView* responder = [window.firstResponder isKindOfClass:NSView.class] ? (NSView*)window.firstResponder : nil;
     if (responder && [responder isDescendantOf:viewportHost]) {
       QWidget* focus = QApplication::focusWidget();
-      return qobject_cast<QLineEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus) ||
-             qobject_cast<QTextEdit*>(focus) || qobject_cast<QAbstractSpinBox*>(focus);
+      // A retained utility panel can leave Qt's focus on its offscreen
+      // presenter after AppKit has returned the keyboard to the CAD view.
+      // Only an editor belonging to that view owns its document keys.
+      if (viewport && focus && (focus == viewport.data() || viewport->isAncestorOf(focus))) {
+        return qobject_cast<QLineEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus) ||
+               qobject_cast<QTextEdit*>(focus) || qobject_cast<QAbstractSpinBox*>(focus);
+      }
     }
     return false;
   }
@@ -960,7 +993,8 @@ struct NativeMacWindowState {
     else for (int index = 0; index < items.size(); ++index) {
       const auto& a = items[index]; const auto& b = historyItems[index];
       if (a.id != b.id || a.title != b.title || a.status != b.status || a.noted != b.noted ||
-          a.suppressed != b.suppressed || a.enabled != b.enabled || a.filtered != b.filtered) {
+          a.suppressed != b.suppressed || a.enabled != b.enabled || a.filtered != b.filtered ||
+          a.bindings != b.bindings) {
         historyAppearanceValid = false;
         break;
       }
@@ -996,6 +1030,27 @@ struct NativeMacWindowState {
       NSImage* image = actionImage(artwork, 22);
       if (button.image != image) button.image = image;
       if (qt(button.toolTip) != item.detail) button.toolTip = ns(item.detail);
+      MITCADBindingBadge* bindingBadge = nil;
+      for (NSView* child in button.subviews) {
+        if ([child isKindOfClass:MITCADBindingBadge.class]) bindingBadge = (MITCADBindingBadge*)child;
+      }
+      if (!bindingBadge && item.bindings > 0) {
+        bindingBadge = [[MITCADBindingBadge alloc] initWithFrame:NSMakeRect(3, 17, 25, 11)];
+        bindingBadge->state = this;
+        bindingBadge->history = true;
+        [bindingBadges addObject:bindingBadge];
+        bindingBadge.target = bindingBadge;
+        bindingBadge.action = @selector(pinCard:);
+        bindingBadge.font = [NSFont systemFontOfSize:8 weight:NSFontWeightSemibold];
+        [button addSubview:bindingBadge];
+      }
+      if (bindingBadge) {
+        bindingBadge.hidden = item.bindings <= 0;
+        bindingBadge.representedObject = key;
+        bindingBadge.title = ns(QStringLiteral("fx %1").arg(item.bindings));
+        bindingBadge.accessibilityLabel = ns(QStringLiteral("%1 follows %2 bindings").arg(item.title).arg(item.bindings));
+        bindingBadge.accessibilityIdentifier = ns(QStringLiteral("native.history.fx.") + item.id);
+      }
       // A native system badge communicates failure/warning without replacing
       // or tinting the shared coloured CAD artwork.
       if (qt(button.statusKey) != item.status) {
@@ -1158,6 +1213,23 @@ struct NativeMacWindowState {
       [browserIssues.topAnchor constraintEqualToAnchor:sidebarCard.body.topAnchor constant:32],
       [browserIssues.trailingAnchor constraintLessThanOrEqualToAnchor:sidebarCard.body.trailingAnchor constant:-10]
     ]];
+    configurationScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    configurationScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    configurationScroll.drawsBackground = NO;
+    configurationScroll.hasVerticalScroller = YES;
+    configurationScroll.hasHorizontalScroller = NO;
+    configurationScroll.automaticallyAdjustsContentInsets = NO;
+    configurationScroll.autohidesScrollers = YES;
+    configurationScroll.hidden = YES;
+    configurationScroll.accessibilityIdentifier = @"native.configuration";
+    [sidebarCard.body addSubview:configurationScroll];
+    configurationHeight = [configurationScroll.heightAnchor constraintEqualToConstant:0];
+    [NSLayoutConstraint activateConstraints:@[
+      [configurationScroll.leadingAnchor constraintEqualToAnchor:sidebarCard.body.leadingAnchor constant:6],
+      [configurationScroll.trailingAnchor constraintEqualToAnchor:sidebarCard.body.trailingAnchor constant:-6],
+      [configurationScroll.topAnchor constraintEqualToAnchor:sidebarCard.body.topAnchor constant:38],
+      configurationHeight
+    ]];
     tree = [[MITCADModelOutlineView alloc] initWithFrame:NSZeroRect];
     tree->state = this;
     NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:@"model"];
@@ -1222,7 +1294,11 @@ struct NativeMacWindowState {
     history.accessibilityIdentifier = @"native.historyStrip";
     historyButtons = [NSMutableDictionary dictionary];
     historyRunMarks = [NSMutableArray array];
-    historyScroll = scroll(history);
+    historyScroll = [[MITCADHistoryScroll alloc] initWithFrame:NSZeroRect];
+    historyScroll.documentView = history;
+    historyScroll.autohidesScrollers = YES;
+    historyScroll.translatesAutoresizingMaskIntoConstraints = NO;
+    historyScroll.accessibilityIdentifier = @"native.historyScroll";
     historyScroll.hasVerticalScroller = NO;
     historyScroll.hasHorizontalScroller = YES;
     historyScroll.scrollerStyle = NSScrollerStyleOverlay;
@@ -1405,9 +1481,39 @@ struct NativeMacWindowState {
         [outline scrollRowToVisible:outline.selectedRow];
       top += projectHeight + gap;
     }
-    const CGFloat leftHeight = std::min(std::max(CGFloat(100), tree.numberOfRows * tree.rowHeight + 50 + (browserIssues.hidden ? 0 : 28)),
-                                       std::max(CGFloat(100), std::min(canvasHeight * 0.55, floor - top)));
+    const CGFloat headerHeight = browserIssues.hidden ? 38 : 66;
+    const CGFloat browserAvailable = std::max(CGFloat(100), floor - top);
+    CGFloat browserLimit = std::max(CGFloat(100), std::min(canvasHeight * 0.55, browserAvailable));
+    // Establish the card's actual width before measuring its document.
+    // A manual frame on an unconstrained stack only clips its fitting width.
+    sidebarCard.frame = NSMakeRect(margin, top, cards.browser, sidebarCard.frame.size.height);
+    CGFloat browserRowSpace = tree.rowHeight;
+    if (configurationContent != nil) {
+      // The first pass gives labels their bounded width, the second their
+      // wrapped height, as for the inspector's shared form content.
+      [sidebarCard layoutSubtreeIfNeeded];
+      [sidebarCard layoutSubtreeIfNeeded];
+      // Source-list styles can leave an inset before their first row. The
+      // rowHeight alone omits that inset, intercell spacing and scroll-view
+      // borders, leaving only the top of Root visible below a notice.
+      if (tree.numberOfRows > 0) {
+        const NSRect row = [tree rectOfRow:0];
+        const CGFloat inset = std::max(CGFloat(0), NSMinY(row) - NSMinY(tree.visibleRect));
+        const CGFloat chrome = std::max(CGFloat(0), NSHeight(browserScroll.bounds) - NSHeight(browserScroll.contentView.bounds));
+        browserRowSpace = std::ceil(NSHeight(row) + tree.intercellSpacing.height + inset + chrome);
+      }
+      const CGFloat content = std::ceil(configurationDocument.frame.size.height);
+      // Grow within the real available area before scrolling the options.
+      // Their viewport always leaves one complete Browser row below it.
+      browserLimit = std::min(browserAvailable, std::max(browserLimit, headerHeight + content + browserRowSpace + 8));
+      const CGFloat available = std::max(CGFloat(0), browserLimit - headerHeight - browserRowSpace - 8);
+      configurationHeight.constant = std::min(available, content);
+    }
+    const CGFloat treeSpace = std::max(tree.numberOfRows * tree.rowHeight + 4, browserRowSpace);
+    const CGFloat leftHeight = std::min(std::max(CGFloat(100), treeSpace + headerHeight + 8 +
+                                               configurationHeight.constant), browserLimit);
     sidebarCard.frame = NSMakeRect(margin, top, cards.browser, browserCollapsed ? (browserIssues.hidden ? 30 : 60) : leftHeight);
+    browserTreeTop.constant = headerHeight + configurationHeight.constant;
     fitCardOutline(sidebarCard, tree);
     CGFloat rightTop = ribbonHeight + 190;
     CGFloat available = std::max(CGFloat(1), floor - rightTop);
@@ -2302,7 +2408,39 @@ void NativeMacWindow::setBrowserIssues(const QString& failures, const QString& f
   }
   if (m_state->browserIssues.hidden == !shown) return;
   m_state->browserIssues.hidden = !shown;
-  m_state->browserTreeTop.constant = shown ? 66 : 38;
+  m_state->browserTreeTop.constant = (shown ? 66 : 38) + m_state->configurationHeight.constant;
+  for (NSLayoutConstraint* constraint in m_state->sidebarCard.body.constraints) {
+    if (constraint.firstItem == m_state->configurationScroll && constraint.firstAttribute == NSLayoutAttributeTop) {
+      constraint.constant = shown ? 66 : 38;
+    }
+  }
+  m_state->layoutOverlays();
+}
+
+void NativeMacWindow::setConfigurationView(void* view) {
+  NSView* content = (__bridge NSView*)view;
+  if (m_state->configurationContent != content) {
+    if (m_state->configurationDocument) m_state->configurationDocument->state = nullptr;
+    m_state->configurationScroll.documentView = nil;
+    [m_state->configurationContent removeFromSuperview];
+    m_state->configurationDocument = nil;
+    m_state->configurationContent = content;
+    if (content) {
+      MITCADInspectorContentView* document = [[MITCADInspectorContentView alloc] initWithFrame:NSZeroRect];
+      document->state = m_state.get();
+      m_state->configurationDocument = document;
+      document.translatesAutoresizingMaskIntoConstraints = NO;
+      fill(content, document);
+      m_state->configurationScroll.documentView = document;
+      [NSLayoutConstraint activateConstraints:@[
+        [document.leadingAnchor constraintEqualToAnchor:m_state->configurationScroll.contentView.leadingAnchor],
+        [document.topAnchor constraintEqualToAnchor:m_state->configurationScroll.contentView.topAnchor],
+        [document.widthAnchor constraintEqualToAnchor:m_state->configurationScroll.contentView.widthAnchor]
+      ]];
+    }
+  }
+  m_state->configurationScroll.hidden = content == nil;
+  if (content == nil) m_state->configurationHeight.constant = 0;
   m_state->layoutOverlays();
 }
 
@@ -2534,6 +2672,87 @@ bool nativeWindowRefreshContract(void* nativeWindow, QString& error) {
 
 using namespace mitcad::mac;
 
+@implementation MITCADBindingBadge
+- (void)updateTrackingAreas {
+  [super updateTrackingAreas];
+  if (tracking) [self removeTrackingArea:tracking];
+  tracking = nil;
+  // A descendant's visibleRect may extend across its whole outline row.
+  // NSTrackingInVisibleRect ignores the supplied rectangle, so use the
+  // exposed part of the pill explicitly instead of tracking nearby names.
+  const NSRect exposed = NSIntersectionRect(self.bounds, self.visibleRect);
+  if (NSIsEmptyRect(exposed)) return;
+  tracking = [[NSTrackingArea alloc] initWithRect:exposed
+      options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp
+        owner:self userInfo:nil];
+  [self addTrackingArea:tracking];
+}
+- (void)viewWillMoveToWindow:(NSWindow*)window {
+  if (!window) { [hoverTimer invalidate]; hoverTimer = nil; }
+  [super viewWillMoveToWindow:window];
+}
+- (void)mouseEntered:(NSEvent*)event {
+  (void)event;
+  [hoverTimer invalidate];
+  __weak MITCADBindingBadge* weakSelf = self;
+  NSString* enteredKey = [self.representedObject copy];
+  hoverTimer = [NSTimer scheduledTimerWithTimeInterval:0.45 repeats:NO block:^(NSTimer* timer) {
+    (void)timer;
+    MITCADBindingBadge* badge = weakSelf;
+    if (badge && [badge.representedObject isEqual:enteredKey]) [badge requestCard:NO];
+  }];
+}
+- (void)mouseExited:(NSEvent*)event {
+  (void)event;
+  [hoverTimer invalidate];
+  hoverTimer = nil;
+}
+- (void)pinCard:(id)sender {
+  (void)sender;
+  [hoverTimer invalidate];
+  hoverTimer = nil;
+  [self requestCard:YES];
+}
+- (void)requestCard:(BOOL)pinned {
+  if (!state || state->closing || state->nativeModalBlocked() || !NSApp.active ||
+      !self.window.visible || !self.enabled || [self isHiddenOrHasHiddenAncestor]) return;
+  if (!pinned) {
+    // Revalidate after the hover delay: a recycled/scrolled row or a new
+    // window must not turn a former entry into another item's card.
+    const NSPoint screen = NSEvent.mouseLocation;
+    const NSPoint local = [self convertPoint:[self.window convertPointFromScreen:screen] fromView:nil];
+    const NSRect exposed = NSIntersectionRect(self.bounds, self.visibleRect);
+    if (NSIsEmptyRect(exposed) || !NSPointInRect(local, exposed) ||
+        [NSWindow windowNumberAtPoint:screen belowWindowWithWindowNumber:0] != self.window.windowNumber) return;
+    NSView* root = self.window.contentView;
+    NSView* hit = [root hitTest:[self convertPoint:local toView:root.superview]];
+    if (hit != self && ![hit isDescendantOf:self]) return;
+  }
+  const QString key = qt(self.representedObject);
+  const auto callback = history ? state->callbacks.historyBindings : state->callbacks.treeBindings;
+  if (!callback) return;
+  const NSRect screen = [self.window convertRectToScreen:[self convertRect:self.bounds toView:nil]];
+  const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+  const QRect anchor(qRound(screen.origin.x), qRound(top - NSMaxY(screen)),
+                     std::max(1, qRound(screen.size.width)), std::max(1, qRound(screen.size.height)));
+  qDebug().noquote() << QStringLiteral("Native %1 fx %2: %3 (%4)")
+      .arg(history ? QStringLiteral("history") : QStringLiteral("browser"), key, qt(self.title),
+           pinned ? QStringLiteral("pinned") : QStringLiteral("hover"));
+  callback(key, anchor, pinned);
+}
+- (void)drawRect:(NSRect)dirty {
+  (void)dirty;
+  [NSColor.controlBackgroundColor setFill];
+  [[NSBezierPath bezierPathWithRoundedRect:NSInsetRect(self.bounds, 0.5, 0.5) xRadius:4 yRadius:4] fill];
+  NSDictionary* attributes = @{NSFontAttributeName:self.font != nil ? self.font : [NSFont systemFontOfSize:NSFont.smallSystemFontSize],
+                               NSForegroundColorAttributeName:NSColor.labelColor};
+  const NSSize size = [self.title sizeWithAttributes:attributes];
+  [self.title drawAtPoint:NSMakePoint((self.bounds.size.width - size.width) / 2,
+                                     (self.bounds.size.height - size.height) / 2)
+          withAttributes:attributes];
+}
+@end
+
 @implementation MITCADDocumentWindow
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
   if (state && state->dispatchShortcutOnce(event)) return YES;
@@ -2541,6 +2760,25 @@ using namespace mitcad::mac;
 }
 - (void)sendEvent:(NSEvent*)event {
   if (state && (state->dispatchGesture(event) || state->dispatchShortcutOnce(event))) return;
+  // The embedded QNSView consumes its keys into Qt rather than offering an
+  // unhandled Escape to this window's responder fallback. Its standalone
+  // viewport does not own the retained MainWindow's Cancel QAction either.
+  // Route only the actual document canvas's plain Escape through the shared
+  // cancellation callback; native panels and CAD text editors keep theirs.
+  if (state && event.type == NSEventTypeKeyDown && event.window == self &&
+      NSApp.active && NSApp.keyWindow == self && !state->closing &&
+      !QApplication::activeModalWidget() && !state->textEditing()) {
+    NSResponder* responder = self.firstResponder;
+    NSView* view = [responder isKindOfClass:NSView.class] ? (NSView*)responder : nil;
+    const QKeySequence pressed = keySequence(event);
+    if (view && [view isDescendantOf:state->viewportHost] && !pressed.isEmpty() &&
+        pressed[0].keyboardModifiers() == Qt::NoModifier && pressed[0].key() == Qt::Key_Escape &&
+        [self dispatchCancellation]) {
+      if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+        qInfo() << "Native document Escape: viewport -> shared cancellation";
+      return;
+    }
+  }
   [super sendEvent:event];
 }
 - (BOOL)dispatchConfirmation {
@@ -2629,6 +2867,22 @@ using namespace mitcad::mac;
 }
 @end
 
+@implementation MITCADHistoryScroll
+- (void)scrollWheel:(NSEvent*)event {
+  NSClipView* clip = self.contentView;
+  const CGFloat maximum = std::max<CGFloat>(0, self.documentView.frame.size.width - clip.bounds.size.width);
+  const CGFloat delta = std::abs(event.scrollingDeltaY) > std::abs(event.scrollingDeltaX)
+                            ? event.scrollingDeltaY : event.scrollingDeltaX;
+  // Precise trackpad deltas are points. A wheel's delta is in lines.
+  const CGFloat pixels = event.hasPreciseScrollingDeltas ? delta : delta * self.horizontalLineScroll;
+  NSPoint point = clip.bounds.origin;
+  point.x = std::clamp(point.x - pixels, CGFloat(0), maximum);
+  [clip scrollToPoint:point];
+  [self reflectScrolledClipView:clip];
+  // Consume the event at either end too: it must not zoom the CAD canvas.
+}
+@end
+
 @implementation MITCADHistoryStrip
 - (BOOL)isFlipped { return YES; }
 - (BOOL)isOpaque { return NO; }
@@ -2691,7 +2945,13 @@ using namespace mitcad::mac;
 - (BOOL)isFlipped { return YES; }
 - (BOOL)acceptsFirstResponder { return self.enabled; }
 - (NSView*)hitTest:(NSPoint)point {
-  return NSPointInRect([self convertPoint:point fromView:self.superview], self.bounds) ? self : nil;
+  const NSPoint local = [self convertPoint:point fromView:self.superview];
+  if (!NSPointInRect(local, self.bounds)) return nil;
+  for (NSView* child in self.subviews) {
+    if ([child isKindOfClass:MITCADBindingBadge.class] && !child.hidden && NSPointInRect(local, child.frame))
+      return [child hitTest:local];
+  }
+  return self;
 }
 - (void)selectHistoryFeature {
   if (state) state->selectHistoryFeature(qt(self.featureKey), 0);
@@ -3294,6 +3554,17 @@ using namespace mitcad::mac;
       active.tag = 2;
       [active.widthAnchor constraintEqualToConstant:16].active = YES;
       [active.heightAnchor constraintEqualToConstant:18].active = YES;
+      MITCADBindingBadge* bindings = [[MITCADBindingBadge alloc] initWithFrame:NSZeroRect];
+      bindings->state = state;
+      bindings->history = false;
+      [state->bindingBadges addObject:bindings];
+      bindings.target = bindings;
+      bindings.action = @selector(pinCard:);
+      bindings.tag = 3;
+      bindings.font = [NSFont systemFontOfSize:10 weight:NSFontWeightSemibold];
+      [bindings.widthAnchor constraintGreaterThanOrEqualToConstant:32].active = YES;
+      [bindings.heightAnchor constraintEqualToConstant:18].active = YES;
+      [row addArrangedSubview:bindings];
       [row addArrangedSubview:active];
       [NSLayoutConstraint activateConstraints:@[
         [row.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:2],
@@ -3324,6 +3595,14 @@ using namespace mitcad::mac;
       drawing.icon = mitcad::themeIcon(visible ? QStringLiteral("eye") : QStringLiteral("eye-off"));
       button.toolTip = visible ? @"Hide" : @"Show";
       button.accessibilityIdentifier = ns(QStringLiteral("native.model.eye.") + item->id);
+    } else if (button.tag == 3) {
+      button.hidden = item->bindings <= 0;
+      button.enabled = item->enabled;
+      button.title = ns(QStringLiteral("fx %1").arg(item->bindings));
+      button.accessibilityIdentifier = ns(QStringLiteral("native.model.fx.") + item->id);
+      button.accessibilityLabel = ns(QStringLiteral("%1 follows %2 bindings").arg(item->title).arg(item->bindings));
+      button.toolTip = @"Follows expressions: point here to see what";
+      continue;
     } else {
       button.hidden = !item->hasActivation;
       button.enabled = item->enabled;

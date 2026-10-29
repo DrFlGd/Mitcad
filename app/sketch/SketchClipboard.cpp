@@ -83,7 +83,10 @@ V2 pointOf(const QJsonValue& value) {
 QStringList selectedGeometry(const SketchController& c) {
   QStringList items;
   for (const SelectionItem& item : c.host().selection()) {
-    const bool geometry = item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint;
+    // Not the sketch's axes and origin selected (mitcad#899): a copy takes
+    // the constraints to them, not them.
+    const bool geometry = (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint) &&
+                          !isAxisSelection(item);
     if (item.owner == c.uid() && geometry && !items.contains(item.name)) {
       items << item.name;
     }

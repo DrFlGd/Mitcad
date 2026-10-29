@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands app/framework app/browser app/view core/model-api/src core/model/src/document tools/cli
+# check-all sources: core/model-drawing/src
 # Input-driven Windows UI test of annotations (mitcad#702) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), as
 # tools/ui-annotations-test.sh on Linux, on the design of
@@ -19,6 +20,9 @@
 #      A. (Picking again from the editor is in the Linux test only: its
 #      buttons are in a dialog.)
 #   7. Saved and opened again.
+#   8. Hole Callout in the Measure panel on a plate with four counterbored
+#      through holes (mitcad#902): HoleCallout1 written from the hole's
+#      feature, in the bundled lettering.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-annotations-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -161,21 +165,22 @@ Ui-ExpectNew "Diameter1 = ${o}10 H7 (auto)" 'drawn with its fit code'
 Ui-Mark
 Ui-Step 'select both (Ctrl+A)'            { Window-Keys @('ctrl+a') }
 Ui-ExpectNew 'Annotations selected: AxisDistance1, Diameter1' 'both selected'
-Ui-Step 'Colour (Alt+C): Green' {
+Ui-Step 'Colour (Alt+C): Dark Grey' {
   Ui-Key 'alt+c'
   Ui-FocusDialog '^Annotation Colour$'
-  # From Auto, the first row: Orange, Blue, Green.
-  foreach ($i in 1..3) { Ui-Key 'Down' }
+  # From Auto, the first row: Black, Dark Grey (mitcad#902: no bright
+  # presets).
+  foreach ($i in 1..2) { Ui-Key 'Down' }
   Ui-Key 'Return'
 }
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10 H7 (#2b8a3e)" 'both green'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50 ${pm}0.1 (#495057) | Diameter1 = ${o}10 H7 (#495057)" 'both dark grey'
 Ui-Step 'Decimals (Alt+D): 2' {
   Window-Keys @('alt+d')
   Ui-FocusDialog '^Annotation Decimals$'
   foreach ($i in 1..3) { Ui-Key 'Down' }
   Ui-Key 'Return'
 }
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'two decimals'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#495057) | Diameter1 = ${o}10.00 H7 (#495057)" 'two decimals'
 Ui-Step 'Group (Alt+R): Shop' {
   Window-Keys @('alt+r')
   Ui-FocusDialog '^Annotation Group$'
@@ -199,9 +204,9 @@ Ui-Mark
 Ui-Step 'filter Shop (Alt+G, Down x3)'    { Window-Keys @('alt+g', 'Down', 'Down', 'Down') }
 Ui-ExpectNew 'Annotations group filter: Shop' 'the filter on Shop'
 Ui-Step 'Hide Group (Alt+U)'              { Window-Keys @('alt+u') }
-Ui-ExpectNew "Annotations drawn: Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'only Inspect''s drawn'
+Ui-ExpectNew "Annotations drawn: Diameter1 = ${o}10.00 H7 (#495057)" 'only Inspect''s drawn'
 Ui-Step 'Show Group (Alt+W)'              { Window-Keys @('alt+w') }
-Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'both again'
+Ui-ExpectNew "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#495057) | Diameter1 = ${o}10.00 H7 (#495057)" 'both again'
 Ui-Step 'close the window (Escape)'       { Window-Keys @('Escape'); Ui-FocusMain }
 
 Write-Host '--- 5. A snapshot of the group Inspect'
@@ -293,7 +298,56 @@ foreach ($field in @('"group": "Shop"', '"group": "Inspect"', '"code": "H7"', '"
 }
 Ui-StartApp 'annotations-again' @('--open', $design)
 Ui-ExpectLog 'Annotations: AxisDistance1 axis_distance in Shop | Diameter1 diameter in Inspect' 'read back in their groups'
-Ui-ExpectLog "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#2b8a3e) | Diameter1 = ${o}10.00 H7 (#2b8a3e)" 'drawn as they were'
+Ui-ExpectLog "Annotations drawn: AxisDistance1 = 50.00 ${pm}0.1 (#495057) | Diameter1 = ${o}10.00 H7 (#495057)" 'drawn as they were'
+
+Write-Host '--- 8. A hole callout from the Measure panel'
+$holesJson = Join-Path $work 'holes.json'
+$holes = Join-Path $work 'holes.mitcad'
+Set-Content -Encoding ascii $holesJson @'
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "hole",
+    "placement": {"type": "face", "body": "F2.b0", "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})",
+                  "points": [[10, 10, 10], [50, 10, 10], [10, 30, 10], [50, 30, 10]]},
+    "diameter": 6.6, "extent": {"type": "through_all"},
+    "kind": {"type": "counterbore", "diameter": 11, "depth": 6.8}}}
+]
+'@
+$output = & $cli run $holesJson --save $holes 2>&1
+if ($LASTEXITCODE -ne 0) { Ui-Fail "mitcad-cli (the plate): $($output -join ' / ')" }
+$cbore = [char]0x2334 # counterbore
+$depth = [char]0x21A7 # depth
+Ui-StartApp 'annotations-holes' @('--open', $holes)
+Ui-ExpectLog 'Annotations: none' 'the plate opened without annotations'
+Ui-Step 'fit (F6)'                         { Ui-Key 'F6' }
+Ui-Mark
+Ui-Step 'measure (I)'                      { Ui-Key 'i' }
+Ui-ExpectNew 'Command Measure started' 'measure started'
+Ui-Step 'pick a hole''s counterbore wall' { Ui-ClickPick 'face F2.b0/F3:hole0.cbore_wall' }
+Wait-Enabled 'Measure Hole Callout'
+Ui-Mark
+Ui-Step 'Hole Callout'                     { Ui-ClickLogged 'Measure Hole Callout' }
+Ui-ExpectNew 'Measure Hole Callout clicked' 'Hole Callout clicked'
+Ui-ExpectNew 'Annotation kept: HoleCallout1' 'the hole callout added'
+Ui-ExpectNew "Annotations drawn: HoleCallout1 = 4x ${o}6.6 THRU / $cbore ${o}11 $depth 6.8 (auto)" 'written from the hole''s feature'
+Ui-ExpectLog 'Annotation lettering: ' 'the annotations'' lettering chosen' | Out-Null
+# The bundled lettering when the build has it (third_party/fonts/iso-lettering).
+if (Test-Path (Join-Path (Split-Path $script:UiApp) 'fonts\lettering.ttf')) {
+  $lettering = Ui-LastLineWith 'Annotation lettering: '
+  if (-not $lettering -or -not $lettering.Contains('lettering.ttf')) { Ui-Fail "not the bundled lettering: $lettering" }
+}
+Ui-Step 'close (Enter)'                    { Ui-Key 'Return' }
+Ui-ExpectNew 'Closed Measure' 'measure closed'
+Ui-Mark
+Ui-Step 'save (Ctrl+S)'                   { Ui-Key 'ctrl+s' }
+Ui-ExpectNew 'Saved ' 'saved'
+if (-not (Select-String -Path $holes -SimpleMatch -Pattern '"kind": "hole_callout"' -Quiet)) {
+  Ui-Fail 'the design file has no hole callout'
+}
 
 if (Ui-LogLines | Where-Object { $_.Contains('Recompute failed') }) { Ui-Fail 'a recompute failed' }
 Ui-Finish 'UI Windows annotations test'

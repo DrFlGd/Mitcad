@@ -125,6 +125,13 @@ for file in AppRun mitcad.desktop mitcad.png .DirIcon usr/bin/mitcad usr/bin/mit
   usr/share/doc/mitcad/licenses/droid-sans/LICENSE.txt usr/share/doc/mitcad/licenses/qtkeychain/COPYING; do
   [ -e "$DIR/$file" ] || ui_fail "the AppImage has no $file"
 done
+# The annotations' lettering (mitcad#902) and its licence, when the source
+# has it (third_party/fonts/iso-lettering).
+if [ -e "$(dirname "$0")/../third_party/fonts/iso-lettering/lettering.ttf" ]; then
+  for file in usr/share/mitcad/fonts/lettering.ttf usr/share/doc/mitcad/licenses/iso-lettering/LICENSE.txt; do
+    [ -e "$DIR/$file" ] || ui_fail "the AppImage has no $file"
+  done
+fi
 # Qt's D-Bus module: the keychain's (KWallet, the Secret Service).
 for library in libQt6Core libQt6Widgets libQt6Network libQt6Svg libQt6XcbQpa libQt6DBus libTKernel libTKV3d libTKOpenGl; do
   compgen -G "$DIR/usr/lib/$library.so*" > /dev/null || ui_fail "the AppImage has no $library"

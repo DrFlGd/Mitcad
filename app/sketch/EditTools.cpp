@@ -192,7 +192,10 @@ public:
     for (const SelectionItem& item : selected) {
       if (item.owner == m_c.uid() &&
           (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint)) {
-        m_picks << item.name;
+        // An axis or the origin selected (mitcad#899) as the entity the
+        // sketch has for it, else as its pick, which view() adds and add()
+        // makes.
+        m_picks << m_c.model().axisEntity(item.name);
       } else if (item.kind == SelectKind::Edge || item.kind == SelectKind::Vertex) {
         // In the sketch plane or out of it (mitcad#866): what it projects
         // to, projected when the dimension is added.
@@ -1240,13 +1243,17 @@ private:
     if (m_type == QStringLiteral("fix")) {
       return;
     }
-    QStringList picks;
+    QStringList names;
     for (const SelectionItem& item : selected) {
       if (item.owner == m_c.uid() &&
           (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint)) {
-        picks << item.name;
+        names << item.name;
       }
     }
+    // The sketch's axes and origin selected (mitcad#899) as the entities
+    // the sketch has for them, else as their picks: made when the
+    // constraint is added (applyEach).
+    const QStringList picks = m_c.model().selectionPicks(names, true);
     if (picks.isEmpty()) {
       return;
     }
@@ -1369,17 +1376,25 @@ QString constraintName(const QString& type) {
 }
 
 bool constrainSelection(SketchController& c, const QString& type) {
-  QStringList picks;
+  QStringList names;
   for (const SelectionItem& item : c.host().selection()) {
     if (item.owner == c.uid() &&
         (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint)) {
-      picks << item.name;
+      names << item.name;
     }
   }
+  // The sketch's axes and origin selected (mitcad#899): as the entities
+  // the sketch has for them, else as their picks, which applyEach makes in
+  // the constraint's step. Fix/Unfix leaves them out.
+  const QStringList picks = c.model().selectionPicks(names, type != QStringLiteral("fix"));
   if (picks.isEmpty()) {
     return false;
   }
-  const QVector<QStringList> sets = selectionSets(type, picks, c.model());
+  // Decided on the sketch with those picks as the fixed line and point the
+  // model makes for them, as the tool does.
+  SketchModel view = c.model();
+  view.addAxisPicks();
+  const QVector<QStringList> sets = selectionSets(type, picks, view);
   if (sets.isEmpty()) {
     return false;
   }

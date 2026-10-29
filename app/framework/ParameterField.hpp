@@ -111,6 +111,12 @@ public:
 
   void setOwnParameter(const QString& name);
   void setLabel(const QString& label);
+  // Native editors use the same current kind, naming and creation rules.
+  const ParameterFieldOptions& options() const { return m_options; }
+  // A native editor owns its suggestions/menu while retaining the hidden
+  // shared value presenter and modal tools. Qt fields default to enabled.
+  bool popupEnabled() const { return m_popupEnabled; }
+  void setPopupEnabled(bool enabled);
   bool isOpen() const;
   // The fx button: every parameter, to be searched.
   void openBrowser();
@@ -180,6 +186,7 @@ private:
   QLabel* m_search = nullptr;
   QLabel* m_footer = nullptr;
   Mode m_mode = Mode::Closed;
+  bool m_popupEnabled = true;
   QString m_filter;  // typing: the name before the caret; browsing: the search
   Anchor m_anchor;   // where the browser opened
   std::vector<SuggestedParameter> m_parameters;

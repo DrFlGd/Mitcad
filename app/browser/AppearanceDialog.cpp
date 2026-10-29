@@ -84,12 +84,12 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   auto* layout = new QVBoxLayout(this);
   // The body scrolls on a screen too low for it, so that the dialog fits
   // the screen and the buttons below the body stay visible (mitcad#818).
-  // An AppKit window scrolls its whole body itself (NativeWindowFit.hpp).
+  // Keep this boundary in both frontends: the assignment panel below it
+  // and the dialog buttons must remain outside the long material form.
   auto* scroll = new FittingScrollArea;
   scroll->setObjectName(QStringLiteral("appearanceBody"));
   scroll->setWidgetResizable(true);
   scroll->setFrameShape(QFrame::NoFrame);
-  scroll->setProperty("nativeWindowBody", true);
   auto* body = new QWidget;
   auto* bodyLayout = new QVBoxLayout(body);
   bodyLayout->setContentsMargins(0, 0, 0, 0);
@@ -141,6 +141,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
   auto* form = new QFormLayout;
   right->addLayout(form);
   m_name = new QLineEdit;
+  m_name->setObjectName(QStringLiteral("appearanceName"));
   form->addRow(tr("Name"), m_name);
   addColor(form, "base_color", tr("Base colour"));
   addNumber(form, "metalness", tr("Metalness"), 0.0, 1.0, 0.05, tr("0 for plastics, paint and glass, 1 for metals"));
@@ -208,6 +209,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
                                      "Planar: along the body's Z axis"));
   form->addRow(tr("Projection"), m_textureProjection);
   m_textureEmbed = new QCheckBox(tr("Embed the image in the design"));
+  m_textureEmbed->setObjectName(QStringLiteral("appearanceTextureEmbed"));
   m_textureEmbed->setToolTip(tr("The design file keeps a copy of the image, so it goes with the design"));
   form->addRow(QString(), m_textureEmbed);
   m_textureInfo = new QLabel;
@@ -276,14 +278,17 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
 
   auto* buttons = new QDialogButtonBox;
   m_new = new QPushButton(themeIcon(QStringLiteral("add")), tr("New"));
+  m_new->setObjectName(QStringLiteral("appearanceNew"));
   m_new->setToolTip(tr("A copy of the selected appearance in this design, to edit"));
   m_delete = new QPushButton(themeIcon(QStringLiteral("delete")), tr("Delete"));
   m_delete->setToolTip(tr("Delete the selected appearance of this design; its bodies get the default look"));
   m_assign = new QPushButton(themeIcon(QStringLiteral("appearance")), tr("Assign"));
+  m_assign->setObjectName(QStringLiteral("appearanceAssign"));
   m_assignBodies = new QPushButton(themeIcon(QStringLiteral("appearance")), tr("Assign to Bodies"));
   m_assignBodies->setToolTip(tr("Give the appearance to the bodies the selected faces belong to"));
   m_assignBodies->setVisible(false); // only while the selection holds faces (mitcad#346)
   m_close = new QPushButton(tr("Close"));
+  m_close->setObjectName(QStringLiteral("appearanceClose"));
   for (QPushButton* button : {m_new, m_delete, m_assign, m_assignBodies, m_close}) {
     button->setAutoDefault(false);
   }

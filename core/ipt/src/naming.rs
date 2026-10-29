@@ -889,11 +889,16 @@ impl BrepState {
             // body: attrib, tag, ?, lump; lump: …, next, shell; shell: …,
             // next, subshell, face; face: …, next, loop; loop: …, next,
             // coedge; coedge: …, next, previous, partner, edge.
+            // A `next` naming its own record or an earlier one of the
+            // chain would make the walk endless (mitcad#933): each lump,
+            // shell, face and loop record is walked once, a chain ending
+            // where it comes back.
+            let mut chained = std::collections::HashSet::new();
             let mut lump = at.ptr(body, 3).and_then(|p| at.rec(p));
             let mut guard = 0usize;
-            while let Some(l) = lump {
+            while let Some(l) = lump.filter(|&l| chained.insert(l)) {
                 let mut shell = at.ptr(l, 4).and_then(|p| at.rec(p));
-                while let Some(s) = shell {
+                while let Some(s) = shell.filter(|&s| chained.insert(s)) {
                     let mut face_p = at.ptr(s, 5);
                     while let Some(fp) = face_p.filter(|&p| p >= 0) {
                         guard += 1;
@@ -901,9 +906,12 @@ impl BrepState {
                             return out;
                         }
                         let Some(f) = at.rec(fp) else { break };
+                        if !chained.insert(f) {
+                            break;
+                        }
                         let mut edges = Vec::new();
                         let mut lp = at.ptr(f, 4).and_then(|p| at.rec(p));
-                        while let Some(lr) = lp {
+                        while let Some(lr) = lp.filter(|&lr| chained.insert(lr)) {
                             let first = at.ptr(lr, 4);
                             let mut cp = first;
                             let mut n = 0;
@@ -1337,5 +1345,26 @@ mod tests {
             ..attribute
         };
         assert!(!name.matches(&other));
+    }
+
+    /// mitcad#933: a lump, shell, face or loop whose `next` is its own
+    /// record ends the chain there instead of walking it forever; the
+    /// sheet's one face with its four edges is read either way.
+    #[test]
+    fn a_chain_that_comes_back_is_walked_once() {
+        use crate::testdesign::square_sheet_with_next;
+        let cases = [
+            ("", -1),
+            ("lump", 2),
+            ("shell", 3),
+            ("face", 4),
+            ("loop", 5),
+        ];
+        for (kind, next) in cases {
+            let file = AsmFile::parse(&square_sheet_with_next(0.0, kind, next)).expect("parsed");
+            let state = BrepState::read(&file, None, 0);
+            assert_eq!(state.faces.len(), 1, "{kind}");
+            assert_eq!(state.faces[0].edges.len(), 4, "{kind}");
+        }
     }
 }

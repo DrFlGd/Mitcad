@@ -50,7 +50,7 @@ pub fn read_document_bodies(
         .into_iter()
         .map(|b| {
             let data = doc
-                .read(&b.entry)
+                .read_large(&b.entry)
                 .map_err(|e| format!("{}: {e}", b.entry))?;
             read_blob(&b.entry, &data, options).map_err(|e| format!("{}: {e}", b.entry))
         })

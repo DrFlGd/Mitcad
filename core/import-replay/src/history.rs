@@ -477,6 +477,9 @@ pub struct Oracle<'g, S> {
     /// time its building took since [`Oracle::take_watched`].
     watched: Option<usize>,
     watched_time: std::time::Duration,
+    /// The cursor the states behind were last released at
+    /// ([`Oracle::release_passed`]).
+    passed: Option<usize>,
 }
 
 impl<'g, S: Clone> Oracle<'g, S> {
@@ -498,6 +501,7 @@ impl<'g, S: Clone> Oracle<'g, S> {
             retired: Vec::new(),
             watched: None,
             watched_time: std::time::Duration::ZERO,
+            passed: None,
         }
     }
 
@@ -582,6 +586,16 @@ impl<'g, S: Clone> Oracle<'g, S> {
         }
         self.geometry.release_before(cursor);
         dropped
+    }
+
+    /// [`Oracle::release_behind`] once the cursor has moved on since this
+    /// last did it (mitcad#885: the replay calls it before each item).
+    pub fn release_passed(&mut self) -> usize {
+        if self.cursor.is_none() || self.cursor == self.passed {
+            return 0;
+        }
+        self.passed = self.cursor;
+        self.release_behind()
     }
 
     /// The state the timeline item `index` made, if known and not behind

@@ -1,0 +1,128 @@
+# SPDX-License-Identifier: MIT
+# Native Configuration bar and Rules canvas on configurations.json.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+wait-idle
+native-appearance '${MITCAD_TEST_COLOR_SCHEME}'
+native-resize 1280 820
+expect-model-bodies 1 600000
+expect-native-visible configurationField_Length true
+expect-native-visible configurationChooser_Color true
+capture-undo-depth before
+expect-native-configuration-layout
+# The full visible slider, including both endpoints, is real pointer input.
+mark
+native-pointer-drag configurationSlider_Length knob 1
+expect-log '^Configuration chosen: Length = 2000$'
+expect-model-bodies 1 800000
+expect-undo-depth ${before} 1
+command edit.undo
+wait-idle
+expect-model-bodies 1 600000
+expect-undo-depth ${before} 0
+native-card-width native.sidebar 180
+expect-native-card-width native.sidebar 180 181
+expect-native-configuration-layout
+mark
+native-pointer-drag configurationSlider_Length knob 0
+expect-log '^Configuration chosen: Length = 300$'
+expect-model-bodies 1 120000
+expect-undo-depth ${before} 1
+command edit.undo
+wait-idle
+expect-model-bodies 1 600000
+expect-undo-depth ${before} 0
+screenshot '${MITCAD_TEST_WORK}/configuration-bar-narrow-${MITCAD_TEST_COLOR_SCHEME}.png'
+native-card-width native.sidebar 260
+expect-native-configuration-layout
+mark
+native-pointer-click configurationField_Length
+key Ctrl+a
+type '1200 mm'
+key Return
+expect-log '^Configuration chosen: Length = 1200'
+wait-idle
+expect-model-bodies 1 480000
+expect-undo-depth ${before} 1
+screenshot '${MITCAD_TEST_WORK}/configuration-bar-${MITCAD_TEST_COLOR_SCHEME}.png'
+
+# The actual Configurations dialog, with the existing rule selected.
+native-action solid.configurations
+focus-dialog '^Configurations$'
+native-choice configurationsTabs Rules
+expect-log 'Configurations page Rules'
+expect-native-visible ruleCanvas true
+expect-native-visible rulePalette true
+native-select 'rules.Black is short'
+expect-native-visible 'rulePiece_then.0.0 block' true
+native-pointer-click 'rulePiece_then.0.0 block'
+key Return
+screenshot-dialog '${MITCAD_TEST_WORK}/configuration-rule-editor-${MITCAD_TEST_COLOR_SCHEME}.png'
+expect-native-visible ruleBlockEditor true
+expect-native-control-focus ruleBlockEditor
+key Ctrl+a
+type '900 mm'
+key Return
+expect-log '^Rules saved: Set then\.0\.0 to 900 mm'
+mark
+native-pointer-click 'rulePiece_then.0.0 block'
+key Return
+type '800 mm'
+key Escape
+expect-native-visible ruleBlockEditor false
+expect-native-visible ruleCanvas true
+expect-log '^Rule canvas editing then\.0\.0 block cancelled$'
+expect-no-log '^Rules saved:'
+native-pointer-click 'rulePiece_then.0.0 block'
+key Return
+expect-native-visible ruleBlockEditor true
+expect-native-text ruleBlockEditor '^900 mm$'
+key Escape
+expect-native-visible ruleBlockEditor false
+expect-no-log '^Rules saved:'
+# Palette insertion and canvas deletion use the same model edits as Qt.
+native-pointer-click 'rulePiece_then.1 slot'
+key Return
+key End
+expect-log '^Native rule palette selected in_table$'
+key Home
+type max
+expect-log '^Native rule palette selected max$'
+key Home
+type number
+expect-log '^Native rule palette selected number$'
+key Home
+type forbid
+expect-log '^Native rule palette selected forbid$'
+key Return
+expect-log 'Rule canvas editing then\.1 message:'
+type 'Temporary refusal'
+key Return
+expect-log '^Rules saved: Set message of then\.1 to Temporary refusal'
+# The message is a child piece over the block's centre. Press the visible
+# block word at its left edge, just as a pointer user selects that block.
+native-pointer-click 'rulePiece_then.1 block' 0.08 0.5
+key Delete
+expect-log '^Rules saved: Delete then\.1'
+native-pointer-button '^View as Text$'
+expect-log 'Rule as text Black is short: .*Length max 900 mm'
+screenshot-dialog '${MITCAD_TEST_WORK}/configuration-rules-${MITCAD_TEST_COLOR_SCHEME}.png'
+native-pointer-button '^Check Rules$'
+expect-log 'Check Rules'
+native-pointer-button '^Close$'
+expect-native-dialog-gone '^Configurations$'
+focus-main
+mark
+expect-native-text configurationChooser_Color '^White$'
+native-pointer-choice configurationChooser_Color Black Up Return
+expect-log '^Native pointer choice: configurationChooser_Color .*menu tracked$'
+expect-native-text configurationChooser_Color '^Black$'
+expect-log '^Configuration chosen: Color = Black'
+wait-idle
+expect-model-bodies 1 360000
+expect-native-text configurationField_Length '^900'
+expect-native-configuration-layout
+screenshot '${MITCAD_TEST_WORK}/configuration-rule-result-${MITCAD_TEST_COLOR_SCHEME}.png'
+native-card-width native.sidebar 180
+expect-native-configuration-layout
+expect-native-text configurationNotice '^Length 1200 mm → 900 mm: Black is short$'
+screenshot '${MITCAD_TEST_WORK}/configuration-rule-result-narrow-${MITCAD_TEST_COLOR_SCHEME}.png'

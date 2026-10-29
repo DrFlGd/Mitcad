@@ -3,9 +3,12 @@
 #include "NativeTableCells.hpp"
 #include "NativeWindowFit.hpp"
 #include "NativeCollection.hpp"
+#include "NativeRuleCanvas.hpp"
+#include "NativeNavigationGuide.hpp"
 #include "NativeLayout.hpp"
 #include "../NativeDialogs.hpp"
 #include "NativeControls.hpp"
+#include "NativeColorField.hpp"
 
 #import <AppKit/AppKit.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
@@ -20,6 +23,7 @@
 #include <QAbstractItemView>
 #include <QAbstractSpinBox>
 #include <QAction>
+#include <QApplication>
 #include <QBoxLayout>
 #include <QBuffer>
 #include <QCheckBox>
@@ -34,6 +38,8 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QFont>
+#include <QFocusEvent>
 #include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -43,10 +49,12 @@
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QShortcut>
+#include <QSet>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
 #include <QListView>
+#include <QListWidget>
 #include <QMenu>
 #include <QMessageBox>
 #include <QPersistentModelIndex>
@@ -65,6 +73,7 @@
 #include <QSplitter>
 #include <QStackedWidget>
 #include <QTabWidget>
+#include <QTabBar>
 #include <QTableView>
 #include <QTextDocument>
 #include <QTextCursor>
@@ -147,6 +156,7 @@ class NativeMenuPopup;
   NSColor* fill;
   BOOL discarding;
   BOOL finishing; // Return, Escape or Tab ends the edit (finishEditing:, modelEditNext)
+  BOOL userEdited; // a real text change, rather than a model refresh behind the editor
   // The row's stable NativeControlIdentifierRole (its first column's), which
   // finds the row again after the model rebuilt it (mitcad#814).
   QString rowIdentifier;
@@ -155,7 +165,13 @@ class NativeMenuPopup;
 // Ends this cell's text edit: commits it or discards it, keeping the table
 // focused. NO when the cell is not being edited.
 - (BOOL)finishEditing:(BOOL)commit;
+- (void)refreshUnchangedEdit;
 - (void)applyTone;
+@end
+
+// Editable fields publish their cell's selection before AppKit starts
+// the field editor and consumes the table's normal pointer selection.
+@interface MitcadNativeModelField : NSTextField
 @end
 
 // Only opted-in models forward hover. Persistent indices become invalid
@@ -199,6 +215,8 @@ class NativeMenuPopup;
 @end
 @interface MitcadNativeOutline : NSOutlineView
 @end
+@interface MitcadNativeSpannedRowView : MitcadNativeCurrentRowView
+@end
 
 @interface MitcadNativeShortcutField : NSTextField {
 @public
@@ -207,8 +225,35 @@ class NativeMenuPopup;
 - (void)clearShortcut:(id)sender;
 @end
 
+@interface MitcadNativeSlider : NSSlider
+@property(nonatomic) NSInteger keyboardStep;
+@property(nonatomic) BOOL pointerTracking;
+@end
+@interface MitcadNativePopup : NSPopUpButton
+@end
+
+@interface MitcadNativeActionButton : NSButton
+@end
+
+@interface MitcadNativeCompletionTable : NSTableView
+@end
+
+@interface MitcadNativeTextView : NSTextView <NSTableViewDataSource, NSTableViewDelegate> {
+  NSPopover* completionPopover;
+  NSTableView* completionTable;
+  id completionMonitor;
+}
+@property(nonatomic, copy) NSString* placeholderString;
+- (BOOL)sharedKey:(NSEvent*)event;
+- (mitcad::AppKitWidgetView*)presenterOwner;
+- (QListWidget*)sharedCompletions;
+- (void)refreshCompletions;
+- (void)closeCompletions;
+- (void)chooseCompletion:(id)sender;
+@end
+
 // Opt-in hover forwarding for presenters that preview a button's candidates.
-@interface MitcadNativeHoverButton : NSButton {
+@interface MitcadNativeHoverButton : MitcadNativeActionButton {
 @public
   QPointer<QAbstractButton> presenter;
   NSTrackingArea* hoverArea;
@@ -285,6 +330,13 @@ QString labelText(const QLabel* caption) {
   }
   return caption->buddy() != nullptr ? title(text) : text;
 }
+CGFloat labelPixmapHeight(const QLabel* caption) {
+  // Labels also carry compact swatches and warning icons. Keep their
+  // logical image size instead of giving every picture a preview's height.
+  const QPixmap pixmap = caption->pixmap();
+  return std::min<CGFloat>(240, std::max<CGFloat>(caption->minimumHeight(),
+                                                std::ceil(pixmap.deviceIndependentSize().height())));
+}
 NSImage* image(const QPixmap& pixmap) {
   if (pixmap.isNull()) {
     return nil;
@@ -314,6 +366,17 @@ NSTextField* label(const QString& text, bool interpretRichText = true) {
                                    forOrientation:NSLayoutConstraintOrientationHorizontal];
   return result;
 }
+NSFont* labelFont(const QFont& font, const QFont& reference) {
+  CGFloat size = NSFont.systemFontSize;
+  if (font.pointSizeF() > 0 && reference.pointSizeF() > 0)
+    size *= font.pointSizeF() / reference.pointSizeF();
+  const NSFontWeight weight = font.weight() >= QFont::Bold ? NSFontWeightBold
+      : font.weight() >= QFont::DemiBold ? NSFontWeightSemibold
+      : font.weight() >= QFont::Medium ? NSFontWeightMedium : NSFontWeightRegular;
+  NSFont* native = [NSFont systemFontOfSize:size weight:weight];
+  if (font.italic()) native = [NSFontManager.sharedFontManager convertFont:native toHaveTrait:NSItalicFontMask];
+  return native;
+}
 void add(NSStackView* parent, NSView* child) {
   if (child == nil) {
     return;
@@ -325,7 +388,7 @@ void add(NSStackView* parent, NSView* child) {
     [child.trailingAnchor constraintEqualToAnchor:parent.trailingAnchor constant:-parent.edgeInsets.right].active = YES;
   }
 }
-NSScrollView* scroll(NSView* document, CGFloat height = 160) {
+NSScrollView* scroll(NSView* document, CGFloat height = 160, bool horizontal = false) {
   NSScrollView* view = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 420, height)];
   view.borderType = NSBezelBorder;
   view.hasVerticalScroller = YES;
@@ -336,9 +399,16 @@ NSScrollView* scroll(NSView* document, CGFloat height = 160) {
     document.translatesAutoresizingMaskIntoConstraints = NO;
     [document.leadingAnchor constraintEqualToAnchor:view.contentView.leadingAnchor].active = YES;
     [document.topAnchor constraintEqualToAnchor:view.contentView.topAnchor].active = YES;
-    [document.widthAnchor constraintEqualToAnchor:view.contentView.widthAnchor].active = YES;
+    NSLayoutConstraint* width = [document.widthAnchor constraintEqualToAnchor:view.contentView.widthAnchor];
+    // A scrollable source keeps its document's minimum independently of
+    // the viewport, so a wide form can scroll instead of widening a window.
+    if (horizontal) {
+      width.priority = 499;
+      [document.widthAnchor constraintGreaterThanOrEqualToAnchor:view.contentView.widthAnchor].active = YES;
+    }
+    width.active = YES;
     [document.heightAnchor constraintGreaterThanOrEqualToAnchor:view.contentView.heightAnchor].active = YES;
-    view.hasHorizontalScroller = NO;
+    view.hasHorizontalScroller = horizontal;
   }
   view.translatesAutoresizingMaskIntoConstraints = NO;
   [view.heightAnchor constraintGreaterThanOrEqualToConstant:height].active = YES;
@@ -391,6 +461,25 @@ void updateButtonPresentation(NSButton* native, QAbstractButton* button) {
   NATIVE_STRING(native, toolTip, plain(button->toolTip().isEmpty() ? button->text() : button->toolTip()));
 }
 
+void updateColorField(NSButton* native, QAbstractButton* button) {
+  if (![native isKindOfClass:MitcadNativeColorField.class]) return;
+  auto* field = (MitcadNativeColorField*)native;
+  const QColor color = button->property(NativeColorFieldProperty).value<QColor>();
+  NSColor* swatch = color.isValid()
+      ? [NSColor colorWithSRGBRed:color.redF() green:color.greenF() blue:color.blueF() alpha:color.alphaF()] : nil;
+  const QString words = button->property(NativeColorFieldTextProperty).toString();
+  const bool placeholder = button->property(NativeColorFieldPlaceholderProperty).toBool();
+  if ((field.swatchColor != swatch && ![field.swatchColor isEqual:swatch]) ||
+      !sameText(field.words, words) || field.placeholder != placeholder) {
+    field.swatchColor = swatch;
+    field.words = ns(words);
+    field.placeholder = placeholder;
+    field.needsDisplay = YES;
+    ++g_widgetPropertyWrites;
+  }
+  NATIVE_STRING(field, accessibilityLabel, button->accessibleName());
+}
+
 // Presenters whose native outline moves rows by dragging (mitcad#816).
 QHash<const QAbstractItemView*, NativeRowMoves>& rowMovesRegistry() {
   static QHash<const QAbstractItemView*, NativeRowMoves> moves;
@@ -400,16 +489,39 @@ NSPasteboardType const kNativeRowDragType = @"org.mitcad.native-row";
 
 } // namespace
 
+// A converted control's real AppKit position, kept only while its shared
+// presenter action runs. Nested menu actions restore the previous anchor.
+class NativeMenuAnchor final {
+public:
+  NativeMenuAnchor(QWidget* presenter, NSControl* control) {
+    if (presenter == nullptr || control.window == nil) return;
+    m_window = presenter->window();
+    m_before = m_window->property("nativeMenuPosition");
+    const NSRect bounds = control.bounds;
+    const NSPoint bottom = NSMakePoint(NSMinX(bounds), control.flipped ? NSMaxY(bounds) : NSMinY(bounds));
+    const NSPoint screen = [control.window convertPointToScreen:[control convertPoint:bottom toView:nil]];
+    m_point = QPoint(qRound(screen.x), qRound(NSMaxY(NSScreen.screens.firstObject.frame) - screen.y));
+    m_window->setProperty("nativeMenuPosition", m_point);
+  }
+  ~NativeMenuAnchor() { if (m_window) m_window->setProperty("nativeMenuPosition", m_before); }
+  QPoint point(const QPoint& fallback) const { return m_window ? m_point : fallback; }
+private:
+  QPointer<QWidget> m_window;
+  QVariant m_before;
+  QPoint m_point;
+};
+
 class AppKitWidgetView final : public QObject, public NativeWidgetView {
 public:
-  explicit AppKitWidgetView(QWidget* source) : m_source(source) {
+  explicit AppKitWidgetView(QWidget* source, bool compact = false) : m_source(source) {
     m_target = [MitcadNativeWidgetTarget new];
     m_target->owner = this;
     m_root = stack();
-    m_root.edgeInsets = source->property("nativeCompactPanel").toBool()
+    m_root.edgeInsets = compact || source->property("nativeCompactPanel").toBool()
                             ? NSEdgeInsetsMake(0, 0, 0, 0) : NSEdgeInsetsMake(16, 16, 16, 16);
     if (source->property("nativeCompactPanel").toBool()) m_root.distribution = NSStackViewDistributionFill;
-    m_root.accessibilityIdentifier = ns(source->objectName());
+    m_root.accessibilityIdentifier = ns(compact ? QStringLiteral("native.cell.") + source->objectName()
+                                               : source->objectName());
     connect(source, &QObject::destroyed, this, [this] { m_root.hidden = YES; });
     m_refreshTimer.setSingleShot(true);
     connect(&m_refreshTimer, &QTimer::timeout, this, [this] { refreshPresenters(); });
@@ -430,6 +542,7 @@ public:
   }
   void detachBindings() {
     for (Binding& binding : m_bindings) {
+      if ([binding.text isKindOfClass:MitcadNativeTextView.class]) [(MitcadNativeTextView*)binding.text closeCompletions];
       for (const auto& connection : binding.connections) { disconnect(connection); }
       for (const auto& connection : binding.modelConnections) { disconnect(connection); }
       for (const auto& connection : binding.selectionConnections) { disconnect(connection); }
@@ -469,9 +582,27 @@ public:
     QLayoutItem* last = layout != nullptr && layout->direction() == QBoxLayout::TopToBottom && layout->count() > 0
                             ? layout->itemAt(layout->count() - 1) : nullptr;
     auto* buttons = last != nullptr ? qobject_cast<QDialogButtonBox*>(last->widget()) : nullptr;
+    // A closing row may also hold helpers beside the button box (Parameters'
+    // stretch, the part picker's Pin, the project picker's New Project).
+    // Keep that whole row outside the scrolling body (mitcad#812).
+    auto* closing = last != nullptr && buttons == nullptr ? qobject_cast<QBoxLayout*>(last->layout()) : nullptr;
+    if (closing != nullptr && closing->direction() != QBoxLayout::LeftToRight &&
+        closing->direction() != QBoxLayout::RightToLeft) {
+      closing = nullptr;
+    }
+    for (int i = 0; closing != nullptr && buttons == nullptr && i < closing->count(); ++i) {
+      buttons = qobject_cast<QDialogButtonBox*>(closing->itemAt(i)->widget());
+    }
     NSView* row = nil;
     for (const Binding& binding : m_bindings) {
       if (buttons != nullptr && binding.widget.data() == buttons) { row = binding.view; break; }
+    }
+    if (row != nil && closing != nullptr) {
+      // The closing row is a direct item of the window's converted layout.
+      NSView* line = row.superview;
+      const bool nested = [line isKindOfClass:MitcadNativeLayoutView.class] &&
+                          [line.superview isKindOfClass:MitcadNativeLayoutView.class];
+      row = nested ? line : nil;
     }
     m_footer.edgeInsets = row != nil ? NSEdgeInsetsMake(8, 16, 16, 16) : NSEdgeInsetsMake(0, 0, 0, 0);
     m_footer.hidden = row == nil;
@@ -482,15 +613,91 @@ public:
     }
   }
   void focusInitial() {
+    QWidget* wanted = m_source != nullptr ? m_source->focusWidget() : nullptr;
+    // A retained dialog is not Qt's active window, so hasFocus() cannot
+    // report an explicitly requested list/table focus there. Its stored
+    // focusWidget (or the table's actual focus proxy) still records it.
+    for (const Binding& binding : m_bindings) {
+      QWidget* widget = binding.widget;
+      if (widget != nullptr && widget == wanted && binding.text != nil && binding.text.editable &&
+          widget->isVisibleTo(m_source) && widget->isEnabled() && binding.text.window != nil &&
+          ![binding.text isHiddenOrHasHiddenAncestor] && [binding.text.window makeFirstResponder:binding.text]) return;
+      if (wanted == nullptr || widget == nullptr || binding.table == nil ||
+          !widget->isVisibleTo(m_source) || !widget->isEnabled() || !binding.table.enabled ||
+          binding.table.window == nil || [binding.table isHiddenOrHasHiddenAncestor]) { continue; }
+      if (widget != wanted && widget->focusProxy() != wanted && wanted->focusProxy() != widget) { continue; }
+      if ([binding.table.window makeFirstResponder:binding.table]) {
+        if (widget->property(NativeCurrentRowNavigationProperty).toBool()) { updateCurrentRows(binding.table); }
+        return;
+      }
+    }
     NSControl* first = nil;
     for (const Binding& binding : m_bindings) {
       if (binding.widget == nullptr || !binding.widget->isVisibleTo(m_source) || !binding.widget->isEnabled()) { continue; }
+      if (binding.table != nil && binding.widget->property(NativeCurrentRowNavigationProperty).toBool()) {
+        [binding.table.window makeFirstResponder:binding.table];
+        updateCurrentRows(binding.table);
+        return;
+      }
       if ([binding.control isKindOfClass:NSTextField.class] && ((NSTextField*)binding.control).editable) {
         if (first == nil) { first = binding.control; }
         if (binding.widget->hasFocus()) { first = binding.control; break; }
       }
     }
     if (first != nil) { [first.window makeFirstResponder:first]; [(NSTextField*)first selectText:nil]; }
+  }
+
+  bool focusNextField(NSControl* sender, bool backwards) {
+    const NSInteger tag = sender.tag;
+    if (tag < 0 || static_cast<std::size_t>(tag) >= m_bindings.size() ||
+        m_bindings[static_cast<std::size_t>(tag)].control != sender || !m_source) return false;
+    const QPointer<AppKitWidgetView> alive(this);
+    const QPointer<QWidget> origin(m_bindings[static_cast<std::size_t>(tag)].widget);
+    if (!origin) return false;
+    QSet<QWidget*> visited{origin.data()};
+    QWidget* cursor = backwards ? origin->previousInFocusChain() : origin->nextInFocusChain();
+    while (cursor != nullptr && !visited.contains(cursor)) {
+      visited.insert(cursor);
+      if (m_source->isAncestorOf(cursor) && cursor->isVisibleTo(m_source) && cursor->isEnabled()) {
+        const Binding* mapped = nullptr;
+        for (const Binding& binding : m_bindings) {
+          QWidget* widget = binding.widget;
+          if (widget == nullptr || binding.control == nil) continue;
+          const auto* spin = qobject_cast<QAbstractSpinBox*>(widget);
+          if (widget == cursor || widget->focusProxy() == cursor || cursor->focusProxy() == widget ||
+              (spin != nullptr && spin->isAncestorOf(cursor))) { mapped = &binding; break; }
+        }
+        QWidget* field = mapped != nullptr ? mapped->widget.data() : cursor;
+        if (field != origin && (int(field->focusPolicy()) & int(Qt::TabFocus)) != 0) {
+          // Dedicated adapters keep their own key handling. Only route a
+          // shared field when this owner has its actual native control.
+          if (mapped == nullptr) return false;
+          NSControl* control = mapped->control;
+          if (field->isEnabled() && field->isVisibleTo(m_source) && control.enabled &&
+              control.window == sender.window && !control.isHiddenOrHasHiddenAncestor) {
+            const QPointer<QWidget> target(field);
+            const QString from = origin->objectName();
+            const QString to = field->objectName();
+            // Establish the ordinary native link too. Responder transfer
+            // ends the current field editor through its normal validation
+            // and commit delegates before accepting the next responder.
+            if (backwards) control.nextKeyView = sender;
+            else sender.nextKeyView = control;
+            const bool accepted = [sender.window makeFirstResponder:control];
+            if (!alive || !origin || !target) return true;
+            if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
+              const QString kind = [sender isKindOfClass:NSPopUpButton.class]
+                  ? QStringLiteral("popup") : QStringLiteral("field");
+              qInfo().noquote() << QStringLiteral("Native %1 Tab: %2 -> %3 backward=%4 accepted=%5")
+                  .arg(kind, from, to).arg(backwards).arg(accepted);
+            }
+            return accepted;
+          }
+        }
+      }
+      cursor = backwards ? cursor->previousInFocusChain() : cursor->nextInFocusChain();
+    }
+    return false;
   }
 
   void refresh() override {
@@ -504,7 +711,13 @@ public:
   QList<QWidget*> structureWidgets() const {
     QList<QWidget*> widgets = m_source->findChildren<QWidget*>();
     const QWidget* window = m_source->window();
-    widgets.removeIf([window](const QWidget* widget) { return widget->window() != window; });
+    widgets.removeIf([window](const QWidget* widget) {
+      if (widget->window() != window) return true;
+      for (const QWidget* parent = widget->parentWidget(); parent; parent = parent->parentWidget()) {
+        if (parent->property("nativeRuleArtwork").toBool()) return true;
+      }
+      return false;
+    });
     return widgets;
   }
   void refreshPresenters() {
@@ -554,28 +767,38 @@ public:
         NATIVE_SET(field, editable, !edit->isReadOnly());
         NATIVE_SET(field, selectable, YES);
         NATIVE_STRING(field, placeholderString, edit->placeholderText());
+        const int tone = mac::nativeTextToneKind(edit);
+        if (binding.textTone != tone) {
+          field.textColor = mac::nativeTextTone(tone);
+          binding.textTone = tone;
+          ++g_widgetPropertyWrites;
+        }
         if (field.currentEditor == nil) { NATIVE_STRING(field, stringValue, edit->text()); }
       } else if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
         NSButton* native = (NSButton*)binding.control;
         const auto* tool = qobject_cast<QToolButton*>(button);
         const int style = tool == nullptr ? int(Qt::ToolButtonTextBesideIcon) : int(tool->toolButtonStyle());
-        if (!binding.presentationInitialized || binding.labelText != button->text() ||
-            binding.buttonTip != button->toolTip() || binding.buttonStyle != style ||
-            binding.iconKey != button->icon().cacheKey()) {
-          updateButtonPresentation(native, button);
-          binding.labelText = button->text();
-          binding.buttonTip = button->toolTip();
-          binding.buttonStyle = style;
-          binding.presentationInitialized = true;
-        }
-        auto state = button->isChecked() ? NSControlStateValueOn : NSControlStateValueOff;
-        if (binding.iconKey != button->icon().cacheKey()) {
+        const bool iconChanged = binding.iconKey != button->icon().cacheKey();
+        if (iconChanged) {
+          // AppKit can reset imagePosition while replacing the image. Apply
+          // the source's final caption/icon presentation after that setter.
           native.image = button->icon().isNull() ? nil
                                                  : image(button->icon().pixmap(buttonIconPixels(button),
                                                                                buttonIconPixels(button)));
           ++g_widgetPropertyWrites;
           binding.iconKey = button->icon().cacheKey();
         }
+        if (!binding.presentationInitialized || binding.labelText != button->text() ||
+            binding.buttonTip != button->toolTip() || binding.buttonStyle != style ||
+            iconChanged) {
+          updateButtonPresentation(native, button);
+          binding.labelText = button->text();
+          binding.buttonTip = button->toolTip();
+          binding.buttonStyle = style;
+          binding.presentationInitialized = true;
+        }
+        updateColorField(native, button);
+        auto state = button->isChecked() ? NSControlStateValueOn : NSControlStateValueOff;
         if (auto* check = qobject_cast<QCheckBox*>(widget)) {
           NATIVE_SET(native, allowsMixedState, check->isTristate());
           if (check->checkState() == Qt::PartiallyChecked) {
@@ -640,6 +863,7 @@ public:
         binding.dirty = false;
       } else if (auto* text = qobject_cast<QLabel*>(widget)) {
         const QPixmap pixmap = text->pixmap();
+        const int tone = mac::nativeTextToneKind(text);
         const bool links = richLabelText(text) && text->text().contains(QStringLiteral("<a"), Qt::CaseInsensitive) &&
                            (text->textInteractionFlags() & (Qt::LinksAccessibleByMouse | Qt::LinksAccessibleByKeyboard));
         if (links && binding.linkText == nil) {
@@ -657,6 +881,7 @@ public:
           binding.presentationInitialized = false;
         }
         NATIVE_SET(binding.image, hidden, pixmap.isNull());
+        NATIVE_SET(binding.imageHeight, constant, labelPixmapHeight(text));
         NATIVE_SET(binding.control, hidden, links || !pixmap.isNull());
         if (binding.pixmapKey != pixmap.cacheKey()) {
           binding.image.image = image(pixmap);
@@ -665,22 +890,30 @@ public:
         }
         if (!binding.presentationInitialized || binding.labelText != text->text() ||
             binding.labelFormat != text->textFormat() || binding.labelBuddy != (text->buddy() != nullptr) ||
-            binding.labelInteraction != text->textInteractionFlags()) {
+            binding.labelInteraction != text->textInteractionFlags() || binding.labelFont != text->font() ||
+            binding.textTone != tone) {
           binding.labelText = text->text();
           binding.labelFormat = text->textFormat();
           binding.labelBuddy = text->buddy() != nullptr;
           binding.labelInteraction = text->textInteractionFlags();
+          binding.labelFont = text->font();
           binding.presentationInitialized = true;
           if (links) {
-            [binding.linkText.textStorage setAttributedString:richLabel(text->text(), text->buddy() != nullptr)];
+            [binding.linkText.textStorage setAttributedString:richLabel(text)];
             ++g_widgetPropertyWrites;
-          } else { NATIVE_STRING(((NSTextField*)binding.control), stringValue, labelText(text)); }
+          } else if (richLabelText(text)) {
+            ((NSTextField*)binding.control).attributedStringValue = richLabel(text);
+            ++g_widgetPropertyWrites;
+          } else {
+            NATIVE_STRING(((NSTextField*)binding.control), stringValue, labelText(text));
+            ((NSTextField*)binding.control).font = labelFont(text->font(), QApplication::font(text));
+            ++g_widgetPropertyWrites;
+          }
         }
         if (binding.linkText != nil) { NATIVE_SET(binding.linkText, hidden, !links || !pixmap.isNull()); }
         // The theme's semantic error/warning text, such as a refusal's
         // in-dialog reason (mitcad#814).
         // Compares the applied state, not AppKit's colour objects.
-        const int tone = mac::nativeTextToneKind(text);
         if (binding.textTone != tone) {
           ((NSTextField*)binding.control).textColor = mac::nativeTextTone(tone);
           binding.textTone = tone;
@@ -725,9 +958,14 @@ public:
         NATIVE_SET(field, editable, !spin->isReadOnly());
         if (field.currentEditor == nil) { NATIVE_STRING(field, stringValue, spin->text()); }
       } else if (auto* slider = qobject_cast<QSlider*>(widget)) {
-        NSSlider* native = (NSSlider*)binding.control;
+        MitcadNativeSlider* native = (MitcadNativeSlider*)binding.control;
+        if (native.pointerTracking && native.integerValue != slider->value() &&
+            !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+          qInfo().noquote() << QStringLiteral("Native slider tracking refresh: %1 native=%2 shared=%3")
+              .arg(slider->objectName()).arg(native.integerValue).arg(slider->value());
         NATIVE_SET(native, minValue, slider->minimum());
         NATIVE_SET(native, maxValue, slider->maximum());
+        NATIVE_SET(native, keyboardStep, slider->singleStep());
         NATIVE_SET(native, integerValue, slider->value());
       } else if (auto* progress = qobject_cast<QProgressBar*>(widget)) {
         const bool indeterminate = progress->minimum() == progress->maximum();
@@ -739,6 +977,27 @@ public:
         if (modeChanged && indeterminate) { [binding.progress startAnimation:nil]; ++g_widgetPropertyWrites; }
         else if (modeChanged) { [binding.progress stopAnimation:nil]; ++g_widgetPropertyWrites; }
         binding.presentationInitialized = true;
+      } else if (auto* bar = qobject_cast<QTabBar*>(widget)) {
+        NSPopUpButton* native = (NSPopUpButton*)binding.control;
+        QStringList state;
+        for (int j = 0; j < bar->count(); ++j) {
+          state.append(QStringLiteral("%1|%2|%3|%4|%5").arg(bar->tabText(j), bar->tabToolTip(j))
+                           .arg(bar->tabIcon(j).cacheKey()).arg(bar->isTabEnabled(j)).arg(bar->isTabVisible(j)));
+        }
+        if (state != binding.items) {
+          [native removeAllItems];
+          for (int j = 0; j < bar->count(); ++j) {
+            [native addItemWithTitle:ns(title(bar->tabText(j)))];
+            NSMenuItem* item = [native itemAtIndex:j];
+            item.toolTip = ns(bar->tabToolTip(j));
+            if (!bar->tabIcon(j).isNull()) item.image = image(bar->tabIcon(j).pixmap(16, 16));
+            item.enabled = bar->isTabEnabled(j);
+            item.hidden = !bar->isTabVisible(j);
+          }
+          binding.items = state;
+        }
+        if (bar->currentIndex() >= 0 && native.indexOfSelectedItem != bar->currentIndex())
+          [native selectItemAtIndex:bar->currentIndex()];
       } else if (auto* tabs = qobject_cast<QTabWidget*>(widget)) {
         if ([binding.tabs indexOfTabViewItem:binding.tabs.selectedTabViewItem] != tabs->currentIndex()) {
           [binding.tabs selectTabViewItemAtIndex:tabs->currentIndex()];
@@ -758,14 +1017,18 @@ public:
         }
       } else if (auto* text = qobject_cast<QPlainTextEdit*>(widget)) {
         NATIVE_SET(binding.text, editable, !text->isReadOnly());
+        NATIVE_STRING(((MitcadNativeTextView*)binding.text), placeholderString, text->placeholderText());
         if (binding.text.window.firstResponder != binding.text &&
             (binding.document != text->document() || binding.textRevision != text->document()->revision())) {
           NATIVE_STRING(binding.text, string, text->toPlainText());
           binding.document = text->document();
           binding.textRevision = text->document()->revision();
+          const QTextCursor cursor = text->textCursor();
+          binding.text.selectedRange = NSMakeRange(cursor.selectionStart(), cursor.selectionEnd() - cursor.selectionStart());
         }
       } else if (auto* text = qobject_cast<QTextEdit*>(widget)) {
         NATIVE_SET(binding.text, editable, !text->isReadOnly());
+        NATIVE_STRING(((MitcadNativeTextView*)binding.text), placeholderString, text->placeholderText());
         if (binding.text.window.firstResponder != binding.text &&
             (binding.document != text->document() || binding.textRevision != text->document()->revision())) {
           NATIVE_STRING(binding.text, string, text->toPlainText());
@@ -776,7 +1039,28 @@ public:
         refreshModel(binding, view, static_cast<int>(i));
       }
     }
+    for (const auto& view : m_ruleViews) view->refresh();
+    for (const auto& view : m_artworkViews) view->refresh();
+    // Visibility KVO only invalidates converted layouts. Solve once after
+    // every binding has its final state, before a caller measures the form.
+    mac::layout::updateVisibility(m_root);
+    [m_root updateConstraintsForSubtreeIfNeeded];
     m_refreshing = false;
+    for (const Binding& binding : m_bindings) {
+      if ([binding.text isKindOfClass:MitcadNativeTextView.class]) {
+        [(MitcadNativeTextView*)binding.text refreshCompletions];
+      }
+    }
+    if (m_textFocusRequested) {
+      const QPointer<QPlainTextEdit> requested = m_textFocusRequested;
+      m_textFocusRequested.clear();
+      for (const Binding& binding : m_bindings) {
+        if (binding.widget == requested && binding.text.window.isKeyWindow && requested->isVisibleTo(m_source)) {
+          [binding.text.window makeFirstResponder:binding.text];
+          break;
+        }
+      }
+    }
   }
 
   void action(id sender) {
@@ -795,17 +1079,36 @@ public:
       }
     }
     NSWindow* window = [sender window];
+    NSTableView* rowTable = mac::owningTable(sender);
+    MitcadNativeWidgetTarget* rowTarget = rowTable != nil &&
+        [rowTable.delegate isKindOfClass:MitcadNativeWidgetTarget.class] ? (MitcadNativeWidgetTarget*)rowTable.delegate : nil;
+    QPointer<AppKitWidgetView> rowOwner = rowTarget != nil ? rowTarget->owner : nullptr;
+    const bool rowChoice = rowOwner != nullptr && qobject_cast<QComboBox*>(widget) != nullptr &&
+        rowOwner->currentRowEditorFocused(rowTable, sender, widget);
     // Accepting actions commit pending name/texture/value edits. Cancel
     // remains usable when a required field contains incomplete input.
-    if (!rejecting && window != nil && ![window makeFirstResponder:nil]) { return; }
+    // Tab/mouse focus already committed the previous text editor. A slider
+    // keeps its own keyboard focus while its arrow action changes a value.
+    // A focused popup likewise keeps the place Tab should leave next.
+    // Editable combos and actions from other controls still end text edits.
+    const bool focusedSlider = qobject_cast<QSlider*>(widget) != nullptr && window.firstResponder == sender;
+    const auto* comboSource = qobject_cast<QComboBox*>(widget);
+    const bool focusedPopup = comboSource != nullptr && !comboSource->isEditable() &&
+        [sender isKindOfClass:NSPopUpButton.class] && window.firstResponder == sender;
+    if (!rejecting && !focusedSlider && !focusedPopup && window != nil && ![window makeFirstResponder:nil]) { return; }
     if (alive == nullptr || pointer == nullptr) { return; }
+    const NativeMenuAnchor menuAnchor(widget, sender);
     if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
       QMenu* menu = nullptr;
       if (auto* tool = qobject_cast<QToolButton*>(widget)) { menu = tool->menu(); }
       if (auto* push = qobject_cast<QPushButton*>(widget)) { menu = push->menu(); }
       if (menu != nullptr) {
-        execNativeMenu(menu, widget->mapToGlobal(QPoint(0, widget->height())));
+        execNativeMenu(menu, menuAnchor.point(widget->mapToGlobal(QPoint(0, widget->height()))));
       } else { button->click(); }
+    } else if (auto* bar = qobject_cast<QTabBar*>(widget)) {
+      const int index = static_cast<int>([(NSPopUpButton*)sender indexOfSelectedItem]);
+      if (index >= 0 && index < bar->count() && bar->isTabEnabled(index) && bar->isTabVisible(index))
+        bar->setCurrentIndex(index);
     } else if (auto* combo = qobject_cast<QComboBox*>(widget)) {
       int index = -1;
       if (combo->isEditable()) { index = static_cast<int>([(NSComboBox*)sender indexOfSelectedItem]); }
@@ -819,6 +1122,10 @@ public:
       if (combo->isEditable()) { combo->setEditText(qt([(NSComboBox*)sender stringValue])); }
       if (alive == nullptr || pointer == nullptr) { return; }
       QMetaObject::invokeMethod(combo, "activated", Qt::DirectConnection, Q_ARG(int, index));
+      if (rowChoice && rowOwner != nullptr && pointer != nullptr) {
+        [window makeFirstResponder:sender];
+        rowOwner->updateCurrentRows(rowTable);
+      }
     } else if (auto* spin = qobject_cast<QSpinBox*>(widget)) {
       spin->setValue(static_cast<int>([sender doubleValue]));
       if (alive == nullptr || pointer == nullptr) { return; }
@@ -828,15 +1135,40 @@ public:
       if (alive == nullptr || pointer == nullptr) { return; }
       QMetaObject::invokeMethod(spin, "editingFinished", Qt::DirectConnection);
     } else if (auto* slider = qobject_cast<QSlider*>(widget)) {
+      auto* native = (MitcadNativeSlider*)sender;
+      if (native.pointerTracking && !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+        qInfo().noquote() << QStringLiteral("Native slider tracking action: %1 native=%2 shared-before=%3")
+            .arg(slider->objectName()).arg(native.integerValue).arg(slider->value());
+      // Keep valueChanged observers inside the same gesture as Qt's
+      // sliderReleased observers, rather than committing once for each.
+      slider->setSliderDown(true);
       slider->setValue(static_cast<int>([sender integerValue]));
       if (alive == nullptr || pointer == nullptr) { return; }
-      QMetaObject::invokeMethod(slider, "sliderReleased", Qt::DirectConnection);
+      slider->setSliderDown(false);
     } else if (auto* group = qobject_cast<QGroupBox*>(widget)) {
       group->setChecked([(NSButton*)sender state] == NSControlStateValueOn);
       if (alive == nullptr || pointer == nullptr) { return; }
       QMetaObject::invokeMethod(group, "clicked", Qt::DirectConnection, Q_ARG(bool, group->isChecked()));
     }
     if (alive != nullptr && pointer != nullptr) { refresh(); }
+  }
+
+  bool commitReturn(NSControl* sender) {
+    const NSInteger tag = sender.tag;
+    if (tag < 0 || static_cast<std::size_t>(tag) >= m_bindings.size()) { return false; }
+    QWidget* field = m_bindings[static_cast<std::size_t>(tag)].widget;
+    auto* target = field != nullptr ? qobject_cast<QWidget*>(field->property(NativeReturnTargetProperty).value<QObject*>()) : nullptr;
+    if (target == nullptr) { return false; }
+    // Finishing the AppKit field invokes the shared editingFinished path.
+    // Its queued model command may replace the header, so retain only the
+    // native target while the editor gives up focus.
+    NSTableView* table = nil;
+    for (const Binding& binding : m_bindings) {
+      if (binding.widget == target) { table = binding.table; break; }
+    }
+    NSWindow* window = sender.window;
+    if ([window makeFirstResponder:nil] && table != nil) { [window makeFirstResponder:table]; }
+    return true;
   }
 
   bool textChanged(NSControl* sender, bool finished) {
@@ -889,12 +1221,99 @@ public:
     return true;
   }
 
-  void textViewChanged(NSTextView* sender) {
+  QWidget* textPresenter(NSTextView* sender) const {
     const int id = qt(sender.identifier).toInt();
-    if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return; }
-    QWidget* widget = m_bindings[static_cast<std::size_t>(id)].widget;
-    if (auto* edit = qobject_cast<QPlainTextEdit*>(widget)) { edit->setPlainText(qt(sender.string)); }
-    else if (auto* edit = qobject_cast<QTextEdit*>(widget)) { edit->setPlainText(qt(sender.string)); }
+    if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size() ||
+        m_bindings[static_cast<std::size_t>(id)].text != sender) return nullptr;
+    return m_bindings[static_cast<std::size_t>(id)].widget;
+  }
+  NativeTextEditorCommands* textCommands(NSTextView* sender) const {
+    return dynamic_cast<NativeTextEditorCommands*>(textPresenter(sender));
+  }
+  QListWidget* textCompletions(NSTextView* sender) const {
+    const auto* commands = textCommands(sender);
+    return commands != nullptr ? commands->nativeTextCompletions() : nullptr;
+  }
+  void textViewChanged(NSTextView* sender) {
+    if (m_refreshing) return;
+    QPointer<QWidget> widget = textPresenter(sender);
+    auto* edit = qobject_cast<QPlainTextEdit*>(widget);
+    if (edit == nullptr) {
+      if (auto* rich = qobject_cast<QTextEdit*>(widget)) rich->setPlainText(qt(sender.string));
+      return;
+    }
+    const QString value = qt(sender.string);
+    const bool changed = edit->toPlainText() != value;
+    const QTextCursor before = edit->textCursor();
+    const NSRange range = sender.selectedRange;
+    const int start = static_cast<int>(std::min<NSUInteger>(range.location, value.size()));
+    const int length = static_cast<int>(std::min<NSUInteger>(range.length, value.size() - start));
+    // Publish one complete edit. Formula assistance must see the actual
+    // caret when textChanged is emitted, rather than setPlainText's zero.
+    {
+      const QSignalBlocker block(edit);
+      if (changed) edit->setPlainText(value);
+      QTextCursor cursor = edit->textCursor();
+      cursor.setPosition(start);
+      cursor.setPosition(start + length, QTextCursor::KeepAnchor);
+      edit->setTextCursor(cursor);
+    }
+    const QTextCursor after = edit->textCursor();
+    if (changed) emit edit->textChanged();
+    if (!widget) return;
+    if (before.position() != after.position()) emit edit->cursorPositionChanged();
+    if (!widget) return;
+    if (before.anchor() != after.anchor() || before.position() != after.position()) emit edit->selectionChanged();
+    scheduleRefresh();
+  }
+  void applyTextState(NSTextView* sender) {
+    auto* edit = qobject_cast<QPlainTextEdit*>(textPresenter(sender));
+    if (edit == nullptr) return;
+    const bool before = m_refreshing;
+    m_refreshing = true;
+    NATIVE_STRING(sender, string, edit->toPlainText());
+    const QTextCursor cursor = edit->textCursor();
+    sender.selectedRange = NSMakeRange(cursor.selectionStart(), cursor.selectionEnd() - cursor.selectionStart());
+    [sender scrollRangeToVisible:sender.selectedRange];
+    m_refreshing = before;
+  }
+  bool textKey(NSTextView* sender, NSEvent* event) {
+    if (m_refreshing || sender.hasMarkedText || !sender.editable) return false;
+    NativeTextEditorCommands* commands = textCommands(sender);
+    const QKeySequence sequence = mac::keySequence(event);
+    if (commands == nullptr || sequence.isEmpty()) return false;
+    const QPointer<AppKitWidgetView> alive(this);
+    const QPointer<QWidget> source(textPresenter(sender));
+    textViewChanged(sender);
+    if (!alive || !source) return false;
+    QKeyEvent key(QEvent::KeyPress, sequence[0].key(), sequence[0].keyboardModifiers(),
+                  qt(event.characters), event.isARepeat);
+    const bool handled = commands->nativeTextKey(&key);
+    if (alive && source) {
+      if (handled) applyTextState(sender);
+      refresh();
+    }
+    return handled;
+  }
+  void completeText(NSTextView* sender, int row) {
+    NativeTextEditorCommands* commands = textCommands(sender);
+    const QPointer<AppKitWidgetView> alive(this);
+    const QPointer<QWidget> source(textPresenter(sender));
+    if (commands == nullptr || !source) return;
+    commands->nativeTextComplete(row);
+    if (!alive || !source) return;
+    applyTextState(sender);
+    refresh();
+    if (sender.window.visible && !sender.window.attachedSheet) {
+      [sender.window makeKeyWindow];
+      [sender.window makeFirstResponder:sender];
+    }
+  }
+  void leaveText(NSTextView* sender) {
+    if (QWidget* source = textPresenter(sender)) {
+      QFocusEvent event(QEvent::FocusOut, Qt::OtherFocusReason);
+      QCoreApplication::sendEvent(source, &event);
+    }
   }
 
   bool linkClicked(NSTextView* sender, id link) {
@@ -922,6 +1341,180 @@ public:
   }
 
   int modelBinding(NSTableView* table) const { return qt(table.identifier).toInt(); }
+  QAbstractItemView* currentRowPresenter(NSTableView* table) const {
+    const int id = modelBinding(table);
+    if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) return nullptr;
+    auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
+    return view != nullptr && view->isEnabled() && view->selectionMode() == QAbstractItemView::NoSelection &&
+        view->property(NativeCurrentRowNavigationProperty).toBool() ? view : nullptr;
+  }
+  NSView* nativeFocusTarget(QWidget* source) {
+    if (source == nullptr) return nil;
+    for (const Binding& binding : m_bindings) {
+      if (binding.widget == source) return binding.table != nil ? (NSView*)binding.table : binding.control;
+    }
+    for (const auto& embedded : m_cellViews) {
+      if (NSView* found = embedded.second->nativeFocusTarget(source)) return found;
+    }
+    return nil;
+  }
+  QWidget* currentRowEditor(QAbstractItemView* view) const {
+    const QModelIndex current = view->currentIndex();
+    for (int column = 1; current.isValid() && column < view->model()->columnCount(current.parent()); ++column) {
+      if (QWidget* editor = view->indexWidget(current.siblingAtColumn(column))) {
+        // A cell can contain both a label and an editor. Its focus proxy,
+        // rather than the layout wrapper, receives the shared key/focus
+        // events and maps to the native control.
+        QSet<QWidget*> visited{editor};
+        while (QWidget* proxy = editor->focusProxy()) {
+          if (visited.contains(proxy) || visited.size() >= 64) return nullptr;
+          visited.insert(proxy);
+          editor = proxy;
+        }
+        return editor;
+      }
+    }
+    return nullptr;
+  }
+  void updateCurrentRows(NSTableView* table) {
+    auto* view = currentRowPresenter(table);
+    if (view == nullptr) return;
+    NSResponder* focus = table.window.firstResponder;
+    for (NSInteger row = 0; row < table.numberOfRows; ++row) {
+      NSTableRowView* native = [table rowViewAtRow:row makeIfNecessary:NO];
+      if (![native isKindOfClass:MitcadNativeCurrentRowView.class]) continue;
+      MitcadNativeModelNode* node = nodeAt(table, row);
+      const bool focused = focus == table || ([focus isKindOfClass:NSView.class] &&
+          [(NSView*)focus isDescendantOf:native]);
+      const bool current = node != nil && view->currentIndex().isValid() &&
+          view->currentIndex().siblingAtColumn(0) == node->index && focused;
+      auto* cursor = (MitcadNativeCurrentRowView*)native;
+      if (cursor.currentFocus != current) { cursor.currentFocus = current; cursor.needsDisplay = YES; }
+    }
+  }
+  // A row's real native editor publishes the same current row and focus
+  // event that its shared widget receives, including pointer activation.
+  bool currentRowEditorFocused(NSTableView* table, NSView* editor, QWidget* source) {
+    auto* view = currentRowPresenter(table);
+    const NSInteger row = [table rowForView:editor];
+    if (view == nullptr || row < 0 || source == nullptr) return false;
+    const QModelIndex index = modelIndex(table, row, 0);
+    if (!index.isValid()) return false;
+    view->setCurrentIndex(index);
+    QFocusEvent focus(QEvent::FocusIn, Qt::TabFocusReason);
+    QCoreApplication::sendEvent(source, &focus);
+    updateCurrentRows(table);
+    return true;
+  }
+  // The hidden Qt tree need not have a laid-out viewport. Navigate the
+  // enabled rows the native outline actually shows, and publish only the
+  // shared cursor: NoSelection and warning colours stay unchanged.
+  void moveCurrentRow(NSTableView* table, QAbstractItemView* view, int key) {
+    const QModelIndex current = view->currentIndex().siblingAtColumn(0);
+    NSInteger row = -1;
+    for (NSInteger candidate = 0; candidate < table.numberOfRows; ++candidate) {
+      if (liveIndex(table, nodeAt(table, candidate)) == current) { row = candidate; break; }
+    }
+    NSInteger target = row;
+    if (key == Qt::Key_Home) target = 0;
+    else if (key == Qt::Key_End) target = table.numberOfRows - 1;
+    else if (key == Qt::Key_Up || key == Qt::Key_Down) target += key == Qt::Key_Up ? -1 : 1;
+    else if ([table isKindOfClass:NSOutlineView.class]) {
+      auto* outline = (NSOutlineView*)table;
+      MitcadNativeModelNode* node = nodeAt(table, row);
+      if (node == nil) return;
+      if (key == Qt::Key_Left) {
+        if ([outline isItemExpanded:node]) { [outline collapseItem:node]; return; }
+        const QModelIndex parent = current.parent();
+        for (NSInteger candidate = 0; parent.isValid() && candidate < table.numberOfRows; ++candidate) {
+          if (liveIndex(table, nodeAt(table, candidate)) == parent) { target = candidate; break; }
+        }
+      } else if (key == Qt::Key_Right && node->children.count > 0) {
+        if (![outline isItemExpanded:node]) { [outline expandItem:node]; return; }
+        target = row + 1;
+      }
+    }
+    const NSInteger direction = key == Qt::Key_Up || key == Qt::Key_End ? -1 : 1;
+    for (; target >= 0 && target < table.numberOfRows; target += direction) {
+      const QModelIndex next = liveIndex(table, nodeAt(table, target));
+      if (!next.isValid() || !next.flags().testFlag(Qt::ItemIsEnabled)) continue;
+      view->setCurrentIndex(next);
+      [table scrollRowToVisible:target];
+      if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+        qDebug().noquote() << QStringLiteral("Native current row: %1 key=%2 row=%3 text=%4")
+            .arg(view->objectName()).arg(key).arg(target).arg(next.data().toString());
+      break;
+    }
+  }
+  bool currentRowKey(NSEvent* event) {
+    const QKeySequence sequence = mac::keySequence(event);
+    if (sequence.isEmpty()) return false;
+    const auto modifiers = sequence[0].keyboardModifiers();
+    if (modifiers != Qt::NoModifier && modifiers != Qt::ShiftModifier) return false;
+    const int key = sequence[0].key();
+    const bool tab = key == Qt::Key_Tab || key == Qt::Key_Backtab;
+    for (const Binding& binding : m_bindings) {
+      NSTableView* table = binding.table;
+      auto* view = table != nil ? currentRowPresenter(table) : nullptr;
+      if (view == nullptr) continue;
+      NSResponder* responder = table.window.firstResponder;
+      const bool inList = responder == table;
+      if (!inList && (![responder isKindOfClass:NSView.class] || ![(NSView*)responder isDescendantOf:table])) continue;
+      if (!inList && !tab) return false;
+      if (inList && !tab && key != Qt::Key_Up && key != Qt::Key_Down && key != Qt::Key_Left &&
+          key != Qt::Key_Right && key != Qt::Key_Home && key != Qt::Key_End && key != Qt::Key_Space) return false;
+      QWidget* source = inList ? view : currentRowEditor(view);
+      if (source == nullptr) return false;
+      const bool backwards = key == Qt::Key_Backtab || modifiers.testFlag(Qt::ShiftModifier);
+      // Space/Tab remain the shared event filter's actions. Cursor arrows
+      // use visible native rows rather than the hidden Qt viewport layout.
+      if (inList && !tab && key != Qt::Key_Space) moveCurrentRow(table, view, key);
+      else {
+        QKeyEvent press(QEvent::KeyPress, backwards && tab ? Qt::Key_Backtab : key, modifiers);
+        QCoreApplication::sendEvent(source, &press);
+      }
+      if (tab) {
+        QWidget* target = inList && !backwards ? currentRowEditor(view) : nullptr;
+        if (!inList && backwards) target = view;
+        if (target == nullptr && !backwards)
+          target = qobject_cast<QWidget*>(view->property(NativeCurrentRowNextProperty).value<QObject*>());
+        if (NSView* native = nativeFocusTarget(target)) {
+          [table.window makeFirstResponder:native];
+          if (target != view && inList) currentRowEditorFocused(table, native, target);
+        } else if (backwards) [table.window selectPreviousKeyView:table];
+      } else {
+        for (NSInteger row = 0; row < table.numberOfRows; ++row) {
+          MitcadNativeModelNode* node = nodeAt(table, row);
+          if (node != nil && node->index == view->currentIndex().siblingAtColumn(0)) {
+            [table scrollRowToVisible:row]; break;
+          }
+        }
+      }
+      refresh();
+      updateCurrentRows(table);
+      return true;
+    }
+    return false;
+  }
+  NSTableRowView* currentRowView(NSTableView* table, MitcadNativeModelNode* node) {
+    auto* view = currentRowPresenter(table);
+    const bool spanning = modelSpansRow(table, node);
+    if (view == nullptr && !spanning) return nil;
+    MitcadNativeCurrentRowView* row = spanning ? [MitcadNativeSpannedRowView new] : [MitcadNativeCurrentRowView new];
+    row.groupRowStyle = spanning;
+    row.currentFocus = view != nullptr && table.window.firstResponder == table && node != nil &&
+        view->currentIndex().siblingAtColumn(0) == node->index;
+    return row;
+  }
+  bool currentRowClicked(NSTableView* table, NSInteger row) {
+    auto* view = currentRowPresenter(table);
+    const QModelIndex index = view != nullptr ? modelIndex(table, row, 0) : QModelIndex();
+    if (!index.isValid()) return false;
+    view->setCurrentIndex(index);
+    [table.window makeFirstResponder:table];
+    updateCurrentRows(table);
+    return true;
+  }
   NSMutableArray<MitcadNativeModelNode*>* children(int id, MitcadNativeModelNode* node) {
     if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return nil; }
     return node == nil ? m_bindings[static_cast<std::size_t>(id)].nodes : node->children;
@@ -932,12 +1525,45 @@ public:
     auto* nodes = children(modelBinding(table), nil);
     return row < static_cast<NSInteger>(nodes.count) ? nodes[static_cast<NSUInteger>(row)] : nil;
   }
+  bool modelSpansRow(NSTableView* table, MitcadNativeModelNode* node) const {
+    const int id = modelBinding(table);
+    if (node == nil || !node->index.isValid() || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) return false;
+    const auto* tree = qobject_cast<QTreeView*>(m_bindings[static_cast<std::size_t>(id)].widget);
+    return tree != nullptr && tree->isFirstColumnSpanned(node->index.row(), node->index.parent());
+  }
+  bool modelSelectable(NSTableView* table, MitcadNativeModelNode* node) const {
+    const int id = modelBinding(table);
+    if (node == nil || !node->index.isValid() || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) return false;
+    const auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
+    return view != nullptr && view->isEnabled() && view->selectionMode() != QAbstractItemView::NoSelection &&
+        node->index.flags().testFlag(Qt::ItemIsEnabled) && node->index.flags().testFlag(Qt::ItemIsSelectable);
+  }
+  CGFloat listRowHeight(QAbstractItemView* view, int row, CGFloat minimum) const {
+    const QModelIndex index = view->model()->index(row, 0, view->rootIndex());
+    const int lines = static_cast<int>(plain(index.data().toString()).count(QLatin1Char('\n'))) + 1;
+    NSFont* font = mac::nativeCellStyle(index, view).font;
+    const CGFloat line = [[NSLayoutManager new] defaultLineHeightForFont:font];
+    return std::max<CGFloat>({minimum, static_cast<CGFloat>(view->sizeHintForRow(row)), std::ceil(lines * line)});
+  }
+  CGFloat modelRowHeight(NSTableView* table, NSInteger row) {
+    const int id = modelBinding(table);
+    if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) return table.rowHeight;
+    auto* view = qobject_cast<QListView*>(m_bindings[static_cast<std::size_t>(id)].widget);
+    if (view == nullptr || view->property(NativeListRowLimitProperty).toInt() <= 0) return table.rowHeight;
+    const QModelIndex index = modelIndex(table, row, 0);
+    if (!index.isValid()) return table.rowHeight;
+    return listRowHeight(view, index.row(), table.rowHeight);
+  }
   NSView* modelCell(NSTableView* table, NSTableColumn* column, MitcadNativeModelNode* node) {
     const int id = modelBinding(table);
     if (node == nil || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return nil; }
     auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
     if (view == nullptr || !node->index.isValid()) { return nil; }
-    const int col = qt(column.identifier).toInt();
+    // AppKit gives group rows one full-width cell, with a nil column. The
+    // shared tree's explicit first-column span is that same contract.
+    const bool spanning = modelSpansRow(table, node);
+    if (column == nil && !spanning) return nil;
+    const int col = column != nil ? qt(column.identifier).toInt() : 0;
     const QModelIndex index = QModelIndex(node->index).siblingAtColumn(col);
     if (QWidget* widget = view->indexWidget(index)) {
       for (auto& embedded : m_cellViews) {
@@ -946,7 +1572,9 @@ public:
           return (__bridge NSView*)embedded.second->nativeView();
         }
       }
-      auto embedded = std::make_unique<AppKitWidgetView>(widget);
+      // A table cell owns its insets. Dialog margins here would leave an
+      // embedded choice too narrow to read even when its column fits it.
+      auto embedded = std::make_unique<AppKitWidgetView>(widget, true);
       NSView* native = (__bridge NSView*)embedded->nativeView();
       embedded->refresh();
       m_cellViews.emplace_back(QPointer<QWidget>(widget), std::move(embedded));
@@ -977,6 +1605,12 @@ public:
       check.state = state == Qt::PartiallyChecked ? NSControlStateValueMixed
                     : state == Qt::Checked ? NSControlStateValueOn : NSControlStateValueOff;
       check.enabled = view->isEnabled() && index.flags().testFlag(Qt::ItemIsEnabled);
+      const auto style = mac::nativeCellStyle(index, view);
+      check.font = style.font;
+      if (style.text != nil) {
+        check.attributedTitle = [[NSAttributedString alloc] initWithString:check.title
+            attributes:@{NSForegroundColorAttributeName:style.text, NSFontAttributeName:style.font}];
+      }
       check.toolTip = ns(plain(index.data(Qt::ToolTipRole).toString()));
       check.accessibilityIdentifier = ns(index.data(NativeControlIdentifierRole).toString());
       check.translatesAutoresizingMaskIntoConstraints = NO;
@@ -986,14 +1620,29 @@ public:
       [check.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor].active = YES;
     } else {
       cell.accessibilityIdentifier = ns(index.data(NativeControlIdentifierRole).toString());
-      NSTextField* field = label(index.data().toString());
+      const QVariant permission = index.data(NativeEditableRole);
+      const bool editable = permission.isValid() ? permission.toBool()
+          : index.flags().testFlag(Qt::ItemIsEditable) && view->editTriggers() != QAbstractItemView::NoEditTriggers;
+      NSTextField* field = nil;
+      if (editable) {
+        field = [MitcadNativeModelField new];
+        field.stringValue = ns(plain(index.data().toString()));
+        field.bezeled = NO;
+        field.bordered = NO;
+        field.drawsBackground = NO;
+        field.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
+        field.translatesAutoresizingMaskIntoConstraints = NO;
+        [field setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+      } else { field = label(index.data().toString()); }
       if (view->property("nativeSourceList").toBool()) {
         field.maximumNumberOfLines = 1;
         field.lineBreakMode = NSLineBreakByTruncatingMiddle;
       }
-      const QVariant permission = index.data(NativeEditableRole);
-      field.editable = permission.isValid() ? permission.toBool()
-                                           : index.flags().testFlag(Qt::ItemIsEditable) && view->editTriggers() != QAbstractItemView::NoEditTriggers;
+      field.editable = editable;
+      // A display-only item selects its row on a press, as in Qt. A
+      // selectable NSTextField would consume that press for text selection
+      // before the table can publish its selection to the shared presenter.
+      field.selectable = field.editable;
       field.delegate = cell;
       field.enabled = index.flags().testFlag(Qt::ItemIsEnabled);
       field.toolTip = ns(plain(index.data(Qt::ToolTipRole).toString()));
@@ -1020,17 +1669,35 @@ public:
       }
       [field.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:inset].active = YES;
       [field.trailingAnchor constraintEqualToAnchor:cell.trailingAnchor constant:-4].active = YES;
-      [field.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor].active = YES;
+      const Qt::Alignment alignment = Qt::Alignment(index.data(Qt::TextAlignmentRole).toInt());
+      if (spanning) {
+        field.alignment = alignment.testFlag(Qt::AlignRight) ? NSTextAlignmentRight
+                         : alignment.testFlag(Qt::AlignHCenter) ? NSTextAlignmentCenter : NSTextAlignmentNatural;
+      }
+      if (spanning && alignment.testFlag(Qt::AlignTop)) {
+        [field.topAnchor constraintEqualToAnchor:cell.topAnchor constant:2].active = YES;
+      } else if (spanning && alignment.testFlag(Qt::AlignBottom)) {
+        [field.bottomAnchor constraintEqualToAnchor:cell.bottomAnchor constant:-2].active = YES;
+      } else { [field.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor].active = YES; }
       // The shared delegate's cell states (mitcad#814): refused values,
-      // section rows' fonts and muted or coloured text, on one elided line.
-      if (!view->property("nativeSourceList").toBool()) { mac::elideNativeCell(field, view->textElideMode()); }
+      // fonts and colours. Compact multiline lists retain explicit breaks;
+      // other cells keep the existing single-line elision.
+      if (view->property(NativeListRowLimitProperty).toInt() > 0 && qobject_cast<QListView*>(view) != nullptr) {
+        field.usesSingleLineMode = NO;
+        field.maximumNumberOfLines = 0;
+        field.cell.wraps = NO; // preserve explicit lines, as wordWrap(false)
+        field.cell.scrollable = NO;
+        field.cell.truncatesLastVisibleLine = YES;
+        field.lineBreakMode = view->textElideMode() == Qt::ElideLeft ? NSLineBreakByTruncatingHead
+                            : view->textElideMode() == Qt::ElideMiddle ? NSLineBreakByTruncatingMiddle
+                            : view->textElideMode() == Qt::ElideNone ? NSLineBreakByClipping : NSLineBreakByTruncatingTail;
+      } else if (!view->property("nativeSourceList").toBool()) { mac::elideNativeCell(field, view->textElideMode()); }
       const mac::NativeCellStyle style = mac::nativeCellStyle(index, view);
       field.font = style.font;
       cell->tone = style.text;
       cell->fill = style.fill;
       [cell applyTone];
-      if (auto* tree = qobject_cast<QTreeView*>(view); tree != nullptr && index.column() == 0 &&
-          field.toolTip.length == 0 && tree->isFirstColumnSpanned(index.row(), index.parent())) {
+      if (spanning && field.toolTip.length == 0) {
         field.toolTip = field.stringValue; // a section row's whole name
       }
     }
@@ -1141,9 +1808,53 @@ public:
     if (![window isKindOfClass:MitcadNativeSecondaryWindow.class]) { [window makeFirstResponder:nil]; }
     return true;
   }
+  void modelCellPressed(MitcadNativeModelCell* cell) {
+    const int id = cell->binding;
+    if (m_refreshing || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) return;
+    NSTableView* table = m_bindings[static_cast<std::size_t>(id)].table;
+    auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
+    const QPersistentModelIndex current = cell->index;
+    const NSInteger row = table != nil ? [table rowForView:cell] : -1;
+    if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+      qInfo().noquote() << QStringLiteral("Native model field press: %1 native-row=%2 column=%3 editor=%4 responder=%5")
+          .arg(current.data(NativeControlIdentifierRole).toString()).arg(qlonglong(row)).arg(current.column())
+          .arg(cell.textField.currentEditor != nil).arg(qt(NSStringFromClass(table.window.firstResponder.class)));
+    if (view == nullptr || !view->isEnabled() || view->selectionModel() == nullptr || !current.isValid() ||
+        current.model() != view->model() || table != mac::owningTable(cell) || row < 0 ||
+        !cell.textField.enabled || !cell.textField.editable || modelIndex(table, row, current.column()) != current) return;
+    const QPointer<AppKitWidgetView> alive(this);
+    const QPointer<QAbstractItemView> presenter(view);
+    const QPointer<QItemSelectionModel> selection(view->selectionModel());
+    // An editable NSTextField handles the press before its table can
+    // select the row. Publish the actual pressed cell, then let the same
+    // native row selection callback notify the shared selection observers.
+    selection->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+    if (!alive || !presenter || !selection || !current.isValid()) return;
+    if (view->selectionMode() != QAbstractItemView::NoSelection && current.flags().testFlag(Qt::ItemIsSelectable)) {
+      // Editing one cell of an already selected set keeps that set.
+      if (![table.selectedRowIndexes containsIndex:static_cast<NSUInteger>(row)]) {
+        [table selectRowIndexes:[NSIndexSet indexSetWithIndex:static_cast<NSUInteger>(row)] byExtendingSelection:NO];
+      }
+      if (!alive || !presenter || !selection || !current.isValid()) return;
+      if (!selection->isSelected(current)) modelSelection(table);
+      if (!alive || !presenter || !selection || !current.isValid()) return;
+      // The row callback may have no clickedColumn when its field took
+      // the original press. F2/Tab still need this exact pressed column.
+      selection->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+    }
+    if (!alive || !presenter || !selection || !current.isValid()) return;
+    if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+      qInfo().noquote() << QStringLiteral("Native model field selected: %1 row=%2 column=%3 selected=%4 rows=%5")
+          .arg(view->objectName()).arg(current.row()).arg(current.column())
+          .arg(selection->isSelected(current)).arg(selection->selectedRows().size());
+    scheduleRefresh();
+  }
   void modelSelection(NSTableView* table) {
     QPointer<AppKitWidgetView> alive(this);
     const int id = modelBinding(table);
+    const bool trace = !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT");
+    if (trace) qDebug().noquote() << QStringLiteral("Native model selection: binding=%1 selected=%2 count=%3 clicked=%4 refreshing=%5")
+        .arg(id).arg(table.selectedRow).arg(table.selectedRowIndexes.count).arg(table.clickedRow).arg(m_refreshing);
     if (m_refreshing || id < 0 || static_cast<std::size_t>(id) >= m_bindings.size()) { return; }
     // Pending edits elsewhere end first. In a dialog the table keeps the
     // keyboard focus for arrow keys and F2, as the shared view does
@@ -1164,23 +1875,35 @@ public:
     if (alive == nullptr) { return; }
     auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
     if (view == nullptr || view->selectionModel() == nullptr) { return; }
-    QItemSelection selection;
     const NSInteger currentRow = table.clickedRow >= 0 && [table.selectedRowIndexes containsIndex:static_cast<NSUInteger>(table.clickedRow)]
                                      ? table.clickedRow : table.selectedRow;
     const QModelIndex clicked = modelIndex(table, currentRow, std::max<NSInteger>(0, table.clickedColumn));
+    QPointer<QAbstractItemView> presenter(view);
+    const QPersistentModelIndex current = clicked.isValid() ? clicked : modelIndex(table, table.selectedRow, 0);
+    // Selection handlers may use currentItem() to identify the selected
+    // row (Configurations' Edit Domain does). Publish that current index
+    // first, as a shared view does for a mouse selection, so the selection
+    // signal sees the new current row rather than the previous one.
+    if (current.isValid()) {
+      view->selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
+      if (alive == nullptr || presenter == nullptr) { return; }
+    }
+    QItemSelection selection;
     for (NSUInteger row = table.selectedRowIndexes.firstIndex; row != NSNotFound;
          row = [table.selectedRowIndexes indexGreaterThanIndex:row]) {
       const QModelIndex index = liveIndex(table, nodeAt(table, static_cast<NSInteger>(row)));
       if (index.isValid()) { selection.select(index, index); }
     }
-    QPointer<QAbstractItemView> presenter(view);
     view->selectionModel()->select(selection, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
     if (alive == nullptr || presenter == nullptr) { return; }
-    const QModelIndex current = clicked.isValid() ? clicked : modelIndex(table, table.selectedRow, 0);
+    if (trace) {
+      const QModelIndex actual = view->selectionModel()->currentIndex();
+      qDebug().noquote() << QStringLiteral("Native model selection applied: %1 current=%2,%3 selected=%4 rows=%5")
+          .arg(view->objectName()).arg(actual.row()).arg(actual.column())
+          .arg(view->selectionModel()->isSelected(actual)).arg(view->selectionModel()->selectedRows().size());
+    }
     if (current.isValid()) {
-      view->selectionModel()->setCurrentIndex(current, QItemSelectionModel::NoUpdate);
-      if (alive == nullptr || presenter == nullptr) { return; }
-      QMetaObject::invokeMethod(view, "clicked", Qt::DirectConnection, Q_ARG(QModelIndex, current));
+      QMetaObject::invokeMethod(view, "clicked", Qt::DirectConnection, Q_ARG(QModelIndex, QModelIndex(current)));
     }
   }
   QModelIndex modelIndex(NSTableView* table, NSInteger row, NSInteger col) {
@@ -1381,9 +2104,11 @@ private:
     NSControl* control = nil;
     NSStepper* stepper = nil;
     NSImageView* image = nil;
+    NSLayoutConstraint* imageHeight = nil;
     NSProgressIndicator* progress = nil;
     NSTextView* text = nil;
     NSTextView* linkText = nil;
+    NSLayoutConstraint* listHeight = nil;
     NSTabView* tabs = nil;
     NSTableView* table = nil;
     NSMutableArray<MitcadNativeModelNode*>* nodes = nil;
@@ -1396,6 +2121,7 @@ private:
     std::vector<QMetaObject::Connection> selectionConnections;
     QStringList items;
     QString labelText;
+    QFont labelFont;
     QString buttonTip;
     QKeySequence keySequence;
     int buttonStyle = -1;
@@ -1475,6 +2201,7 @@ private:
         if (auto* tree = qobject_cast<QTreeView*>(view)) {
           mix(tree->isRowHidden(row, parent));
           mix(tree->isExpanded(index));
+          mix(tree->isFirstColumnSpanned(row, parent));
         }
         if (auto* table = qobject_cast<QTableView*>(view)) { mix(table->isRowHidden(row)); }
         if (auto* list = qobject_cast<QListView*>(view)) { mix(list->isRowHidden(row)); }
@@ -1496,6 +2223,9 @@ private:
     }
   }
   int bind(QWidget* widget, NSView* view, NSControl* control = nil) {
+    // The parent grid is built next: give it the source's actual visibility
+    // immediately, before filtered settings join the window's layout graph.
+    view.hidden = widget != m_source && widget->isHidden();
     Binding binding;
     binding.widget = widget;
     binding.view = view;
@@ -1516,9 +2246,17 @@ private:
     if (auto* slider = qobject_cast<QSlider*>(widget)) { c.push_back(connect(slider, &QSlider::valueChanged, this, changed)); }
     if (auto* progress = qobject_cast<QProgressBar*>(widget)) { c.push_back(connect(progress, &QProgressBar::valueChanged, this, changed)); }
     if (auto* tabs = qobject_cast<QTabWidget*>(widget)) { c.push_back(connect(tabs, &QTabWidget::currentChanged, this, changed)); }
+    if (auto* bar = qobject_cast<QTabBar*>(widget)) { c.push_back(connect(bar, &QTabBar::currentChanged, this, changed)); }
     if (auto* pages = qobject_cast<QStackedWidget*>(widget)) { c.push_back(connect(pages, &QStackedWidget::currentChanged, this, changed)); }
     if (auto* edit = qobject_cast<QKeySequenceEdit*>(widget)) { c.push_back(connect(edit, &QKeySequenceEdit::keySequenceChanged, this, changed)); }
     if (auto* edit = qobject_cast<QPlainTextEdit*>(widget)) { c.push_back(connect(edit, &QPlainTextEdit::textChanged, this, changed)); }
+    if (auto* edit = qobject_cast<QPlainTextEdit*>(widget); edit != nullptr && dynamic_cast<NativeTextEditorCommands*>(edit)) {
+      c.push_back(connect(edit, &QPlainTextEdit::textChanged, this, [this, edit, id] {
+        if (m_refreshing || m_source == nullptr || m_source->focusWidget() != edit) return;
+        const Binding& current = m_bindings[static_cast<std::size_t>(id)];
+        if (current.text != nil && current.text.window.firstResponder != current.text) m_textFocusRequested = edit;
+      }));
+    }
     if (auto* edit = qobject_cast<QTextEdit*>(widget)) { c.push_back(connect(edit, &QTextEdit::textChanged, this, changed)); }
     if (auto* tree = qobject_cast<QTreeView*>(widget)) {
       const auto generation = m_generation;
@@ -1547,8 +2285,11 @@ private:
     // spans, field growth and label alignment. Pages hosted in the document's
     // cards (inspector, sketch palette) keep their stacks within the cards'
     // own width rules.
-    if (!m_source->isWindow()) { return renderStackLayout(layout); }
-    return mac::layout::build(layout, [this](QLayoutItem* item) { return renderItem(item); }, false);
+    if (!m_source->isWindow() && !m_source->property("nativeLayoutContract").toBool()) {
+      return renderStackLayout(layout);
+    }
+    return mac::layout::build(layout, [this](QLayoutItem* item) { return renderItem(item); }, false,
+                              m_source->property("nativeResponsiveLayout").toBool());
   }
   NSView* renderStackLayout(QLayout* layout) {
     if (auto* grid = qobject_cast<QGridLayout*>(layout)) {
@@ -1650,21 +2391,42 @@ private:
       [view refresh];
       return view;
     }
+    if (auto guide = mac::createNativeNavigationGuide(widget)) {
+      NSView* view = (__bridge NSView*)guide->nativeView();
+      bind(widget, view);
+      m_artworkViews.push_back(std::move(guide));
+      return view;
+    }
+    if (auto rules = mac::createNativeRuleView(widget)) {
+      widget->setProperty("nativeRuleArtwork", true);
+      NSView* view = (__bridge NSView*)rules->nativeView();
+      bind(widget, view);
+      m_ruleViews.push_back(std::move(rules));
+      return view;
+    }
     if (auto* text = qobject_cast<QLabel*>(widget)) {
       NSStackView* contents = stack();
       NSTextField* caption = label(labelText(text), false);
-      if (richLabelText(text) && text->text().contains(QStringLiteral("<b>"))) {
-        caption.font = [NSFont systemFontOfSize:NSFont.systemFontSize weight:NSFontWeightSemibold];
+      if (!text->wordWrap() && !qt(caption.stringValue).contains(QLatin1Char('\n'))) {
+        caption.usesSingleLineMode = YES;
+        caption.maximumNumberOfLines = 1;
+        caption.cell.wraps = NO;
+        caption.lineBreakMode = NSLineBreakByTruncatingTail;
+        [caption setContentCompressionResistancePriority:NSLayoutPriorityDefaultHigh
+                                         forOrientation:NSLayoutConstraintOrientationHorizontal];
       }
+      caption.font = labelFont(text->font(), QApplication::font(text));
       NSImageView* preview = [NSImageView new];
       preview.imageScaling = NSImageScaleProportionallyUpOrDown;
       preview.hidden = text->pixmap().isNull();
       caption.hidden = !text->pixmap().isNull();
       add(contents, caption);
       add(contents, preview);
-      [preview.heightAnchor constraintGreaterThanOrEqualToConstant:std::max(80, std::min(240, text->minimumHeight()))].active = YES;
+      NSLayoutConstraint* imageHeight = [preview.heightAnchor constraintGreaterThanOrEqualToConstant:labelPixmapHeight(text)];
+      imageHeight.active = YES;
       const int id = bind(widget, contents, caption);
       m_bindings[static_cast<std::size_t>(id)].image = preview;
+      m_bindings[static_cast<std::size_t>(id)].imageHeight = imageHeight;
       return contents;
     }
     if (auto* edit = qobject_cast<QLineEdit*>(widget)) {
@@ -1700,7 +2462,7 @@ private:
         NSComboBox* field = [[NSComboBox alloc] initWithFrame:NSZeroRect];
         field.delegate = m_target;
         view = field;
-      } else { view = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO]; }
+      } else { view = [[MitcadNativePopup alloc] initWithFrame:NSZeroRect pullsDown:NO]; }
       target(view);
       bind(widget, view, view);
       return view;
@@ -1719,8 +2481,22 @@ private:
         tile.target = m_target;
         tile.action = @selector(perform:);
         view = tile;
+      } else if (button->property(NativeColorFieldProperty).isValid()) {
+        auto* field = [[MitcadNativeColorField alloc] initWithFrame:NSZeroRect];
+        field.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
+        // This is an expanding input, not an empty-caption action button.
+        // Its bezel must fill the shared editor's cell so the inherited
+        // value's words and the whole pointer target remain reachable.
+        [field setContentHuggingPriority:NSLayoutPriorityDefaultLow
+                         forOrientation:NSLayoutConstraintOrientationHorizontal];
+        field.target = m_target;
+        field.action = @selector(perform:);
+        view = field;
       } else {
-        view = [NSButton buttonWithTitle:ns(title(button->text())) target:m_target action:@selector(perform:)];
+        view = [[MitcadNativeActionButton alloc] initWithFrame:NSZeroRect];
+        view.title = ns(title(button->text()));
+        view.target = m_target;
+        view.action = @selector(perform:);
       }
       if (!tileButton(button)) { view.bezelStyle = NSBezelStyleRounded; }
       if (qobject_cast<QCheckBox*>(widget) != nullptr) { [view setButtonType:NSButtonTypeSwitch]; }
@@ -1730,6 +2506,7 @@ private:
         view.image = image(button->icon().pixmap(buttonIconPixels(button), buttonIconPixels(button)));
       }
       updateButtonPresentation(view, button);
+      updateColorField(view, button);
       if (widget->objectName().startsWith(QStringLiteral("palette_"))) {
         [view.widthAnchor constraintGreaterThanOrEqualToConstant:34].active = YES;
         [view.heightAnchor constraintGreaterThanOrEqualToConstant:30].active = YES;
@@ -1756,9 +2533,14 @@ private:
       return row;
     }
     if (auto* slider = qobject_cast<QSlider*>(widget)) {
-      NSSlider* view = [NSSlider sliderWithValue:slider->value() minValue:slider->minimum() maxValue:slider->maximum()
-                                        target:m_target action:@selector(perform:)];
-      view.continuous = YES;
+      MitcadNativeSlider* view = [[MitcadNativeSlider alloc] initWithFrame:NSZeroRect];
+      view.minValue = slider->minimum();
+      view.maxValue = slider->maximum();
+      view.integerValue = slider->value();
+      view.target = m_target;
+      view.action = @selector(perform:);
+      view.keyboardStep = slider->singleStep();
+      view.continuous = !slider->property("nativeSliderOnRelease").toBool();
       bind(widget, view, view);
       return view;
     }
@@ -1827,7 +2609,7 @@ private:
     }
     if (auto* view = qobject_cast<QAbstractItemView*>(widget)) { return renderModel(view); }
     if (qobject_cast<QPlainTextEdit*>(widget) != nullptr || qobject_cast<QTextEdit*>(widget) != nullptr) {
-      NSTextView* view = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 440, 130)];
+      MitcadNativeTextView* view = [[MitcadNativeTextView alloc] initWithFrame:NSMakeRect(0, 0, 440, 130)];
       view.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
       view.richText = NO;
       view.delegate = m_target;
@@ -1835,11 +2617,24 @@ private:
       view.horizontallyResizable = NO;
       view.autoresizingMask = NSViewWidthSizable;
       view.textContainer.widthTracksTextView = YES;
-      NSScrollView* box = scroll(view, std::max(90, std::min(260, widget->minimumHeight())));
+      const int minimum = std::clamp(widget->minimumSizeHint().height(), widget->minimumHeight(), widget->maximumHeight());
+      NSScrollView* box = scroll(view, minimum);
+      const int preferred = std::clamp(widget->sizeHint().height(), minimum, widget->maximumHeight());
+      NSLayoutConstraint* readingHeight = [box.heightAnchor constraintEqualToConstant:preferred];
+      readingHeight.priority = 490; // shared reading height yields when the window needs to shrink
+      readingHeight.active = YES;
       const int id = bind(widget, box);
       m_bindings[static_cast<std::size_t>(id)].text = view;
       view.identifier = ns(QString::number(id));
       return box;
+    }
+    if (auto* bar = qobject_cast<QTabBar*>(widget)) {
+      NSPopUpButton* control = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+      control.menu.autoenablesItems = NO;
+      control.accessibilityLabel = ns(bar->accessibleName().isEmpty() ? tr("Settings category") : bar->accessibleName());
+      target(control);
+      bind(widget, control, control);
+      return control;
     }
     if (auto* tabs = qobject_cast<QTabWidget*>(widget)) { return renderTabs(widget, tabs->count(), [tabs](int i) { return tabs->widget(i); }, [tabs](int i) { return tabs->tabText(i); }); }
     if (auto* pages = qobject_cast<QStackedWidget*>(widget)) {
@@ -1855,7 +2650,20 @@ private:
       // secondary window scrolls its whole body (NativeWindowFit.hpp).
       if (area->property("nativeWindowBody").toBool()) { return renderWidget(area->widget()); }
       NSView* content = renderWidget(area->widget());
-      NSScrollView* view = scroll(content, std::max(100, std::min(340, area->minimumHeight())));
+      const int minimum = std::clamp(area->minimumSizeHint().height(), area->minimumHeight(), area->maximumHeight());
+      NSScrollView* view = scroll(content, minimum, area->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOff);
+      view.hasVerticalScroller = area->verticalScrollBarPolicy() != Qt::ScrollBarAlwaysOff;
+      view.autohidesScrollers = area->horizontalScrollBarPolicy() != Qt::ScrollBarAlwaysOn &&
+                                area->verticalScrollBarPolicy() != Qt::ScrollBarAlwaysOn;
+      view.borderType = area->frameShape() == QFrame::NoFrame ? NSNoBorder : NSBezelBorder;
+      const int preferred = std::clamp(area->sizeHint().height(), minimum, area->maximumHeight());
+      NSLayoutConstraint* readingHeight = [view.heightAnchor constraintEqualToConstant:preferred];
+      readingHeight.priority = 490; // shared preferred height yields to a smaller viewport
+      readingHeight.active = YES;
+      if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
+        qInfo().noquote() << QStringLiteral("Native scroll contract: %1 minimum height %2, preferred %3, horizontal %4")
+            .arg(area->objectName()).arg(minimum).arg(preferred).arg(bool(view.hasHorizontalScroller));
+      }
       bind(widget, view);
       return view;
     }
@@ -1910,10 +2718,11 @@ private:
     bind(widget, view);
     return view;
   }
-  NSAttributedString* richLabel(const QString& html, bool mnemonic) {
+  NSAttributedString* richLabel(const QLabel* source) {
     QTextDocument document;
-    document.setHtml(html);
-    if (mnemonic) {
+    document.setDefaultFont(source->font());
+    document.setHtml(source->text());
+    if (source->buddy() != nullptr) {
       const QString text = document.toPlainText();
       std::vector<int> markers;
       for (qsizetype i = 0; i < text.size(); ++i) {
@@ -1930,14 +2739,19 @@ private:
       }
     }
     NSMutableAttributedString* result = [[NSMutableAttributedString alloc] initWithString:ns(document.toPlainText())
-      attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:NSFont.systemFontSize], NSForegroundColorAttributeName:NSColor.labelColor}];
+      attributes:@{NSFontAttributeName: labelFont(source->font(), QApplication::font(source)),
+                   NSForegroundColorAttributeName:mac::nativeTextTone(mac::nativeTextToneKind(source))}];
     for (QTextBlock block = document.begin(); block.isValid(); block = block.next()) {
       for (auto it = block.begin(); !it.atEnd(); ++it) {
         const QTextFragment fragment = it.fragment();
-        if (!fragment.isValid() || !fragment.charFormat().isAnchor()) { continue; }
+        if (!fragment.isValid()) { continue; }
         const NSRange range = NSMakeRange(static_cast<NSUInteger>(fragment.position()), static_cast<NSUInteger>(fragment.length()));
         if (NSMaxRange(range) <= result.length) {
-          [result addAttribute:NSLinkAttributeName value:ns(fragment.charFormat().anchorHref()) range:range];
+          const QTextCharFormat format = fragment.charFormat();
+          const QFont font = format.font().resolve(source->font());
+          [result addAttribute:NSFontAttributeName value:labelFont(font, QApplication::font(source)) range:range];
+          if (format.fontUnderline()) [result addAttribute:NSUnderlineStyleAttributeName value:@(NSUnderlineStyleSingle) range:range];
+          if (format.isAnchor()) [result addAttribute:NSLinkAttributeName value:ns(format.anchorHref()) range:range];
         }
       }
     }
@@ -1982,6 +2796,9 @@ private:
       table.autoresizingMask = NSViewWidthSizable;
     }
     table.allowsMultipleSelection = view->selectionMode() == QAbstractItemView::ExtendedSelection || view->selectionMode() == QAbstractItemView::MultiSelection;
+    // Qt's spanned headings scroll with their rows, rather than floating
+    // over later content as AppKit group rows otherwise may do.
+    table.floatsGroupRows = NO;
     table.delegate = m_target;
     table.dataSource = m_target;
     table.target = m_target;
@@ -2005,7 +2822,8 @@ private:
     // The native default must fit within the presenter's required upper bound.
     const int minimumHeight = view->property("nativeSourceList").toBool() ? 24
         : std::min(view->maximumHeight(), std::max(120, std::min(280, view->minimumHeight())));
-    NSScrollView* box = scroll(table, minimumHeight);
+    const bool boundedList = qobject_cast<QListView*>(view) != nullptr && view->property(NativeListRowLimitProperty).toInt() > 0;
+    NSScrollView* box = scroll(table, boundedList ? 0 : minimumHeight);
     if (view->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff) box.hasHorizontalScroller = NO;
     if (view->property("nativeSourceList").toBool()) {
       box.borderType = NSNoBorder;
@@ -2013,7 +2831,7 @@ private:
       box.automaticallyAdjustsContentInsets = NO;
       box.contentInsets = NSEdgeInsetsMake(0, 0, 0, 0);
     }
-    if (view->maximumHeight() < QWIDGETSIZE_MAX) {
+    if (!boundedList && view->maximumHeight() < QWIDGETSIZE_MAX) {
       [box.heightAnchor constraintLessThanOrEqualToConstant:view->maximumHeight()].active = YES;
     }
     if (hierarchical && rowMovesRegistry().contains(view)) {
@@ -2024,6 +2842,13 @@ private:
     }
     const int id = bind(view, box);
     m_bindings[static_cast<std::size_t>(id)].table = table;
+    if (boundedList) {
+      // A shared compact list grows/shrinks after records or Clear. Do not
+      // freeze its initially empty QWidget maximumHeight into the native view.
+      auto& binding = m_bindings[static_cast<std::size_t>(id)];
+      binding.listHeight = [box.heightAnchor constraintEqualToConstant:table.rowHeight];
+      binding.listHeight.active = YES;
+    }
     table.identifier = ns(QString::number(id));
     // A tree or table keeps its shared header's section sizes, stretching
     // columns and hidden sections, in flat rows like the shared view's,
@@ -2048,6 +2873,15 @@ private:
       mac::applyNativeColumns(table, view, m_bindings[static_cast<std::size_t>(id)].sections);
       mac::followNativeColumns(table);
     }
+    if (const QHeaderView* header = mac::nativeHeader(view)) {
+      const QVariantList sources = header->property(NativeColumnEditorsProperty).toList();
+      std::vector<NSView*> editors;
+      for (const QVariant& source : sources) {
+        auto* widget = qobject_cast<QWidget*>(source.value<QObject*>());
+        editors.push_back(widget != nullptr ? renderWidget(widget) : nil);
+      }
+      mac::installNativeColumnEditors(table, editors);
+    }
     return box;
   }
   NSMutableArray<MitcadNativeModelNode*>* modelNodes(QAbstractItemView* view, const QModelIndex& parent) {
@@ -2067,6 +2901,20 @@ private:
   void refreshModel(Binding& binding, QAbstractItemView* view, int id) {
     observeModel(binding, view->model(), id);
     observeSelection(binding, view, id);
+    auto* list = qobject_cast<QListView*>(view);
+    if (binding.listHeight != nil && list != nullptr && view->model() != nullptr) {
+      const int limit = std::max(1, view->property(NativeListRowLimitProperty).toInt());
+      CGFloat height = 2 * view->frameWidth();
+      int shown = 0;
+      for (int row = 0; row < view->model()->rowCount(view->rootIndex()) && shown < limit; ++row) {
+        if (list->isRowHidden(row)) continue;
+        height += listRowHeight(view, row, binding.table.rowHeight) + binding.table.intercellSpacing.height;
+        ++shown;
+      }
+      if (shown == 0) height += binding.table.rowHeight;
+      NATIVE_SET(binding.listHeight, constant, height);
+    }
+    updateCurrentRows(binding.table);
     if (binding.rootIndex != view->rootIndex()) {
       binding.rootIndex = view->rootIndex();
       binding.dirty = true;
@@ -2084,6 +2932,7 @@ private:
         MitcadNativeModelCell* cell =
             [delegate isKindOfClass:MitcadNativeModelCell.class] ? (MitcadNativeModelCell*)delegate : nil;
         if (cell != nil && cell->index.isValid()) {
+          [cell refreshUnchangedEdit];
           mac::logNativeCellEdit("a model refresh waits for the edit", edited);
           return;
         }
@@ -2094,6 +2943,7 @@ private:
         if (row.isValid() && nativeColumn >= 0) {
           cell->index = row.siblingAtColumn(
               qt(binding.table.tableColumns[static_cast<NSUInteger>(nativeColumn)].identifier).toInt());
+          [cell refreshUnchangedEdit];
           mac::logNativeCellEdit("a model refresh rebuilt the edited row; its edit stays", edited);
           return;
         }
@@ -2144,7 +2994,15 @@ private:
       NSMutableIndexSet* selected = [NSMutableIndexSet new];
       for (NSInteger row = 0; row < binding.table.numberOfRows; ++row) {
         MitcadNativeModelNode* node = nodeAt(binding.table, row);
-        if (node != nil && view->selectionModel()->isRowSelected(node->index.row(), node->index.parent())) {
+        // The native table presents rows. A shared SelectItems view can
+        // restore just its current cell after a model refresh; that row
+        // still needs its native highlight, without selecting its other
+        // cells in the presenter. Selection callbacks stay suppressed by
+        // m_refreshing while this native state is restored.
+        const bool selectedRow = node != nil && (view->selectionBehavior() == QAbstractItemView::SelectItems
+            ? view->selectionModel()->rowIntersectsSelection(node->index.row(), node->index.parent())
+            : view->selectionModel()->isRowSelected(node->index.row(), node->index.parent()));
+        if (selectedRow) {
           [selected addIndex:static_cast<NSUInteger>(row)];
         }
       }
@@ -2159,10 +3017,24 @@ private:
     }
   }
   void rebuild() {
+    // An option row may be replaced while its catalogue search is being
+    // typed. Keep the surviving presenter's edit across the native rebuild,
+    // while still showing the new options immediately.
+    NSWindow* window = m_root.window;
+    NSResponder* responder = window.firstResponder;
+    NSTextView* editor = [responder isKindOfClass:NSTextView.class] && ((NSTextView*)responder).isFieldEditor
+        ? (NSTextView*)responder : nil;
+    NSTextField* field = [editor.delegate isKindOfClass:NSTextField.class] ? (NSTextField*)editor.delegate : nil;
+    const QString identifier = field != nil && [field isDescendantOf:m_root] ? qt(field.accessibilityIdentifier) : QString();
+    const auto edits = identifier.isEmpty() ? QList<QLineEdit*>() : m_source->findChildren<QLineEdit*>(identifier);
+    const QPointer<QLineEdit> keptEdit = edits.size() == 1 ? edits.first() : nullptr;
+    const NSRange selection = editor != nil ? editor.selectedRange : NSMakeRange(0, 0);
     detachBindings();
     for (MitcadNativeModelCell* cell in m_cells) { cell->owner = nullptr; }
     m_cellViews.clear();
     m_tileViews.clear();
+    m_ruleViews.clear();
+    m_artworkViews.clear();
     for (NSView* child in [m_root.arrangedSubviews copy]) { [m_root removeArrangedSubview:child]; [child removeFromSuperview]; }
     m_bindings.clear();
     ++m_generation;
@@ -2173,6 +3045,9 @@ private:
     // height as in the Qt layout (mitcad#812).
     if (m_source->isWindow()) { m_root.distribution = NSStackViewDistributionFill; }
     add(m_root, renderWidget(m_source));
+    // Initial construction happens before the root joins a window. Hidden
+    // categories retain their controls, but not a connected constraint tree.
+    mac::layout::updateVisibility(m_root);
     if (m_footer != nil) { placeFooter(); }
     m_widgetTree.clear();
     for (QWidget* widget : structureWidgets()) { m_widgetTree.emplace_back(widget); }
@@ -2182,8 +3057,27 @@ private:
     const auto objects = m_source->findChildren<QObject*>();
     for (QObject* object : objects) { m_observed.push_back(object); }
     for (const auto& object : m_observed) { if (object) { object->installEventFilter(this); } }
+    if (keptEdit != nullptr && keptEdit->isEnabled() && !keptEdit->isReadOnly() && keptEdit->isVisibleTo(m_source) &&
+        m_root.window == window && window.isKeyWindow) {
+      std::vector<NSTextField*> matches;
+      const auto find = [&](auto&& self, NSView* view) -> void {
+        if ([view isKindOfClass:NSTextField.class] && qt(view.accessibilityIdentifier) == identifier &&
+            !view.isHiddenOrHasHiddenAncestor) matches.push_back((NSTextField*)view);
+        for (NSView* child in view.subviews) self(self, child);
+      };
+      find(find, m_root);
+      NSTextField* restored = matches.size() == 1 ? matches.front() : nil;
+      if (restored.editable && restored.enabled && [window makeFirstResponder:restored]) {
+        NSText* current = restored.currentEditor;
+        if ([current isKindOfClass:NSTextView.class]) {
+          const NSUInteger start = std::min(selection.location, current.string.length);
+          ((NSTextView*)current).selectedRange = NSMakeRange(start, std::min(selection.length, current.string.length - start));
+        }
+      }
+    }
   }
   QPointer<QWidget> m_source;
+  QPointer<QPlainTextEdit> m_textFocusRequested;
   QTimer m_timer;
   QTimer m_refreshTimer;
   MitcadNativeWidgetTarget* m_target = nil;
@@ -2193,6 +3087,8 @@ private:
   std::vector<std::pair<QPointer<QWidget>, std::unique_ptr<AppKitWidgetView>>> m_cellViews;
   // Tile grids and catalogues (NativeCollection.hpp) keep their own bindings.
   std::vector<std::unique_ptr<NativeWidgetView>> m_tileViews;
+  std::vector<std::unique_ptr<NativeWidgetView>> m_ruleViews;
+  std::vector<std::unique_ptr<NativeWidgetView>> m_artworkViews;
   NSHashTable<MitcadNativeModelCell*>* m_cells = [NSHashTable weakObjectsHashTable];
   std::vector<QPointer<QObject>> m_observed;
   std::vector<QPointer<QWidget>> m_widgetTree;
@@ -2293,6 +3189,7 @@ public:
   }
   bool dispatchShortcut(NSEvent* event) {
     if (!m_widget || m_finished || m_window.attachedSheet || !m_window.isKeyWindow) return false;
+    if (m_view->currentRowKey(event)) return true;
     const QKeySequence sequence = mac::keySequence(event);
     if (sequence.isEmpty() || sequence[0].keyboardModifiers() == Qt::NoModifier) return false;
     // Only this presenter's explicit shortcuts participate. Text-view
@@ -2783,6 +3680,7 @@ private:
 };
 
 void setNativeDialogWindow(void* window) { g_documentWindow = (__bridge NSWindow*)window; }
+void* nativeDialogWindow() { return (__bridge void*)g_documentWindow; }
 bool nativeDialogsActive() { return g_documentWindow != nil; }
 bool nativeDialogModalActive() { return !g_modalWindows.empty() || NSApp.modalWindow != nil; }
 void waitNativeUntil(const std::function<bool()>& completed) { pumpNativeEvents(completed); }
@@ -2993,6 +3891,59 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 
 } // namespace mitcad
 
+@implementation MitcadNativeColorField
+- (BOOL)wantsUpdateLayer { return NO; }
+- (NSRect)swatchRect {
+  const CGFloat side = std::max<CGFloat>(8, NSHeight(self.bounds) - 10);
+  return NSMakeRect(7, (NSHeight(self.bounds) - side) / 2, side + 8, side);
+}
+- (NSRect)wordsRect {
+  const CGFloat left = NSMaxX(self.swatchRect) + 8;
+  NSFont* font = self.font != nil ? self.font : [NSFont systemFontOfSize:NSFont.systemFontSize];
+  const CGFloat height = [@"Ag" sizeWithAttributes:@{NSFontAttributeName: font}].height;
+  return NSMakeRect(left, (NSHeight(self.bounds) - height) / 2,
+                    std::max<CGFloat>(0, NSWidth(self.bounds) - left - 9), height);
+}
+- (void)drawRect:(NSRect)dirty {
+  [super drawRect:dirty]; // AppKit's bezel, pressed state and focus ring
+  const NSRect swatch = self.swatchRect;
+  NSBezierPath* shape = [NSBezierPath bezierPathWithRoundedRect:swatch xRadius:2 yRadius:2];
+  [NSGraphicsContext saveGraphicsState];
+  [shape addClip];
+  if (self.swatchColor == nil || self.swatchColor.alphaComponent < 1) {
+    for (CGFloat y = NSMinY(swatch); y < NSMaxY(swatch); y += 3) {
+      for (CGFloat x = NSMinX(swatch); x < NSMaxX(swatch); x += 3) {
+        const int tile = int((x - NSMinX(swatch)) / 3) + int((y - NSMinY(swatch)) / 3);
+        [(tile % 2 == 0 ? NSColor.controlBackgroundColor : NSColor.separatorColor) setFill];
+        NSRectFill(NSMakeRect(x, y, 3, 3));
+      }
+    }
+  }
+  if (self.swatchColor != nil) {
+    [self.swatchColor setFill];
+    [shape fill];
+  }
+  [NSGraphicsContext restoreGraphicsState];
+  [NSColor.separatorColor setStroke];
+  shape.lineWidth = 1;
+  [shape stroke];
+  if (self.words.length > 0) {
+    NSMutableParagraphStyle* paragraph = [NSMutableParagraphStyle new];
+    paragraph.lineBreakMode = NSLineBreakByTruncatingTail;
+    NSColor* ink = !self.enabled ? NSColor.disabledControlTextColor
+                   : self.placeholder ? NSColor.placeholderTextColor : NSColor.controlTextColor;
+    [self.words drawInRect:self.wordsRect withAttributes:@{
+      NSFontAttributeName: self.font != nil ? self.font : [NSFont systemFontOfSize:NSFont.systemFontSize],
+      NSForegroundColorAttributeName: ink, NSParagraphStyleAttributeName: paragraph
+    }];
+  }
+}
+- (void)viewDidChangeEffectiveAppearance {
+  [super viewDidChangeEffectiveAppearance];
+  self.needsDisplay = YES;
+}
+@end
+
 @implementation MitcadNativeMenuTarget
 - (void)perform:(NSMenuItem*)sender { if (owner) owner->choose(sender); }
 - (BOOL)validateMenuItem:(NSMenuItem*)item { return owner && owner->enabled(item); }
@@ -3012,6 +3963,148 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 }
 @end
 
+@implementation MitcadNativeCompletionTable
+- (BOOL)acceptsFirstResponder { return NO; }
+@end
+
+@implementation MitcadNativeTextView
+@synthesize placeholderString = _placeholderString;
+- (mitcad::AppKitWidgetView*)presenterOwner {
+  return [self.delegate isKindOfClass:MitcadNativeWidgetTarget.class]
+      ? ((MitcadNativeWidgetTarget*)self.delegate)->owner : nullptr;
+}
+- (QListWidget*)sharedCompletions {
+  auto* owner = [self presenterOwner];
+  return owner != nullptr ? owner->textCompletions(self) : nullptr;
+}
+- (BOOL)sharedKey:(NSEvent*)event {
+  auto* owner = [self presenterOwner];
+  return owner != nullptr && owner->textKey(self, event);
+}
+- (void)keyDown:(NSEvent*)event {
+  if (![self sharedKey:event]) [super keyDown:event];
+}
+- (void)closeCompletions {
+  if (completionMonitor != nil) {
+    [NSEvent removeMonitor:completionMonitor];
+    completionMonitor = nil;
+  }
+  [completionPopover close];
+}
+- (void)refreshCompletions {
+  QListWidget* list = [self sharedCompletions];
+  if (list == nullptr || !list->isVisible() || list->count() == 0 || !self.window.visible ||
+      [self isHiddenOrHasHiddenAncestor]) {
+    [self closeCompletions];
+    return;
+  }
+  if (completionPopover == nil) {
+    completionTable = [[MitcadNativeCompletionTable alloc] initWithFrame:NSZeroRect];
+    completionTable.headerView = nil;
+    completionTable.dataSource = self;
+    completionTable.delegate = self;
+    completionTable.target = self;
+    completionTable.action = @selector(chooseCompletion:);
+    completionTable.accessibilityIdentifier = @"formulaCompletions";
+    NSTableColumn* column = [[NSTableColumn alloc] initWithIdentifier:@"completion"];
+    [completionTable addTableColumn:column];
+    NSScrollView* scroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    scroll.hasVerticalScroller = YES;
+    scroll.autohidesScrollers = YES;
+    scroll.documentView = completionTable;
+    NSViewController* controller = [NSViewController new];
+    controller.view = scroll;
+    completionPopover = [NSPopover new];
+    completionPopover.animates = NO;
+    completionPopover.behavior = NSPopoverBehaviorApplicationDefined;
+    completionPopover.contentViewController = controller;
+  }
+  // The shared completion widget owns its width, row count and reading
+  // height; its current row and strings are the only completion state.
+  const CGFloat width = std::max(1, list->width());
+  const CGFloat height = std::max(1, list->height());
+  completionTable.rowHeight = list->fontMetrics().height() + 6;
+  completionTable.tableColumns.firstObject.width = width;
+  [completionTable reloadData];
+  [completionTable setFrameSize:NSMakeSize(width, std::max(height, list->count() * completionTable.rowHeight))];
+  if (list->currentRow() >= 0) {
+    [completionTable selectRowIndexes:[NSIndexSet indexSetWithIndex:list->currentRow()] byExtendingSelection:NO];
+    [completionTable scrollRowToVisible:list->currentRow()];
+  }
+  completionPopover.contentSize = NSMakeSize(width, height);
+  if (!completionPopover.shown && self.window.firstResponder == self) {
+    const NSRect caret = [self firstRectForCharacterRange:self.selectedRange actualRange:nullptr];
+    const NSRect local = [self convertRect:[self.window convertRectFromScreen:caret] fromView:nil];
+    [completionPopover showRelativeToRect:local ofView:self preferredEdge:NSRectEdgeMinY];
+    // Completion never takes the keyboard from the multiline editor.
+    [self.window makeKeyWindow];
+    [self.window makeFirstResponder:self];
+  }
+  if (completionMonitor == nil && completionPopover.shown) {
+    __weak MitcadNativeTextView* editor = self;
+    completionMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskLeftMouseDown |
+        NSEventMaskRightMouseDown handler:^NSEvent*(NSEvent* event) {
+      MitcadNativeTextView* text = editor;
+      if (text == nil) return event;
+      const NSPoint point = event.window ? [event.window convertPointToScreen:event.locationInWindow] : NSEvent.mouseLocation;
+      const NSRect editorFrame = [text.window convertRectToScreen:[text convertRect:text.visibleRect toView:nil]];
+      if (!NSPointInRect(point, editorFrame) &&
+          !NSPointInRect(point, text->completionPopover.contentViewController.view.window.frame)) {
+        auto* owner = [text presenterOwner];
+        if (owner != nullptr) owner->leaveText(text);
+        [text closeCompletions];
+      }
+      return event;
+    }];
+  }
+}
+- (NSInteger)numberOfRowsInTableView:(NSTableView*)table {
+  (void)table;
+  QListWidget* list = [self sharedCompletions];
+  return list != nullptr ? list->count() : 0;
+}
+- (NSView*)tableView:(NSTableView*)table viewForTableColumn:(NSTableColumn*)column row:(NSInteger)row {
+  (void)table; (void)column;
+  QListWidget* list = [self sharedCompletions];
+  if (list == nullptr || row < 0 || row >= list->count()) return nil;
+  NSTextField* field = [NSTextField labelWithString:list->item(static_cast<int>(row))->text().toNSString()];
+  field.lineBreakMode = NSLineBreakByTruncatingTail;
+  return field;
+}
+- (void)chooseCompletion:(id)sender {
+  (void)sender;
+  const NSInteger row = completionTable.clickedRow;
+  auto* owner = [self presenterOwner];
+  if (owner != nullptr && row >= 0) owner->completeText(self, static_cast<int>(row));
+}
+- (void)setPlaceholderString:(NSString*)text {
+  if ([_placeholderString isEqualToString:text]) return;
+  _placeholderString = [text copy];
+  self.needsDisplay = YES;
+}
+- (void)setString:(NSString*)text {
+  [super setString:text];
+  self.needsDisplay = YES;
+}
+- (void)didChangeText {
+  [super didChangeText];
+  self.needsDisplay = YES;
+}
+- (void)drawRect:(NSRect)dirtyRect {
+  [super drawRect:dirtyRect];
+  if (self.string.length != 0 || self.placeholderString.length == 0) return;
+  const NSPoint origin = self.textContainerOrigin;
+  const CGFloat padding = self.textContainer.lineFragmentPadding;
+  const NSRect rect = NSMakeRect(origin.x + padding, origin.y,
+      std::max<CGFloat>(0, self.textContainer.size.width - 2 * padding),
+      std::max<CGFloat>(0, NSHeight(self.bounds) - origin.y));
+  [self.placeholderString drawInRect:rect withAttributes:@{
+    NSFontAttributeName: self.font != nil ? self.font : [NSFont systemFontOfSize:NSFont.systemFontSize],
+    NSForegroundColorAttributeName: NSColor.placeholderTextColor
+  }];
+}
+@end
+
 @implementation MitcadNativeWidgetTarget
 - (void)perform:(id)sender { if (owner != nullptr) { owner->action(sender); } }
 - (void)doubleClick:(id)sender { if (owner != nullptr) { owner->modelActivated(sender); } }
@@ -3021,7 +4114,20 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
   (void)editor;
   return owner == nullptr || owner->textCanEnd(control);
 }
+- (BOOL)control:(NSControl*)control textView:(NSTextView*)textView doCommandBySelector:(SEL)command {
+  (void)textView;
+  if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+    qInfo().noquote() << QStringLiteral("Native field command: %1 selector=%2")
+        .arg(QString::fromNSString(control.accessibilityIdentifier), QString::fromNSString(NSStringFromSelector(command)));
+  if (owner != nullptr && (command == @selector(insertTab:) || command == @selector(insertBacktab:))) {
+    return owner->focusNextField(control, command == @selector(insertBacktab:));
+  }
+  return NO;
+}
 - (void)textDidChange:(NSNotification*)notification { if (owner != nullptr) { owner->textViewChanged(notification.object); } }
+- (void)textViewDidChangeSelection:(NSNotification*)notification {
+  if (owner != nullptr) owner->textViewChanged(notification.object);
+}
 - (BOOL)textView:(NSTextView*)view clickedOnLink:(id)link atIndex:(NSUInteger)index {
   (void)index;
   return owner != nullptr && owner->linkClicked(view, link);
@@ -3035,7 +4141,16 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 - (NSView*)tableView:(NSTableView*)view viewForTableColumn:(NSTableColumn*)column row:(NSInteger)row {
   return owner == nullptr ? nil : owner->modelCell(view, column, owner->nodeAt(view, row));
 }
+- (BOOL)tableView:(NSTableView*)view shouldSelectRow:(NSInteger)row {
+  return owner != nullptr && owner->modelSelectable(view, owner->nodeAt(view, row));
+}
+- (CGFloat)tableView:(NSTableView*)view heightOfRow:(NSInteger)row {
+  return owner != nullptr ? owner->modelRowHeight(view, row) : view.rowHeight;
+}
 - (void)tableViewSelectionDidChange:(NSNotification*)notification { if (owner != nullptr) { owner->modelSelection(notification.object); } }
+- (NSTableRowView*)tableView:(NSTableView*)view rowViewForRow:(NSInteger)row {
+  return owner != nullptr ? owner->currentRowView(view, owner->nodeAt(view, row)) : nil;
+}
 - (NSInteger)outlineView:(NSOutlineView*)view numberOfChildrenOfItem:(id)item {
   return owner == nullptr ? 0 : owner->children(owner->modelBinding(view), item).count;
 }
@@ -3048,7 +4163,20 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 - (NSView*)outlineView:(NSOutlineView*)view viewForTableColumn:(NSTableColumn*)column item:(id)item {
   return owner == nullptr ? nil : owner->modelCell(view, column, item);
 }
+- (BOOL)outlineView:(NSOutlineView*)view isGroupItem:(id)item {
+  return owner != nullptr && owner->modelSpansRow(view, item);
+}
+- (BOOL)outlineView:(NSOutlineView*)view shouldSelectItem:(id)item {
+  return owner != nullptr && owner->modelSelectable(view, item);
+}
+- (CGFloat)outlineView:(NSOutlineView*)view heightOfRowByItem:(id)item {
+  (void)item;
+  return view.rowHeight;
+}
 - (void)outlineViewSelectionDidChange:(NSNotification*)notification { if (owner != nullptr) { owner->modelSelection(notification.object); } }
+- (NSTableRowView*)outlineView:(NSOutlineView*)view rowViewForItem:(id)item {
+  return owner != nullptr ? owner->currentRowView(view, item) : nil;
+}
 - (void)outlineViewItemDidExpand:(NSNotification*)notification {
   if (owner != nullptr) { owner->modelExpanded(notification.object, notification.userInfo[@"NSObject"], true); }
 }
@@ -3079,17 +4207,63 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 }
 @end
 
+@implementation MitcadNativeModelField
+- (void)mouseDown:(NSEvent*)event {
+  MitcadNativeModelField* field = self;
+  NSWindow* window = self.window;
+  const NSEventModifierFlags modifiers = event.modifierFlags &
+      (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
+  if (event.type == NSEventTypeLeftMouseDown && self.enabled && self.editable &&
+      modifiers == 0 &&
+      [self.delegate isKindOfClass:MitcadNativeModelCell.class]) {
+    auto* cell = (MitcadNativeModelCell*)self.delegate;
+    if (cell->owner != nullptr && cell.textField == self) cell->owner->modelCellPressed(cell);
+  }
+  if (field.window == window && window.visible && field.enabled && field.editable) [super mouseDown:event];
+}
+@end
+
 @implementation MitcadNativeModelCell
+- (void)controlTextDidBeginEditing:(NSNotification*)notification {
+  (void)notification;
+  userEdited = NO;
+  [self refreshUnchangedEdit];
+}
+- (void)controlTextDidChange:(NSNotification*)notification {
+  (void)notification;
+  userEdited = YES;
+}
+- (void)refreshUnchangedEdit {
+  NSTextField* field = self.textField;
+  NSText* editor = field.currentEditor;
+  if (userEdited || editor == nil || !index.isValid()) { return; }
+  const QString value = mitcad::plain(index.data().toString());
+  if (mitcad::qt(field.stringValue) == value && mitcad::qt(editor.string) == value) { return; }
+  // Modal helpers can update the model while AppKit restores this cell's
+  // field editor. An untouched editor follows that value; a real edit
+  // keeps its text until the user commits or cancels it.
+  const NSRange selection = editor.selectedRange;
+  field.stringValue = mitcad::ns(value);
+  editor.string = mitcad::ns(value);
+  const NSUInteger start = std::min(selection.location, editor.string.length);
+  editor.selectedRange = NSMakeRange(start, std::min(selection.length, editor.string.length - start));
+  mitcad::mac::logNativeCellEdit("an untouched editor follows its model value", field);
+}
 - (void)controlTextDidEndEditing:(NSNotification*)notification {
   if (!finishing) { mitcad::mac::logNativeCellEdit("an edit ends without Return, Escape or Tab", self); }
   // A read-only cell's text is only selected, and a discarded edit is not
   // the model's (mitcad#814).
   if (discarding || ![(NSTextField*)notification.object isEditable]) { return; }
+  const QPointer<mitcad::AppKitWidgetView> alive(owner);
   const QString text = QString::fromUtf8([(NSTextField*)notification.object stringValue].UTF8String);
-  // An edit that changed nothing sets nothing: an empty cell's "" is no new
-  // value of the model's (mitcad#814).
-  if (index.isValid() && text == mitcad::plain(index.data().toString())) { return; }
-  if (owner != nullptr && index.isValid()) { owner->modelEdit(binding, index, text, Qt::EditRole); }
+  // A focused cell does not become a user edit when a modal helper updates
+  // the model behind it. In particular, never write its old expression back.
+  const bool changed = userEdited;
+  userEdited = NO;
+  if (changed && owner != nullptr && index.isValid() && text != mitcad::plain(index.data().toString())) {
+    owner->modelEdit(binding, index, text, Qt::EditRole);
+  }
+  if (alive != nullptr) { alive->cellEditEnded(); }
 }
 - (void)viewWillMoveToWindow:(NSWindow*)window {
   if (window == nil && self.textField.currentEditor != nil) {
@@ -3151,6 +4325,8 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
   [super drawRect:dirty];
 }
 - (void)checked:(id)sender {
+  NSTableView* table = mitcad::mac::owningTable(self);
+  if (owner != nullptr && table != nil) owner->currentRowClicked(table, [table rowForView:self]);
   if (owner != nullptr && index.isValid()) { owner->modelEdit(binding, index, [(NSButton*)sender state] == NSControlStateValueOn ? Qt::Checked : Qt::Unchecked, Qt::CheckStateRole); }
 }
 @end
@@ -3213,6 +4389,10 @@ BOOL tableKeyEquivalent(NSWindow* window, NSEvent* event) {
     id edited = ((NSTextView*)responder).delegate;
     if (![edited isKindOfClass:NSTextField.class]) { return NO; }
     id cell = ((NSTextField*)edited).delegate;
+    if (key != 53 && [cell isKindOfClass:MitcadNativeWidgetTarget.class]) {
+      MitcadNativeWidgetTarget* widgets = (MitcadNativeWidgetTarget*)cell;
+      return widgets->owner != nullptr && widgets->owner->commitReturn((NSControl*)edited);
+    }
     return [cell isKindOfClass:MitcadNativeModelCell.class] && [(MitcadNativeModelCell*)cell finishEditing:key != 53];
   }
   if (key == 120 && [responder isKindOfClass:NSTableView.class]) { // F2
@@ -3230,6 +4410,9 @@ BOOL tableKeyEquivalent(NSWindow* window, NSEvent* event) {
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
   if ([self.firstResponder isKindOfClass:MitcadNativeShortcutField.class])
     return [(MitcadNativeShortcutField*)self.firstResponder performKeyEquivalent:event];
+  if (mitcad::mac::routeNativeRuleKey(self, event)) return YES;
+  if ([self.firstResponder isKindOfClass:MitcadNativeTextView.class] &&
+      [(MitcadNativeTextView*)self.firstResponder sharedKey:event]) return YES;
   if (tableKeyEquivalent(self, event)) return YES;
   const QKeySequence sequence = mitcad::mac::keySequence(event);
   if (!sequence.isEmpty() && sequence[0].keyboardModifiers() == Qt::NoModifier &&
@@ -3302,6 +4485,12 @@ BOOL tableKeyEquivalent(NSWindow* window, NSEvent* event) {
 @end
 
 @implementation MitcadNativeOutline
+- (void)mouseDown:(NSEvent*)event {
+  MitcadNativeWidgetTarget* target = (MitcadNativeWidgetTarget*)self.delegate;
+  if (target != nil && target->owner != nullptr)
+    target->owner->currentRowClicked(self, [self rowAtPoint:[self convertPoint:event.locationInWindow fromView:nil]]);
+  [super mouseDown:event];
+}
 - (BOOL)becomeFirstResponder {
   const BOOL accepted = [super becomeFirstResponder];
   if (accepted) { mitcad::mac::logNativeCellEdit("the outline takes the keyboard focus", self); }
@@ -3325,6 +4514,24 @@ BOOL tableKeyEquivalent(NSWindow* window, NSEvent* event) {
   (void)point;
   MitcadNativeWidgetTarget* target = (MitcadNativeWidgetTarget*)self.delegate;
   return target != nil && target->owner != nullptr && target->owner->rowsDraggable(self, rows);
+}
+@end
+
+@implementation MitcadNativeSpannedRowView
+- (void)layout {
+  [super layout];
+  // NSTableView lays a group cell out at the columns' combined width,
+  // even when its full row is wider. Apply the shared first-column span
+  // after that layout, retaining AppKit's leading disclosure inset.
+  for (NSView* child in self.subviews) {
+    if (![child isKindOfClass:NSTableCellView.class]) continue;
+    NSRect frame = child.frame;
+    const CGFloat width = std::max<CGFloat>(0, NSMaxX(self.bounds) - NSMinX(frame));
+    if (std::abs(NSWidth(frame) - width) < 0.5) continue;
+    frame.size.width = width;
+    child.frame = frame;
+    [child layoutSubtreeIfNeeded];
+  }
 }
 @end
 
@@ -3413,6 +4620,20 @@ BOOL tableKeyEquivalent(NSWindow* window, NSEvent* event) {
 }
 @end
 
+@implementation MitcadNativeActionButton
+- (void)keyDown:(NSEvent*)event {
+  const QKeySequence sequence = mitcad::mac::keySequence(event);
+  if (self.enabled && !sequence.isEmpty() && sequence[0].key() == Qt::Key_Tab &&
+      (sequence[0].keyboardModifiers() & ~Qt::ShiftModifier) == Qt::NoModifier &&
+      [self.target isKindOfClass:MitcadNativeWidgetTarget.class]) {
+    auto* target = (MitcadNativeWidgetTarget*)self.target;
+    if (target->owner != nullptr && target->owner->focusNextField(
+        self, sequence[0].keyboardModifiers().testFlag(Qt::ShiftModifier))) return;
+  }
+  [super keyDown:event];
+}
+@end
+
 @implementation MitcadNativeHoverButton
 - (void)updateTrackingAreas {
   if (hoverArea != nil) { [self removeTrackingArea:hoverArea]; }
@@ -3434,6 +4655,74 @@ BOOL tableKeyEquivalent(NSWindow* window, NSEvent* event) {
   if (presenter != nullptr) {
     QEvent leave(QEvent::Leave);
     QCoreApplication::sendEvent(presenter, &leave);
+  }
+}
+@end
+
+@implementation MitcadNativePopup
+- (BOOL)acceptsFirstResponder { return self.enabled; }
+- (void)mouseDown:(NSEvent*)event {
+  // Choosing a value with the pointer also establishes the next Tab stop.
+  // Keep AppKit's actual menu tracking and the shared combo action intact.
+  if (self.enabled) [self.window makeFirstResponder:self];
+  [super mouseDown:event];
+}
+- (void)keyDown:(NSEvent*)event {
+  const QKeySequence sequence = mitcad::mac::keySequence(event);
+  if (!sequence.isEmpty() && sequence[0].key() == Qt::Key_Tab &&
+      (sequence[0].keyboardModifiers() & ~Qt::ShiftModifier) == Qt::NoModifier &&
+      [self.target isKindOfClass:MitcadNativeWidgetTarget.class]) {
+    auto* target = (MitcadNativeWidgetTarget*)self.target;
+    if (target->owner != nullptr && target->owner->focusNextField(self, sequence[0].keyboardModifiers().testFlag(Qt::ShiftModifier))) return;
+  }
+  [super keyDown:event];
+}
+@end
+
+@implementation MitcadNativeSlider
+- (BOOL)acceptsFirstResponder { return self.enabled; }
+- (void)mouseDown:(NSEvent*)event {
+  // AppKit's slider tracking can change the value without taking keyboard
+  // focus. A real click must also establish where Tab and arrow keys start,
+  // before a continuous action asks the presenter to refresh this control.
+  if (self.enabled) [self.window makeFirstResponder:self];
+  self.pointerTracking = YES;
+  if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+    qInfo().noquote() << QStringLiteral("Native slider tracking begin: %1 value=%2 continuous=%3 event=%4 current=%5 pressed=%6")
+        .arg(QString::fromNSString(self.accessibilityIdentifier)).arg(self.doubleValue).arg(self.continuous)
+        .arg(int(event.type)).arg(int(NSApp.currentEvent.type)).arg(qulonglong(NSEvent.pressedMouseButtons));
+  [super mouseDown:event];
+  if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT"))
+    qInfo().noquote() << QStringLiteral("Native slider tracking end: %1 value=%2")
+        .arg(QString::fromNSString(self.accessibilityIdentifier)).arg(self.doubleValue);
+  self.pointerTracking = NO;
+}
+- (void)keyDown:(NSEvent*)event {
+  const QKeySequence sequence = mitcad::mac::keySequence(event);
+  if (self.enabled && !sequence.isEmpty() && sequence[0].key() == Qt::Key_Tab &&
+      (sequence[0].keyboardModifiers() & ~Qt::ShiftModifier) == Qt::NoModifier &&
+      [self.target isKindOfClass:MitcadNativeWidgetTarget.class]) {
+    auto* target = (MitcadNativeWidgetTarget*)self.target;
+    if (target->owner != nullptr && target->owner->focusNextField(self, sequence[0].keyboardModifiers().testFlag(Qt::ShiftModifier))) return;
+  }
+  if (!self.enabled || sequence.isEmpty() || sequence[0].keyboardModifiers() != Qt::NoModifier) {
+    [super keyDown:event];
+    return;
+  }
+  // Match the shared integer slider's documented single step, rather than
+  // AppKit's fractional default increment (which can round asymmetrically).
+  NSInteger value = self.integerValue;
+  switch (sequence[0].key()) {
+  case Qt::Key_Left: case Qt::Key_Down: value -= self.keyboardStep; break;
+  case Qt::Key_Right: case Qt::Key_Up: value += self.keyboardStep; break;
+  case Qt::Key_Home: value = static_cast<NSInteger>(self.minValue); break;
+  case Qt::Key_End: value = static_cast<NSInteger>(self.maxValue); break;
+  default: [super keyDown:event]; return;
+  }
+  value = std::clamp(value, static_cast<NSInteger>(self.minValue), static_cast<NSInteger>(self.maxValue));
+  if (value != self.integerValue) {
+    self.integerValue = value;
+    [self sendAction:self.action to:self.target];
   }
 }
 @end

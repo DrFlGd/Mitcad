@@ -235,7 +235,7 @@ fn document_bodies(
     let options = Options::default();
     for blob in doc.body_blobs() {
         let data = doc
-            .read(&blob.entry)
+            .read_large(&blob.entry)
             .map_err(|e| format!("{}: {e}", blob.entry))?;
         let bodies = mitcad_asm::read_blob(&blob.entry, &data, &options)
             .map_err(|e| format!("{}: {e}", blob.entry))?;
@@ -261,7 +261,7 @@ fn document_history_bodies(
     let options = Options::default();
     for blob in doc.body_blobs().into_iter().filter(|b| b.history) {
         let data = doc
-            .read(&blob.entry)
+            .read_large(&blob.entry)
             .map_err(|e| format!("{}: {e}", blob.entry))?;
         let file = AsmFile::parse(&data).map_err(|e| format!("{}: {e}", blob.entry))?;
         let Ok(Some(history)) = History::parse(&file) else {

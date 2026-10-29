@@ -99,6 +99,9 @@ public:
   static QString inactiveTooltip(bool active, const QString& reason);
   // Where each shown constraint's first symbol is drawn (view pixels).
   std::map<QString, QRectF> constraintGlyphRects() const;
+  // Every shown symbol's bounds, including repeated constraints and fixed
+  // entities, as used by painting and picking.
+  std::vector<QRectF> constraintGlyphBounds() const;
   // Logs "Sketch inactive drawn: k5 constraint, k7 dimension" when what is
   // drawn inactive changes, for the UI tests (mitcad#721).
   void logInactive();

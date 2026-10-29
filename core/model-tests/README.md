@@ -14,7 +14,7 @@ content is its tests (`#![cfg(test)]`); its ctest is `core.model.<area>`.
 | `analysis` | `core.model.analysis` | Section analyses, Measure, plane geometry, measurement objects and annotations, image references |
 | `sketch` | `core.model.sketch` | The general sketch: entities, constraints, dimensions, patterns, offsets, text, the sketch's axes, inactive constraints, one solve per edit, copy and paste |
 | `sketch-refs` | `core.model.sketch-refs` | Regular polygons, equal spacing, driven references, dimension names, projections and their offsets, Convert to Sketch Geometry, assembly constraints, section curves, selected profile areas |
-| `features-profile` | `core.model.features-profile` | Profile features: extrudes and their scopes, extrudes from faces, revolves and sweeps |
+| `features-profile` | `core.model.features-profile` | Profile features: extrudes and their scopes, extrudes from faces, revolves and sweeps, holes (clearance holes by screw size) |
 | `features-solid` | `core.model.features-solid` | Patterns and dressups, construction geometry, renamed references, automatic operations, surface modelling |
 | `parts` | `core.model.parts` | Place At, plastic part features, printable bearings, pulleys, gears, seats, point patterns |
 | `sheet` | `core.model.sheet` | Sheet metal |

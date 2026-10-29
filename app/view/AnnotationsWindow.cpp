@@ -47,13 +47,19 @@ const std::pair<const char*, const char*> kKinds[] = {
     {"diameter", QT_TRANSLATE_NOOP("Annotations", "Diameter")},
     {"note", QT_TRANSLATE_NOOP("Annotations", "Note")},
     {"datum", QT_TRANSLATE_NOOP("Annotations", "Datum label")},
-    {"frame", QT_TRANSLATE_NOOP("Annotations", "Feature control frame")}};
+    {"frame", QT_TRANSLATE_NOOP("Annotations", "Feature control frame")},
+    {"hole_callout", QT_TRANSLATE_NOOP("Annotations", "Hole callout")}};
 
-// A note, a datum label or a feature control frame: on a leader, without a
-// value of its own.
+// A note, a datum label, a feature control frame or a hole callout: on a
+// leader, without a value of its own.
 bool isLeader(const QString& kind) {
-  return kind == QLatin1String("note") || kind == QLatin1String("datum") || kind == QLatin1String("frame");
+  return kind == QLatin1String("note") || kind == QLatin1String("datum") || kind == QLatin1String("frame") ||
+         kind == QLatin1String("hole_callout");
 }
+
+// What a feature control frame can stand under: a dimension or a hole
+// callout (mitcad#902).
+bool takesFrame(const QString& kind) { return !isLeader(kind) || kind == QLatin1String("hole_callout"); }
 
 QString kindName(const QString& key) {
   for (const auto& [kind, name] : kKinds) {
@@ -218,10 +224,16 @@ AnnotationsWindow::AnnotationsWindow(QWidget* parent) : QDialog(parent) {
   connect(m_decimals, &QPushButton::clicked, this, [this] { chooseDecimals(); });
   connect(m_tolerance, &QPushButton::clicked, this, [this] { chooseTolerance(); });
   connect(m_addFrame, &QPushButton::clicked, this, [this] {
-    const QStringList dimensions = selectedDimensions();
-    qDebug().noquote() << QStringLiteral("Annotations Add Frame clicked: %1").arg(dimensions.join(QStringLiteral(", ")));
-    if (dimensions.size() == 1 && m_actions.frame) {
-      m_actions.frame(dimensions.front());
+    const QStringList names = selectedNames();
+    QStringList under;
+    for (const QString& name : names) {
+      if (takesFrame(annotation(name).value(QStringLiteral("kind")).toString())) {
+        under << name;
+      }
+    }
+    qDebug().noquote() << QStringLiteral("Annotations Add Frame clicked: %1").arg(under.join(QStringLiteral(", ")));
+    if (under.size() == 1 && m_actions.frame) {
+      m_actions.frame(under.front());
     }
   });
   connect(m_show, &QPushButton::clicked, this, [this] { changeSelected({{QStringLiteral("visible"), true}}); });
@@ -494,9 +506,10 @@ void AnnotationsWindow::followSelection() {
     angles += annotation(name).value(QStringLiteral("kind")).toString() == QLatin1String("angle") ? 1 : 0;
   }
   m_tolerance->setEnabled(!dimensions.isEmpty() && (angles == 0 || angles == dimensions.size()));
-  // A frame under one dimension that is not broken.
-  m_addFrame->setEnabled(names.size() == 1 && dimensions.size() == 1 &&
-                         !annotation(dimensions.front()).contains(QStringLiteral("error")));
+  // A frame under one dimension or hole callout that is not broken.
+  m_addFrame->setEnabled(names.size() == 1 &&
+                         takesFrame(annotation(names.front()).value(QStringLiteral("kind")).toString()) &&
+                         !annotation(names.front()).contains(QStringLiteral("error")));
   const QString group = m_group->currentData().toString();
   const bool oneGroup = !group.isEmpty() && group != QLatin1String("\n");
   m_showGroup->setEnabled(oneGroup);

@@ -3,9 +3,16 @@
 //! derived part's `parameters`, which `set_component_parameters` binds to
 //! the design's parameters like an inserted component's options.
 
-use serde_json::json;
+use std::sync::Arc;
 
+use serde_json::{Value, json};
+
+use mitcad_model::features::SketchPlane;
 use mitcad_model::ids::BodyUid;
+use mitcad_model::test_support::def;
+use mitcad_model::testing::MockKernel;
+use mitcad_model::{Document, ValueInput};
+use mitcad_model_api::AnalysisApi;
 use mitcad_model_build::prelude::*;
 use mitcad_model_tests_support::test_library::*;
 
@@ -68,6 +75,460 @@ fn a_build_cut_length_works_through_parameters() {
     )
     .unwrap();
     assert!((length(&doc) - 480.0).abs() < 1e-6);
+}
+
+/// An open-table profile whose actual section follows its text option,
+/// numeric offset, dimensionless quantity and angle. No real model needed.
+fn text_option_profile() -> Document<MockKernel> {
+    let mut source = Document::new(MockKernel::default());
+    for (name, expression) in [
+        ("Grade", "'A'"),
+        ("Offset", "8 mm"),
+        ("Quantity", "2"),
+        ("Twist", "0 deg"),
+        ("L", "1000 mm"),
+        ("W", "if(Grade == 'B'; 30 mm; 20 mm) + Offset"),
+        ("H", "Quantity * 5 mm + Twist / 1 deg * 1 mm"),
+    ] {
+        let mut add = json!({"cmd": "add_parameter", "name": name, "expression": expression});
+        if name == "Grade" {
+            add["values"] = json!(["'A'", "'B'"]);
+        } else if name == "Offset" {
+            add["min"] = json!("0 mm");
+            add["max"] = json!("10 mm");
+            add["step"] = json!("1 mm");
+        }
+        command(&mut source, add).unwrap();
+    }
+    let sketch = source.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = source
+        .add_rectangle(
+            sketch,
+            [0.0, 0.0],
+            &ValueInput::Name("W".into()),
+            &ValueInput::Name("H".into()),
+        )
+        .unwrap()
+        .region;
+    let solid = source
+        .add_feature(
+            &def(
+                json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],
+                        "extent": {"type": "distance", "distance": "L"}, "operation": "new_body"}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    fixed_frame(
+        &mut source,
+        "end_a",
+        [0.0; 3],
+        [0.0, 0.0, -1.0],
+        [1.0, 0.0, 0.0],
+    );
+    source
+        .add_feature(
+            &def(
+                json!({"type": "joint_origin", "geometry": {"body": format!("{solid}.b0"),
+                        "face": format!("{solid}:end({region})")}}),
+            ),
+            Some("mount:end_b"),
+        )
+        .unwrap();
+    command(
+        &mut source,
+        json!({"cmd": "set_configurations", "configurations": {
+            "options": ["Grade", "Offset", "L"], "closed": false, "default": "Standard",
+            "rows": [{"name": "Standard", "values": {"Grade": "'A'", "Offset": "8 mm", "L": "1000 mm"}}],
+            "rules": [{"name": "Grade B offset", "when": "Grade == 'B'",
+                       "then": [{"option": "Offset", "max": "5 mm"}]},
+                      {"name": "Grade B length", "when": "Grade == 'B'",
+                       "then": [{"option": "L", "max": "1000 mm"}]}]}}),
+    )
+    .unwrap();
+    source.recompute();
+    all_ok(&source);
+    let mut library = TestLibrary::default();
+    library.parts.insert(
+        ("text-profile".into(), V1.into()),
+        Part {
+            text: source.to_json(),
+            build: Some(profile_build("I", 5.0, 20.0, &[])),
+            part_number: String::new(),
+            name: "Text option profile".into(),
+            designation: "Profile {Grade}".into(),
+        },
+    );
+    let mut doc = Document::new(MockKernel::default());
+    doc.set_link_resolver(Some(Arc::new(library)));
+    doc
+}
+
+#[test]
+fn text_options_reach_build_plan_preview_shape_and_commit() {
+    for (grade, width) in [("'A'", 24.0), ("'B'", 34.0), ("ParentGrade", 34.0)] {
+        let mut doc = text_option_profile();
+        command(
+            &mut doc,
+            json!({"cmd": "add_parameter", "name": "ParentGrade", "expression": "'B'"}),
+        )
+        .unwrap();
+        command(
+            &mut doc,
+            json!({"cmd": "add_parameter", "name": "ParentOffset", "expression": "4 mm"}),
+        )
+        .unwrap();
+        let mut selected = part("text-profile");
+        let offset = if grade == "ParentGrade" {
+            "ParentOffset"
+        } else {
+            "4 mm"
+        };
+        selected["parameters"] =
+            json!({"Grade": grade, "Offset": offset, "Quantity": "3", "Twist": "90"});
+        let mut fields = json!({"part": selected, "at": {"point": [0, 0, 0]}, "length": 600});
+        let revision = doc.revision();
+        let undo = doc.undo_depth();
+        fields["query"] = json!("build_preview");
+        let report = query(&doc, fields.clone());
+        assert_eq!(report["problems"], json!([]), "{report}");
+        assert_eq!(
+            report["designation"],
+            if grade == "'A'" {
+                "Profile A"
+            } else {
+                "Profile B"
+            }
+        );
+        let vector =
+            |value: &Value| -> [f64; 3] { std::array::from_fn(|i| value[i].as_f64().unwrap()) };
+        let min = vector(&report["box"]["min"]);
+        let max = vector(&report["box"]["max"]);
+        let size: [f64; 3] = std::array::from_fn(|i| max[i] - min[i]);
+        // Bare 90 is degrees for the source's angle, not a length or radians;
+        // Quantity stays dimensionless. Grade changes the real source section.
+        assert!(close(size, [width, 105.0, 600.0]), "{grade}: {report}");
+        fields.as_object_mut().unwrap().remove("query");
+        fields["shape"] = json!("build_preview");
+        let shown = doc.analysis_shape(&fields.to_string()).unwrap().unwrap();
+        let bounds = shown.bounds.unwrap();
+        assert!(close(
+            std::array::from_fn(|i| bounds.max[i] - bounds.min[i]),
+            size
+        ));
+        assert_eq!(doc.revision(), revision, "preview changed the document");
+        assert_eq!(doc.undo_depth(), undo, "preview added an undo step");
+        fields.as_object_mut().unwrap().remove("shape");
+        let placed = place(&mut doc, fields);
+        assert_eq!(
+            placed["name"],
+            if grade == "'A'" {
+                "Profile A"
+            } else {
+                "Profile B"
+            }
+        );
+        all_ok(&doc);
+        let uid = derived(&doc, component(&placed));
+        let committed = doc
+            .body_shape(BodyUid::new(uid, 0))
+            .unwrap()
+            .bounds
+            .unwrap();
+        assert!(close(committed.min, bounds.min) && close(committed.max, bounds.max));
+        assert_eq!(doc.undo_depth(), undo + 1, "placement must stay one edit");
+        if grade == "ParentGrade" {
+            command(
+                &mut doc,
+                json!({"cmd": "set_parameter", "name": "ParentGrade", "expression": "'A'"}),
+            )
+            .unwrap();
+            all_ok(&doc);
+            let bounds = doc
+                .body_shape(BodyUid::new(uid, 0))
+                .unwrap()
+                .bounds
+                .unwrap();
+            assert!((bounds.max[0] - bounds.min[0] - 24.0).abs() < 1e-6);
+        }
+    }
+}
+
+#[test]
+fn constant_build_options_cascade_but_bound_options_refuse_the_same_rule() {
+    let mut doc = text_option_profile();
+    command(
+        &mut doc,
+        json!({"cmd": "add_parameter", "name": "ParentOffset", "expression": "8 mm"}),
+    )
+    .unwrap();
+    let mut selected = part("text-profile");
+    selected["parameters"] =
+        json!({"Grade": "'B'", "Offset": "8 mm", "Quantity": "3", "Twist": "90"});
+    let mut fields = json!({"part": selected, "at": {"point": [0, 0, 0]}, "length": 600});
+    let original = doc.to_json();
+    let revision = doc.revision();
+    let undo = doc.undo_depth();
+    fields["query"] = json!("build_preview");
+    let report = query(&doc, fields.clone());
+    assert_eq!(report["problems"], json!([]), "{report}");
+    assert_eq!(
+        report["designation"], "Profile B",
+        "text naming must follow the configured source"
+    );
+    assert!(
+        report["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("Grade B offset")),
+        "{report}"
+    );
+    let span = |value: &Value, axis: usize| {
+        value["max"][axis].as_f64().unwrap() - value["min"][axis].as_f64().unwrap()
+    };
+    assert!(
+        (span(&report["box"], 0) - 35.0).abs() < 1e-6,
+        "constant Offset 8 must cascade to 5: {report}"
+    );
+    fields.as_object_mut().unwrap().remove("query");
+    fields["shape"] = json!("build_preview");
+    let preview = doc
+        .analysis_shape(&fields.to_string())
+        .unwrap()
+        .unwrap()
+        .bounds
+        .unwrap();
+    assert!(close(
+        std::array::from_fn(|i| preview.max[i] - preview.min[i]),
+        [35.0, 105.0, 600.0]
+    ));
+    assert_eq!(
+        doc.to_json(),
+        original,
+        "a repaired preview must remain read-only"
+    );
+    assert_eq!(doc.revision(), revision);
+    assert_eq!(doc.undo_depth(), undo);
+
+    // The same numeric Offset supplied by a parent parameter is pinned.
+    // Every entry point refuses it, even after the constant preview succeeded.
+    let mut bound = fields.clone();
+    bound["part"]["parameters"]["Offset"] = json!("ParentOffset");
+    bound.as_object_mut().unwrap().remove("shape");
+    bound["query"] = json!("build_preview");
+    let report = query(&doc, bound.clone());
+    assert!(
+        report["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p.as_str().unwrap().contains("Grade B offset")),
+        "{report}"
+    );
+    bound.as_object_mut().unwrap().remove("query");
+    bound["shape"] = json!("build_preview");
+    let error = doc
+        .analysis_shape(&bound.to_string())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("Grade B offset"), "{error}");
+    bound.as_object_mut().unwrap().remove("shape");
+    bound["cmd"] = json!("build_place");
+    let error = command(&mut doc, bound).unwrap_err();
+    assert!(error.contains("Grade B offset"), "{error}");
+    assert_eq!(
+        doc.to_json(),
+        original,
+        "refusal must leave the design unchanged"
+    );
+    assert_eq!(doc.undo_depth(), undo);
+
+    fields.as_object_mut().unwrap().remove("shape");
+    let placed = place(&mut doc, fields);
+    all_ok(&doc);
+    assert_eq!(placed["name"], "Profile B");
+    let uid = derived(&doc, component(&placed));
+    let mitcad_model::features::FeatureDef::DerivedPart(definition) =
+        &doc.feature(uid).unwrap().def
+    else {
+        panic!("derived part");
+    };
+    assert!(
+        (doc.parameters()
+            .value(definition.parameters["Offset"])
+            .unwrap()
+            - 5.0)
+            .abs()
+            < 1e-6,
+        "the repaired constant must be kept by the component"
+    );
+    let committed = doc
+        .body_shape(BodyUid::new(uid, 0))
+        .unwrap()
+        .bounds
+        .unwrap();
+    assert!(close(committed.min, preview.min) && close(committed.max, preview.max));
+    assert_eq!(doc.undo_depth(), undo + 1);
+}
+
+#[test]
+fn repaired_cut_length_agrees_in_plan_report_preview_and_committed_geometry() {
+    let mut doc = text_option_profile();
+    let target = place(
+        &mut doc,
+        json!({"part": part("text-profile"), "at": {"point": [0, 0, 1200]}, "length": 100}),
+    );
+    let mut selected = part("text-profile");
+    selected["parameters"] = json!({"Grade": "'B'", "Offset": "4 mm"});
+    let mut fields = json!({"part": selected, "at": {"point": [0, 0, 0]}, "length": 1200});
+    let original = doc.to_json();
+    let undo = doc.undo_depth();
+    let input = serde_json::from_value(fields.clone()).unwrap();
+    let plan = doc.preview_place(&input).unwrap();
+    let mitcad_model_build::internal::LengthPlan::Value(_, length) = plan.length else {
+        panic!("plain length");
+    };
+    assert!((length - 1000.0).abs() < 1e-6);
+    // The automatic ray suggestion is also repaired before its value is
+    // reported, rather than showing 1200 while drawing 1000.
+    let mut automatic = fields.clone();
+    automatic.as_object_mut().unwrap().remove("length");
+    automatic["query"] = json!("build_preview");
+    let suggested = query(&doc, automatic.clone());
+    assert_eq!(suggested["problems"], json!([]), "{suggested}");
+    assert_eq!(
+        suggested["length"]["target"]["occurrence"], target["occurrence"],
+        "the ray must meet the actual target"
+    );
+    assert_eq!(suggested["length"]["value"], 1000.0, "{suggested}");
+    automatic.as_object_mut().unwrap().remove("query");
+    automatic["shape"] = json!("build_preview");
+    let shape = doc
+        .analysis_shape(&automatic.to_string())
+        .unwrap()
+        .unwrap()
+        .bounds
+        .unwrap();
+    assert!((shape.max[2] - shape.min[2] - 1000.0).abs() < 1e-6);
+    fields["query"] = json!("build_preview");
+    let report = query(&doc, fields.clone());
+    assert_eq!(report["problems"], json!([]), "{report}");
+    assert_eq!(report["length"]["value"], 1000.0, "{report}");
+    assert_eq!(report["box"]["max"][2], 1000.0, "{report}");
+    fields.as_object_mut().unwrap().remove("query");
+    fields["shape"] = json!("build_preview");
+    let preview = doc
+        .analysis_shape(&fields.to_string())
+        .unwrap()
+        .unwrap()
+        .bounds
+        .unwrap();
+    assert!((preview.max[2] - preview.min[2] - 1000.0).abs() < 1e-6);
+    assert_eq!(doc.to_json(), original);
+    assert_eq!(doc.undo_depth(), undo);
+    fields.as_object_mut().unwrap().remove("shape");
+    let placed = place(&mut doc, fields);
+    all_ok(&doc);
+    let uid = derived(&doc, component(&placed));
+    let committed = doc
+        .body_shape(BodyUid::new(uid, 0))
+        .unwrap()
+        .bounds
+        .unwrap();
+    assert!(close(committed.min, preview.min) && close(committed.max, preview.max));
+    assert!((doc.part_info(component(&placed)).unwrap().length.unwrap().1 - 1000.0).abs() < 1e-6);
+}
+
+#[test]
+fn exact_geometry_bound_length_is_pinned_in_plan_preview_and_placement() {
+    let mut doc = text_option_profile();
+    let target = place(
+        &mut doc,
+        json!({"part": part("text-profile"), "at": {"point": [0, 0, 1200]}, "length": 100}),
+    );
+    let target_part = derived(&doc, component(&target));
+    let mut selected = part("text-profile");
+    selected["parameters"] = json!({"Grade": "'B'", "Offset": "4 mm"});
+    let binding = json!({"bind": {"occurrence": target["occurrence"], "geometry": {"mount": format!("{target_part}:mount(end_a)")}}});
+    let original = doc.to_json();
+    let undo = doc.undo_depth();
+    for mode in ["face", "centre", "through"] {
+        let mut length = binding.clone();
+        length["mode"] = json!(mode);
+        let mut fields = json!({"part": selected, "at": {"point": [0, 0, 0]}, "length": length});
+        let input = serde_json::from_value(fields.clone()).unwrap();
+        let error = doc.preview_place(&input).unwrap_err().to_string();
+        assert!(error.contains("Grade B length"), "{mode}: {error}");
+        fields["query"] = json!("build_preview");
+        let report = query(&doc, fields.clone());
+        assert!(
+            report["problems"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p.as_str().unwrap().contains("Grade B length")),
+            "{mode}: {report}"
+        );
+        fields.as_object_mut().unwrap().remove("query");
+        fields["shape"] = json!("build_preview");
+        let error = doc
+            .analysis_shape(&fields.to_string())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("Grade B length"), "{mode}: {error}");
+        fields.as_object_mut().unwrap().remove("shape");
+        fields["cmd"] = json!("build_place");
+        let error = command(&mut doc, fields).unwrap_err();
+        assert!(error.contains("Grade B length"), "{mode}: {error}");
+        assert_eq!(doc.to_json(), original);
+        assert_eq!(doc.undo_depth(), undo);
+    }
+    // An explicit gap is part of the same exact measurement: 1200 - 300
+    // is valid, and its reported/reference length must be 900, not the ray's 1200.
+    let mut length = binding;
+    length["add"] = json!("-300 mm");
+    let mut fields = json!({"part": selected, "at": {"point": [0, 0, 0]}, "length": length});
+    let input = serde_json::from_value(fields.clone()).unwrap();
+    let plan = doc.preview_place(&input).unwrap();
+    let mitcad_model_build::internal::LengthPlan::Bound {
+        first,
+        source_default,
+        ..
+    } = plan.length
+    else {
+        panic!("geometry-bound length");
+    };
+    assert!((first - 900.0).abs() < 1e-6);
+    assert!((source_default - 1000.0).abs() < 1e-6);
+    fields["query"] = json!("build_preview");
+    let report = query(&doc, fields.clone());
+    assert_eq!(report["problems"], json!([]), "{report}");
+    assert_eq!(report["length"]["value"], 900.0, "{report}");
+    // The stock/default remains distinct from the measured preview body.
+    assert_eq!(report["length"]["default"], 1000.0, "{report}");
+    assert_eq!(report["box"]["max"][2], 900.0, "{report}");
+    fields.as_object_mut().unwrap().remove("query");
+    fields["shape"] = json!("build_preview");
+    let preview = doc
+        .analysis_shape(&fields.to_string())
+        .unwrap()
+        .unwrap()
+        .bounds
+        .unwrap();
+    assert!((preview.max[2] - preview.min[2] - 900.0).abs() < 1e-6);
+    fields.as_object_mut().unwrap().remove("shape");
+    let placed = place(&mut doc, fields);
+    all_ok(&doc);
+    let uid = derived(&doc, component(&placed));
+    let committed = doc
+        .body_shape(BodyUid::new(uid, 0))
+        .unwrap()
+        .bounds
+        .unwrap();
+    assert!(close(committed.min, preview.min) && close(committed.max, preview.max));
+    assert!((doc.part_info(component(&placed)).unwrap().length.unwrap().1 - 900.0).abs() < 1e-6);
 }
 
 #[test]

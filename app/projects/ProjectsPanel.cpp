@@ -215,6 +215,8 @@ class ProjectsTreeWidget : public QTreeWidget {
 public:
   explicit ProjectsTreeWidget(ProjectsPanel& panel) : QTreeWidget(&panel), m_panel(panel) {}
 
+  QSize minimumSizeHint() const override { return dockedTreeMinimumSize(this, QTreeWidget::minimumSizeHint()); }
+
   bool editing() const { return state() == QAbstractItemView::EditingState; }
   bool dragging() const { return m_drag.dragging(); }
 

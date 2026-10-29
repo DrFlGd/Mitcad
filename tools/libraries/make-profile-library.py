@@ -1067,9 +1067,14 @@ def solid_screw_thread(mcp, document, entry):
     central or self-forming screw): a cosmetic ISO metric thread of the
     size its name gives (`M8x20`; a self-forming `S12x30` the metric
     coarse thread of its diameter as a stand-in) on its cylindrical faces
-    of that diameter."""
+    of that diameter. A part whose solid has its thread modelled (`"thread":
+    "source"`: a shank of thread rings, no plain cylinder) keeps that one
+    (mitcad#901)."""
     category = str(entry.get("category") or "").lower()
     if "screw" not in category and "screw" not in entry["name"].lower():
+        return
+    if entry.get("thread") == "source":
+        print(f"{entry['id']}: the thread is the source's own", flush=True)
         return
     found = re.search(r"\b[MS](\d+(?:\.\d+)?)x\d", entry["name"])
     if not found:

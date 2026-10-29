@@ -114,6 +114,8 @@ pub use refs::DEFAULT_GEOMETRIC_TOLERANCE;
 // The progress of an import and the one running on this thread, shared with
 // the other imports (`mitcad-import-base`).
 pub use mitcad_import_base::{Helper, Progress, Ticking, abandoned, current_progress, tick};
+// When the memory guard gives the allocator's free memory back (mitcad#885).
+pub use mitcad_import_base::FreeMemoryRelease;
 pub use report::{
     BodyReport, ComponentReport, DesignReport, ImportReport, InputProvenance, ItemReport,
     JointReport, LightBulbReport, LowMemoryReport, Outcome, ReferenceReport, RetryQuestionReport,
@@ -1753,12 +1755,21 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             .map_or(0, |p| p.memory_lows())
     }
 
-    /// Drops the cached results of the definitions tried and the bodies of
-    /// the history states behind the replay (mitcad#80): when memory gets
-    /// tight ([`Progress::tight_on_memory`]), and after each time it ran
-    /// low ([`Progress::low_memory`]; from the first on, the cached results
-    /// take at most [`CACHE_AFTER_LOW_MEMORY`]).
+    /// Drops the bodies of the history states behind the replay before each
+    /// item (mitcad#885), and the cached results of the definitions tried
+    /// (mitcad#80): when memory gets tight ([`Progress::tight_on_memory`]),
+    /// and after each time it ran low ([`Progress::low_memory`]; from the
+    /// first on, the cached results take at most
+    /// [`CACHE_AFTER_LOW_MEMORY`]).
     fn release_memory(&mut self) {
+        // The states the replay has gone past are asked for again seldom
+        // (built again then, from the file); their bodies of thousands of
+        // faces, and what their comparisons kept with them, took a third
+        // of a large design's memory to the import's end (mitcad#885).
+        let behind = self.oracle.release_passed();
+        if behind > 0 {
+            trace!("{behind} history states behind the replay dropped");
+        }
         let Some(p) = self.options.progress.clone() else {
             return;
         };

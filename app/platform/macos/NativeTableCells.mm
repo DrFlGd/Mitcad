@@ -15,6 +15,7 @@
 #include <QHeaderView>
 #include <QModelIndex>
 #include <QPalette>
+#include <QTextDocument>
 #include <QString>
 #include <QStringList>
 #include <QTableView>
@@ -37,6 +38,63 @@
 - (void)fit:(NSNotification*)notification;
 @end
 
+// A header containing the shared column's name and unit editors. The
+// ordinary NSTableHeaderView still handles resizing between the controls.
+@interface MitcadNativeEditorHeader : NSTableHeaderView
+@property(nonatomic, strong) NSArray<NSView*>* editors;
+@end
+
+@implementation MitcadNativeCurrentRowView
+- (void)drawBackgroundInRect:(NSRect)dirtyRect {
+  [super drawBackgroundInRect:dirtyRect];
+  _paintedCurrentFocus = self.currentFocus;
+  if (self.currentFocus) {
+    [NSColor.controlAccentColor setStroke];
+    NSBezierPath* frame = [NSBezierPath bezierPathWithRect:NSInsetRect(self.bounds, 1, 1)];
+    frame.lineWidth = 2;
+    [frame stroke];
+  }
+}
+@end
+
+@implementation MitcadNativeEditorHeader
+- (void)mouseDown:(NSEvent*)event {
+  // Own mouseDown when a header contains editors: the inherited header
+  // tracking can swallow their presses before a popup starts tracking.
+  // Preserve the actual event and leave column gaps/resizing to AppKit.
+  NSView* hit = [self hitTest:[self.superview convertPoint:event.locationInWindow fromView:nil]];
+  if ([hit isKindOfClass:NSControl.class]) {
+    for (NSView* editor in self.editors) {
+      if (hit == editor || [hit isDescendantOf:editor]) {
+        [hit mouseDown:event];
+        return;
+      }
+    }
+  }
+  [super mouseDown:event];
+}
+- (void)layout {
+  [super layout];
+  NSTableView* table = self.tableView;
+  for (NSUInteger visual = 0; visual < table.tableColumns.count; ++visual) {
+    NSTableColumn* column = table.tableColumns[visual];
+    const NSInteger logical = column.identifier.integerValue;
+    if (logical < 0 || logical >= static_cast<NSInteger>(self.editors.count)) { continue; }
+    NSView* editor = self.editors[static_cast<NSUInteger>(logical)];
+    editor.hidden = column.hidden;
+    if (!column.hidden) {
+      const NSRect columnRect = [self headerRectOfColumn:static_cast<NSInteger>(visual)];
+      editor.frame = NSMakeRect(columnRect.origin.x + 3, 2, std::max<CGFloat>(0, columnRect.size.width - 6),
+                                std::max<CGFloat>(0, self.bounds.size.height - 4));
+    }
+  }
+}
+- (void)drawRect:(NSRect)dirtyRect {
+  [NSColor.windowBackgroundColor setFill];
+  NSRectFill(dirtyRect);
+}
+@end
+
 @implementation MitcadNativeColumnFit
 - (void)fit:(NSNotification*)notification {
   (void)notification;
@@ -47,6 +105,8 @@
     mitcad::mac::logNativeCellEdit("the columns are fitted during an edit", edited);
   }
   mitcad::mac::fitNativeColumns(target);
+  target.headerView.needsLayout = YES;
+  [target.headerView layoutSubtreeIfNeeded];
   fitting = NO;
 }
 - (void)dealloc { [NSNotificationCenter.defaultCenter removeObserver:self]; }
@@ -174,6 +234,72 @@ QHeaderView* nativeHeader(const QAbstractItemView* view) {
   return nullptr;
 }
 
+namespace {
+
+CGFloat headerWidth(NSTableView* table, int section) {
+  if (table.headerView == nil) return 0;
+  for (NSUInteger visual = 0; visual < table.tableColumns.count; ++visual) {
+    NSTableColumn* column = table.tableColumns[visual];
+    if (column.identifier.integerValue != section) continue;
+    NSTableHeaderCell* cell = column.headerCell;
+    const NSSize size = cell.cellSize;
+    const NSRect spacious = NSMakeRect(0, 0, size.width * 2 + 1, std::max(size.height, NSHeight(table.headerView.bounds)));
+    const NSRect title = [cell titleRectForBounds:spacious];
+    NSFont* font = cell.font != nil ? cell.font : [NSFont systemFontOfSize:NSFont.systemFontSize];
+    const CGFloat glyphs = [column.title sizeWithAttributes:@{NSFontAttributeName:font}].width;
+    const CGFloat preferred = std::max(size.width, glyphs + std::max<CGFloat>(0, NSWidth(spacious) - NSWidth(title)));
+    // The outline column's header draws after its disclosure indentation.
+    // On some AppKit versions headerRect/titleRect still report that area
+    // as text space. Keep the actual indentation without counting it twice
+    // when the header rectangle already excludes it.
+    const NSRect rect = [table.headerView headerRectOfColumn:static_cast<NSInteger>(visual)];
+    const CGFloat outside = NSWidth(rect) > 0 ? std::max<CGFloat>(0, column.width - NSWidth(rect)) : 0;
+    NSOutlineView* outline = [table isKindOfClass:NSOutlineView.class] ? (NSOutlineView*)table : nil;
+    const CGFloat indentation = outline.outlineTableColumn == column ? outline.indentationPerLevel : 0;
+    return std::ceil(preferred + std::max(outside, indentation));
+  }
+  return 0;
+}
+
+CGFloat contentsWidth(NSTableView* table, const QAbstractItemView* view, int section) {
+  const auto* tree = qobject_cast<const QTreeView*>(view);
+  const auto* grid = qobject_cast<const QTableView*>(view);
+  NSTextFieldCell* measure = [NSTextFieldCell new];
+  measure.usesSingleLineMode = YES;
+  CGFloat width = headerWidth(table, section);
+  int remaining = nativeHeader(view)->resizeContentsPrecision();
+  const bool unlimited = remaining < 0;
+  const auto rows = [&](auto&& self, const QModelIndex& parent, int depth) -> void {
+    for (int row = 0; row < view->model()->rowCount(parent) && (unlimited || remaining > 0); ++row) {
+      if ((tree && tree->isRowHidden(row, parent)) || (grid && grid->isRowHidden(row))) continue;
+      if (!unlimited) --remaining;
+      const QModelIndex first = view->model()->index(row, 0, parent);
+      const QModelIndex index = first.siblingAtColumn(section);
+      // A spanning group label belongs to the whole row, not one column.
+      if (index.isValid() && !(tree && tree->isFirstColumnSpanned(row, parent)) && view->indexWidget(index) == nullptr) {
+        QString text = index.data().toString();
+        if (Qt::mightBeRichText(text)) {
+          QTextDocument document;
+          document.setHtml(text);
+          text = document.toPlainText();
+        }
+        measure.stringValue = text.toNSString();
+        measure.font = cellFont(index, view);
+        CGFloat needed = std::ceil(measure.cellSize.width) + 8; // the native cell's text insets
+        if (index.flags().testFlag(Qt::ItemIsUserCheckable) && index.data(Qt::CheckStateRole).isValid()) needed += 20;
+        else if (index.data(Qt::DecorationRole).isValid()) needed += std::max<CGFloat>(18, std::min<CGFloat>(80, table.rowHeight - 4)) + 4;
+        if (tree && section == 0) needed += (depth + 1) * ((NSOutlineView*)table).indentationPerLevel;
+        width = std::max(width, needed);
+      }
+      if (tree && tree->isExpanded(first)) self(self, first, depth + 1);
+    }
+  };
+  rows(rows, view->rootIndex(), 0);
+  return width;
+}
+
+} // namespace
+
 bool applyNativeColumns(NSTableView* table, const QAbstractItemView* view, NativeColumnState& state) {
   QHeaderView* header = nativeHeader(view);
   if (table == nil || header == nullptr || view->model() == nullptr) { return false; }
@@ -197,6 +323,8 @@ bool applyNativeColumns(NSTableView* table, const QAbstractItemView* view, Nativ
   };
   std::vector<Shared> shared(static_cast<std::size_t>(columns.count));
   std::size_t signature = mixed(0, static_cast<std::size_t>(columns.count));
+  const quint64 contentsRequest = header->property(NativeColumnContentsRequestProperty).toULongLong();
+  signature = mixed(signature, static_cast<std::size_t>(contentsRequest));
   for (std::size_t i = 0; i < shared.size(); ++i) {
     Shared& s = shared[i];
     const int section = QString::fromNSString(columns[i].identifier).toInt();
@@ -222,6 +350,12 @@ bool applyNativeColumns(NSTableView* table, const QAbstractItemView* view, Nativ
   if (signature == state.signature && state.sizes.size() == shared.size()) { return false; }
   state.signature = signature;
   if (state.sizes.size() != shared.size()) { state.sizes.assign(shared.size(), -1); }
+  const bool newRequest = contentsRequest != state.contentsRequest || state.requestedSizes.size() != shared.size();
+  if (newRequest) {
+    state.contentsRequest = contentsRequest;
+    state.requestedSizes.assign(shared.size(), 0);
+    state.requestedSharedSizes.assign(shared.size(), -1);
+  }
   for (std::size_t i = 0; i < shared.size(); ++i) {
     const Shared& s = shared[i];
     if (s.section < 0) { continue; }
@@ -235,11 +369,28 @@ bool applyNativeColumns(NSTableView* table, const QAbstractItemView* view, Nativ
     column.resizingMask = s.stretch                             ? NSTableColumnAutoresizingMask
                           : s.mode == QHeaderView::Interactive ? NSTableColumnUserResizingMask
                                                                : NSTableColumnNoResizing;
-    column.minWidth = s.minimum;
+    if (newRequest && contentsRequest != 0 && s.mode == QHeaderView::Interactive) {
+      state.requestedSizes[i] = static_cast<int>(std::ceil(contentsWidth(table, view, s.section)));
+      state.requestedSharedSizes[i] = s.size;
+    }
+    const bool endedRequest = state.requestedSharedSizes[i] >= 0 &&
+        (s.mode != QHeaderView::Interactive || state.requestedSharedSizes[i] != s.size);
+    if (endedRequest) {
+      state.requestedSizes[i] = 0;
+      state.requestedSharedSizes[i] = -1;
+    }
+    const bool requested = contentsRequest != 0 && s.mode == QHeaderView::Interactive &&
+        state.requestedSharedSizes[i] == s.size;
+    column.minWidth = requested && s.stretch ? std::max(s.minimum, state.requestedSizes[i]) : s.minimum;
     // A section's width follows a change of its shared size; a native user
     // resize stays until then. A stretching column's comes from fitting.
-    const int taken = s.stretch ? 0 : s.size;
-    if (taken > 0 && state.sizes[i] != taken) { column.width = taken; }
+    // ResizeToContents is a sizing policy, not a pixel width shared by
+    // different font renderers and cell margins. Measure only on a changed
+    // header state; unchanged refreshes still do no AppKit sizing work.
+    const int taken = s.stretch ? 0 : s.mode == QHeaderView::ResizeToContents
+        ? std::max(s.size, static_cast<int>(std::ceil(contentsWidth(table, view, s.section))))
+        : requested ? std::max(s.size, state.requestedSizes[i]) : s.size;
+    if (taken > 0 && (state.sizes[i] != taken || endedRequest || (newRequest && requested))) { column.width = taken; }
     state.sizes[i] = taken;
   }
   table.columnAutoresizingStyle = NSTableViewNoColumnAutoresizing;
@@ -278,7 +429,35 @@ void followNativeColumns(NSTableView* table) {
   [center addObserver:fit selector:@selector(fit:) name:NSViewFrameDidChangeNotification object:clip];
   [center addObserver:fit selector:@selector(fit:) name:NSTableViewColumnDidResizeNotification object:table];
   [center addObserver:fit selector:@selector(fit:) name:NSOutlineViewColumnDidResizeNotification object:table];
+  [center addObserver:fit selector:@selector(fit:) name:NSTableViewColumnDidMoveNotification object:table];
   objc_setAssociatedObject(table, &g_columnFitKey, fit, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+void installNativeColumnEditors(NSTableView* table, const std::vector<NSView*>& editors) {
+  if (editors.empty()) { return; }
+  auto* header = [[MitcadNativeEditorHeader alloc] initWithFrame:NSMakeRect(0, 0, table.frame.size.width, 28)];
+  NSMutableArray<NSView*>* holders = [NSMutableArray new];
+  CGFloat height = 0;
+  for (NSView* editor : editors) {
+    NSView* holder = [[NSView alloc] initWithFrame:NSZeroRect];
+    [holders addObject:holder];
+    [header addSubview:holder];
+    if (editor == nil) { continue; }
+    editor.translatesAutoresizingMaskIntoConstraints = NO;
+    [holder addSubview:editor];
+    [NSLayoutConstraint activateConstraints:@[
+      [editor.leadingAnchor constraintEqualToAnchor:holder.leadingAnchor],
+      [editor.trailingAnchor constraintEqualToAnchor:holder.trailingAnchor],
+      [editor.topAnchor constraintEqualToAnchor:holder.topAnchor],
+      [editor.bottomAnchor constraintEqualToAnchor:holder.bottomAnchor]
+    ]];
+    height = std::max(height, editor.fittingSize.height);
+  }
+  header.editors = holders;
+  [header setFrameSize:NSMakeSize(header.frame.size.width, height + 4)];
+  table.headerView = header;
+  header.needsLayout = YES;
+  [table.enclosingScrollView tile];
 }
 
 NSTableView* owningTable(NSView* view) {

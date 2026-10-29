@@ -1,0 +1,84 @@
+{
+  "about": "Clearance holes and screw head recesses for ISO metric screws, for the Hole feature's Clearance holes (mitcad#903). Mitcad's own data (MIT licence): the dimensions tabulated from the standards each section names, in millimetres and degrees. The sizes are those of MitCad's fastener tables (tools/libraries/make-fastener-library.py), M1.6 to M24; a section without a size has no row for it. The commands store the values the panel fills in as plain values: this table is only where they come from.",
+  "sizes": ["M1.6", "M2", "M2.5", "M3", "M4", "M5", "M6", "M8", "M10", "M12", "M14", "M16", "M20", "M24"],
+  "iso_273": {
+    "title": "ISO 273 (ISO 20273): clearance holes for bolts and screws",
+    "about": "The clearance hole diameter dh of the fine, medium and coarse series for the nominal thread diameter d. The Hole panel's Fit Normal is the medium series.",
+    "rows": [
+      {"size": "M1.6", "d": 1.6, "fine": 1.7, "medium": 1.8, "coarse": 2.0},
+      {"size": "M2", "d": 2, "fine": 2.2, "medium": 2.4, "coarse": 2.6},
+      {"size": "M2.5", "d": 2.5, "fine": 2.7, "medium": 2.9, "coarse": 3.1},
+      {"size": "M3", "d": 3, "fine": 3.2, "medium": 3.4, "coarse": 3.6},
+      {"size": "M4", "d": 4, "fine": 4.3, "medium": 4.5, "coarse": 4.8},
+      {"size": "M5", "d": 5, "fine": 5.3, "medium": 5.5, "coarse": 5.8},
+      {"size": "M6", "d": 6, "fine": 6.4, "medium": 6.6, "coarse": 7.0},
+      {"size": "M8", "d": 8, "fine": 8.4, "medium": 9.0, "coarse": 10.0},
+      {"size": "M10", "d": 10, "fine": 10.5, "medium": 11.0, "coarse": 12.0},
+      {"size": "M12", "d": 12, "fine": 13.0, "medium": 13.5, "coarse": 14.5},
+      {"size": "M14", "d": 14, "fine": 15.0, "medium": 15.5, "coarse": 16.5},
+      {"size": "M16", "d": 16, "fine": 17.0, "medium": 17.5, "coarse": 18.5},
+      {"size": "M20", "d": 20, "fine": 21.0, "medium": 22.0, "coarse": 24.0},
+      {"size": "M24", "d": 24, "fine": 25.0, "medium": 26.0, "coarse": 28.0}
+    ]
+  },
+  "din_974_1": {
+    "title": "DIN 974-1, series 1: counterbores for hexagon socket head cap screws (ISO 4762) without washers",
+    "about": "The counterbore diameter d1 of series 1. The depth is the head height k (max) of ISO 4762 plus an allowance that puts the head below the face: 0.2 mm for M1.6 to M2.5, 0.4 mm for M3 to M6, 0.6 mm for M8 to M20 and 0.8 mm for M24 (M6: 6 + 0.4 = 6.4). A counterdrill takes the same diameter and depth.",
+    "rows": [
+      {"size": "M1.6", "diameter": 3.5, "head_height": 1.6, "depth": 1.8},
+      {"size": "M2", "diameter": 4.4, "head_height": 2, "depth": 2.2},
+      {"size": "M2.5", "diameter": 5.5, "head_height": 2.5, "depth": 2.7},
+      {"size": "M3", "diameter": 6.5, "head_height": 3, "depth": 3.4},
+      {"size": "M4", "diameter": 8, "head_height": 4, "depth": 4.4},
+      {"size": "M5", "diameter": 10, "head_height": 5, "depth": 5.4},
+      {"size": "M6", "diameter": 11, "head_height": 6, "depth": 6.4},
+      {"size": "M8", "diameter": 15, "head_height": 8, "depth": 8.6},
+      {"size": "M10", "diameter": 18, "head_height": 10, "depth": 10.6},
+      {"size": "M12", "diameter": 20, "head_height": 12, "depth": 12.6},
+      {"size": "M14", "diameter": 24, "head_height": 14, "depth": 14.6},
+      {"size": "M16", "diameter": 26, "head_height": 16, "depth": 16.6},
+      {"size": "M20", "diameter": 33, "head_height": 20, "depth": 20.6},
+      {"size": "M24", "diameter": 40, "head_height": 24, "depth": 24.8}
+    ]
+  },
+  "iso_10642": {
+    "title": "ISO 10642: hexagon socket countersunk head screws, 90 degrees",
+    "about": "The head's theoretical diameter dk (max), where its 90-degree cone meets its top: a countersink of this diameter puts the top of the head at the face. The standard has M3 to M20.",
+    "rows": [
+      {"size": "M3", "head_diameter": 6.72},
+      {"size": "M4", "head_diameter": 8.96},
+      {"size": "M5", "head_diameter": 11.2},
+      {"size": "M6", "head_diameter": 13.44},
+      {"size": "M8", "head_diameter": 17.92},
+      {"size": "M10", "head_diameter": 22.4},
+      {"size": "M12", "head_diameter": 26.88},
+      {"size": "M14", "head_diameter": 30.8},
+      {"size": "M16", "head_diameter": 33.6},
+      {"size": "M20", "head_diameter": 40.32}
+    ]
+  },
+  "iso_15065": {
+    "title": "ISO 15065: countersinks for countersunk head screws with heads of ISO 7721",
+    "about": "The countersink diameter d2 (min) at 90 degrees for the heads of ISO 7721 (the screws of ISO 2009, ISO 7046 and others); the standard has the sizes up to M10.",
+    "rows": [
+      {"size": "M1.6", "diameter": 3.6},
+      {"size": "M2", "diameter": 4.4},
+      {"size": "M2.5", "diameter": 5.5},
+      {"size": "M3", "diameter": 6.3},
+      {"size": "M4", "diameter": 9.4},
+      {"size": "M5", "diameter": 10.4},
+      {"size": "M6", "diameter": 12.6},
+      {"size": "M8", "diameter": 17.3},
+      {"size": "M10", "diameter": 20.0}
+    ]
+  },
+  "countersink": {
+    "about": "A clearance hole's countersink: 90 degrees, its diameter the larger of ISO 10642's head diameter and ISO 15065's countersink, so that the head of either screw is at or just below the face; a size neither standard has (M24) has none.",
+    "angle": 90
+  },
+  "tapped_countersink": {
+    "about": "A tapped hole's countersink: just over the thread's major diameter, factor times it rounded to 0.1 mm (at least 0.1 mm over it), at 90 degrees, so that the first thread does not raise a burr.",
+    "factor": 1.1,
+    "angle": 90
+  }
+}

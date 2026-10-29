@@ -11,6 +11,7 @@
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <optional>
 
 #include <QDebug>
 #include <QHash>
@@ -22,6 +23,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 
+#include "../framework/Numbers.hpp"
 #include "CommandFactories.hpp"
 #include "CommandSupport.hpp"
 #include "PlaceInputs.hpp"
@@ -170,6 +172,8 @@ struct ThreadStandard {
   QVector<QPair<QString, QStringList>> sizes;
   // A taper pipe thread's tap drill by size (mitcad#733).
   QHash<QString, double> tapDrills;
+  // The major diameter by size (mitcad#903: a tapped hole's countersink).
+  QHash<QString, double> majors;
   QStringList external;
   QStringList internal;
   QString defaultExternal;
@@ -198,6 +202,9 @@ const QVector<ThreadStandard>& threadTable(const CommandContext& context) {
       entry.sizes.append({str(sized, "size"), strings(sized.value(QStringLiteral("designations")))});
       if (sized.contains(QStringLiteral("tap_drill"))) {
         entry.tapDrills.insert(str(sized, "size"), sized.value(QStringLiteral("tap_drill")).toDouble());
+      }
+      if (sized.contains(QStringLiteral("major_diameter"))) {
+        entry.majors.insert(str(sized, "size"), sized.value(QStringLiteral("major_diameter")).toDouble());
       }
     }
     entry.external = strings(standard.value(QStringLiteral("classes_external")));
@@ -511,6 +518,12 @@ QVector<InputDef> threadInputs(const CommandContext& context, const ThreadStart&
           .withVisible(tabled),
       valueInput(kThreadMajor, QObject::tr("Major Diameter"), ValueKind::Length, QStringLiteral("10 mm"))
           .withTooltip(QObject::tr("The custom thread's major diameter, on the 60-degree profile"))
+          .withOnChange([sized](CommandState& state, const CommandContext& model) {
+            // (A tapped hole's countersink follows it, mitcad#903.)
+            if (sized) {
+              sized(state, model);
+            }
+          })
           .withVisible(custom),
       valueInput(kThreadPitch, QObject::tr("Pitch"), ValueKind::Length, QStringLiteral("1.5 mm"))
           .withTooltip(QObject::tr("The distance from one tooth to the next along the axis"))
@@ -673,6 +686,284 @@ void loadChamfer(const QJsonObject& feature, CommandState& state, const CommandC
   loadValue(state, kChamferDiameter, feature.value(kChamferDiameter), feature, context);
 }
 
+// ---------------------------------------------------------------------------
+// Clearance holes and recesses by screw size (mitcad#903)
+
+// Hole Tap Type Clearance: a screw size and an ISO 273 fit. The hole's
+// Diameter and its counterbore's, countersink's and counterdrill's values
+// come from the model's `hole_sizes` table (a tapped hole's countersink
+// from its thread's major diameter) and follow the size until the user
+// types a value in the field (`kTyped`); an expression is never replaced.
+// The definition keeps the values as plain values and names the size and
+// fit (`clearance`).
+const QString kClearance = QStringLiteral("clearance");
+const QString kScrewSize = QStringLiteral("clearance_size");
+const QString kFit = QStringLiteral("clearance_fit");
+const QString kTyped = QStringLiteral("sized_typed");
+
+constexpr double kDegree = 3.14159265358979323846 / 180.0;
+
+// A size of the `hole_sizes` table: its clearance holes by fit, its
+// counterbore (a counterdrill's too) and countersink; NaN where it has
+// none.
+struct HoleSize {
+  QString size;
+  QHash<QString, double> clearance;
+  double cbDiameter = std::numeric_limits<double>::quiet_NaN();
+  double cbDepth = std::numeric_limits<double>::quiet_NaN();
+  double cdAngle = std::numeric_limits<double>::quiet_NaN();
+  double csDiameter = std::numeric_limits<double>::quiet_NaN();
+  double csAngle = std::numeric_limits<double>::quiet_NaN();
+};
+
+struct HoleSizeTable {
+  QVector<HoleSize> sizes;
+  QVector<QPair<QString, QString>> fits{{QStringLiteral("fine"), QStringLiteral("Fine")},
+                                        {QStringLiteral("normal"), QStringLiteral("Normal")},
+                                        {QStringLiteral("coarse"), QStringLiteral("Coarse")}};
+  QString defaultFit = QStringLiteral("normal");
+  QString defaultSize = QStringLiteral("M6");
+};
+
+// The table, read once.
+const HoleSizeTable& holeSizeTable(const CommandContext& context) {
+  static HoleSizeTable table;
+  if (!table.sizes.isEmpty()) {
+    return table;
+  }
+  QJsonObject answer;
+  try {
+    answer = context.queryObject({{QStringLiteral("query"), QStringLiteral("hole_sizes")}});
+  } catch (const std::exception&) {
+    return table;
+  }
+  const double none = std::numeric_limits<double>::quiet_NaN();
+  for (const QJsonValue& value : answer.value(QStringLiteral("sizes")).toArray()) {
+    const QJsonObject sized = value.toObject();
+    HoleSize entry;
+    entry.size = str(sized, "size");
+    const QJsonObject clearance = sized.value(QStringLiteral("clearance")).toObject();
+    for (auto it = clearance.begin(); it != clearance.end(); ++it) {
+      entry.clearance.insert(it.key(), it.value().toDouble());
+    }
+    const QJsonObject counterbore = sized.value(QStringLiteral("counterbore")).toObject();
+    entry.cbDiameter = counterbore.value(QStringLiteral("diameter")).toDouble(none);
+    entry.cbDepth = counterbore.value(QStringLiteral("depth")).toDouble(none);
+    const QJsonObject counterdrill = sized.value(QStringLiteral("counterdrill")).toObject();
+    entry.cdAngle = counterdrill.value(QStringLiteral("angle")).toDouble(none);
+    const QJsonObject countersink = sized.value(QStringLiteral("countersink")).toObject();
+    entry.csDiameter = countersink.value(QStringLiteral("diameter")).toDouble(none);
+    entry.csAngle = countersink.value(QStringLiteral("angle")).toDouble(none);
+    table.sizes.append(entry);
+  }
+  const QJsonArray fits = answer.value(QStringLiteral("fits")).toArray();
+  if (!fits.isEmpty()) {
+    table.fits.clear();
+  }
+  for (const QJsonValue& value : fits) {
+    const QJsonObject fit = value.toObject();
+    table.fits.append({str(fit, "fit"), str(fit, "title")});
+  }
+  table.defaultFit = answer.value(QStringLiteral("default_fit")).toString(QStringLiteral("normal"));
+  table.defaultSize = answer.value(QStringLiteral("default_size")).toString(QStringLiteral("M6"));
+  return table;
+}
+
+const HoleSize* holeSizeOf(const CommandContext& context, const QString& size) {
+  for (const HoleSize& entry : holeSizeTable(context).sizes) {
+    if (entry.size == size) {
+      return &entry;
+    }
+  }
+  return nullptr;
+}
+
+bool isAngle(const QString& id) { return id.endsWith(QStringLiteral("_angle")); }
+
+// What the size's values are for, for the log: `M6 normal`, `M6x1`.
+QString sizedName(const CommandState& state) {
+  if (state.choice(QStringLiteral("tap")) == kClearance) {
+    return QStringLiteral("%1 %2").arg(state.choice(kScrewSize), state.choice(kFit));
+  }
+  return customThread(state) ? QStringLiteral("custom %1").arg(number(state.value(kThreadMajor)))
+                             : state.choice(QStringLiteral("designation"));
+}
+
+// The values the size gives the inputs, in mm and degrees: a clearance
+// hole's Diameter and each recess's (all of them, the hidden types' too),
+// a tapped hole's countersink; none for a simple hole.
+QVector<QPair<QString, double>> sizedValues(const CommandState& state, const CommandContext& model) {
+  QVector<QPair<QString, double>> values;
+  const QString tap = state.choice(QStringLiteral("tap"));
+  if (tap == kClearance) {
+    const HoleSize* size = holeSizeOf(model, state.choice(kScrewSize));
+    if (size == nullptr) {
+      return values;
+    }
+    const QString fit = state.choice(kFit);
+    if (size->clearance.contains(fit)) {
+      values.append({QStringLiteral("diameter"), size->clearance.value(fit)});
+    }
+    if (std::isfinite(size->cbDiameter)) {
+      values.append({QStringLiteral("cb_diameter"), size->cbDiameter});
+      values.append({QStringLiteral("cb_depth"), size->cbDepth});
+    }
+    if (std::isfinite(size->csDiameter)) {
+      values.append({QStringLiteral("cs_diameter"), size->csDiameter});
+      values.append({QStringLiteral("cs_angle"), size->csAngle});
+    }
+    if (std::isfinite(size->cbDiameter)) {
+      values.append({QStringLiteral("cd_diameter"), size->cbDiameter});
+      values.append({QStringLiteral("cd_depth"), size->cbDepth});
+      values.append({QStringLiteral("cd_angle"), std::isfinite(size->cdAngle) ? size->cdAngle : 90.0});
+    }
+  } else if (tap == QStringLiteral("tapped")) {
+    // A countersink just over the thread's major diameter.
+    double major = std::numeric_limits<double>::quiet_NaN();
+    if (customThread(state)) {
+      major = state.value(kThreadMajor);
+    } else if (const ThreadStandard* standard = standardOf(model, state.choice(QStringLiteral("standard")))) {
+      major = standard->majors.value(state.choice(QStringLiteral("size")), major);
+    }
+    if (!(major > 0.0)) {
+      return values;
+    }
+    // (One size of the table with it: the answer is short.)
+    try {
+      const QJsonObject sink = model
+                                   .queryObject({{QStringLiteral("query"), QStringLiteral("hole_sizes")},
+                                                 {QStringLiteral("size"), QStringLiteral("M6")},
+                                                 {QStringLiteral("major"), major}})
+                                   .value(QStringLiteral("tapped_countersink"))
+                                   .toObject();
+      values.append({QStringLiteral("cs_diameter"), sink.value(QStringLiteral("diameter")).toDouble()});
+      values.append({QStringLiteral("cs_angle"), sink.value(QStringLiteral("angle")).toDouble(90.0)});
+    } catch (const std::exception&) {
+      // Nothing to fill then.
+    }
+  }
+  return values;
+}
+
+// A field's text as a plain number, in mm or degrees ("6.6 mm", "6.6" in
+// the document's unit, "90°", "90 deg"); none for an expression or a value
+// in another unit.
+std::optional<double> plainText(const QString& text, bool angle, const CommandContext& model) {
+  QString digits = text.trimmed();
+  double scale = 1.0;
+  if (angle) {
+    const QStringList units{QString(QChar(0x00B0)), QStringLiteral("deg")};
+    for (const QString& unit : units) {
+      if (digits.endsWith(unit)) {
+        digits.chop(unit.size());
+        break;
+      }
+    }
+  } else if (digits.endsWith(QStringLiteral("mm"))) {
+    digits.chop(2);
+  } else {
+    // A bare number is in the document's unit.
+    scale = model.unitMillimetres();
+    if (digits.endsWith(model.lengthUnit())) {
+      digits.chop(model.lengthUnit().size());
+    }
+  }
+  const std::optional<double> plain = parsePlainNumber(digits);
+  if (!plain) {
+    return std::nullopt;
+  }
+  return *plain * scale;
+}
+
+// Fills the fields the size gives (sizedValues) but those typed and those
+// holding an expression; the log says which.
+void fillSized(CommandState& state, const CommandContext& model) {
+  const QVector<QPair<QString, double>> values = sizedValues(state, model);
+  if (values.isEmpty()) {
+    return;
+  }
+  const QJsonObject typed = state.object(kTyped);
+  QStringList filled;
+  QStringList kept;
+  for (const auto& [id, wanted] : values) {
+    const bool angle = isAngle(id);
+    const QString current = state.text(id).trimmed();
+    if (typed.contains(id) || (!current.isEmpty() && !plainText(current, angle, model))) {
+      kept << id;
+      continue;
+    }
+    const double rounded = std::round(wanted * 10000.0) / 10000.0;
+    const QString text = angle ? number(rounded) + QChar(0x00B0) : lengthText(rounded, model);
+    state.setText(id, text);
+    state.setExpression(id, text);
+    state.setValue(id, angle ? rounded * kDegree : rounded);
+    filled << QStringLiteral("%1 %2").arg(id, text);
+  }
+  QString line = QStringLiteral("Hole sizes for %1: %2").arg(sizedName(state), filled.join(QStringLiteral(", ")));
+  if (!kept.isEmpty()) {
+    line += QStringLiteral("; kept %1").arg(kept.join(QStringLiteral(", ")));
+  }
+  qDebug().noquote() << line;
+}
+
+// A value typed in a field the size fills: it stays when the size changes.
+std::function<void(CommandState&, const CommandContext&)> markTyped(const QString& id) {
+  return [id](CommandState& state, const CommandContext&) {
+    QJsonObject typed = state.object(kTyped);
+    if (!typed.contains(id)) {
+      typed.insert(id, true);
+      state.setObject(kTyped, typed);
+      qDebug().noquote() << QStringLiteral("Hole %1 typed: kept when the size changes").arg(id);
+    }
+  };
+}
+
+// A new Hole Tap Type: a tapered pipe thread's tap drill, and the size's
+// values in every field again (but expressions).
+void startTap(CommandState& state, const CommandContext& model) {
+  startTapDrill(state, model);
+  state.setObject(kTyped, QJsonObject());
+  fillSized(state, model);
+}
+
+// A hole loaded for editing: the fields whose stored values its size does
+// not give (or expressions) count as typed. A value is the definition's
+// number (mm, radians) or the feature's own parameter's expression.
+void markLoaded(const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+  const QJsonObject kind = feature.value(QStringLiteral("kind")).toObject();
+  const QString type = kind.value(QStringLiteral("type")).toString();
+  const QString prefix = type == QStringLiteral("counterbore")    ? QStringLiteral("cb_")
+                         : type == QStringLiteral("countersink")  ? QStringLiteral("cs_")
+                         : type == QStringLiteral("counterdrill") ? QStringLiteral("cd_")
+                                                                  : QString();
+  QJsonObject typed;
+  for (const auto& [id, wanted] : sizedValues(state, context)) {
+    QJsonValue slot;
+    if (id == QStringLiteral("diameter")) {
+      slot = feature.value(QStringLiteral("diameter"));
+    } else if (!prefix.isEmpty() && id.startsWith(prefix)) {
+      slot = kind.value(id.mid(3));
+    } else {
+      continue;
+    }
+    if (slot.isUndefined() || slot.isNull()) {
+      continue;
+    }
+    const bool angle = isAngle(id);
+    const std::optional<double> stored = slot.isDouble() ? std::optional<double>(angle ? slot.toDouble() / kDegree
+                                                                                       : slot.toDouble())
+                                                         : plainText(state.text(id), angle, context);
+    // (A value shown in inches is rounded to 4 decimals: 0.002 mm.)
+    if (!stored || std::abs(*stored - wanted) > 0.002) {
+      typed.insert(id, true);
+    }
+  }
+  state.setObject(kTyped, typed);
+  if (!typed.isEmpty()) {
+    qDebug().noquote() << QStringLiteral("Hole values kept from the size: %1").arg(typed.keys().join(QStringLiteral(", ")));
+  }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -689,7 +980,8 @@ CommandDef holeCommand(const CommandContext& context) {
   def.section = QStringLiteral("faces");
   def.pinned = true;
   def.keywords = {QStringLiteral("drill"), QStringLiteral("tap"), QStringLiteral("counterbore"),
-                  QStringLiteral("countersink"), QStringLiteral("counterdrill"), QStringLiteral("taper")};
+                  QStringLiteral("countersink"), QStringLiteral("counterdrill"), QStringLiteral("taper"),
+                  QStringLiteral("clearance")};
   def.featureType = QStringLiteral("hole");
   const auto tapped = choiceIs(QStringLiteral("tap"), QStringLiteral("tapped"));
   const auto type = [](const char* kind) { return choiceIs(QStringLiteral("type"), QString::fromLatin1(kind)); };
@@ -751,19 +1043,41 @@ CommandDef holeCommand(const CommandContext& context) {
                    {QStringLiteral("counterbore"), QStringLiteral("Counterbore")},
                    {QStringLiteral("countersink"), QStringLiteral("Countersink")},
                    {QStringLiteral("counterdrill"), QStringLiteral("Counterdrill")}},
-                  QStringLiteral("simple")),
+                  QStringLiteral("simple"))
+          .withOnChange(fillSized),
+      // Clearance (mitcad#903): the hole and its recesses for a screw size.
       choiceInput(QStringLiteral("tap"), QObject::tr("Hole Tap Type"),
                   {{QStringLiteral("simple"), QStringLiteral("Simple")},
-                   {QStringLiteral("tapped"), QStringLiteral("Tapped")}},
+                   {QStringLiteral("tapped"), QStringLiteral("Tapped")},
+                   {kClearance, QStringLiteral("Clearance")}},
                   QStringLiteral("simple"))
-          .withOnChange(startTapDrill),
+          .withTooltip(QObject::tr("Simple, Tapped (threaded), or Clearance: sized for a screw, with its recesses"))
+          .withOnChange(startTap),
       choiceInput(QStringLiteral("drill"), QObject::tr("Drill Point"),
                   {{QStringLiteral("angle"), QStringLiteral("Angle")}, {QStringLiteral("flat"), QStringLiteral("Flat")}},
                   QStringLiteral("angle")),
+      choiceInput(kScrewSize, QObject::tr("Screw Size"), {}, holeSizeTable(context).defaultSize)
+          .withTooltip(QObject::tr("The ISO metric screw the hole is for; it sizes the hole and its recesses"))
+          .withChoices([&context](const CommandState&) {
+            QVector<QPair<QString, QString>> options;
+            for (const HoleSize& size : holeSizeTable(context).sizes) {
+              options.append({size.size, size.size});
+            }
+            return options;
+          })
+          .withOnChange(fillSized)
+          .withVisible(choiceIs(QStringLiteral("tap"), kClearance)),
+      choiceInput(kFit, QObject::tr("Fit"), {}, holeSizeTable(context).defaultFit)
+          .withTooltip(QObject::tr("ISO 273's clearance: Fine, Normal (the medium series) or Coarse"))
+          .withChoices([&context](const CommandState&) { return holeSizeTable(context).fits; })
+          .withOnChange(fillSized)
+          .withVisible(choiceIs(QStringLiteral("tap"), kClearance)),
       // A tapered taper pipe thread's hole keeps its diameter, the tap
       // drill (mitcad#733); another thread sets it.
       valueInput(QStringLiteral("diameter"), QObject::tr("Diameter"), ValueKind::Length, QStringLiteral("6 mm"))
-          .withTooltip(QObject::tr("The hole's diameter; the tap drill of a tapered pipe thread"))
+          .withTooltip(QObject::tr("The hole's diameter; a tapered pipe thread's tap drill; a clearance hole's "
+                                   "from its screw"))
+          .withOnChange(markTyped(QStringLiteral("diameter")))
           .withVisible([tapped](const CommandState& s) { return !tapped(s) || tapers(s); }),
       // A tapped hole has no taper (the model refuses it).
       valueInput(QStringLiteral("taper"), QObject::tr("Taper Angle"), ValueKind::Angle, QStringLiteral("0") + QChar(0x00B0))
@@ -788,28 +1102,40 @@ CommandDef holeCommand(const CommandContext& context) {
           }),
       valueInput(QStringLiteral("cb_diameter"), QObject::tr("Counterbore Diameter"), ValueKind::Length,
                  QStringLiteral("10 mm"))
+          .withOnChange(markTyped(QStringLiteral("cb_diameter")))
           .withVisible(type("counterbore")),
       valueInput(QStringLiteral("cb_depth"), QObject::tr("Counterbore Depth"), ValueKind::Length, QStringLiteral("3 mm"))
+          .withOnChange(markTyped(QStringLiteral("cb_depth")))
           .withVisible(type("counterbore")),
       valueInput(QStringLiteral("cs_diameter"), QObject::tr("Countersink Diameter"), ValueKind::Length,
                  QStringLiteral("10 mm"))
+          .withOnChange(markTyped(QStringLiteral("cs_diameter")))
           .withVisible(type("countersink")),
       valueInput(QStringLiteral("cs_angle"), QObject::tr("Countersink Angle"), ValueKind::Angle, QStringLiteral("90") + QChar(0x00B0))
+          .withOnChange(markTyped(QStringLiteral("cs_angle")))
           .withVisible(type("countersink")),
       valueInput(QStringLiteral("cd_diameter"), QObject::tr("Counterdrill Diameter"), ValueKind::Length,
                  QStringLiteral("10 mm"))
+          .withOnChange(markTyped(QStringLiteral("cd_diameter")))
           .withVisible(type("counterdrill")),
       valueInput(QStringLiteral("cd_depth"), QObject::tr("Counterdrill Depth"), ValueKind::Length, QStringLiteral("3 mm"))
+          .withOnChange(markTyped(QStringLiteral("cd_depth")))
           .withTooltip(QObject::tr("The depth of its cylinder; the cone narrowing to the hole is below it"))
           .withVisible(type("counterdrill")),
       valueInput(QStringLiteral("cd_angle"), QObject::tr("Counterdrill Angle"), ValueKind::Angle, QStringLiteral("90") + QChar(0x00B0))
+          .withOnChange(markTyped(QStringLiteral("cd_angle")))
           .withTooltip(QObject::tr("The full angle of the cone at its floor"))
           .withVisible(type("counterdrill")),
       valueInput(QStringLiteral("tip_angle"), QObject::tr("Drill Point Angle"), ValueKind::Angle, QStringLiteral("118") + QChar(0x00B0))
           .withVisible(choiceIs(QStringLiteral("drill"), QStringLiteral("angle"))),
   };
+  // A new size: a tapered pipe thread's tap drill, a countersink's
+  // diameter (mitcad#903).
   def.inputs += threadInputs(context, {QStringLiteral("6"), QStringLiteral("M6x1"), QStringLiteral("6H")}, true, tapped,
-                             startTapDrill);
+                             [](CommandState& state, const CommandContext& model) {
+                               startTapDrill(state, model);
+                               fillSized(state, model);
+                             });
   def.inputs.append(taperInput(tapped).withOnChange(startTapDrill));
   // The thread's hand (mitcad#893: a custom thread's too).
   def.inputs.append(choiceInput(QStringLiteral("direction"), QObject::tr("Direction"),
@@ -939,6 +1265,11 @@ CommandDef holeCommand(const CommandContext& context) {
       }
       result.def.insert(QStringLiteral("thread"), thread);
     }
+    // A clearance hole names its screw size and fit (mitcad#903).
+    if (state.choice(QStringLiteral("tap")) == kClearance) {
+      result.def.insert(QStringLiteral("clearance"), QJsonObject{{QStringLiteral("size"), state.choice(kScrewSize)},
+                                                                 {QStringLiteral("fit"), state.choice(kFit)}});
+    }
     if (state.checked(QStringLiteral("flip"))) {
       result.def.insert(QStringLiteral("flip"), true);
     }
@@ -1051,6 +1382,15 @@ CommandDef holeCommand(const CommandContext& context) {
       // A hole saved before mitcad#733 keeps its straight thread.
       state.setChecked(kTaperThread, thread.value(QStringLiteral("taper")).toBool());
     }
+    // A clearance hole's size and fit (mitcad#903); its values that the
+    // size does not give stay as they are when the size changes.
+    const QJsonObject clearance = feature.value(QStringLiteral("clearance")).toObject();
+    if (!clearance.isEmpty()) {
+      state.setChoice(QStringLiteral("tap"), kClearance);
+      state.setChoice(kScrewSize, str(clearance, "size"));
+      state.setChoice(kFit, clearance.value(QStringLiteral("fit")).toString(QStringLiteral("normal")));
+    }
+    markLoaded(feature, state, context);
     state.setChecked(QStringLiteral("flip"), feature.value(QStringLiteral("flip")).toBool());
     state.setItems(QStringLiteral("objects"), bodiesOf(feature.value(QStringLiteral("participants")).toArray()));
   };
@@ -1096,9 +1436,13 @@ CommandDef holeCommand(const CommandContext& context) {
                               ? QStringLiteral(", taper %1 deg").arg(degrees(state.value(QStringLiteral("taper"))))
                               : QString();
     // (A custom thread's diameter and pitch, mitcad#893.)
-    const QString tap = !tapped ? QStringLiteral("diameter %1").arg(number(state.value(QStringLiteral("diameter"))))
-                        : customThread(state) ? sizeText(state)
-                                              : state.choice(QStringLiteral("designation"));
+    QString tap = !tapped ? QStringLiteral("diameter %1").arg(number(state.value(QStringLiteral("diameter"))))
+                  : customThread(state) ? sizeText(state)
+                                        : state.choice(QStringLiteral("designation"));
+    // (A clearance hole's screw size and fit, mitcad#903.)
+    if (state.choice(QStringLiteral("tap")) == kClearance) {
+      tap += QStringLiteral(" (clearance %1 %2)").arg(state.choice(kScrewSize), state.choice(kFit));
+    }
     return QStringLiteral("Added %1 hole(s) (%2), %3%4").arg(count).arg(state.choice(QStringLiteral("type")), tap, taper);
   };
   return def;

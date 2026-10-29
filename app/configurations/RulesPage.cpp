@@ -24,6 +24,7 @@
 #include "../framework/FormulaEditor.hpp"
 #include "../framework/ParameterSuggest.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "RuleCanvas.hpp"
 
 namespace {
@@ -73,8 +74,11 @@ RulesPage::RulesPage(RulesSource source, QWidget* parent) : QWidget(parent), m_s
   m_list->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
   m_list->installEventFilter(this);
   m_add = new QPushButton(QStringLiteral("&Add"));
+  m_add->setObjectName(QStringLiteral("rulesAdd"));
   m_duplicate = new QPushButton(QStringLiteral("D&uplicate"));
+  m_duplicate->setObjectName(QStringLiteral("rulesDuplicate"));
   m_delete = new QPushButton(QStringLiteral("&Delete"));
+  m_delete->setObjectName(QStringLiteral("rulesDelete"));
   for (QPushButton* button : {m_add, m_duplicate, m_delete}) {
     button->setAutoDefault(false);
   }
@@ -97,9 +101,11 @@ RulesPage::RulesPage(RulesSource source, QWidget* parent) : QWidget(parent), m_s
   m_palette->installEventFilter(this);
   m_canvas->installEventFilter(this);
   m_viewText = new QPushButton(QStringLiteral("View as &Text"));
+  m_viewText->setObjectName(QStringLiteral("rulesViewText"));
   m_viewText->setCheckable(true);
   m_viewText->setAutoDefault(false);
   m_check = new QPushButton(QStringLiteral("Chec&k Rules"));
+  m_check->setObjectName(QStringLiteral("rulesCheck"));
   m_check->setAutoDefault(false);
   m_status = new QLabel;
   m_status->setObjectName(QStringLiteral("rulesStatus"));
@@ -311,6 +317,7 @@ void RulesPage::fillList() {
   for (std::size_t i = 0; i < m_rules.size(); ++i) {
     const Rule& rule = m_rules[i];
     auto* item = new QTreeWidgetItem(m_list, QStringList{rule.name});
+    item->setData(0, NativeControlIdentifierRole, QStringLiteral("rules.") + rule.name);
     item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
     item->setCheckState(0, rule.enabled ? Qt::Checked : Qt::Unchecked);
     const QString comment = rule.extra.value(QStringLiteral("comment")).toString();

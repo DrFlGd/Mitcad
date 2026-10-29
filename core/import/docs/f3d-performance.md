@@ -199,12 +199,25 @@ the import guards its memory (`core/ffi/src/f3d_import.rs`,
 its own, ten times a second: it measures the process against the
 tightest limit it runs under (`core/ffi/src/memory.rs`,
 `core/cpp/bridge/memory.cpp`): an address-space (`ulimit -v`) or data
-limit, or the memory the system has left (available memory and free
-swap) on Linux; a job's memory limit or the commit the system has left
-on Windows; the physical memory on macOS; and the `memory_limit` option
-(MiB, against the resident memory). Near a Linux limit the memory the C
-library's allocator holds free (`mallinfo2`) does not count: it is used
-again before more is mapped.
+limit, the memory the system has left (available memory and free swap)
+or a cgroup's memory limit (`memory.max` of the process's cgroup v2 and
+those above it, against what the cgroup uses less its page cache: a
+systemd scope's `MemoryMax` or a container's limit, beyond which the
+kernel kills the process, mitcad#885) on Linux; a job's memory limit or
+the commit the system has left on Windows; the physical memory on macOS;
+and the `memory_limit` option (MiB, against the resident memory). Near an
+address-space or data limit the memory the C library's allocator holds
+free (`mallinfo2`) does not count: it is used again before more is
+mapped. Against the resident memory it counts, and the guard gives it
+back to the system instead (`release_free_memory`, glibc's
+`malloc_trim`; `mitcad_import::FreeMemoryRelease`): an allocator arena
+of one thread does not lend its free memory to the others, so with the
+definitions and the kernel's operations on several threads a design of
+116 items stood at 6.9 GB resident with 4.1 GB in use, and a job's limit
+of 6 GB killed it. The guard gives it back once the process has grown by
+256 MiB (or an eighth, when that is more) since it last did, and before
+it tells the import that memory is tight; at most once a second (it
+takes the arenas' locks, 30–90 ms on 5 GB of them).
 
 - At 70 % of the limit (and each 5 % more) memory is *tight*
   (`Progress::tight_on_memory`): before its next item the import drops
@@ -258,6 +271,15 @@ state holds the bodies that differ from the state after it, not a copy of
 every body (a design of 256 items took 5.8 GB before the first item that
 way, and the memory the allocator kept afterwards left 40 MB of a 12 GB
 address-space limit once OCCT's threads started).
+
+The bodies of the history states the replay has gone past are dropped
+before each item, not only when memory is tight (`Oracle::release_passed`,
+mitcad#885), with what the file's geometry built for them alone; they are
+built again if they are asked for. On the design of 116 items above, the
+bodies of the 69 states it built (5 000 faces each, healed) and what the
+comparisons with them kept on them (their faces' classifiers and grids,
+edge geometries) took 1.3 GB and more to the import's end; dropped, none
+was asked for again and the import was the same.
 
 ## Definitions evaluated in parallel
 

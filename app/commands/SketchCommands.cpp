@@ -418,16 +418,35 @@ void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
   registry.add(def);
 }
 
+// Project: edges, faces (their edges) and vertices of the bodies, and
+// curves and points of earlier sketches (mitcad#904: lines, arcs, circles,
+// ellipses, splines and points, construction and projected ones too; a
+// whole sketch picked in the browser gives all its curves), each a
+// `sketch.project`. Other sketches' curves and points are pickable only
+// here, through a selection filter row of their own (SelectionScope);
+// the edited sketch's own never. A later sketch's geometry fails the
+// preview with the model's reason.
+bool projectsSketchGeometry(const SelectionItem& item) {
+  return item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint ||
+         item.kind == SelectKind::Sketch;
+}
+
 void addProject(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.project", QObject::tr("Project"), "project", "CREATE/References",
                                  CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.shortcut = QKeySequence(Qt::Key_P);
-  def.tooltip = QObject::tr("Edges, faces (their edges) and vertices of the bodies onto the sketch plane");
+  def.tooltip = QObject::tr("Body edges, faces and vertices, and other sketches' curves, onto the plane");
   def.keywords = {QStringLiteral("include"), QStringLiteral("reference")};
   def.inputs = {
       selectionInput(QStringLiteral("geometry"), QObject::tr("Geometry"),
-                     SelectKind::Edge | SelectKind::Face | SelectKind::Vertex, 1, 0),
+                     SelectKind::Edge | SelectKind::Face | SelectKind::Vertex | SelectKind::SketchCurve |
+                         SelectKind::SketchPoint | SelectKind::Sketch,
+                     1, 0)
+          .withAccepts([&c](const SelectionItem& item) {
+            // Not the edited sketch's own geometry, nor the sketch itself.
+            return !projectsSketchGeometry(item) || item.owner != c.uid();
+          }),
       checkInput(QStringLiteral("linked"), QObject::tr("Projection Link"), true)
           .withTooltip(QObject::tr("The projection follows its source when the design changes")),
   };
@@ -435,8 +454,14 @@ void addProject(CommandRegistry& registry, SketchController& c) {
     QJsonArray commands;
     for (const SelectionItem& item : s.items(QStringLiteral("geometry"))) {
       QJsonObject cmd = base(c, "sketch.project");
-      cmd.insert(QStringLiteral("source"), item.name);
-      cmd.insert(QStringLiteral("body"), item.owner);
+      if (projectsSketchGeometry(item)) {
+        // {"sketch": "F5", "curve": "c3"}, {"sketch": "F5", "point":
+        // "p2"} or a whole sketch, {"sketch": "F5"}.
+        cmd.insert(QStringLiteral("source"), item.reference());
+      } else {
+        cmd.insert(QStringLiteral("source"), item.name);
+        cmd.insert(QStringLiteral("body"), item.owner);
+      }
       cmd.insert(QStringLiteral("linked"), s.checked(QStringLiteral("linked")));
       // Where it was picked: another component's geometry comes through
       // a link (mitcad#100).
@@ -446,7 +471,16 @@ void addProject(CommandRegistry& registry, SketchController& c) {
     return Built::of(QJsonObject{{QStringLiteral("commands"), commands}});
   };
   def.describe = [](const CommandState& s, const CommandContext&) {
-    return QStringLiteral("Projected %1 item(s)").arg(s.items(QStringLiteral("geometry")).size());
+    const Selection& items = s.items(QStringLiteral("geometry"));
+    // Other sketches' geometry by name (mitcad#904).
+    QStringList sketched;
+    for (const SelectionItem& item : items) {
+      if (projectsSketchGeometry(item)) {
+        sketched << item.describe();
+      }
+    }
+    return QStringLiteral("Projected %1 item(s)").arg(items.size()) +
+           (sketched.isEmpty() ? QString() : QStringLiteral(": ") + sketched.join(QStringLiteral(", ")));
   };
   registry.add(def);
 }

@@ -34,13 +34,20 @@
 #include "Dialogs.hpp"
 #include "FitToScreen.hpp"
 #include "Theme.hpp"
+#include "../platform/NativeDialogs.hpp"
 
 namespace mitcad {
 namespace {
 
-class FormulaText : public QPlainTextEdit {
+class FormulaText : public QPlainTextEdit, public NativeTextEditorCommands {
 public:
   std::function<void(int)> hovered;
+  std::function<bool(QKeyEvent*)> keyCommand;
+  std::function<QListWidget*()> completions;
+  std::function<void(int)> completeRow;
+  bool nativeTextKey(QKeyEvent* event) override { return keyCommand && keyCommand(event); }
+  QListWidget* nativeTextCompletions() const override { return completions ? completions() : nullptr; }
+  void nativeTextComplete(int row) override { if (completeRow) completeRow(row); }
   explicit FormulaText(QWidget* parent = nullptr) : QPlainTextEdit(parent) {
     viewport()->setMouseTracking(true);
     setMouseTracking(true);
@@ -59,7 +66,8 @@ QString limitText(const QJsonObject& limits, const char* name) {
 } // namespace
 
 QString formulaKindName(ParameterKind kind) {
-  return kind == ParameterKind::Angle ? QStringLiteral("angle") :
+  return kind == ParameterKind::Text ? QStringLiteral("text") :
+         kind == ParameterKind::Angle ? QStringLiteral("angle") :
          kind == ParameterKind::Unitless ? QStringLiteral("unitless") : QStringLiteral("length");
 }
 
@@ -201,6 +209,9 @@ FormulaEditor::FormulaEditor(ParameterSource source, ParameterFieldOptions optio
   m_completions->setUniformItemSizes(true);
   m_completions->hide();
   connect(m_completions, &QListWidget::itemClicked, this, [this](QListWidgetItem* item) { complete(item); });
+  editor->keyCommand = [this](QKeyEvent* event) { return eventFilter(m_expression, event); };
+  editor->completions = [this] { return m_completions; };
+  editor->completeRow = [this](int row) { complete(m_completions->item(row)); };
   m_expression->installEventFilter(this);
   // The list opens on what is typed only; a caret moved by the arrows or a
   // click closes it (its keys are then the text's again).

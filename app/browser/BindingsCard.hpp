@@ -13,6 +13,7 @@
 
 #include "../framework/Command.hpp"
 #include "BindingList.hpp"
+#include "../platform/NativeBindingsCard.hpp"
 
 class QHideEvent;
 class QKeyEvent;
@@ -62,6 +63,7 @@ public:
   };
 
   BindingsCard(const CommandContext& model, Actions actions, QWidget* window);
+  ~BindingsCard() override;
 
   // Shows the card of an item beside `anchor` (the badge, in global
   // coordinates): following the pointer, or pinned.
@@ -97,6 +99,7 @@ private:
   QPushButton* m_all = nullptr;
   QTimer m_follow;
   int m_away = 0; // the pointer's looks outside the badge and the card in a row
+  std::unique_ptr<NativeBindingsCardView> m_native;
 };
 
 } // namespace mitcad

@@ -2977,6 +2977,123 @@ impl<K: Kernel> Document<K> {
         self.project_or_section(sketch, source, body, linked, occurrence, context, true)
     }
 
+    /// Projects curves and points of another sketch into a sketch
+    /// (mitcad#904): `entities` of the sketch `source` (lines, arcs,
+    /// circles, ellipses, splines and points, construction and projected
+    /// ones too), or every curve of it when None (a whole sketch picked).
+    /// The source sketch comes before `sketch` in the timeline; a later one
+    /// is refused, so no sketch follows one that follows it. Its geometry
+    /// is projected along the sketch's normal as body edges are: an exact
+    /// copy on the same plane, the same shapes on a parallel one, ellipses
+    /// and shorter lines on an oblique one. Linked, each entity is a
+    /// projection of its own ([`crate::sketch::SketchEntityRef`]) that
+    /// follows it when the source sketch changes, and keeps its last
+    /// geometry with a warning once the entity is gone; unlinked, they are
+    /// fixed copies. Another component's sketch comes through the link of
+    /// `occurrence` (seen at `context`), as its bodies' edges do.
+    pub fn project_sketch_geometry(
+        &mut self,
+        sketch: FeatureUid,
+        source: FeatureUid,
+        entities: Option<&[crate::sketch::Ref]>,
+        linked: bool,
+        occurrence: Option<&[OccurrenceUid]>,
+        context: Option<&[OccurrenceUid]>,
+    ) -> Result<EditReport, ModelError> {
+        use crate::sketch::project::SourceCurves;
+        use crate::sketch::{ProjectionSource, SketchEntityRef};
+        let source_name = match entities {
+            Some([one]) => SketchEntityRef {
+                sketch: source,
+                entity: *one,
+            }
+            .to_string(),
+            _ => source.to_string(),
+        };
+        let fail = |e: String| invalid(format!("projection of {source_name}: {e}"));
+        let target = self.projection_target(sketch, occurrence, context, &fail)?;
+        if source == sketch {
+            return Err(fail(
+                "a sketch does not project its own geometry; pick curves and points of \
+                 another sketch"
+                    .to_owned(),
+            ));
+        }
+        let at = self.state.require(source)?;
+        let entry = &self.state.features[at];
+        let target_entry = &self.state.features[target.position];
+        if !matches!(entry.def, FeatureDef::Sketch(_)) {
+            return Err(fail(format!("{} ({source}) is not a sketch", entry.name)));
+        }
+        if at > target.position {
+            return Err(fail(format!(
+                "{} ({source}) comes after {} ({sketch}) in the timeline; only the curves and \
+                 points of a sketch before it can be projected",
+                entry.name, target_entry.name
+            )));
+        }
+        let assembly = &self.state.assembly;
+        if entry.component != target.from {
+            return Err(fail(format!(
+                "{} is a sketch of {}, not of {}; pick it where an occurrence of {} shows it",
+                entry.name,
+                assembly.name(entry.component),
+                assembly.name(target.from),
+                assembly.name(entry.component)
+            )));
+        }
+        let output = self.sketch_output(source).ok_or_else(|| {
+            fail(format!(
+                "{} ({source}) does not evaluate; its geometry cannot be projected",
+                entry.name
+            ))
+        })?;
+        let picked: Vec<crate::sketch::Ref> = match entities {
+            Some(list) => list.to_vec(),
+            None => output
+                .solved
+                .curves
+                .keys()
+                .map(|id| crate::sketch::Ref::Curve(*id))
+                .collect(),
+        };
+        if picked.is_empty() {
+            return Err(fail(format!("{} has no curves to project", entry.name)));
+        }
+        let mut groups = Vec::with_capacity(picked.len());
+        for entity in picked {
+            let curve = crate::features::sketch::sketch_entity_curve(output, entity)
+                .ok_or_else(|| fail(format!("{} has no {entity}", entry.name)))?;
+            groups.push(SourceCurves {
+                source: Some(ProjectionSource::Sketch(SketchEntityRef {
+                    sketch: source,
+                    entity,
+                })),
+                chain: Vec::new(),
+                curves: vec![curve],
+            });
+        }
+        let ProjectionTarget {
+            frame,
+            link,
+            to_sketch,
+            ..
+        } = target;
+        self.push_projections(
+            sketch,
+            &frame,
+            groups,
+            to_sketch.as_ref(),
+            Projecting {
+                body: None,
+                link,
+                linked,
+                section: false,
+                label: "Project to {sketch}",
+            },
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn project_or_section(
         &mut self,
@@ -3001,46 +3118,18 @@ impl<K: Kernel> Document<K> {
                 ));
             }
         };
-        let position = self.state.require(sketch)?;
-        let frame = match (
-            self.sketch_output(sketch),
-            &self.state.features[position].def,
-        ) {
-            (Some(output), _) => output.frame,
-            (None, FeatureDef::Sketch(def)) => def
-                .plane
-                .origin_frame()
-                .map(|plane| def.place(&plane))
-                .ok_or_else(|| invalid("the sketch has no plane yet (it does not evaluate)"))?,
-            (None, _) => return Err(invalid(format!("{sketch} is not a sketch"))),
-        };
+        let target = self.projection_target(sketch, occurrence, context, &|e| {
+            invalid(format!("{what} of {source_name}: {e}"))
+        })?;
+        let ProjectionTarget {
+            position,
+            frame,
+            from,
+            link,
+            to_sketch,
+        } = target;
         let bodies = self.bodies_before(position);
-        // The sketch's component's bodies are in its coordinates; another
-        // component's are moved there through a link.
-        let component = self.state.features[position].component;
         let assembly = &self.state.assembly;
-        let link = match occurrence {
-            Some(path) => crate::links::link_for(assembly, component, path, context)
-                .map_err(|e| invalid(format!("{what} of {source_name}: {e}")))?,
-            None => None,
-        };
-        let (from, to_sketch) = match &link {
-            Some(link) => {
-                let placements = &self.result.placements;
-                let mut placement = |o: OccurrenceUid| {
-                    placements.get(&o).copied().unwrap_or_else(|| {
-                        assembly
-                            .occurrence(o)
-                            .map_or(crate::transform::Transform::IDENTITY, |o| o.transform)
-                    })
-                };
-                let from = link.source_component(assembly);
-                let to_sketch = link.transform(assembly, component, &mut placement);
-                let error = |e: String| invalid(format!("{what} of {source_name}: {e}"));
-                (from.map_err(error)?, Some(to_sketch.map_err(error)?))
-            }
-            None => (component, None),
-        };
         if let Some(b) = body
             && let Some(owner) = self.body_component(b)
             && owner != from
@@ -3078,7 +3167,7 @@ impl<K: Kernel> Document<K> {
         };
         let one = |curves: Vec<crate::kernel::Curve3>| {
             vec![SourceCurves {
-                source: source.cloned(),
+                source: source.cloned().map(crate::sketch::ProjectionSource::Topo),
                 chain: Vec::new(),
                 curves,
             }]
@@ -3134,10 +3223,117 @@ impl<K: Kernel> Document<K> {
                 (false, _) => format!("nothing named {source_name} exists before the sketch"),
             }));
         }
+        let label = if section {
+            "Section Curves to {sketch}"
+        } else {
+            "Project to {sketch}"
+        };
+        self.push_projections(
+            sketch,
+            &frame,
+            groups,
+            to_sketch.as_ref(),
+            Projecting {
+                body,
+                link,
+                linked,
+                section,
+                label,
+            },
+        )
+    }
+
+    /// Where a projection into `sketch` goes and where its source is
+    /// (Project and Section Curves, mitcad#100, mitcad#904): the sketch's
+    /// place in the timeline and its frame, and the component the source
+    /// geometry is in, with the link and the transform into the sketch's
+    /// coordinates when `occurrence` places it in another component.
+    /// `error` words what goes wrong with the link.
+    fn projection_target(
+        &self,
+        sketch: FeatureUid,
+        occurrence: Option<&[OccurrenceUid]>,
+        context: Option<&[OccurrenceUid]>,
+        error: &dyn Fn(String) -> ModelError,
+    ) -> Result<ProjectionTarget, ModelError> {
+        let position = self.state.require(sketch)?;
+        let frame = match (
+            self.sketch_output(sketch),
+            &self.state.features[position].def,
+        ) {
+            (Some(output), _) => output.frame,
+            (None, FeatureDef::Sketch(def)) => def
+                .plane
+                .origin_frame()
+                .map(|plane| def.place(&plane))
+                .ok_or_else(|| invalid("the sketch has no plane yet (it does not evaluate)"))?,
+            (None, _) => return Err(invalid(format!("{sketch} is not a sketch"))),
+        };
+        // The sketch's component's geometry is in its coordinates; another
+        // component's is moved there through a link.
+        let component = self.state.features[position].component;
+        let assembly = &self.state.assembly;
+        let link = match occurrence {
+            Some(path) => {
+                crate::links::link_for(assembly, component, path, context).map_err(error)?
+            }
+            None => None,
+        };
+        let (from, to_sketch) = match &link {
+            Some(link) => {
+                let placements = &self.result.placements;
+                let mut placement = |o: OccurrenceUid| {
+                    placements.get(&o).copied().unwrap_or_else(|| {
+                        assembly
+                            .occurrence(o)
+                            .map_or(crate::transform::Transform::IDENTITY, |o| o.transform)
+                    })
+                };
+                let from = link.source_component(assembly);
+                let to_sketch = link.transform(assembly, component, &mut placement);
+                (from.map_err(error)?, Some(to_sketch.map_err(error)?))
+            }
+            None => (component, None),
+        };
+        Ok(ProjectionTarget {
+            position,
+            frame,
+            from,
+            link,
+            to_sketch,
+        })
+    }
+
+    /// Adds projected curves to a sketch in one edit (`what.label`): each
+    /// group's curves, in the sketch's component's coordinates (moved
+    /// there by `to_sketch`), projected onto its plane (`frame`), joined to
+    /// the projected geometry already there, and for a linked projection
+    /// its record. Project and Section Curves of model geometry, and
+    /// Project of other sketches' curves and points (mitcad#904).
+    fn push_projections(
+        &mut self,
+        sketch: FeatureUid,
+        frame: &crate::profile::SketchFrame,
+        groups: Vec<crate::sketch::project::SourceCurves>,
+        to_sketch: Option<&crate::transform::Transform>,
+        what: Projecting<'_>,
+    ) -> Result<EditReport, ModelError> {
+        let Projecting {
+            body,
+            link,
+            linked,
+            section,
+            label,
+        } = what;
+        // Joined only to the projections of the same sketch's geometry, or
+        // of model geometry (mitcad#904).
+        let source_sketch = groups
+            .iter()
+            .find_map(|g| g.source.as_ref().and_then(|s| s.sketch()).map(|e| e.sketch));
         let projected: Vec<_> = groups
             .iter()
             .map(|group| {
-                let curves: Vec<crate::kernel::Curve3> = match &to_sketch {
+                let curves: Vec<crate::kernel::Curve3> = match to_sketch {
                     Some(t) => group
                         .curves
                         .iter()
@@ -3145,22 +3341,20 @@ impl<K: Kernel> Document<K> {
                         .collect(),
                     None => group.curves.clone(),
                 };
-                crate::sketch::project::distinct(crate::sketch::project::project(&curves, &frame))
+                crate::sketch::project::distinct(crate::sketch::project::project(&curves, frame))
             })
             .collect();
-        let label = if section {
-            "Section Curves to {sketch}"
-        } else {
-            "Project to {sketch}"
-        };
         let ((), report) = self.edit_sketch(sketch, label, |edit| {
             use crate::sketch::project;
             for (group, projected) in groups.into_iter().zip(&projected) {
                 // Joined to the projected geometry already there (mitcad#741):
                 // an edge projected again, or a face after one of its edges,
                 // adds no second curve, and ends that meet share a point.
-                let joinable =
-                    project::joinable(&edit.def, linked.then_some((body, link.as_ref())));
+                let joinable = project::joinable(
+                    &edit.def,
+                    linked.then_some((body, link.as_ref())),
+                    source_sketch,
+                );
                 let mut next = project::FRESH;
                 let fresh = project::entities(projected, &mut || {
                     next += 1;
@@ -3868,4 +4062,28 @@ fn display_names<S>(state: &DocState, result: &Recomputed<S>) -> BTreeMap<BodyUi
         }
     }
     names
+}
+
+/// How `Document::push_projections` adds its curves: the source's body
+/// (model geometry), its link to another component, whether the
+/// projection is linked or a section, and the edit's undo label.
+struct Projecting<'a> {
+    body: Option<BodyUid>,
+    link: Option<crate::links::OccurrenceLink>,
+    linked: bool,
+    section: bool,
+    label: &'a str,
+}
+
+/// Where a projection goes and where its source is
+/// (`Document::projection_target`).
+struct ProjectionTarget {
+    /// The sketch's place in the timeline.
+    position: usize,
+    frame: SketchFrame,
+    /// The component the source geometry is in.
+    from: ComponentUid,
+    link: Option<crate::links::OccurrenceLink>,
+    /// From the source's component's coordinates into the sketch's.
+    to_sketch: Option<crate::transform::Transform>,
 }

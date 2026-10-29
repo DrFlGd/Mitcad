@@ -80,6 +80,8 @@ pub mod face_extrude;
 pub mod face_revolve;
 // Display meshes kept in the result store (mitcad#858).
 pub mod display_mesh;
+// C++ exceptions under bridge calls as errors, tested (mitcad#937).
+pub mod exception_probe;
 
 use std::sync::Arc;
 

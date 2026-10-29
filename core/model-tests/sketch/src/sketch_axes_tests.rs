@@ -416,3 +416,59 @@ fn the_axis_flag_reads_and_writes_and_sketches_without_it_are_as_before() {
     .unwrap_err();
     assert!(error.to_string().contains("\"axis\" must be"), "{error}");
 }
+
+/// The sketch solves without redundant or conflicting constraints, its
+/// axis lines fixed and fully constrained.
+fn assert_axes_clean(s: &Value, axes: &[&str]) {
+    assert!(s["error"].is_null(), "{s}");
+    assert_eq!(s["redundant"], json!([]), "{s}");
+    assert!(
+        s["conflicts"].as_array().is_none_or(|c| c.is_empty()),
+        "{s}"
+    );
+    let fully = s["fully_constrained"].as_array().unwrap();
+    for id in axes {
+        assert_eq!(entity(s, id)["fixed"], true, "{id}: {s}");
+        assert!(fully.contains(&json!(id)), "{id}: {s}");
+    }
+}
+
+#[test]
+fn an_axis_line_is_not_redundant_alone_or_constrained() {
+    // The x axis alone: its fix repeats its fixed end points, which hold
+    // it, so it is not reported redundant (mitcad#877).
+    let mut d = with_sketch();
+    let x = axis_id(&mut d, "x");
+    let s = sketch(&d);
+    assert_eq!(s["dof"], 0, "{s}");
+    assert_axes_clean(&s, &[x.as_str()]);
+
+    // With a point on it.
+    let p = add_point(&mut d, [12.0, 5.0]);
+    constrain(
+        &mut d,
+        json!({"type": "coincident", "point": p, "entity": x}),
+    );
+    let s = sketch(&d);
+    assert!(close(at(&s, &p)[1], 0.0), "{s}");
+    assert_axes_clean(&s, &[x.as_str()]);
+
+    // Two points symmetric about it.
+    let a = add_point(&mut d, [20.0, 6.0]);
+    let b = add_point(&mut d, [21.0, -4.0]);
+    constrain(
+        &mut d,
+        json!({"type": "symmetric", "a": a, "b": b, "axis": x}),
+    );
+    let s = sketch(&d);
+    let (pa, pb) = (at(&s, &a), at(&s, &b));
+    assert!(close(pa[0], pb[0]) && close(pa[1], -pb[1]), "{s}");
+    assert_axes_clean(&s, &[x.as_str()]);
+
+    // The y axis beside it, sharing the origin, and a line parallel to it.
+    let y = axis_id(&mut d, "y");
+    let (l, _, _) = line(&mut d, [30.0, 0.0], [33.0, 20.0]);
+    constrain(&mut d, json!({"type": "parallel", "a": y, "b": l}));
+    let s = sketch(&d);
+    assert_axes_clean(&s, &[x.as_str(), y.as_str()]);
+}

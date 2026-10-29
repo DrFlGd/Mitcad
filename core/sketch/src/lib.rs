@@ -1288,6 +1288,204 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
     }
 }
 
+/// A curve or point of a sketch, named by the sketch's uid and the
+/// entity's id (mitcad#904): `F5/c3`, `F5/p2` in messages; in a
+/// definition and in commands `{"sketch": "F5", "curve": "c3"}` or
+/// `{"sketch": "F5", "point": "p2"}`, as the references to geometry write
+/// them. The ids of a sketch's entities stay with them across its edits,
+/// so the name keeps naming the same curve while the sketch changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SketchEntityRef {
+    pub sketch: crate::ids::FeatureUid,
+    pub entity: Ref,
+}
+
+impl fmt::Display for SketchEntityRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}/{}", self.sketch, self.entity)
+    }
+}
+
+impl std::str::FromStr for SketchEntityRef {
+    type Err = IdError;
+
+    fn from_str(text: &str) -> Result<Self, IdError> {
+        let wrong = || IdError::new("sketch entity", text, "F<number>/c<number> or /p<number>");
+        let (sketch, entity) = text.split_once('/').ok_or_else(wrong)?;
+        Ok(Self {
+            sketch: sketch.parse().map_err(|_| wrong())?,
+            entity: entity.parse().map_err(|_| wrong())?,
+        })
+    }
+}
+
+impl SketchEntityRef {
+    /// `{"sketch": "F5", "curve": "c3"}` or `{"sketch": "F5", "point": "p2"}`.
+    pub fn to_json(&self) -> Value {
+        let key = if self.entity.is_point() {
+            "point"
+        } else {
+            "curve"
+        };
+        let mut map = Map::new();
+        map.insert("sketch".to_owned(), Value::String(self.sketch.to_string()));
+        map.insert(key.to_owned(), Value::String(self.entity.to_string()));
+        Value::Object(map)
+    }
+
+    /// From [`SketchEntityRef::to_json`]'s form: a sketch and one of
+    /// `curve` and `point`, nothing else.
+    pub fn from_json(value: &Value) -> Result<Self, String> {
+        let Value::Object(map) = value else {
+            return Err(format!(
+                "a sketch entity is {{\"sketch\": \"F5\", \"curve\": \"c3\"}} or \
+                 {{\"sketch\": \"F5\", \"point\": \"p2\"}}, not {value}"
+            ));
+        };
+        if let Some(key) = map
+            .keys()
+            .find(|k| !matches!(k.as_str(), "sketch" | "curve" | "point"))
+        {
+            return Err(format!("a sketch entity has no field \"{key}\""));
+        }
+        let text = |key: &str| -> Result<Option<&str>, String> {
+            match map.get(key) {
+                None => Ok(None),
+                Some(Value::String(s)) => Ok(Some(s.as_str())),
+                Some(other) => Err(format!("\"{key}\" is a text, not {other}")),
+            }
+        };
+        let sketch: crate::ids::FeatureUid = text("sketch")?
+            .ok_or_else(|| "a sketch entity needs its \"sketch\"".to_owned())?
+            .parse()
+            .map_err(|e| format!("{e}"))?;
+        let entity = match (text("curve")?, text("point")?) {
+            (Some(curve), None) => Ref::Curve(
+                parse_number(curve, "c")
+                    .map(EntityUid)
+                    .ok_or_else(|| format!("\"curve\" is c<number>, not {curve}"))?,
+            ),
+            (None, Some(point)) => Ref::Point(
+                parse_number(point, "p")
+                    .map(EntityUid)
+                    .ok_or_else(|| format!("\"point\" is p<number>, not {point}"))?,
+            ),
+            _ => {
+                return Err(
+                    "a sketch entity names one \"curve\" or one \"point\" of its sketch".to_owned(),
+                );
+            }
+        };
+        Ok(Self { sketch, entity })
+    }
+}
+
+impl Serialize for SketchEntityRef {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        self.to_json().serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for SketchEntityRef {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(d)?;
+        Self::from_json(&value).map_err(D::Error::custom)
+    }
+}
+
+/// What a linked projection follows: model geometry by its topological
+/// name (an edge, a face or a vertex), or a curve or point of an earlier
+/// sketch (mitcad#904). In a definition the first is its name's text, as
+/// in every earlier version, the second the object form of
+/// [`SketchEntityRef`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ProjectionSource {
+    Topo(TopoName),
+    Sketch(SketchEntityRef),
+}
+
+impl ProjectionSource {
+    /// The model geometry's name; None for a sketch's entity.
+    pub fn topo(&self) -> Option<&TopoName> {
+        match self {
+            Self::Topo(name) => Some(name),
+            Self::Sketch(_) => None,
+        }
+    }
+
+    /// The sketch's entity; None for model geometry.
+    pub fn sketch(&self) -> Option<&SketchEntityRef> {
+        match self {
+            Self::Topo(_) => None,
+            Self::Sketch(entity) => Some(entity),
+        }
+    }
+}
+
+impl From<TopoName> for ProjectionSource {
+    fn from(name: TopoName) -> Self {
+        Self::Topo(name)
+    }
+}
+
+impl From<SketchEntityRef> for ProjectionSource {
+    fn from(entity: SketchEntityRef) -> Self {
+        Self::Sketch(entity)
+    }
+}
+
+impl PartialEq<TopoName> for ProjectionSource {
+    fn eq(&self, other: &TopoName) -> bool {
+        self.topo() == Some(other)
+    }
+}
+
+impl fmt::Display for ProjectionSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Topo(name) => name.fmt(f),
+            Self::Sketch(entity) => entity.fmt(f),
+        }
+    }
+}
+
+impl std::str::FromStr for ProjectionSource {
+    type Err = String;
+
+    /// `F5/c3` a sketch's entity, anything else a topological name.
+    fn from_str(text: &str) -> Result<Self, String> {
+        if let Ok(entity) = text.parse::<SketchEntityRef>() {
+            return Ok(Self::Sketch(entity));
+        }
+        text.parse::<TopoName>()
+            .map(Self::Topo)
+            .map_err(|e| e.to_string())
+    }
+}
+
+impl Serialize for ProjectionSource {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Topo(name) => name.serialize(s),
+            Self::Sketch(entity) => entity.serialize(s),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProjectionSource {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        match Value::deserialize(d)? {
+            Value::String(text) => text
+                .parse::<TopoName>()
+                .map(Self::Topo)
+                .map_err(D::Error::custom),
+            other => SketchEntityRef::from_json(&other)
+                .map(Self::Sketch)
+                .map_err(D::Error::custom),
+        }
+    }
+}
+
 /// Model geometry projected into the sketch whose entities follow the
 /// source (a linked projection). Unlinked projections are plain
 /// fixed reference entities and need no record; their persistent
@@ -1295,8 +1493,9 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Projection {
-    /// An edge, a face (its boundary edges) or a vertex.
-    pub source: TopoName,
+    /// An edge, a face (its boundary edges) or a vertex; or a curve or
+    /// point of an earlier sketch (mitcad#904).
+    pub source: ProjectionSource,
     /// The body of the source; any body when left out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<BodyUid>,

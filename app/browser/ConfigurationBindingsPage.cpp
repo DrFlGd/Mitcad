@@ -32,6 +32,7 @@ namespace {
 enum Column { kItem, kProperty, kFollows, kNow };
 constexpr int kEntryRole = Qt::UserRole; // the entry's index
 const QColor kWarningFill(0xff, 0xf1, 0xc8);
+const QColor kWarningText(0x4f, 0x3b, 0x14);
 
 } // namespace
 
@@ -212,6 +213,9 @@ void ConfigurationBindingsPage::fill() {
       item->setToolTip(problems.isEmpty() ? texts[column] : texts[column] + QStringLiteral("\n⚠ ") + problems);
       if (!problems.isEmpty()) {
         item->setBackground(kWarningFill);
+        // This fixed pale fill needs its paired ink in both appearances;
+        // the dark theme's ordinary text would be nearly white on yellow.
+        item->setForeground(kWarningText);
       }
       m_table->setItem(row, column, item);
     }

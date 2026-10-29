@@ -1,0 +1,13 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT"},
+  {"comment": "Synthetic parameter table with a dependent 60 x 40 mm extrusion."},
+  {"cmd": "set_table", "name": "Sizes", "table": {
+    "comment": "Synthetic sizes", "columns": [{"name": "Key", "unit": "Text"}, {"name": "Value", "unit": "mm"}],
+    "rows": [["M4", 7], ["M5", 20]]}},
+  {"cmd": "add_parameter", "name": "Height", "unit": "mm", "expression": "XLOOKUP('M5'; Sizes.Key; Sizes.Value)"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": "Height"}, "operation": "new_body"}}
+]

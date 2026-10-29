@@ -1,0 +1,141 @@
+# SPDX-License-Identifier: MIT
+# Actual AppKit pointer entry, native key events and native text input.
+# The shared Formula Editor remains the only formula/validation writer.
+wait-idle
+window-resize 1280 820
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+native-appearance ${MITCAD_TEST_COLOR_SCHEME}
+expect-model-bodies 1 16000
+expect-model-parameter result 1
+capture-undo-depth formulaBaseline
+command solid.parameters
+focus-dialog '^Parameters$'
+# Enter through the actual Expression cell, as the shared Parameters flow.
+native-pointer-click parameter.result.2
+expect-native-enabled parametersFormula true
+native-pointer-click parametersFormula
+focus-dialog '^Formula Editor$'
+native-pointer-click formulaText
+native-key-event Ctrl+a
+type '1 mm'
+native-key-event Return
+expect-widget-property formulaText blockCount 2
+expect-model-parameter result 1
+expect-undo-depth ${formulaBaseline} 0
+
+# Replace a selection in the middle, not at the hidden Qt cursor's start.
+native-key-event Ctrl+a
+type '10 mm + 99 mm + 5 mm'
+native-key-event Left Left Left Left Left Left Left
+native-key-event Shift+Left Shift+Left Shift+Left Shift+Left Shift+Left
+native-pointer-click formulaFunctionSearch
+native-key-event Ctrl+a
+type MAX
+native-pointer-dblclick formulaFunctions/0/0
+expect-native-text formulaText '^10 mm [+] MAX[(][)] [+] 5 mm$'
+expect-widget-property formulaText plainText '10 mm + MAX() + 5 mm'
+expect-native-focus formulaText
+screenshot-screen '${MITCAD_TEST_WORK}/function-${MITCAD_TEST_COLOR_SCHEME}.png'
+type '2 mm; 3 mm'
+expect-native-text formulaText '^10 mm [+] MAX[(]2 mm; 3 mm[)] [+] 5 mm$'
+native-key-event Ctrl+Return
+expect-native-dialog-gone '^Formula Editor$'
+focus-dialog '^Parameters$'
+expect-model-parameter result 18
+expect-undo-depth ${formulaBaseline} 1
+
+# A native template popup likewise replaces the actual middle selection.
+native-pointer-click parameter.result.2
+expect-native-enabled parametersFormula true
+native-pointer-click parametersFormula
+focus-dialog '^Formula Editor$'
+native-pointer-click formulaText
+native-key-event Ctrl+a
+type '10 mm + 0 mm + 5 mm'
+native-key-event Left Left Left Left Left Left Left
+native-key-event Shift+Left Shift+Left Shift+Left Shift+Left
+native-pointer-choice formulaTemplates 'Spacing for N items' Down Down Return
+expect-native-text formulaText '^10 mm [+] length / [(]count - 1[)] [+] 5 mm$'
+expect-widget-property formulaText plainText '10 mm + length / (count - 1) + 5 mm'
+expect-native-focus formulaText
+screenshot-screen '${MITCAD_TEST_WORK}/template-${MITCAD_TEST_COLOR_SCHEME}.png'
+native-key-event Ctrl+Return
+expect-native-dialog-gone '^Formula Editor$'
+focus-dialog '^Parameters$'
+expect-model-parameter result 40
+expect-undo-depth ${formulaBaseline} 2
+expect-native-text parameter.result.2 '^10 mm [+] length / [(]count - 1[)] [+] 5 mm$'
+
+# A refused formula stays open and writes nothing; Escape still cancels.
+native-pointer-click parameter.result.2
+expect-native-enabled parametersFormula true
+native-pointer-click parametersFormula
+focus-dialog '^Formula Editor$'
+native-pointer-click formulaText
+native-key-event Ctrl+a
+type '1 mm / 0'
+native-key-event Ctrl+Return
+focus-dialog '^Formula Editor$'
+expect-native-text formulaError 'zero'
+expect-model-parameter result 40
+expect-undo-depth ${formulaBaseline} 2
+screenshot-screen '${MITCAD_TEST_WORK}/refused-${MITCAD_TEST_COLOR_SCHEME}.png'
+native-key-event Escape
+expect-native-dialog-gone '^Formula Editor$'
+focus-dialog '^Parameters$'
+expect-model-parameter result 40
+expect-undo-depth ${formulaBaseline} 2
+
+# Genuine typed key events open the shared list. Escape closes only it;
+# Tab inserts its selected item and Command+Return accepts that expression.
+native-pointer-click parameter.result.2
+expect-native-enabled parametersFormula true
+native-pointer-click parametersFormula
+focus-dialog '^Formula Editor$'
+native-pointer-click formulaText
+native-key-event Ctrl+a Backspace
+native-key-event p i t
+expect-log 'Formula completions for "pit": pitch'
+expect-native-visible formulaCompletions true
+expect-native-selection formulaCompletions 1
+expect-native-focus formulaText
+screenshot-screen '${MITCAD_TEST_WORK}/completion-${MITCAD_TEST_COLOR_SCHEME}.png'
+native-key-event Escape
+expect-native-visible formulaCompletions false
+expect-native-text formulaText '^pit$'
+expect-undo-depth ${formulaBaseline} 2
+native-key-event Ctrl+a Backspace
+native-key-event p i t
+expect-native-visible formulaCompletions true
+native-pointer-click formulaCompletions/0/0
+expect-native-visible formulaCompletions false
+expect-native-text formulaText '^pitch$'
+expect-native-focus formulaText
+native-key-event Ctrl+a Backspace
+native-key-event p i t
+expect-native-visible formulaCompletions true
+native-key-event Tab
+expect-native-visible formulaCompletions false
+expect-native-text formulaText '^pitch$'
+expect-widget-property formulaText plainText pitch
+expect-native-focus formulaText
+native-key-event Ctrl+Return
+expect-native-dialog-gone '^Formula Editor$'
+focus-dialog '^Parameters$'
+expect-model-parameter result 8
+expect-undo-depth ${formulaBaseline} 3
+expect-model-bodies 1 16000
+native-pointer-click parametersOK
+expect-native-dialog-gone '^Parameters$'
+focus-main
+native-key-event Ctrl+s
+expect-log 'Saved .*formula-input[.]mitcad'
+command edit.undo
+expect-model-parameter result 40
+command edit.undo
+expect-model-parameter result 18
+command edit.undo
+expect-model-parameter result 1
+expect-undo-depth ${formulaBaseline} 0
+expect-model-bodies 1 16000
+expect-never 'Native Mac canvas[:]|OCCT view event failed|Recompute failed'

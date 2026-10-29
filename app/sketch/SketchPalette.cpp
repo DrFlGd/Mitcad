@@ -304,17 +304,39 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   connect(&m_c, &SketchController::changed, this, &SketchPalette::refresh);
   connect(&m_c, &SketchController::optionsChanged, this, &SketchPalette::refresh);
   connect(&m_c, &SketchController::toolChanged, this, [this](const QString& name) {
+    // Keep the actionable hint readable with the ordinary text palette;
+    // the tool's bold name supplies the visual hierarchy.
     m_tool->setText(name.isEmpty() ? QString()
-                                   : tr("<b>%1</b><br><span style='color:gray'>Esc ends the tool; "
-                                        "Enter accepts typed values.</span>")
-                                         .arg(name.toHtmlEscaped()));
+                                 : tr("<b>%1</b><br>Esc ends the tool; Enter accepts typed values.")
+                                       .arg(name.toHtmlEscaped()));
   });
   refresh();
 }
 
+void SketchPalette::changeEvent(QEvent* event) {
+  QWidget::changeEvent(event);
+  if ((event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) &&
+      m_title != nullptr) {
+    refreshTitle();
+  }
+}
+
+void SketchPalette::refreshTitle() {
+  // Match the palette's subdued section captions, including their alpha on
+  // a translucent card. A fixed grey can disappear against a dark card.
+  const QColor secondary = palette().color(QPalette::PlaceholderText);
+  const QString color = QStringLiteral("rgba(%1,%2,%3,%4)")
+                            .arg(secondary.red())
+                            .arg(secondary.green())
+                            .arg(secondary.blue())
+                            .arg(secondary.alpha());
+  m_title->setText(tr("<b>Sketch Palette</b> <span style='color:%2'>%1</span>")
+                       .arg(m_c.model().name.toHtmlEscaped(), color));
+}
+
 void SketchPalette::refresh() {
   const SketchModel& model = m_c.model();
-  m_title->setText(tr("<b>Sketch Palette</b> <span style='color:gray'>%1</span>").arg(model.name.toHtmlEscaped()));
+  refreshTitle();
   QString status;
   if (!model.conflicts.empty() || !model.error.isEmpty()) {
     status = tr("<span style='color:%1'>Conflicting constraints</span>").arg(errorColor().name());

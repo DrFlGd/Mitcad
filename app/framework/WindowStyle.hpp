@@ -27,6 +27,10 @@ class QTreeView;
 
 namespace mitcad {
 
+// Scrollable side trees need one complete row, rather than the scroll
+// area's several-row default. Stacked docks must still fit a short screen.
+QSize dockedTreeMinimumSize(const QTreeView* tree, const QSize& fallback);
+
 // The look of the Docked chrome's window (mitcad#251), the same on Windows,
 // Linux and macOS and in the light and the dark theme: the panels (Projects,
 // Browser, Command, Timeline) and the toolbar are raised surfaces, slightly

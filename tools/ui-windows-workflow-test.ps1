@@ -44,7 +44,9 @@
 #      click on it), 3 turns of a typed pitch, of the volume by Pappus'
 #      rule; a counterdrilled, tapered hole as the FreeCAD import writes
 #      one opens from the timeline (a double-click), and a typed taper keeps
-#      its counterdrill.
+#      its counterdrill; edited to a Clearance hole for M6 (mitcad#903) the
+#      size fills its diameter and counterdrill, and a typed depth stays
+#      when the size changes.
 #  13. Joints (mitcad#55) on a design mitcad-cli makes: a pin on a revolute
 #      joint dragged in the view turns about its joint (one undo step); Joint
 #      (J) puts a cap's top face onto a plate's, flipped, the preview showing
@@ -542,6 +544,38 @@ $rb = 3.3 - 20 * $lean
 $hole = [Math]::PI * (5.5 * 5.5 * 3 + ($cone - 3) / 3 * (5.5 * 5.5 + 5.5 * $rc + $rc * $rc) +
   (20 - $cone) / 3 * ($rc * $rc + $rc * $rb + $rb * $rb))
 Ui-ExpectVolume 'Body \S+ \(F2\.b0\): volume [0-9.]+ -> ([0-9.]+) mm3' (48000 - $hole) 'still counterdrilled, tapered 1 degree'
+# A Clearance hole for M6 (mitcad#903): Hole Tap Type Clearance fills the
+# hole (ISO 273 Normal: 6.6) and its counterdrill (the ISO 4762 head's
+# counterbore: 11, 6.4 deep, 90 degrees); a typed depth of 8 stays while
+# the size goes to M8 and back.
+Ui-Mark
+Ui-Step 'edit Hole1 again (double-click)' { Ui-DoubleClickLogged 'Timeline Hole1' }
+Ui-ExpectNew 'Editing F5 with Hole' 'the hole opens again' 30
+Ui-Step 'taper 0'                        { Ui-TypeIn 'Panel Hole input taper' '0' }
+Ui-ExpectNew 'Hole Taper Angle: 0 = 0 deg' 'no taper'
+foreach ($tap in 'Tapped', 'Clearance') {
+  Ui-Step "$tap (wheel)"                 { Ui-WheelLogged 'Panel Hole input tap' -1 }
+  Ui-ExpectNew "Hole: Hole Tap Type = $tap" "Hole Tap Type $tap"
+}
+Ui-ExpectNew 'Hole sizes for M6 normal: diameter 6.6 mm, cb_diameter 11 mm, cb_depth 6.4 mm' 'M6 Normal fills 6.6, 11 and 6.4'
+Ui-ExpectNew 'cd_diameter 11 mm, cd_depth 6.4 mm' 'the counterdrill as the counterbore'
+Ui-Step 'counterdrill 8 deep'            { Ui-TypeIn 'Panel Hole input cd_depth' '8' }
+Ui-ExpectNew 'Hole cd_depth typed: kept when the size changes' 'the typed depth is kept'
+Ui-Mark
+Ui-Step 'Screw Size M8 (wheel)'          { Ui-WheelLogged 'Panel Hole input clearance_size' -1 }
+Ui-ExpectNew 'Hole: Screw Size = M8' 'M8 chosen'
+Ui-ExpectNew 'Hole sizes for M8 normal: diameter 9 mm, cb_diameter 15 mm' 'M8 fills 9 and 15'
+Ui-ExpectNew '; kept cd_depth' 'the typed depth stays at M8'
+Ui-Mark
+Ui-Step 'Screw Size M6 (wheel)'          { Ui-WheelLogged 'Panel Hole input clearance_size' 1 }
+Ui-ExpectNew 'Hole sizes for M6 normal: diameter 6.6 mm, cb_diameter 11 mm' 'back to 6.6 and 11'
+Ui-ExpectNew '; kept cd_depth' 'the typed depth stays at M6'
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Edited F5' 'the hole edited to a clearance hole' 30
+# The block less an 11 mm cylinder 8 deep, the 90 degree cone down to the
+# 6.6 mm wall (2.2 high), the wall to the bottom.
+$hole = [Math]::PI * (5.5 * 5.5 * 8 + 2.2 / 3 * (5.5 * 5.5 + 5.5 * 3.3 + 3.3 * 3.3) + 3.3 * 3.3 * (20 - 8 - 2.2))
+Ui-ExpectVolume 'Body \S+ \(F2\.b0\): volume [0-9.]+ -> ([0-9.]+) mm3' (48000 - $hole) 'an M6 clearance hole, counterdrilled 8 deep'
 
 Write-Host '--- Joints (mitcad#55): a drag in the view, a joint from its panel'
 # The design: Plate:1 (a 40 x 40 x 10 block, grounded), Pin:1 (10 x 10 x 20)

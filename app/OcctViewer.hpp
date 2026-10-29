@@ -190,6 +190,10 @@ struct HighlightDisplay {
   // while a command preview replaces the displayed body.
   std::shared_ptr<geometry::Shape> body = nullptr;
   bool throughSolid = false; // feature inspection: boundaries remain visible behind solids
+  // Diagnostic alternatives for whole-body overlay cost (mitcad#770).
+  // Production callers keep the normal transparent, bounded presentation.
+  bool opaqueWholeBody = false;
+  bool wholeBodyBoundaries = true;
 };
 
 // How bodies are drawn (U5).
@@ -698,6 +702,13 @@ public:
   // Everything under a widget position that the filter takes, the item a
   // click picks first.
   std::vector<SelectionItem> itemsAt(const QPointF& position);
+  // Whether a click at a widget position is the view's own (mitcad#899):
+  // it would pick a precise target there now (an edge, a vertex, a sketch
+  // curve, point or text, a datum axis or point; not only an area such as
+  // a face or a profile), or a body edge or vertex of the filter's kinds is
+  // under it that the finer test refuses (behind faces, which Shift
+  // picks). Sketch mode's axes take only the clicks that are not.
+  bool claimsClick(const QPointF& position);
   // For UI tests: a point in the widget where a click picks each face,
   // edge or vertex of the shown bodies that the filter takes (only those
   // a click there would pick).

@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files app/projects
+# check-all sources: app/files app/projects app/MainWindow.cpp
 # Project files through the real UI: Save As with a typed path, reopen with
 # --open, Save (Ctrl+S) after a parameter change, the title's "*" through
 # undo and redo, the unsaved-changes prompt on New Design (an untitled
 # design outside projects) and on exit, and Open through the file dialog.
-# The File menu's entries in their groups (mitcad#175).
+# The File menu's entries in their groups (mitcad#175). Every new design
+# starts with Component1 active (mitcad#898): the untitled design at the
+# start, after New and after Close; a design read from a file opens with
+# the root active instead (mitcad#426).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh). The app uses Qt's own file
 # dialog (--no-native-dialogs), so a path can be typed into it.
@@ -164,25 +167,54 @@ expect_file '[p["value"] for p in doc["parameters"] if p["name"] == "d3"]' "[20.
   "undo saved on exit"
 
 echo "--- Open dialog, Don't Save on New Design"
+NEW_DESIGN="Opened the new design with Component1 active"
+# no_new_design_since_mark description: a design read from a file opens
+# with its root active (mitcad#426), not as a new design.
+no_new_design_since_mark() {
+  ! tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "$NEW_DESIGN" ||
+    ui_fail "$1: logged '$NEW_DESIGN'"
+  echo "ok   $1: opened with the root active, not as a new design"
+}
 ui_start_app --no-native-dialogs
 expect_title "Untitled - MitCad"
+# Every new design starts with Component1 active (mitcad#898): at the
+# start, after New and after Close.
+ui_expect_log "$NEW_DESIGN" "the untitled design at the start has Component1 active"
+ui_mark
 ui_step "open (Ctrl+O)"                  ui_key ctrl+o
 ui_step "type the path, Enter"           type_path "Open" "$FILE"
 ui_expect_log "Opened $FILE" "opened through the dialog"
 ui_expect_log "Recomputed 3 feature(s)" "sketch, extrude and fillet recomputed"
 expect_title "block.mitcad - MitCad"
+no_new_design_since_mark "the opened file"
 checksum=$(sha256sum "$FILE")
 ui_step "create a sketch on XY"          ui_create_sketch xy
 expect_title "block.mitcad* - MitCad"
+ui_mark
 ui_step "new design (Ctrl+N)"            ui_key ctrl+n
 focus_dialog '^MitCad$'
 ui_step "don't save (D)"                 ui_key d
 focus_main
-ui_expect_log "New document" "new document after Don't Save"
-ui_expect_log "New Design: no project, an untitled design" "outside projects New Design is New"
+ui_expect_new "New document" "new document after Don't Save"
+ui_expect_new "New Design: no project, an untitled design" "outside projects New Design is New"
+ui_expect_new "$NEW_DESIGN" "the new design after New has Component1 active"
 expect_title "Untitled - MitCad"
 [ "$(sha256sum "$FILE")" = "$checksum" ] || ui_fail "the file changed after Don't Save"
 echo "ok   file unchanged"
+
+echo "--- Close: the empty design after it has Component1 active (mitcad#898)"
+ui_mark
+ui_step "open (Ctrl+O)"                  ui_key ctrl+o
+ui_step "type the path, Enter"           type_path "Open" "$FILE"
+ui_expect_new "Opened $FILE" "opened through the dialog again"
+expect_title "block.mitcad - MitCad"
+no_new_design_since_mark "the file opened again"
+ui_mark
+ui_step "close (Ctrl+W)"                 ui_key ctrl+w
+ui_expect_new "Document closed" "the design closed"
+ui_expect_new "$NEW_DESIGN" "the new design after Close has Component1 active"
+expect_title "Untitled - MitCad"
+focus_main
 ui_key ctrl+q
 expect_exit "unmodified document exits without a prompt"
 

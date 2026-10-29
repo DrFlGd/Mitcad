@@ -372,6 +372,30 @@ decision 7):
 - Free numeric options are fields within their allowed range.
 - A closed table looks as it does today.
 
+Profile planning and BUILD preview retain text constants and text
+expressions bound to the parent design, and use source-declared units for
+non-length numeric options. Lengths keep the existing millimetre fallback
+for bare expressions, matching derived-part slots; explicitly unit-bearing
+expressions retain their units. The source's configured geometry supplies
+the preview's frames, bounds and designation. As with a committed derived
+part, constants may move through the source's rule cascade; a conflicting
+parent-bound expression is refused with the rule's reason. Every preview
+validates that distinction before consulting its cache, whose key contains
+the normalized typed values after the cascade. Text options are never
+omitted from planning or read as length expressions.
+The existing numeric-only source-state helper remains available to other
+BUILD operations.
+
+A repaired cut length is also the reported preview length, including an
+automatic ray suggestion. The plan keeps moved constants in the shared
+cascade's expression form, as component-option edits do, so the saved
+component and parts list agree with its geometry. A geometry-bound length
+uses the committed feature's exact target calculation, including Face,
+Centre or Through and the added gap. Planning measures the target, then
+rebuilds once at that measured length with its value pinned; a binding
+that changes its own placement is refused. Preview configuration retains
+that pin and never repairs the geometric measurement as a free constant.
+
 ## Commands and queries (for commands.md)
 
 | Command / query | Change |

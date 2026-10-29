@@ -426,7 +426,13 @@ bool DocumentSession::startAsync(const QString& label, const QString& stage, Job
   m_async->clock.start();
   m_job = &m_async->job;
   ModelJob* state = m_job;
-  m_worker->post([job = std::move(job), state] { job(*state); });
+  const auto hold = label == QStringLiteral("preview") ? m_testHoldPreview : nullptr;
+  m_worker->post([job = std::move(job), state, hold] {
+    while (hold && hold->load() && !state->control().is_cancelled()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    job(*state);
+  });
   m_progressTimer.start();
   qDebug().noquote() << QStringLiteral("Computing %1 started").arg(label);
   emit busyChanged(true);

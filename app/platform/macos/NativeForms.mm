@@ -217,7 +217,9 @@ NSGridRow* spanningRow(NSGridView* grid, NSView* view, CGFloat top, CGFloat bott
 
 QString displaySelection(const InputDef& input, int count) {
   if (count == 0) {
-    return input.min > 0 ? QObject::tr("Select") : QObject::tr("None (all)");
+    // Match the shared form: an optional single pick is none, while an
+    // empty optional list can stand for all of its candidates.
+    return input.min > 0 ? QObject::tr("Select") : input.max == 1 ? QObject::tr("None") : QObject::tr("None (all)");
   }
   return QObject::tr("%1 selected").arg(count);
 }
@@ -238,7 +240,8 @@ bool sameNote(const InputNote& a, const InputNote& b) {
 class AppKitCommandForm final : public NativeCommandForm {
 public:
   AppKitCommandForm(CommandSession& session, QWidget* parameterOwner)
-      : m_def(session.def()), m_state(session.state()), m_expressionHost(nativeExpressionHost(parameterOwner)) {
+      : m_session(&session), m_def(session.def()), m_state(session.state()),
+        m_expressionHost(nativeExpressionHost(parameterOwner)) {
     m_logTimer.setSingleShot(true);
     m_logTimer.setInterval(0);
     QObject::connect(&m_logTimer, &QTimer::timeout, &session, [this] { logLayout(); });
@@ -270,6 +273,10 @@ public:
     addFullWidth(m_root, m_header);
     m_fields = column();
     addFullWidth(m_root, m_fields);
+    m_sections = column();
+    m_sections.accessibilityIdentifier = @"commandSections";
+    m_sections.hidden = YES;
+    addFullWidth(m_root, m_sections);
     m_result = label(QString());
     m_result.accessibilityIdentifier = @"commandResult";
     m_result.hidden = YES;
@@ -289,7 +296,10 @@ public:
     // applied: its Cancel only closes it.
     NSButton* cancel = button(m_def.repeats ? QObject::tr("Close") : QObject::tr("Cancel"), QStringLiteral("cancel"));
     cancel.accessibilityIdentifier = @"commandCancel";
-    cancel.keyEquivalent = @"\033";
+    // A command's Escape hook belongs to the document responder chain
+    // (3D Print's bed face choice, mitcad#857). Its Cancel button remains
+    // an unconditional rejection, including when activated with Space.
+    cancel.keyEquivalent = m_def.escape ? @"" : @"\033";
     cancel.toolTip = nativeString(m_def.repeats ? QObject::tr("Close; what was placed stays (Esc)")
                                                 : QObject::tr("Close without changes (Esc)"));
     m_ok = button(m_def.apply               ? (m_def.okLabel.isEmpty() ? QObject::tr("OK") : m_def.okLabel)
@@ -329,6 +339,21 @@ public:
 
   void* nativeView() const override { return (__bridge void*)m_root; }
   void* nativeFooterView() const override { return (__bridge void*)m_footer; }
+
+  void addSection(QWidget* section) override {
+    if (section == nullptr) return;
+    Section added;
+    // Keep the retained presenter an embedded widget, not a hidden top-level
+    // window with window-sized Qt layout constraints. This host is never shown.
+    section->setParent(m_sectionHost.get());
+    section->setProperty("nativeCompactPanel", true);
+    added.presenter.reset(section);
+    added.view = createNativeWidgetView(section);
+    addFullWidth(m_sections, (__bridge NSView*)added.view->nativeView());
+    m_sections.hidden = NO;
+    m_auxiliary.push_back(std::move(added));
+    requestLayout();
+  }
 
   void addHeaderAction(QAction* action) override {
     if (action == nullptr) {
@@ -429,6 +454,7 @@ public:
     for (const HeaderAction& header : m_headerActions) {
       header.button.enabled = !header.action.isNull() && header.action->isEnabled();
     }
+    for (const Section& section : m_auxiliary) section.view->refresh();
     refreshControlAvailability();
     requestLayout();
   }
@@ -721,6 +747,7 @@ public:
       return true;
     }
     if (command == @selector(cancelOperation:)) {
+      if (m_session && m_session->escape()) { return true; }
       auto call = actions().rejected;
       if (call) { call(); }
       return true;
@@ -1489,6 +1516,7 @@ private:
     return row == m_rows.cend() ? nullptr : &*row;
   }
 
+  QPointer<CommandSession> m_session;
   const CommandDef m_def;
   CommandState m_state;
   QPointer<QWidget> m_expressionHost; // the fx tools' window (nativeExpressionHost)
@@ -1496,6 +1524,7 @@ private:
   NSStackView* __strong m_root;
   NSStackView* __strong m_header;
   NSStackView* __strong m_fields;
+  NSStackView* __strong m_sections;
   NSGridView* __strong m_grid = nil;
   NSTextField* __strong m_result;
   NSTextField* __strong m_message;
@@ -1503,6 +1532,14 @@ private:
   NSButton* __strong m_ok;
   std::vector<Row> m_rows;
   std::vector<HeaderAction> m_headerActions;
+  // Declaration order keeps the presenter alive until its native adapter
+  // has disconnected all callbacks, including queued model refreshes.
+  struct Section {
+    std::unique_ptr<QWidget> presenter;
+    std::unique_ptr<NativeWidgetView> view;
+  };
+  std::unique_ptr<QWidget> m_sectionHost = std::make_unique<QWidget>();
+  std::vector<Section> m_auxiliary;
   QHash<QString, int> m_counts;
   QHash<QString, QString> m_pendingStructure;
   QHash<QString, QColor> m_colors;

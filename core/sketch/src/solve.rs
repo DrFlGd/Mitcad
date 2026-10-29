@@ -355,7 +355,22 @@ impl Built {
             spacings,
             degenerate: Vec::new(),
         };
-        for e in entities.iter().filter(|e| e.fixed) {
+        // A fixed line whose both end points are fixed (the sketch's axis
+        // lines, mitcad#500) is held by its points' fixes; fixing the line
+        // too would only repeat them and be reported redundant
+        // (mitcad#877). The line stays fixed in the definition.
+        let fixed_points: BTreeSet<EntityUid> = entities
+            .iter()
+            .filter(|e| e.fixed && e.is_point())
+            .map(|e| e.id)
+            .collect();
+        let held_by_points = |e: &Entity| match e.kind {
+            EntityKind::Line { start, end, .. } => {
+                fixed_points.contains(&start) && fixed_points.contains(&end)
+            }
+            _ => false,
+        };
+        for e in entities.iter().filter(|e| e.fixed && !held_by_points(e)) {
             let c = if e.is_point() {
                 S::FixPoint(built.points[&e.id])
             } else {

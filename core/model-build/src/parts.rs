@@ -6,16 +6,18 @@
 //! designation and part number are read in the model
 //! (`mitcad_model::internal::build`) and re-exported here.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{LibrarySourceDef, SourceId};
+use mitcad_model::expr::{Expr, Unit};
 use mitcad_model::features::{FeatureDef, ValueInput};
 use mitcad_model::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use mitcad_model::kernel::{BoundingBox, Kernel};
 use mitcad_model::parameters::{ParamId, Parameters};
+use mitcad_model::part_options::{ConfiguredSource, PartValue};
 use mitcad_model::topo::FaceName;
 use mitcad_model::transform::Transform;
-use mitcad_model::{DocState, Document};
+use mitcad_model::{DocState, Document, ModelError};
 
 // What BUILD reads of a placed part (`Document::part_info`) and what a
 // list gives it are in the model, which the parts list and the
@@ -148,6 +150,118 @@ pub fn source_state(
     values: &[(String, f64)],
 ) -> Result<DocState, String> {
     mitcad_model::internal::features::configured(source, config, values)
+}
+
+/// The chosen options evaluated in the parent document. Text and
+/// non-length numeric units follow the source, as derived-part slots do;
+/// lengths retain BUILD's millimetre fallback for bare expressions.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SourceOptionValues {
+    pub values: Vec<(String, PartValue)>,
+    pub pinned: BTreeSet<String>,
+}
+
+impl SourceOptionValues {
+    /// The values after the shared cascade, including options it moved.
+    /// Validate before caching so the same numbers from a bound request
+    /// cannot reuse a constant request that the cascade repaired.
+    pub fn normalized(
+        &self,
+        configured: &ConfiguredSource,
+    ) -> Result<Vec<(String, PartValue)>, String> {
+        let names: BTreeSet<_> = self
+            .values
+            .iter()
+            .map(|(name, _)| name)
+            .chain(configured.moves.iter().map(|m| &m.option))
+            .collect();
+        let params = &configured.state.parameters;
+        names
+            .into_iter()
+            .map(|name| {
+                let id = params
+                    .find(name)
+                    .ok_or_else(|| format!("there is no parameter {name}"))?;
+                let value = match params.text(id) {
+                    Some(text) => PartValue::Text(text.to_owned()),
+                    None => PartValue::Number(
+                        params
+                            .value(id)
+                            .filter(|n| n.is_finite())
+                            .ok_or_else(|| format!("{name}: not a finite value"))?,
+                    ),
+                };
+                Ok((name.clone(), value))
+            })
+            .collect()
+    }
+}
+
+/// Reads expressions and records only parent-bound values as pinned,
+/// matching a committed derived part's constant/bound distinction.
+pub fn source_option_values<K: Kernel>(
+    doc: &Document<K>,
+    source: &LibrarySourceDef,
+    values: &BTreeMap<String, ValueInput>,
+) -> Result<SourceOptionValues, ModelError> {
+    let design = source.design.state().map_err(ModelError::Invalid)?;
+    let params = doc.parameters();
+    let mut pinned = BTreeSet::new();
+    let values = values
+        .iter()
+        .map(|(name, value)| {
+            let parameter = design
+                .parameters
+                .find(name)
+                .and_then(|id| design.parameters.get(id))
+                .ok_or_else(|| ModelError::Invalid(format!("there is no parameter {name}")))?;
+            let source_unit = parameter.unit();
+            let unit = if !source_unit.is_text() && source_unit.dims() == Unit::MM.dims() {
+                Unit::MM
+            } else {
+                source_unit
+            };
+            if let ValueInput::Name(text) = value {
+                let expression = mitcad_model::internal::values::split_named(text)
+                    .map_or(text.as_str(), |(_, e)| e);
+                let parsed = Expr::parse(expression)
+                    .map_err(|e| ModelError::Invalid(format!("'{text}': {e}")))?;
+                if !parsed.is_constant() {
+                    pinned.insert(name.clone());
+                }
+            }
+            let evaluated = match value {
+                ValueInput::Name(text) if unit.is_text() => {
+                    let expression = mitcad_model::internal::values::split_named(text)
+                        .map_or(text.as_str(), |(_, e)| e);
+                    let parsed = Expr::parse(expression)
+                        .map_err(|e| ModelError::Invalid(format!("'{text}': {e}")))?;
+                    let text = parsed
+                        .eval_text(params.table(), &params.context())
+                        .map_err(|e| ModelError::Invalid(format!("'{text}': {e}")))?;
+                    PartValue::Text(text)
+                }
+                _ => PartValue::Number(mitcad_model::internal::build::value_in(doc, value, unit)?),
+            };
+            Ok((name.clone(), evaluated))
+        })
+        .collect::<Result<_, ModelError>>()?;
+    Ok(SourceOptionValues { values, pinned })
+}
+
+/// The source for planning or preview, using the same cascade and bound
+/// value refusal as a committed derived part. Constants may be repaired.
+pub fn source_state_with_options(
+    source: &LibrarySourceDef,
+    config: Option<&str>,
+    values: &SourceOptionValues,
+) -> Result<ConfiguredSource, String> {
+    let configured =
+        mitcad_model::part_options::configure(source, config, &values.values, &values.pinned)?;
+    if let Some(broken) = &configured.broken {
+        return Err(broken.text.clone());
+    }
+    Ok(configured)
 }
 
 /// The source's default value of a parameter, in its row.

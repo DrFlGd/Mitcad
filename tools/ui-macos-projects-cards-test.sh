@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/projects app/framework/GlassCard app/framework/FloatingLayout app/framework/TestDriver
+# check-all sources: app/projects app/framework/GlassCard app/framework/FloatingLayout app/framework/TestDriver app/framework/Ribbon
 # Actual native tool-window bounds as well as requested slots (mitcad#681).
 set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -13,6 +13,45 @@ cli=$2
 ui_init "$1" "${3:-ui-macos-projects-cards}"
 export MITCAD_LIBRARIES_DIR=$UI_ROOT/library-cache
 sed '/^collapse-card /d' "$here/ui-scripts/macos-projects-cards.mitcad-ui" > "$UI_OUT/docked.mitcad-ui"
+cat >> "$UI_OUT/docked.mitcad-ui" <<'DRIVER'
+# A VM's 2x workspace can leave just 394 logical points for the window's
+# frame. Exercise that allowance in this process, including the real native
+# titlebar margins, without changing the physical display resolution.
+fit-main-frame 916 394
+expect-main-frame 916 394
+expect-ribbon-labels Solid Build
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+focus-widget projectsTree
+key Home Right
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+key End
+expect-projects-layout ${MITCAD_TEST_PROJECT_COUNT}
+expect-widget-property ribbonScrollLeft enabled false
+focus-widget ribbonScrollRight
+key Space
+expect-widget-property ribbonScrollLeft enabled true
+expect-ribbon-labels Solid Build
+focus-widget ribbonScrollLeft
+key Space
+expect-widget-property ribbonScrollLeft enabled false
+expect-ribbon-labels Solid Build
+screenshot ${MITCAD_TEST_SHOTS}/short-frame.png
+# Below the width of all group captions, overflow must work through ordinary
+# keyboard input and leave every complete group menu reachable.
+fit-main-frame 500 394
+expect-main-frame 500 394
+expect-ribbon-labels Solid Build
+expect-widget-property ribbonScrollLeft enabled false
+focus-widget ribbonScrollRight
+key Space
+expect-widget-property ribbonScrollLeft enabled true
+expect-ribbon-labels Solid Build
+focus-widget ribbonScrollLeft
+key Space
+expect-widget-property ribbonScrollLeft enabled false
+expect-ribbon-labels Solid Build
+screenshot ${MITCAD_TEST_SHOTS}/ribbon-overflow.png
+DRIVER
 for chrome in floating docked; do
   template=$here/ui-scripts/macos-projects-cards.mitcad-ui
   [ "$chrome" = docked ] && template=$UI_OUT/docked.mitcad-ui

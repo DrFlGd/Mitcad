@@ -7,7 +7,12 @@
 // of a technical drawing (mitcad#894): texts readable from any side (ISO
 // 129-1), no card behind a value, closed 30-degree arrowheads sized by the
 // text's height, the model's text height with its pixel floor, Auto's
-// colour of the background tone.
+// colour of the background tone. The reference look (mitcad#902): no band
+// or box under a selected or hovered one, lines on the pixel grid, the
+// text between its floor and ceiling, arrowheads and centre marks in the
+// plane, extension lines from the measured point, frames two text heights
+// high, the bundled lettering, a picture's own background tone, hole
+// callouts and a frame under one.
 #include "view/MeasurementDrawing.hpp"
 
 #include <array>
@@ -18,6 +23,9 @@
 #include <utility>
 #include <vector>
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QImage>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -195,8 +203,9 @@ int measurementDrawingTests() {
     CHECK(near(lengthOf(radial.arrows[0].first - QPointF(100.0, 100.0)), 50.0, 1e-6));
   }
 
-  // An angle: an arc of 42 pixels about the corner from one ray to the
-  // other, the rays drawn past it, arrows at its ends.
+  // An angle: an arc of five text heights (45 pixels at the floor of 9)
+  // about the corner from one ray to the other, the rays drawn past it,
+  // arrows at its ends.
   const MeasurementShape angle = layoutMeasurement(shown[2], top);
   CHECK(angle.valid);
   CHECK(angle.arcs.size() == 1);
@@ -204,9 +213,9 @@ int measurementDrawingTests() {
   CHECK(angle.lines.size() == 2);
   if (angle.arcs.size() == 1) {
     for (const QPointF& at : angle.arcs[0]) {
-      CHECK(near(lengthOf(at - QPointF(100.0, 100.0)), 42.0, 1e-6));
+      CHECK(near(lengthOf(at - QPointF(100.0, 100.0)), 45.0, 1e-6));
     }
-    CHECK(near(angle.arcs[0].first().x(), 142.0) && near(angle.arcs[0].last().y(), 58.0));
+    CHECK(near(angle.arcs[0].first().x(), 145.0) && near(angle.arcs[0].last().y(), 55.0));
   }
   // Points that cannot be drawn: nothing.
   const MeasurementShape none = layoutMeasurement(shown[0], [](const gp_Pnt&) { return std::optional<QPointF>(); });
@@ -395,7 +404,7 @@ int measurementDrawingTests() {
   CHECK(!noted.rightAligned);
   CHECK(measurementHit(noted, noted.labelAt) == 1);
 
-  // Painting them, highlighted too.
+  // Painting them, highlighted too: in the selection's colour, not its own.
   QImage planarImage(420, 240, QImage::Format_ARGB32);
   planarImage.fill(Qt::white);
   {
@@ -404,7 +413,8 @@ int measurementDrawingTests() {
     QPainter painter(&planarImage);
     paintMeasurements(painter, {highlighted, noted, edgeOn}, QColor(250, 250, 252), measurementFont(QFont()));
   }
-  CHECK(paintedIn(planarImage, QColor(0x2f, 0x9e, 0x44)));
+  CHECK(paintedIn(planarImage, measurementSelectionColor()));
+  CHECK(!paintedIn(planarImage, QColor(0x2f, 0x9e, 0x44), 20));
 
   // A datum label and feature control frames (mitcad#702 phase 2): on the
   // note's leader, a letter in its square at the leader's end and a filled
@@ -558,7 +568,7 @@ int measurementDrawingTests() {
   // The value itself is painted, in its colour.
   CHECK(paintedIn(bare, QColor(0x2f, 0x9e, 0x44)));
 
-  // Closed arrowheads of 30 degrees, 0.8 text heights long; at least 5
+  // Closed arrowheads of 30 degrees, a text height long (mitcad#902); at least 5
   // pixels.
   const QPolygonF head = measurementArrowHead(QPointF(0.0, 0.0), QPointF(1.0, 0.0), 20.0);
   CHECK(head.size() == 3);
@@ -567,15 +577,15 @@ int measurementDrawingTests() {
     const QPointF other = head[2] - head[0];
     const double cosine = (one.x() * other.x() + one.y() * other.y()) / (lengthOf(one) * lengthOf(other));
     CHECK(near(std::acos(cosine) * 180.0 / std::acos(-1.0), 30.0, 1e-6));
-    CHECK(near(lengthOf((head[1] + head[2]) / 2.0 - head[0]), 16.0, 1e-9));
-    CHECK(near(lengthOf((head[1] + head[2]) / 2.0 - head[0]) / 20.0, 0.8, 1e-9));
+    CHECK(near(lengthOf((head[1] + head[2]) / 2.0 - head[0]), 20.0, 1e-9));
+    CHECK(near(lengthOf((head[1] + head[2]) / 2.0 - head[0]) / 20.0, 1.0, 1e-9));
   }
   const QPolygonF least = measurementArrowHead(QPointF(0.0, 0.0), QPointF(0.0, 1.0), 2.0);
   CHECK(least.size() == 3 && near(lengthOf((least[1] + least[2]) / 2.0 - least[0]), 5.0, 1e-9));
   // A laid out dimension's arrowheads: its text's height on the picture.
   if (face.arrows.size() == 2) {
     const QPolygonF drawnHead = measurementArrowHead(face.arrows[0].first, face.arrows[0].second, face.textPixels);
-    CHECK(near(lengthOf((drawnHead[1] + drawnHead[2]) / 2.0 - drawnHead[0]), 0.8 * 12.0, 1e-6));
+    CHECK(near(lengthOf((drawnHead[1] + drawnHead[2]) / 2.0 - drawnHead[0]), 1.0 * 12.0, 1e-6));
   }
 
   // Auto (mitcad#894): no colour of its own, drawn in the neutral colour of
@@ -588,7 +598,10 @@ int measurementDrawingTests() {
   const QColor light(250, 250, 252);
   const QColor dark(38, 41, 46);
   CHECK(measurementAutoColor(light).lightnessF() < 0.2);
-  CHECK(measurementAutoColor(dark).lightnessF() > 0.8);
+  // A mid grey on dark (mitcad#902): clearly darker than the old chalk
+  // #dee2e6, still light enough to read on the dark background.
+  CHECK(measurementAutoColor(dark).lightnessF() > 0.55 && measurementAutoColor(dark).lightnessF() < 0.78);
+  CHECK(measurementAutoColor(dark).lightnessF() < QColor(0xde, 0xe2, 0xe6).lightnessF() - 0.1);
   if (autos.size() == 1) {
     const MeasurementShape autoShape = layoutMeasurement(autos[0], lowered);
     CHECK(autoShape.autoColor);
@@ -608,5 +621,241 @@ int measurementDrawingTests() {
     CHECK(paintedIn(onDark, measurementAutoColor(dark)));
     CHECK(!paintedIn(onLight, QColor(0x2f, 0x9e, 0x44), 20));
   }
+
+  // mitcad#902, the reference look.
+  // The bundled technical lettering is found beside the test (fonts/).
+  // (A build without the font file, third_party/fonts/iso-lettering, takes
+  // the UI's font.)
+  if (QFileInfo::exists(QDir(QCoreApplication::applicationDirPath()).filePath(QStringLiteral("fonts/lettering.ttf")))) {
+    CHECK(!measurementFontFamily().isEmpty());
+    CHECK(measurementTextFont(QFont(), face).families().contains(measurementFontFamily()));
+  } else {
+    CHECK(measurementFontFamily().isEmpty());
+  }
+
+  // No band and no filled box behind a selected or hovered annotation: the
+  // same thin lines (at most 1.5 pixels) and text, in the selection's or the
+  // hover's colour.
+  for (const bool selected : {true, false}) {
+    MeasurementShape lit = valueShape;
+    lit.highlighted = selected;
+    lit.hovered = !selected;
+    const QColor colour = selected ? measurementSelectionColor() : measurementHoverColor();
+    QImage picture(520, 260, QImage::Format_ARGB32_Premultiplied);
+    picture.fill(Qt::transparent);
+    {
+      QPainter painter(&picture);
+      paintMeasurements(painter, {lit}, QColor(250, 250, 252), measurementFont(QFont()));
+    }
+    CHECK(paintedIn(picture, colour));
+    CHECK(!paintedIn(picture, QColor(0x2f, 0x9e, 0x44), 20));
+    // The text's place mostly clear (no box), its corner too.
+    const QRect place = lit.textArea.boundingRect().toAlignedRect().intersected(picture.rect());
+    int inked = 0;
+    int all = 0;
+    for (int y = place.top(); y <= place.bottom(); ++y) {
+      for (int x = place.left(); x <= place.right(); ++x) {
+        ++all;
+        inked += qAlpha(picture.pixel(x, y)) > 0 ? 1 : 0;
+      }
+    }
+    CHECK(all > 0 && inked < all * 6 / 10);
+    CHECK(qAlpha(picture.pixel(place.topLeft() + QPoint(1, 1))) == 0);
+    // Across the dimension line (y 120 here, x 130 clear of the text and
+    // the arrows), at most two pixels painted: no band of four.
+    int crossing = 0;
+    for (int y = 110; y <= 130; ++y) {
+      crossing += qAlpha(picture.pixel(130, y)) > 40 ? 1 : 0;
+    }
+    CHECK(crossing >= 1 && crossing <= 2);
+  }
+
+  // Crisp lines: every line of a laid out annotation on whole-pixel
+  // centres (a pixel wide), on pixel corners at twice the scale (two wide).
+  CHECK(near(measurementLineWidth(), 1.0) && near(measurementLineWidth(2.0), 2.0));
+  const auto onCentres = [](const QPointF& p) {
+    return near(p.x() - std::floor(p.x()), 0.5, 1e-9) && near(p.y() - std::floor(p.y()), 0.5, 1e-9);
+  };
+  CHECK(!face.lines.empty() && !skewed.lines.empty());
+  for (const MeasurementShape* laid : {&face, &skewed, &noted}) {
+    for (const QLineF& line : laid->lines) {
+      CHECK(onCentres(line.p1()) && onCentres(line.p2()));
+    }
+  }
+  const QPointF evenSnapped = measurementSnapped(QPointF(10.3, 7.8), 2.0);
+  CHECK(near(evenSnapped.x(), 10.0) && near(evenSnapped.y(), 8.0));
+  const QPointF oddSnapped = measurementSnapped(QPointF(10.3, 7.8), 1.0);
+  CHECK(near(oddSnapped.x(), 10.5) && near(oddSnapped.y(), 7.5));
+
+  // The text's height between its floor and its ceiling on screen: 5 mm
+  // at 10 pixels a millimetre (zoomed in) stays at the ceiling, 0.1 mm
+  // (zoomed out) at the floor, both times a picture's scale.
+  CHECK(near(measurementTextFloor(), 9.0) && near(measurementTextCeiling(), 16.0));
+  MeasurementDisplay tall = drawn[0];
+  tall.textHeight = 5.0;
+  CHECK(near(layoutMeasurement(tall, top).textPixels, measurementTextCeiling(), 1e-9));
+  CHECK(near(layoutMeasurement(tall, twice, 2.0).textPixels, measurementTextCeiling(2.0), 1e-9));
+  CHECK(near(layoutMeasurement(tiny, top).textPixels, measurementTextFloor(), 1e-9));
+  CHECK(near(face.textPixels, 12.0, 1e-9)); // between them: the model's
+
+  // Arrowheads in the annotation's plane, as its text: seen with the
+  // plane's y squashed to 0.7 (the plane turned away about X), an
+  // arrowhead along X keeps its length but its width is squashed with the
+  // plane, where one facing the screen would keep its full width.
+  const auto squashed = [](const gp_Pnt& p) -> std::optional<QPointF> {
+    return QPointF(100.0 + 10.0 * p.X(), 220.0 - 7.0 * p.Y());
+  };
+  MeasurementDisplay marked = drawn[0];
+  marked.centerMark = gp_Pnt(20.0, 10.0, 0.0);
+  const MeasurementShape turned = layoutMeasurement(marked, squashed);
+  CHECK(turned.valid && turned.heads.size() == 2 && turned.arrows.size() == 2);
+  if (turned.heads.size() == 2 && turned.heads[0].size() == 3) {
+    const QPolygonF& planeHead = turned.heads[0];
+    const double headLength = lengthOf((planeHead[1] + planeHead[2]) / 2.0 - planeHead[0]);
+    const double headWidth = lengthOf(planeHead[1] - planeHead[2]);
+    const QPolygonF facing = measurementArrowHead(turned.arrows[0].first, turned.arrows[0].second, turned.textPixels);
+    const double facingWidth = lengthOf(facing[1] - facing[2]);
+    CHECK(near(headLength, 1.0 * turned.textPixels, 1e-6));
+    CHECK(near(headWidth, 0.7 * facingWidth, 1e-6));
+    // Its tip on the dimension line's end.
+    CHECK(near(planeHead[0].x(), turned.arrows[0].first.x(), 1e-9) &&
+          near(planeHead[0].y(), turned.arrows[0].first.y(), 1e-9));
+  }
+  // The centre mark's arms in the plane: the one along y squashed too.
+  CHECK(turned.lines.size() >= 5);
+  if (turned.lines.size() >= 5) {
+    const QLineF alongX = turned.lines[turned.lines.size() - 2];
+    const QLineF alongY = turned.lines[turned.lines.size() - 1];
+    CHECK(alongY.length() < 0.85 * alongX.length());
+  }
+
+  // Extension lines start a quarter text height off the measured point the
+  // model gives (its picked edge, vertex or face outline), not anywhere
+  // else, and run half a text height past the dimension line.
+  if (face.lines.size() == 3) {
+    const QLineF first = face.lines[0];
+    // The model's (0, 0, 0) is (100, 100) on the picture, the line goes up.
+    CHECK(near(first.p1().x(), 100.5, 1e-9));
+    CHECK(std::abs(first.p1().y() - (100.0 - 0.5 * face.textPixels)) <= 0.5 + 1e-9);
+    CHECK(std::abs(first.p2().y() - (0.0 - 0.8 * face.textPixels)) <= 0.5 + 1e-9);
+  }
+
+  // A frame's cells two text heights high, a datum label's square too.
+  CHECK(near(cells.height(), 2.0 * frameShape.textPixels, 0.5 + 1e-9));
+  CHECK(near(letterBox.height(), 2.0 * datumShape.textPixels, 0.5 + 1e-9));
+
+  // A leader on a face ends in a dot in its plane; a hole callout's lines
+  // start at its leader's end on the side the model says, and a frame under
+  // it stands below its lines on that side.
+  QJsonObject dotted = note;
+  QJsonObject dottedDrawing = note.value(QStringLiteral("drawing")).toObject();
+  dottedDrawing.insert(QStringLiteral("terminator"), QStringLiteral("dot"));
+  dotted.insert(QStringLiteral("drawing"), dottedDrawing);
+  QJsonObject callout = note;
+  callout.insert(QStringLiteral("name"), QStringLiteral("HoleCallout1"));
+  callout.insert(QStringLiteral("kind"), QStringLiteral("hole_callout"));
+  callout.remove(QStringLiteral("text"));
+  callout.insert(QStringLiteral("label"),
+                 QJsonObject{{QStringLiteral("text"), QStringLiteral("4x Ø6.6 THRU / ⌴ Ø11 ↧ 6.8")},
+                             {QStringLiteral("lines"), QJsonArray{QStringLiteral("4x Ø6.6 THRU"),
+                                                                  QStringLiteral("⌴ Ø11 ↧ 6.8")}}});
+  QJsonObject calloutDrawing = note.value(QStringLiteral("drawing")).toObject();
+  calloutDrawing.insert(QStringLiteral("align"), QStringLiteral("end"));
+  callout.insert(QStringLiteral("drawing"), calloutDrawing);
+  QJsonObject position = frame;
+  position.insert(QStringLiteral("name"), QStringLiteral("Position"));
+  QJsonObject positionDrawing = under.value(QStringLiteral("drawing")).toObject();
+  positionDrawing.insert(QStringLiteral("attached"), QStringLiteral("HoleCallout1"));
+  positionDrawing.insert(QStringLiteral("under_lines"), 2);
+  positionDrawing.insert(QStringLiteral("align"), QStringLiteral("end"));
+  position.insert(QStringLiteral("drawing"), positionDrawing);
+  const std::vector<MeasurementDisplay> pmi = measurementDisplays(QJsonArray{dotted, callout, position}, words);
+  CHECK(pmi.size() == 3);
+  if (pmi.size() == 3) {
+    CHECK(pmi[0].dotTerminator && !pmi[0].datumTerminator);
+    const MeasurementShape dot = layoutMeasurement(pmi[0], top);
+    CHECK(dot.dotTerminator && dot.heads.size() == 1 && dot.heads[0].size() >= 12);
+    CHECK(pmi[1].align == QStringLiteral("end") && pmi[1].lines.size() == 2);
+    const MeasurementShape holeShape = layoutMeasurement(pmi[1], top);
+    CHECK(holeShape.valid && holeShape.note && holeShape.leader && holeShape.noteLines.size() == 2);
+    CHECK(holeShape.rightAligned && !holeShape.dotTerminator && holeShape.heads.size() == 1);
+    CHECK(measurementHit(holeShape, holeShape.labelAt) == 1);
+    const QRectF holeText = measurementLabelRect(holeShape, font);
+    CHECK(holeText.right() < 0.0); // ends at the leader's end
+    CHECK(pmi[2].underLines == 2 && pmi[2].attached == QStringLiteral("HoleCallout1"));
+    const MeasurementShape positionShape = layoutMeasurement(pmi[2], top);
+    const QRectF positionCells = measurementLabelRect(positionShape, font);
+    CHECK(positionShape.attached && positionShape.rightAligned && positionShape.underLines == 2);
+    // Below the callout's two lines (1.6 text heights apart), on its side.
+    CHECK(positionCells.top() >= 1.6 * positionShape.textPixels - 1e-6);
+    // The callout's first line level with the landing (mitcad#902), its
+    // lines and the frame under them flush left: each knows the other's
+    // words.
+    CHECK(near(holeText.top(), -(0.8 + 0.3) * holeShape.textPixels, 1e-6));
+    CHECK(pmi[1].framesUnder.size() == 1 && pmi[2].overLines == pmi[1].lines);
+    CHECK(near(positionCells.left(), holeText.left() + 0.3 * holeShape.textPixels, 0.5));
+    QImage pmiImage(420, 240, QImage::Format_ARGB32);
+    pmiImage.fill(Qt::white);
+    {
+      QPainter painter(&pmiImage);
+      paintMeasurements(painter, {dot, holeShape, positionShape}, QColor(250, 250, 252), font);
+    }
+    CHECK(paintedIn(pmiImage, QColor(0x70, 0x48, 0xe8)));
+  }
+
+  // Render Image and snapshots in the tone of their own background: a
+  // light picture's, a dark one's; none of a transparent one.
+  QImage lightPicture(64, 48, QImage::Format_ARGB32);
+  lightPicture.fill(QColor(245, 245, 245));
+  QImage darkPicture(64, 48, QImage::Format_ARGB32);
+  darkPicture.fill(QColor(30, 32, 36));
+  QImage clearPicture(64, 48, QImage::Format_ARGB32);
+  clearPicture.fill(Qt::transparent);
+  CHECK(measurementPictureTone(lightPicture).lightnessF() > 0.9);
+  CHECK(measurementPictureTone(darkPicture).lightnessF() < 0.2);
+  CHECK(!measurementPictureTone(clearPicture).isValid());
+  CHECK(measurementAutoColor(measurementPictureTone(lightPicture)).lightnessF() < 0.2);
+
+  // Auto's ink chosen against what lies behind it, single plain lines
+  // (mitcad#902): near-black over the light half of a picture, a light grey
+  // over the dark half; a line across both piece by piece (readable over
+  // either), a text over both in one ink, that of what lies behind most of
+  // it.
+  QImage halves(200, 40, QImage::Format_RGB32);
+  halves.fill(QColor(30, 32, 36));
+  for (int y = 0; y < 40; ++y) {
+    for (int x = 100; x < 200; ++x) {
+      halves.setPixelColor(x, y, QColor(210, 213, 218));
+    }
+  }
+  const MeasurementBackdrop backdrop{halves, 1.0};
+  const QColor darkBehind = measurementAutoInk(&backdrop, QPointF(50.0, 20.0), QColor(30, 32, 36));
+  const QColor lightBehind = measurementAutoInk(&backdrop, QPointF(150.0, 20.0), QColor(30, 32, 36));
+  CHECK(darkBehind.lightnessF() > 0.55 && lightBehind.lightnessF() < 0.2);
+  CHECK(measurementAutoInk(nullptr, QPointF(150.0, 20.0), QColor(30, 32, 36)) == measurementAutoColor(QColor(30, 32, 36)));
+  MeasurementShape twoTone = autos.empty() ? MeasurementShape() : layoutMeasurement(autos[0], top);
+  twoTone.lines = {QLineF(QPointF(10.5, 20.5), QPointF(190.5, 20.5))};
+  twoTone.arrows.clear();
+  twoTone.heads.clear();
+  twoTone.planar = false;
+  twoTone.label.clear();
+  twoTone.valid = true;
+  twoTone.opacity = 1.0;
+  QImage inked = halves;
+  {
+    QPainter painter(&inked);
+    paintMeasurements(painter, {twoTone}, QColor(30, 32, 36), measurementFont(QFont()), 1.0, &backdrop);
+  }
+  CHECK(nearColour(inked.pixelColor(50, 20), darkBehind, 20));
+  CHECK(nearColour(inked.pixelColor(150, 20), lightBehind, 20));
+  MeasurementShape mostlyDark = twoTone;
+  mostlyDark.textArea = QPolygonF(QRectF(10.0, 5.0, 130.0, 10.0));
+  CHECK(measurementAutoInk(&backdrop, mostlyDark, QColor(30, 32, 36)) == darkBehind);
+  MeasurementShape mostlyLight = twoTone;
+  mostlyLight.textArea = QPolygonF(QRectF(60.0, 5.0, 130.0, 10.0));
+  CHECK(measurementAutoInk(&backdrop, mostlyLight, QColor(30, 32, 36)) == lightBehind);
+  // No halo: the pixels beside the line are what lay behind.
+  CHECK(nearColour(inked.pixelColor(150, 18), QColor(210, 213, 218), 8));
+  CHECK(nearColour(inked.pixelColor(50, 18), QColor(30, 32, 36), 8));
   return failures;
 }

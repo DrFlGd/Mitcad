@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
 #include <QIcon>
 #include <QString>
 #include <QtGlobal>
 
 class QMenu;
+class QRectF;
 class QWidget;
 
 // The macOS-only parts of the interface that need AppKit. Portable code calls
@@ -106,8 +108,18 @@ void setGlassCornerRadius(QWidget* card, qreal cornerRadius);
 // Saves what is on the screen of the application's own windows, as the window
 // server composes them (child windows and glass included; the Qt widgets'
 // grab() has neither), as a PNG. No screen recording permission is needed for
-// a process's own windows. False if it failed.
-bool captureOwnWindows(const QString& path);
+// a process's own windows. Optional bounds are logical screen coordinates,
+// with the window server's top-left origin, including the captured shadows.
+// False if it failed.
+bool captureOwnWindows(const QString& path, QRectF* capturedBounds = nullptr);
+
+// In-process UI driver only (MITCAD_TEST_INPUT): Qt can show a combo with
+// an AppKit menu even in the ordinary Qt frontend. Select its actual
+// enabled item after tracking starts. False with no error means that Qt
+// displayed its own item view, which the driver clicks instead.
+bool chooseTestPopup(const QString& title, const std::function<void()>& open,
+                     const std::function<bool()>& qtPopupVisible, QString& error,
+                     const std::function<void()>& nativeClosed = {});
 
 #else
 
@@ -121,7 +133,12 @@ inline ThreadQualityScope::~ThreadQualityScope() = default;
 inline bool glassAvailable() { return false; }
 inline void attachGlassWindow(QWidget*, QWidget*, qreal) {}
 inline void setGlassCornerRadius(QWidget*, qreal) {}
-inline bool captureOwnWindows(const QString&) { return false; }
+inline bool captureOwnWindows(const QString&, QRectF* = nullptr) { return false; }
+inline bool chooseTestPopup(const QString&, const std::function<void()>& open,
+                            const std::function<bool()>&, QString&, const std::function<void()>& = {}) {
+  open();
+  return false;
+}
 inline QIcon symbolIcon(const QString&, const QIcon& fallback = {}) { return fallback; }
 inline void showMenuImages(QMenu*) {}
 inline void hideNativeTitle(QWidget*) {}

@@ -541,19 +541,25 @@ fn wire_edges(file: &AsmFile, body: usize) -> Option<Vec<usize>> {
         Some(())
     };
     let mut guard = 0;
+    let mut steps = ChainSteps::new(file);
     let mut lump = ptr(file, body, 3);
     while let Some(l) = lump {
+        steps.step()?;
         let mut shell = ptr(file, l, 4);
         while let Some(s) = shell {
+            steps.step()?;
             let mut wire = ptr(file, s, 6);
             while let Some(w) = wire {
+                steps.step()?;
                 walk(ptr(file, w, 4)?, &mut guard)?;
                 wire = ptr(file, w, 3);
             }
             let mut face = ptr(file, s, 5);
             while let Some(f) = face {
+                steps.step()?;
                 let mut lp = ptr(file, f, 4);
                 while let Some(l) = lp {
+                    steps.step()?;
                     walk(ptr(file, l, 4)?, &mut guard)?;
                     lp = ptr(file, l, 3);
                 }
@@ -772,6 +778,25 @@ fn nurbs_point(
     [d[p][0] / d[p][2], d[p][1] / d[p][2]]
 }
 
+/// The steps left along a body's lump, shell, wire, face and loop chains
+/// (mitcad#933). A sound file visits each of its records at most once on
+/// them, so a walk of more steps than the file has records follows a
+/// chain that comes back on itself (a `next` naming its own record or an
+/// earlier one), which would otherwise never end: the walk gives up (None).
+struct ChainSteps(usize);
+
+impl ChainSteps {
+    fn new(file: &AsmFile) -> ChainSteps {
+        ChainSteps(file.records.len())
+    }
+
+    /// One step; None once they are spent.
+    fn step(&mut self) -> Option<()> {
+        self.0 = self.0.checked_sub(1)?;
+        Some(())
+    }
+}
+
 /// The record a pointer field of a record names.
 fn ptr(file: &AsmFile, record: usize, field: usize) -> Option<usize> {
     match file.fields(record).get(field)? {
@@ -791,12 +816,16 @@ fn wire_loops(file: &AsmFile, body: usize) -> Option<Vec<Vec<[f64; 3]>>> {
     let mut out = Vec::new();
     let mut lump = ptr(file, body, 3);
     let mut guard = 0;
+    let mut steps = ChainSteps::new(file);
     let mut faces = 0;
     while let Some(l) = lump {
+        steps.step()?;
         let mut shell = ptr(file, l, 4);
         while let Some(s) = shell {
+            steps.step()?;
             let mut wire = ptr(file, s, 6);
             while let Some(w) = wire {
+                steps.step()?;
                 if let Some(points) = coedge_loop(file, body, ptr(file, w, 4)?, &mut guard)? {
                     out.push(points);
                 }
@@ -804,9 +833,11 @@ fn wire_loops(file: &AsmFile, body: usize) -> Option<Vec<Vec<[f64; 3]>>> {
             }
             let mut face = ptr(file, s, 5);
             while let Some(f) = face {
+                steps.step()?;
                 faces += 1;
                 let mut lp = ptr(file, f, 4);
                 while let Some(l) = lp {
+                    steps.step()?;
                     if let Some(points) = coedge_loop(file, body, ptr(file, l, 4)?, &mut guard)? {
                         out.push(points);
                     }
@@ -919,6 +950,43 @@ mod tests {
             assert!((m.area - 1.0).abs() < 1e-9, "{m:?}");
             assert!((m.centroid[0] - 0.5).abs() < 1e-9 && (m.centroid[1] - 0.5).abs() < 1e-9);
         }
+    }
+
+    /// mitcad#933: a lump, shell, face or loop whose `next` is its own
+    /// record made the walk endless; now the walk gives up (None) after as
+    /// many steps as the file has records.
+    #[test]
+    fn a_chain_that_comes_back_ends_the_walk() {
+        use crate::testdesign::square_sheet_with_next;
+        for (kind, next) in [("lump", 2), ("shell", 3), ("face", 4), ("loop", 5)] {
+            let asm = square_sheet_with_next(0.0, kind, next);
+            let mut w = crate::testdesign::DesignWriter::new(24);
+            let selection = w.selection(&asm, 4);
+            let dc = Definitions::from_records(24, &w.records);
+            let mut profiles = Profiles::default();
+            // The first call parses the ASM file; the walk alone is timed
+            // (the best of three, so one preemption does not count).
+            assert_eq!(profiles.loops(&dc, selection), None, "{kind}");
+            let fastest = (0..3)
+                .map(|_| {
+                    let start = std::time::Instant::now();
+                    assert_eq!(profiles.loops(&dc, selection), None, "{kind}");
+                    start.elapsed()
+                })
+                .min()
+                .unwrap_or_default();
+            assert!(
+                fastest < std::time::Duration::from_millis(10),
+                "{kind}: {fastest:?}"
+            );
+            let file = AsmFile::parse(&asm).expect("parsed");
+            assert_eq!(wire_edges(&file, 1), None, "{kind}");
+        }
+        // The same sheet without the loop still has its loop and edges.
+        let asm = square_sheet_with_next(0.0, "", -1);
+        let file = AsmFile::parse(&asm).expect("parsed");
+        assert_eq!(wire_loops(&file, 1).map(|l| l.len()), Some(1));
+        assert_eq!(wire_edges(&file, 1).map(|e| e.len()), Some(4));
     }
 
     /// A selection of these loops, measured as `Profiles::measure` does.

@@ -44,6 +44,7 @@ pub mod ffi {
 
     unsafe extern "C++" {
         include!("bridge/faceops.hpp");
+        include!("bridge/trycatch.hpp");
 
         #[namespace = "mitcad::geometry"]
         type Shape = crate::kernel::shape::ffi::Shape;

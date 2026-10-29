@@ -73,7 +73,8 @@ ui_step "select its middle fit point"    ui_sketch_click -10 -20
 ui_expect_new "Selected: 1 sketch point" "the fit point selected"
 ui_expect_new "Sketch highlights: 0 curves, 1 point" "its ball in the points' layer, over the marker"
 ui_mark
-ui_step "click where nothing is"         ui_sketch_click 45 0
+# Off the x axis, which a click selects (mitcad#899).
+ui_step "click where nothing is"         ui_sketch_click 45 15
 ui_expect_new "Selected: nothing" "the selection cleared"
 
 echo "--- Tangent at each end of the spline"

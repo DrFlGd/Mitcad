@@ -326,13 +326,14 @@ impl GeometricTolerance {
     }
 }
 
-/// Frames whose `on` names no dimension (none of that name, or a note, a
-/// datum or a frame) stand on their leaders again, as when their dimension
-/// is deleted: a later dimension of that name does not take them.
+/// Frames whose `on` names no dimension or hole callout (none of that
+/// name, or a note, a datum or a frame) stand on their leaders again, as
+/// when their dimension is deleted: a later dimension of that name does not
+/// take them.
 pub(crate) fn settle_frames(annotations: &mut [Annotation]) {
     let dimensions: Vec<String> = annotations
         .iter()
-        .filter(|a| !a.kind.is_leader())
+        .filter(|a| a.kind.takes_frame())
         .map(|a| a.name.clone())
         .collect();
     for annotation in annotations.iter_mut() {
@@ -383,7 +384,9 @@ fn is_false(value: &bool) -> bool {
 /// axes, or of two circles' centres (mitcad#646, mitcad#647); of one pick
 /// with a circle (a round edge or face) its radius or diameter; or a
 /// leader note's text on one pick; a datum label (ISO 5459) or a
-/// feature control frame (ISO 1101) on one pick (mitcad#702, phase 2).
+/// feature control frame (ISO 1101) on one pick (mitcad#702, phase 2); a
+/// hole callout on a hole's round face or edge, its text from the feature
+/// that made the hole (mitcad#902).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MeasureKind {
@@ -397,6 +400,7 @@ pub enum MeasureKind {
     Note,
     Datum,
     Frame,
+    HoleCallout,
 }
 
 impl MeasureKind {
@@ -424,6 +428,7 @@ impl MeasureKind {
             Self::Note => "note",
             Self::Datum => "datum",
             Self::Frame => "frame",
+            Self::HoleCallout => "hole_callout",
         }
     }
 
@@ -440,6 +445,7 @@ impl MeasureKind {
             Self::Note => "Note",
             Self::Datum => "Datum",
             Self::Frame => "Frame",
+            Self::HoleCallout => "HoleCallout",
         }
     }
 
@@ -448,7 +454,12 @@ impl MeasureKind {
     pub fn single(self) -> bool {
         matches!(
             self,
-            Self::Radius | Self::Diameter | Self::Note | Self::Datum | Self::Frame
+            Self::Radius
+                | Self::Diameter
+                | Self::Note
+                | Self::Datum
+                | Self::Frame
+                | Self::HoleCallout
         )
     }
 
@@ -463,9 +474,19 @@ impl MeasureKind {
     }
 
     /// Whether it is drawn on a leader to its pick (a note, a datum label,
-    /// a feature control frame) rather than measured: no value of its own.
+    /// a feature control frame, a hole callout) rather than measured: no
+    /// value of its own.
     pub fn is_leader(self) -> bool {
-        matches!(self, Self::Note | Self::Datum | Self::Frame)
+        matches!(
+            self,
+            Self::Note | Self::Datum | Self::Frame | Self::HoleCallout
+        )
+    }
+
+    /// Whether a feature control frame can stand under it (`on`): a
+    /// dimension, or a hole callout on its leader (mitcad#902).
+    pub fn takes_frame(self) -> bool {
+        !self.is_leader() || self == Self::HoleCallout
     }
 
     /// Whether its value is a length (every dimension but an angle).
@@ -847,10 +868,9 @@ impl Annotation {
             }
         }
         if let Some(plane) = &self.plane {
-            if matches!(
-                self.kind,
-                MeasureKind::Radius | MeasureKind::Diameter | MeasureKind::Angle
-            ) {
+            // A diameter's plane is its leader's (mitcad#902: added in a
+            // view, a leader from outside with its text level there).
+            if matches!(self.kind, MeasureKind::Radius | MeasureKind::Angle) {
                 return Err(format!(
                     "a {} lies in the plane of its {}",
                     self.kind.key(),
@@ -871,6 +891,7 @@ impl Annotation {
                 MeasureKind::Note
                 | MeasureKind::Datum
                 | MeasureKind::Frame
+                | MeasureKind::HoleCallout
                 | MeasureKind::Radius
                 | MeasureKind::Diameter => {
                     return Err(format!(
@@ -935,6 +956,8 @@ impl Annotation {
                         return Err("a datum's letter is written without spaces".to_owned());
                     }
                 }
+                // Its text comes from the hole's feature (mitcad#902).
+                MeasureKind::HoleCallout => {}
                 _ => {
                     self.frame
                         .as_ref()
@@ -1444,11 +1467,22 @@ mod tests {
 
     #[test]
     fn kinds_have_their_keys_and_stems() {
-        for kind in MeasureKind::ALL.into_iter().chain([MeasureKind::Note]) {
+        for kind in MeasureKind::ALL
+            .into_iter()
+            .chain([MeasureKind::Note, MeasureKind::HoleCallout])
+        {
             let json = serde_json::to_value(kind).unwrap();
             assert_eq!(json, serde_json::json!(kind.key()));
             assert_eq!(serde_json::from_value::<MeasureKind>(json).unwrap(), kind);
         }
+        // mitcad#902: a hole callout is a leader on one pick that a frame can
+        // stand under, as a dimension.
+        assert_eq!(MeasureKind::HoleCallout.key(), "hole_callout");
+        assert_eq!(MeasureKind::HoleCallout.name_stem(), "HoleCallout");
+        assert!(MeasureKind::HoleCallout.single() && MeasureKind::HoleCallout.is_leader());
+        assert!(!MeasureKind::HoleCallout.is_note() && !MeasureKind::HoleCallout.is_length());
+        assert!(MeasureKind::HoleCallout.takes_frame() && MeasureKind::Distance.takes_frame());
+        assert!(!MeasureKind::Note.takes_frame() && !MeasureKind::Frame.takes_frame());
         assert_eq!(MeasureKind::AxisDistance.name_stem(), "AxisDistance");
         assert_eq!(MeasureKind::Note.name_stem(), "Note");
         assert!(MeasureKind::Radius.single() && MeasureKind::Diameter.single());
@@ -1517,13 +1551,16 @@ mod tests {
         d.format.decimals = Some(MAX_DECIMALS + 1);
         assert!(d.check().unwrap_err().contains("decimals"));
         d.format.decimals = Some(2);
-        // A circle's dimension lies in its circle's plane and has no line
-        // to move.
+        // A radius lies in its circle's plane; a diameter may have its
+        // leader's plane (mitcad#902). Neither has a line to move.
         d.plane = Some(AnnotationPlane {
             normal: Some([0.0, 0.0, 1.0]),
             ..AnnotationPlane::default()
         });
+        d.check().unwrap();
+        d.kind = MeasureKind::Radius;
         assert!(d.check().unwrap_err().contains("plane of its circle"));
+        d.kind = MeasureKind::Diameter;
         d.plane = None;
         d.line_offset = Some(5.0);
         assert!(d.check().unwrap_err().contains("no dimension line"));

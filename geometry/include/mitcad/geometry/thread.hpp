@@ -32,7 +32,11 @@ namespace mitcad::geometry {
 // the major diameter, a bore wider than the minor one) the teeth are added
 // up to the crest. The part runs between planes across the axis; at an end
 // of the face with no material beyond it (the free end of a shaft, the
-// mouth of a hole) the thread runs out through it.
+// mouth of a hole) the thread runs out through it. An end against the
+// body that is uneven (a shank under a head's serrated underside; the
+// face's end not one circle across the axis) ends the thread a hundredth
+// of a pitch short of where the face ends all round (mitcad#901), so that
+// it cuts nothing beyond the face.
 //
 // The helix: take the axis pointing up (+Z; axes across Z towards +Y, the
 // X axis towards +X), whichever way the face's surface runs. From the

@@ -32,6 +32,7 @@ pub mod ffi {
 
     unsafe extern "C++" {
         include!("bridge/text.hpp");
+        include!("bridge/trycatch.hpp");
 
         /// The glyph outlines of a text in a font family (empty for the
         /// bundled font).

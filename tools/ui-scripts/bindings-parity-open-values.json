@@ -1,0 +1,4 @@
+[
+  {"cmd":"add_feature","def":{"type":"box","plane":"xy","corner":[-30,-20],"length":60,"width":40,"height":20,"operation":"new_body"}},
+  {"expect":{"bodies":1}}
+]

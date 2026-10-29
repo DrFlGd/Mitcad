@@ -46,6 +46,14 @@ install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
   DESTINATION ${mitcad_doc_dir})
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/droid-sans/LICENSE.txt"
   DESTINATION ${mitcad_doc_dir}/licenses/droid-sans)
+# The annotations' technical lettering (mitcad#902): a file of its own in
+# share/mitcad/fonts, loaded at run time (LGPL-3.0 with the font exception).
+if(EXISTS "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/lettering.ttf")
+  install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/lettering.ttf"
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/mitcad/fonts)
+  install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/LICENSE.txt"
+    DESTINATION ${mitcad_doc_dir}/licenses/iso-lettering)
+endif()
 # three.js, embedded for the web viewer (app/web/viewer).
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/three/LICENSE" DESTINATION ${mitcad_doc_dir}/licenses/three)
 # SolidCraft's format upgrade steps, adapted for the .solidcraft import (third_party/solidcraft).

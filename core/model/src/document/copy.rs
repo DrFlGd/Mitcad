@@ -1011,7 +1011,17 @@ impl CopyReferences<'_> {
                         true
                     };
                     copy.source = if internal {
-                        remap_reference(&original.source.to_string(), &text)
+                        // Another sketch's entity (mitcad#904): its sketch's
+                        // copy when that is copied too.
+                        let remapped = match &original.source {
+                            crate::sketch::ProjectionSource::Sketch(_) => {
+                                remap_text(&original.source.to_string(), &text)
+                            }
+                            crate::sketch::ProjectionSource::Topo(_) => {
+                                remap_reference(&original.source.to_string(), &text)
+                            }
+                        };
+                        remapped
                             .parse()
                             .map_err(|e| invalid(format!("copy projection: {e}")))?
                     } else {

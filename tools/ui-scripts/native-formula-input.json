@@ -1,0 +1,8 @@
+[
+  {"cmd":"add_feature","def":{"type":"box","plane":"xy","corner":[0,0],"length":40,"width":20,"height":20,"operation":"new_body"}},
+  {"cmd":"add_parameter","name":"length","expression":"100 mm"},
+  {"cmd":"add_parameter","name":"pitch","expression":"8 mm"},
+  {"cmd":"add_parameter","name":"count","unit":"","expression":"5"},
+  {"cmd":"add_parameter","name":"result","expression":"1 mm"},
+  {"expect":{"bodies":1}}
+]

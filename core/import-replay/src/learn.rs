@@ -919,12 +919,10 @@ impl Raw {
     /// The design `label` of the file (the first one when no label fits).
     fn open(path: Option<&Path>, label: &str) -> Option<Raw> {
         use mitcad_f3d_design as design;
-        let docs = design::documents(path?).ok()?;
-        let (_, doc) = docs
-            .iter()
-            .find(|(l, _)| l == label)
-            .or_else(|| docs.first())?;
-        let streams = design::find_design_streams(doc).ok()??;
+        // Only that design is inflated (mitcad#923).
+        let docs = design::package(path?).ok()?;
+        let doc = docs.open(docs.position(label).unwrap_or(0)).ok()?;
+        let streams = design::find_design_streams(&doc).ok()??;
         let segment = design::stream::Segment::parse(&streams.meta, streams.bulk).ok()?;
         let decoded = design::decode::decode(&segment);
         let items = decoded.timeline.iter().map(|t| t.id).collect();

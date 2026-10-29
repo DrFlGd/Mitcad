@@ -11,6 +11,9 @@
 #   - Revolve: two sides about the Y axis.
 #   - Hole: a hole clicked on a face, its distances from the two nearest
 #     edges typed (mitcad#656), edited to a counterbore through all, then to
+#     a Clearance hole for M6 (mitcad#903: Normal fills 6.6, its counterbore
+#     11 and 6.4; a typed depth of 8 stays when the size changes to M8 and
+#     back, and when the hole opens again), then to
 #     a tapered counterdrill; a counterdrilled, tapered hole at a sketch's
 #     circle
 #     (as the FreeCAD import makes them) opens for editing with its values
@@ -309,10 +312,42 @@ ui_expect_log "Edited F3" "Hole1 edited"
 ui_expect_volume "Body Body1 (F2.b0): volume [0-9.]* -> \([0-9.]*\) mm3" \
   "$(awk 'BEGIN { printf "%.6f", 48000 - (48000 - 46926.50522389775) }')" "a counterbore"
 
+echo "--- Edited to a Clearance hole for M6, its counterbore 8 deep (mitcad#903)"
+ui_mark
+ui_step "double-click Hole1"               ui_double_click_logged "Timeline Hole1"
+ui_expect_new "Editing F3 with Hole" "editing Hole1 again"
+ui_step "Clearance"                        ui_choose "Panel Hole input tap" 2
+ui_expect_new "Hole: Hole Tap Type = Clearance" "Clearance chosen"
+ui_expect_new "Hole sizes for M6 normal: diameter 6.6 mm, cb_diameter 11 mm, cb_depth 6.4 mm" \
+  "M6 Normal fills the hole 6.6 and its counterbore 11 and 6.4"
+for input in clearance_size clearance_fit; do
+  grep "Panel Hole input $input at" "$UI_LOG" | tail -1 | grep -q "(hidden)" && ui_fail "$input hidden"
+done
+ui_step "8 deep"                           ui_type_in "Panel Hole input cb_depth" "8"
+ui_expect_new "Hole cb_depth typed: kept when the size changes" "the typed depth is kept"
+ui_mark
+ui_step "Screw Size M8"                    ui_choose "Panel Hole input clearance_size" 1
+ui_expect_new "Hole: Screw Size = M8" "M8 chosen"
+ui_expect_new "Hole sizes for M8 normal: diameter 9 mm, cb_diameter 15 mm, cs_diameter" "M8 fills 9 and 15"
+ui_expect_new "; kept cb_depth" "the typed depth stays at M8"
+ui_mark
+ui_step "Screw Size M6"                    ui_choose "Panel Hole input clearance_size" -1
+ui_expect_new "Hole sizes for M6 normal: diameter 6.6 mm, cb_diameter 11 mm, cs_diameter" "back to 6.6 and 11"
+ui_expect_new "; kept cb_depth" "the typed depth stays at M6"
+ui_expect_new "Preview Hole: ok" "previewed"
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Edited F3" "Hole1 edited to a clearance hole"
+# The block less a 6.6 mm hole through it and an 11 mm counterbore 8 deep.
+ui_expect_volume "Body Body1 (F2.b0): volume [0-9.]* -> \([0-9.]*\) mm3" \
+  "$(awk 'BEGIN { printf "%.6f", 48000 - 3.141592653589793 * (3.3 * 3.3 * 12 + 5.5 * 5.5 * 8) }')" \
+  "an M6 clearance hole, its counterbore 8 deep"
+
 echo "--- Edited to counterdrills, tapered 2 degrees"
 ui_mark
 ui_step "double-click Hole1"               ui_double_click_logged "Timeline Hole1"
 ui_expect_new "Editing F3 with Hole" "editing Hole1 again"
+ui_expect_new "tap=clearance, drill=angle, clearance_size=M6, clearance_fit=normal" "it opens as an M6 clearance hole"
+ui_expect_new "Hole values kept from the size: cb_depth" "with its typed depth kept"
 ui_step "Counterdrill"                     ui_choose "Panel Hole input type" 2
 ui_expect_new "Hole: Hole Type = Counterdrill" "counterdrill chosen"
 ui_expect_new "Panel Hole input cd_angle at" "its diameter, depth and angle shown"

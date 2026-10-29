@@ -9,6 +9,7 @@
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonValue>
 #include <QLabel>
 #include <QMenu>
@@ -52,6 +53,17 @@ bool runSlicerImport(PrintItemsHost& host, const QString& path, const QString& i
 
 QJsonArray installedSlicers(PrintItemsHost& host, const QString& into) {
   QJsonObject query{{QStringLiteral("query"), QStringLiteral("slicer_presets")}, {QStringLiteral("into"), into}};
+  // A UI regression can name synthetic preset folders through the same
+  // query argument as the API tests, without reading the user's presets.
+  const QByteArray testFolders = qgetenv("MITCAD_TEST_SLICER_FOLDERS");
+  if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") && !testFolders.isEmpty()) {
+    const QJsonDocument folders = QJsonDocument::fromJson(testFolders);
+    if (!folders.isArray()) {
+      qWarning() << "Invalid MITCAD_TEST_SLICER_FOLDERS: expected a JSON array";
+      return {};
+    }
+    query.insert(QStringLiteral("folders"), folders.array());
+  }
   const QString project = host.projectFolder();
   if (!project.isEmpty() && into != QStringLiteral("user")) {
     query.insert(QStringLiteral("project"), project);
@@ -137,8 +149,10 @@ SlicerImportBar::SlicerImportBar(PrintItemsHost& host, const QString& logName, Q
   m_line->setStyleSheet(QStringLiteral("color: gray;"));
   m_line->hide();
   m_details = new QPushButton(tr("Details…"));
+  m_details->setObjectName(QStringLiteral("slicerImportDetails"));
   m_details->hide();
   m_import = new QPushButton(tr("Import from Slicer…"));
+  m_import->setObjectName(QStringLiteral("slicerImportButton"));
   m_row->addStretch(1);
   m_row->addWidget(m_line);
   m_row->addWidget(m_details);

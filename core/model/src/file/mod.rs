@@ -501,6 +501,9 @@ pub fn load_state(json: &str) -> Result<(DocState, Vec<String>), FileError> {
     let json = json.strip_prefix('\u{feff}').unwrap_or(json);
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|e| FileError::Syntax(e.to_string()))?;
+    // The B-rep data inside the file decodes within one budget, so that
+    // many bodies cannot ask for many times one body's limit (mitcad#928).
+    let _budget = crate::features::base::FileBudget::start();
     let (mut state, warnings) = match check_header(&value)? {
         1 => v1::load(json),
         _ => v2::load(value),
@@ -680,6 +683,9 @@ fn resolve(state: &mut DocState, store: &dyn BlobStore, warnings: &mut Vec<Strin
     // Library sources' designs (mitcad#375).
     state.library_sources.resolve(store, warnings);
     let mut found: HashMap<Sha256, Option<Brep>> = HashMap::new();
+    // The data read from the store counts against one budget, each piece
+    // once however many bodies share it (mitcad#928).
+    let mut left = crate::features::base::MAX_FILE_SIZE;
     for (i, entry) in state.features.iter_mut().enumerate() {
         let FeatureDef::Base(base) = &entry.def else {
             continue;
@@ -694,15 +700,28 @@ fn resolve(state: &mut DocState, store: &dyn BlobStore, warnings: &mut Vec<Strin
             }
             let sha256 = body.brep.sha256();
             let brep = found.entry(sha256).or_insert_with(|| {
-                let problem = match store.get(&sha256) {
-                    Ok(Some(stored)) => match body.brep.resolve(&stored) {
-                        Ok(brep) => return Some(brep),
-                        Err(e) => format!("the file {} is damaged: {e}", brep_path(&sha256)),
-                    },
-                    Ok(None) => format!(
-                        "its B-rep data {sha256} is missing from the project store ({BREP_DIR})"
-                    ),
-                    Err(e) => format!("cannot read {}: {e}", brep_path(&sha256)),
+                let size = body.brep.size();
+                let problem = if size > left {
+                    format!(
+                        "its B-rep data {sha256} is not read: the design's B-rep data exceeds \
+                         {} bytes in all",
+                        crate::features::base::MAX_FILE_SIZE
+                    )
+                } else {
+                    match store.get(&sha256) {
+                        Ok(Some(stored)) => match body.brep.resolve(&stored) {
+                            Ok(brep) => {
+                                left -= size;
+                                return Some(brep);
+                            }
+                            Err(e) => format!("the file {} is damaged: {e}", brep_path(&sha256)),
+                        },
+                        Ok(None) => format!(
+                            "its B-rep data {sha256} is missing from the project store \
+                             ({BREP_DIR})"
+                        ),
+                        Err(e) => format!("cannot read {}: {e}", brep_path(&sha256)),
+                    }
                 };
                 warnings.push(format!(
                     "features[{i}] ({}): bodies[{j}]: {problem}",

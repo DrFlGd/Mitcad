@@ -236,8 +236,9 @@ NSUInteger clampedIndex(int value, NSUInteger length) {
 namespace mitcad {
 
 NativeExpressionField::NativeExpressionField(QWidget* host, NSTextField* field,
-                                             std::function<ParameterFieldOptions()> options)
-    : m_host(host), m_field(field), m_options(std::move(options)) {
+                                             std::function<ParameterFieldOptions()> options,
+                                             std::function<void()> restoreFocus)
+    : m_host(host), m_field(field), m_options(std::move(options)), m_restoreFocus(std::move(restoreFocus)) {
   m_target = [MitcadNativeExpressionTarget new];
   m_target->field = this;
   // "fx" in the secondary text colour, as the shared field's own button.
@@ -454,6 +455,8 @@ void NativeExpressionField::openMenu() {
   const Tool tool = std::exchange(m_pending, Tool::None);
   if (tool != Tool::None) {
     openTool(tool);
+  } else if (m_restoreFocus) {
+    m_restoreFocus();
   }
 }
 
@@ -564,7 +567,11 @@ void NativeExpressionField::openTool(Tool tool) {
   // On the event loop's next turn, as the shared list's own choice does:
   // the dialog's modal loop never runs inside the click or the menu.
   const QPointer<QLineEdit> guard(edit);
-  TestSync::singleShot(0, edit, [guard, tool] {
+  const QPointer<QObject> lifetime(&m_context);
+  const auto restore = m_restoreFocus;
+  NSTextField* field = m_field;
+  TestSync::singleShot(0, edit, [guard, lifetime, tool, restore, field] {
+    if (!lifetime) return; // the field closed before its queued tool opened
     ParameterField* tools = guard.isNull() ? nullptr : ParameterField::of(guard.data());
     if (tools == nullptr) {
       return;
@@ -573,6 +580,17 @@ void NativeExpressionField::openTool(Tool tool) {
       tools->openCreateEditor();
     } else {
       tools->openFormulaEditor();
+    }
+    if (!lifetime || !guard || !restore) return;
+    restore();
+    if (!lifetime || !guard) return;
+    // Cancel keeps the original selection; applying a helper leaves the
+    // insertion caret from the shared proxy, after the chosen reference.
+    if (NSText* text = field.currentEditor) {
+      const NSUInteger length = text.string.length;
+      const NSUInteger start = clampedIndex(guard->hasSelectedText() ? guard->selectionStart() : guard->cursorPosition(), length);
+      text.selectedRange = NSMakeRange(start, guard->hasSelectedText()
+          ? std::min<NSUInteger>(clampedIndex(guard->selectionLength(), length), length - start) : 0);
     }
   });
 }

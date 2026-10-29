@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+use std::collections::HashMap;
 use std::f64::consts::TAU;
 use std::ops::{Add, Mul, Neg, Sub};
 
@@ -371,30 +372,30 @@ impl Drawing {
     /// The lower left and upper right corners of the entities (in drawing
     /// units); `None` without entities.
     pub fn bounds(&self) -> Option<(Point2, Point2)> {
-        let mut points = self
-            .entities
-            .iter()
-            .flat_map(|entity| entity.geometry.extent_points())
-            .filter(|p| p.x.is_finite() && p.y.is_finite());
-        let first = points.next()?;
-        Some(points.fold((first, first), |(lo, hi), p| {
-            (
-                Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
-                Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
-            )
-        }))
+        bounds_of(self.entities.iter())
+    }
+
+    /// [`Drawing::bounds`] of the entities on `layer`, without copying
+    /// them (mitcad#926: the Insert DXF dialog asks it per layer).
+    pub fn layer_bounds(&self, layer: &str) -> Option<(Point2, Point2)> {
+        bounds_of(self.entities.iter().filter(|entity| entity.layer == layer))
     }
 
     /// The layers that hold entities, in the order of the layer table (then
     /// of first use), with how many entities each holds.
     pub fn used_layers(&self) -> Vec<(String, usize)> {
         let mut used: Vec<(String, usize)> = Vec::new();
-        let mut count = |name: &str| match used.iter_mut().find(|(n, _)| n == name) {
-            Some((_, n)) => *n += 1,
-            None => used.push((name.to_owned(), 1)),
-        };
+        // Where each name is in `used`: a drawing may hold a million
+        // entities on many layers (mitcad#926).
+        let mut index: HashMap<&str, usize> = HashMap::new();
         for entity in &self.entities {
-            count(&entity.layer);
+            match index.get(entity.layer.as_str()) {
+                Some(&i) => used[i].1 += 1,
+                None => {
+                    index.insert(&entity.layer, used.len());
+                    used.push((entity.layer.clone(), 1));
+                }
+            }
         }
         let position = |name: &str| {
             self.layers
@@ -416,7 +417,7 @@ impl Drawing {
                 .filter(|entity| layers.contains(&entity.layer))
                 .cloned()
                 .collect(),
-            ..self.clone()
+            ..self.without_entities()
         }
     }
 
@@ -430,7 +431,19 @@ impl Drawing {
                     Entity::new(entity.layer.clone(), entity.geometry.transformed(transform))
                 })
                 .collect(),
-            ..self.clone()
+            ..self.without_entities()
+        }
+    }
+
+    /// A copy without the entities: the copies above make their own, so
+    /// the drawing's are not copied first (mitcad#926).
+    fn without_entities(&self) -> Self {
+        Self {
+            version: self.version.clone(),
+            units: self.units,
+            layers: self.layers.clone(),
+            entities: Vec::new(),
+            warnings: self.warnings.clone(),
         }
     }
 
@@ -450,4 +463,19 @@ impl Drawing {
         drawing.units = Units::Millimeters;
         drawing
     }
+}
+
+/// The lower left and upper right corners of `entities`; `None` without
+/// any.
+fn bounds_of<'a>(entities: impl Iterator<Item = &'a Entity>) -> Option<(Point2, Point2)> {
+    let mut points = entities
+        .flat_map(|entity| entity.geometry.extent_points())
+        .filter(|p| p.x.is_finite() && p.y.is_finite());
+    let first = points.next()?;
+    Some(points.fold((first, first), |(lo, hi), p| {
+        (
+            Point2::new(lo.x.min(p.x), lo.y.min(p.y)),
+            Point2::new(hi.x.max(p.x), hi.y.max(p.y)),
+        )
+    }))
 }

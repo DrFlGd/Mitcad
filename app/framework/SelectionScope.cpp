@@ -12,7 +12,8 @@ constexpr std::array<FilterRow, kFilterRowCount> kAllRows = {
     FilterRow::SketchGeometry, FilterRow::ConstructionGeometry, FilterRow::ProjectedGeometry,
     FilterRow::Annotations,    FilterRow::Profiles,             FilterRow::VisibleEdges,
     FilterRow::OccludedEdges,  FilterRow::Faces,                FilterRow::Vertices,
-    FilterRow::Bodies,         FilterRow::Components,           FilterRow::ReferenceGeometry};
+    FilterRow::Bodies,         FilterRow::Components,           FilterRow::ReferenceGeometry,
+    FilterRow::OtherSketchGeometry};
 
 std::size_t indexOf(FilterRow row) { return static_cast<std::size_t>(row); }
 
@@ -91,6 +92,8 @@ QString filterRowId(FilterRow row) {
     return QStringLiteral("bodies");
   case FilterRow::Components:
     return QStringLiteral("components");
+  case FilterRow::OtherSketchGeometry:
+    return QStringLiteral("other-sketch-geometry");
   case FilterRow::ReferenceGeometry:
     break;
   }
@@ -130,6 +133,8 @@ QString filterRowLabel(FilterRow row) {
     return QStringLiteral("Bodies");
   case FilterRow::Components:
     return QStringLiteral("Components");
+  case FilterRow::OtherSketchGeometry:
+    return QStringLiteral("Other sketches' curves and points");
   case FilterRow::ReferenceGeometry:
     break;
   }
@@ -141,6 +146,7 @@ SelectFilter filterRowKinds(FilterRow row) {
   case FilterRow::SketchGeometry:
   case FilterRow::ConstructionGeometry:
   case FilterRow::ProjectedGeometry:
+  case FilterRow::OtherSketchGeometry:
     return SelectKind::SketchCurve | SelectKind::SketchPoint;
   case FilterRow::Annotations:
     return SelectFilter();
@@ -195,7 +201,8 @@ SelectionScope SelectionScope::project() {
   return SelectionScope(QStringLiteral("project"), {{FilterRow::VisibleEdges, FilterState::Window},
                                                     {FilterRow::OccludedEdges, FilterState::Off},
                                                     {FilterRow::Faces, FilterState::Click},
-                                                    {FilterRow::Vertices, FilterState::Click}});
+                                                    {FilterRow::Vertices, FilterState::Click},
+                                                    {FilterRow::OtherSketchGeometry, FilterState::Window}});
 }
 
 bool SelectionScope::has(FilterRow row) const { return m_rows.contains(row); }
@@ -280,7 +287,13 @@ QString SelectionScope::describe() const {
 std::optional<FilterRow> filterRowOf(const SelectionItem& item, const QString& activeSketch,
                                      const SketchRowOf& sketchRow) {
   if (isSketchKind(item.kind) && item.owner != activeSketch) {
-    return std::nullopt; // another sketch's: never selectable here
+    // Another sketch's curves and points: a row of their own, which only
+    // Project's scope has (mitcad#904); its profiles, dimensions and
+    // constraints never.
+    if (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint) {
+      return FilterRow::OtherSketchGeometry;
+    }
+    return std::nullopt;
   }
   switch (item.kind) {
   case SelectKind::SketchCurve:

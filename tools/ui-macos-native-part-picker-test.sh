@@ -6,7 +6,8 @@
 # shared picker in an AppKit utility panel with its pictured grid and
 # groups, never a Qt window; a click chooses the part while the keyboard
 # stays with the command; pinning keeps it over the command's end and the
-# next Profile takes it over; Close and Command-W return the keyboard to
+# next Profile takes it over; open-table options below the grid keep their
+# cascade, text-field commit and command choice; Close and Command-W return the keyboard to
 # the document, where the command goes on; light and dark appearance.
 # A local synthetic library of two pictured slot profiles, made here with
 # mitcad-cli (no supplier's files, no network).
@@ -16,8 +17,8 @@ set -uo pipefail
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=tools/ui-macos-lib.sh
 . "$here/ui-macos-lib.sh"
-if [ $# -ne 3 ]; then
-  echo "usage: $0 <app> <mitcad-cli> <output>" >&2
+if [ $# -lt 3 ] || [ $# -gt 4 ] || { [ $# -eq 4 ] && [ "$4" != --prepare-only ]; }; then
+  echo "usage: $0 <app> <mitcad-cli> <output> [--prepare-only]" >&2
   exit 2
 fi
 cli=$2
@@ -44,6 +45,10 @@ profile() {
   local half
   half=$(awk -v s="$1" 'BEGIN { print s / 2 }')
   printf '[\n  {"cmd": "add_parameter", "name": "L", "expression": "500 mm"},\n'
+  cat <<'EOF'
+  {"cmd": "add_parameter", "name": "Grade", "expression": "'A'", "values": ["'A'", "'B'"]},
+  {"cmd": "add_parameter", "name": "Offset", "expression": "8 mm", "min": "0 mm", "max": "10 mm", "step": "1 mm"},
+EOF
   printf '  {"cmd": "sketch.create", "plane": "xy"},\n'
   printf '  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-%s, -%s], "width": %s, "height": %s},\n' \
     "$half" "$half" "$1" "$1"
@@ -56,7 +61,13 @@ profile() {
   frame "slot_x-_1" "[-$half, 0, 0]" "[-1, 0, 0]" "[0, 0, 1]"
   frame "slot_y+_1" "[0, $half, 0]" "[0, 1, 0]" "[0, 0, 1]"
   frame "slot_y-_1" "[0, -$half, 0]" "[0, -1, 0]" "[0, 0, 1]"
-  printf '  {"expect": {"bodies": 1}}\n]\n'
+  cat <<'EOF'
+  {"cmd": "set_configurations", "configurations": {"options": ["Grade", "Offset"], "closed": false,
+    "default": "Standard", "rows": [{"name": "Standard", "values": {"Grade": "'A'", "Offset": "8 mm"}}],
+    "rules": [{"name": "Grade B offset", "when": "Grade == 'B'", "then": [{"option": "Offset", "max": "5 mm"}]}]}},
+  {"expect": {"bodies": 1}}
+]
+EOF
 }
 design() { # design SIZE FILE
   local script=$UI_OUT/p$1-test.json
@@ -144,6 +155,12 @@ printf '[]\n' > "$MITCAD_TEST_WORK/empty.json"
 if ! "$cli" run "$MITCAD_TEST_WORK/empty.json" --save "$MITCAD_TEST_WORK/start.mitcad" >> "$setup" 2>&1; then
   cat "$setup"
   exit 1
+fi
+# The integrated acceptance audit reuses these exact configurable, pictured
+# production BUILD fixtures without launching this test's GUI workflows.
+if [ "${4:-}" = --prepare-only ]; then
+  echo "Prepared synthetic configurable BUILD profiles; $UI_OUT"
+  exit 0
 fi
 for scheme in light dark; do
   MITCAD_TEST_COLOR_SCHEME=$scheme MITCAD_TEST_INPUT=$here/ui-scripts/native-macos-part-picker.mitcad-ui \

@@ -65,6 +65,13 @@ add_custom_command(
 set_source_files_properties("${MITCAD_ICNS}" PROPERTIES
   GENERATED TRUE MACOSX_PACKAGE_LOCATION Resources)
 target_sources(mitcad PRIVATE "${MITCAD_ICNS}")
+# The annotations' technical lettering (mitcad#902): a file of its own in
+# Resources/fonts, loaded at run time (LGPL-3.0 with the font exception).
+set(mitcad_bundle_lettering "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/lettering.ttf")
+if(EXISTS "${mitcad_bundle_lettering}")
+  set_source_files_properties("${mitcad_bundle_lettering}" PROPERTIES MACOSX_PACKAGE_LOCATION Resources/fonts)
+  target_sources(mitcad PRIVATE "${mitcad_bundle_lettering}")
+endif()
 
 # --- The bundle ------------------------------------------------------------------
 set_target_properties(mitcad PROPERTIES
@@ -127,6 +134,11 @@ install(FILES "${PROJECT_SOURCE_DIR}/LICENSE"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME Mitcad-LICENSE.txt)
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/droid-sans/LICENSE.txt"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME DroidSans-Apache-2.0.txt)
+# The annotations' lettering (mitcad#902), in Resources/fonts as a file.
+if(EXISTS "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/LICENSE.txt")
+  install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/LICENSE.txt"
+    DESTINATION "${MITCAD_LICENSES_DIR}" RENAME Lettering-LGPL-3.0.txt)
+endif()
 # three.js, embedded for the web viewer (app/web/viewer).
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/three/LICENSE"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME three.js-MIT.txt)
@@ -241,6 +253,11 @@ Open CASCADE Technology ${OpenCASCADE_VERSION}: GNU LGPL-2.1 with the Open CASCA
 ${MITCAD_HEIF_THIRD_PARTY_NOTES}FreeType: used under the FreeType Licence (FTL), not the GPL, which the package
   offers as an alternative.
 Droid Sans (the font of sketch texts, embedded): Apache-2.0 (DroidSans-Apache-2.0.txt).
+The ISO 3098 type B style technical lettering font of Zefram Cochrane and its contributors
+  (https://github.com/hikikomori82), the annotations' lettering, a file of its own in
+  Resources/fonts loaded at run time, not linked in: offered under GPL-3.0, GPL-2.0 or
+  LGPL-3.0, each with a font exception; used under LGPL-3.0 with the font exception
+  (Lettering-LGPL-3.0.txt, with its name and source). Copyright 2015-2023 Zefram Cochrane.
 three.js r170 (https://threejs.org/), embedded, and in every web page that Export > Web
   page and the project's web viewer write: MIT, Copyright 2010-2024 three.js authors
   (three.js-MIT.txt); the pages carry the licence text with it.

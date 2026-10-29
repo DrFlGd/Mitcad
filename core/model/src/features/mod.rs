@@ -272,6 +272,8 @@ mod mapping;
 pub mod drives;
 pub mod place_at;
 pub use place_at::{PlaceAt, Placed};
+// Clearance holes and head recesses by screw size (mitcad#903).
+pub mod hole_sizes;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;

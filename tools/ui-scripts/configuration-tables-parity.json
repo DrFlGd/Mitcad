@@ -1,0 +1,11 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT"},
+  {"cmd": "set_table", "name": "Screws", "table": {
+    "columns": [{"name": "Size", "unit": "Text"}, {"name": "dk", "unit": "mm"}, {"name": "Length", "unit": "mm"}],
+    "rows": [["M3", 5.5, 10], ["M4", 7, 16], ["M5", 8.5, 20]]}},
+  {"cmd": "add_parameter", "name": "Size", "unit": "Text", "expression": "'M4'"},
+  {"cmd": "add_parameter", "name": "Length", "unit": "mm", "expression": "16 mm"},
+  {"cmd": "add_parameter", "name": "HeadDia", "unit": "mm", "expression": "XLOOKUP(Size; Screws.Size; Screws.dk)"},
+  {"cmd": "set_configurations", "configurations": {"options": ["Size", "Length"], "rules": [{"name": "Made sizes", "then": []}]}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0], "length": "10 mm", "width": "10 mm", "height": "Length", "operation": "new_body"}}
+]

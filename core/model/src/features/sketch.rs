@@ -24,7 +24,7 @@ use crate::kernel::{Curve3, Kernel};
 use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
 use crate::profile::SketchFrame;
-use crate::sketch::{Projection, project};
+use crate::sketch::{Projection, ProjectionSource, SketchEntityRef, project};
 use crate::topo::{FaceName, TopoName};
 use crate::transform::Transform;
 
@@ -82,6 +82,12 @@ impl FeatureInfo for SketchDef {
                 ctx.feature(feature)
                     .map_err(|e| format!("projection of {}: {e}", projection.source))?;
             }
+            // Another sketch's curve or point (mitcad#904): of a sketch
+            // before this one.
+            if let ProjectionSource::Sketch(entity) = &projection.source {
+                ctx.sketch(entity.sketch)
+                    .map_err(|e| format!("projection of {}: {e}", projection.source))?;
+            }
             if let Some(body) = projection.body {
                 ctx.body(body)?;
             }
@@ -134,11 +140,16 @@ impl LinkedReferences for SketchDef {
     }
 }
 
-pub(crate) fn topo_features(name: &crate::topo::TopoName) -> BTreeSet<FeatureUid> {
-    match name {
-        crate::topo::TopoName::Face(f) => f.features(),
-        crate::topo::TopoName::Edge(e) => e.features(),
-        crate::topo::TopoName::Vertex(v) => v.faces().iter().flat_map(FaceName::features).collect(),
+/// The features a projection's source names: those of its topological
+/// name, or the sketch whose curve or point it is (mitcad#904).
+pub(crate) fn topo_features(source: &ProjectionSource) -> BTreeSet<FeatureUid> {
+    match source {
+        ProjectionSource::Topo(TopoName::Face(f)) => f.features(),
+        ProjectionSource::Topo(TopoName::Edge(e)) => e.features(),
+        ProjectionSource::Topo(TopoName::Vertex(v)) => {
+            v.faces().iter().flat_map(FaceName::features).collect()
+        }
+        ProjectionSource::Sketch(entity) => BTreeSet::from([entity.sketch]),
     }
 }
 
@@ -252,7 +263,12 @@ fn source_curves<K: Kernel>(
     frame: &SketchFrame,
     ctx: &mut super::EvalContext<'_, K>,
 ) -> Result<Vec<Curve3>, String> {
-    let source = &projection.source;
+    let source = match &projection.source {
+        ProjectionSource::Topo(name) => name,
+        ProjectionSource::Sketch(entity) => {
+            return sketch_entity_curves(entity, projection.link.as_ref(), ctx);
+        }
+    };
     let what = if projection.section {
         "section of"
     } else {
@@ -340,6 +356,54 @@ fn source_curves<K: Kernel>(
         }
     }
     Ok(Vec::new())
+}
+
+/// The model curve of another sketch's curve or point (mitcad#904), where
+/// that sketch has it now, in this sketch's component's coordinates (moved
+/// there from another component's by `link`); none when the sketch no
+/// longer has the entity: the projection is lost and keeps its last
+/// geometry, as one of a body edge that is gone.
+fn sketch_entity_curves<K: Kernel>(
+    entity: &SketchEntityRef,
+    link: Option<&OccurrenceLink>,
+    ctx: &mut super::EvalContext<'_, K>,
+) -> Result<Vec<Curve3>, String> {
+    let output = ctx
+        .sketch(entity.sketch)
+        .map_err(|e| format!("projection of {entity}: {e}"))?;
+    let curve = sketch_entity_curve(&output, entity.entity);
+    let Some(curve) = curve else {
+        return Ok(Vec::new());
+    };
+    Ok(match link {
+        Some(link) => {
+            let (_, t) = ctx
+                .linked(link)
+                .map_err(|e| format!("projection of {entity}: {e}"))?;
+            vec![project::transform_curve(&t, &curve)]
+        }
+        None => vec![curve],
+    })
+}
+
+/// A sketch's curve or point in its component's coordinates, where its
+/// evaluation solved it; None when the sketch has no such entity.
+pub(crate) fn sketch_entity_curve(
+    output: &SketchOutput,
+    entity: crate::sketch::Ref,
+) -> Option<Curve3> {
+    match entity {
+        crate::sketch::Ref::Point(id) => output
+            .solved
+            .points
+            .get(&id)
+            .map(|p| Curve3::Point(output.frame.point(*p))),
+        crate::sketch::Ref::Curve(id) => output
+            .solved
+            .curves
+            .get(&id)
+            .map(|c| super::path::curve3(&output.frame, c)),
+    }
 }
 
 /// The frame of a face plane from the bodies before the sketch.

@@ -1,0 +1,69 @@
+# SPDX-License-Identifier: MIT
+wait-idle 30
+window-resize 1280 820
+expect-model-bodies 1 1000
+ENTER_SKETCH
+expect-log 'Editing sketch F2 \(Sketch1\)'
+command view.fit
+expect-viewport
+capture-undo-depth baseline
+capture-sketch F2 '${MITCAD_TEST_WORK}/before.json'
+
+# Drag a selected curve while a second curve and an independent point
+# remain selected: one group offset and one undo action through the canvas.
+sketch-click 20 10
+sketch-click 20 25 ctrl
+sketch-click 45 10 ctrl
+expect-selection 3 0
+mark
+sketch-drag 20 10 25 17
+expect-log 'Drag of the selection: '
+expect-undo-depth ${baseline} 1
+capture-sketch F2 '${MITCAD_TEST_WORK}/drag.json'
+key ctrl+z
+expect-undo-depth ${baseline} 0
+capture-sketch F2 '${MITCAD_TEST_WORK}/drag-undo.json'
+key ctrl+shift+z
+expect-undo-depth ${baseline} 1
+capture-sketch F2 '${MITCAD_TEST_WORK}/drag-redo.json'
+key Escape
+expect-selection 0 0
+
+# The quadratic control spline passes through (30,70), away from any
+# control point. A genuine double-click inserts a knot/control point there.
+mark
+sketch-dblclick 30 70
+expect-log 'Double-click on c[0-9]+: Insert Point'
+expect-log 'Inserted point p[0-9]+ into c[0-9]+ at '
+expect-undo-depth ${baseline} 2
+capture-sketch F2 '${MITCAD_TEST_WORK}/insert.json'
+key ctrl+z
+expect-undo-depth ${baseline} 1
+capture-sketch F2 '${MITCAD_TEST_WORK}/insert-undo.json'
+key ctrl+shift+z
+expect-undo-depth ${baseline} 2
+capture-sketch F2 '${MITCAD_TEST_WORK}/insert-redo.json'
+command sketch.finish
+expect-log 'Sketch finished'
+expect-model-bodies 1 1000
+
+# Create Sketch exposes selectable origin planes in an existing design
+# with a body. Pick XY through the viewport, then create real geometry.
+mark
+command sketch.create
+expect-log 'Create Sketch: select a plane'
+expect-log 'Datum xy at '
+click-logged '^Datum xy at '
+expect-log 'Sketch started on xy'
+command view.fit
+command sketch.point
+sketch-click 5 5
+key Escape
+command sketch.finish
+expect-log 'Sketch finished'
+expect-model-bodies 1 1000
+mark
+menu 'File/Save'
+expect-log 'Saved .*sketch-parity\.mitcad'
+screenshot '${MITCAD_TEST_WORK}/sketch-parity-final.png'
+expect-never 'The document was read while a job computes it|OCCT view event failed|Native Mac canvas:|Insert Point:'

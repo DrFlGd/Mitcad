@@ -50,9 +50,7 @@
 #include "../browser/BrowserBackground.hpp"
 #include "../browser/DocumentHost.hpp"
 #include "../framework/Dialogs.hpp"
-#ifdef MITCAD_MACOS_NATIVE_UI
 #include "../platform/NativeDialogs.hpp"
-#endif
 #include "../framework/AppSettings.hpp"
 #include "../framework/CachePreferences.hpp"
 #include "../framework/ChromeStyle.hpp"
@@ -1830,14 +1828,20 @@ void ViewController::showShortcutOverview() {
   dialog.setWindowTitle(tr("Keyboard and Mouse Overview"));
   auto* layout = new QVBoxLayout(&dialog);
   auto* filter = new QLineEdit;
+  filter->setObjectName(QStringLiteral("shortcutOverviewFilter"));
   filter->setPlaceholderText(tr("Search"));
   filter->setClearButtonEnabled(true);
   mac::styleSearchField(filter);
   layout->addWidget(filter);
   auto* tree = new QTreeWidget;
+  tree->setObjectName(QStringLiteral("shortcutOverviewTable"));
   tree->setColumnCount(2);
   tree->setHeaderLabels({tr("Keys or mouse"), tr("Does")});
-  tree->header()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+  // Group captions span both columns, so they do not steal the action
+  // column's width. Both columns keep their content widths; a small window
+  // scrolls horizontally instead of reducing actions to a few letters.
+  tree->header()->setStretchLastSection(false);
+  tree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
   tree->setRootIsDecorated(true);
   layout->addWidget(tree);
 
@@ -1847,12 +1851,22 @@ void ViewController::showShortcutOverview() {
     QFont bold = item->font(0);
     bold.setBold(true);
     item->setFont(0, bold);
+    item->setFirstColumnSpanned(true);
     item->setExpanded(true);
     return item;
   };
+  const auto addRow = [](QTreeWidgetItem* parent, const QString& keys, const QString& what, const QString& id) {
+    auto* row = new QTreeWidgetItem(parent, {keys, what});
+    for (int column = 0; column < 2; ++column) {
+      row->setData(column, NativeControlIdentifierRole,
+                   QStringLiteral("shortcutOverview.%1.%2").arg(id).arg(column));
+    }
+    return row;
+  };
   QTreeWidgetItem* mouse = section(tr("Mouse (%1)").arg(schemeName(m_settings.navigation.scheme)));
+  int mouseRow = 0;
   for (const auto& [keys, what] : mouseRows(m_settings.navigation)) {
-    new QTreeWidgetItem(mouse, {keys, what});
+    addRow(mouse, keys, what, QStringLiteral("mouse.%1").arg(mouseRow++));
   }
   for (const auto& [keys, what] :
        QVector<QPair<QString, QString>>{{tr("Left click"), tr("Select; %1 or Shift adds or removes").arg(ctrlKey())},
@@ -1864,7 +1878,7 @@ void ViewController::showShortcutOverview() {
                                         {tr("Trackpad: two-finger double tap"), tr("Fit (in every scheme)")},
                                         {tr("Orientation cube: click"), tr("Turn to a face, edge or corner")},
                                         {tr("Orientation cube: drag"), tr("Orbit")}}) {
-    new QTreeWidgetItem(mouse, {keys, what});
+    addRow(mouse, keys, what, QStringLiteral("mouse.%1").arg(mouseRow++));
   }
   QTreeWidgetItem* keys = section(tr("Keys"));
   // Ctrl is Cmd on macOS, where Backspace (the delete key) deletes too.
@@ -1878,6 +1892,7 @@ void ViewController::showShortcutOverview() {
 #else
   const QString deleteKeys = tr("Delete");
 #endif
+  int keyRow = 0;
   for (const auto& [key, what] :
        QVector<QPair<QString, QString>>{{tr("Enter"), tr("OK: finish the command, or the typed value")},
                                         {tr("Esc"), tr("Cancel the command, step back in a sketch tool, clear the selection")},
@@ -1885,7 +1900,7 @@ void ViewController::showShortcutOverview() {
                                         {deleteKeys, tr("Delete the selection")},
                                         {tr("F2"), tr("Rename in the Browser or history; Return activates")},
                                         {fileKeys, tr("Open, Save, Save As")}}) {
-    new QTreeWidgetItem(keys, {key, what});
+    addRow(keys, key, what, QStringLiteral("key.%1").arg(keyRow++));
   }
   // The commands with shortcuts, by tab and group.
   QHash<QString, QTreeWidgetItem*> groups;
@@ -1902,7 +1917,7 @@ void ViewController::showShortcutOverview() {
     }
     QStringList labels;
     for (const QKeySequence& sequence : sequences) labels.append(sequence.toString(QKeySequence::NativeText));
-    auto* row = new QTreeWidgetItem(parent, {labels.join(QStringLiteral(", ")), def->name});
+    auto* row = addRow(parent, labels.join(QStringLiteral(", ")), def->name, def->id);
     row->setIcon(1, themeIcon(def->icon));
     ++count;
   }

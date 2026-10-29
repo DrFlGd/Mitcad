@@ -6,6 +6,7 @@
 pub mod ffi {
     unsafe extern "C++" {
         include!("bridge/shape.hpp");
+        include!("bridge/trycatch.hpp");
 
         /// `mitcad::geometry::Shape`: an immutable B-rep with face names.
         #[namespace = "mitcad::geometry"]

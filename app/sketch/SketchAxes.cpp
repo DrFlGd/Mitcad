@@ -3,8 +3,17 @@
 // constrain and dimension (mitcad#500): the entities the model makes for
 // them (`sketch.axis`, core/sketch/src/axes.rs), and the pick ids
 // that stand for them until a step makes them. Only the sketch model's
-// data: the app's unit tests take this file alone.
+// data: the app's unit tests take this file alone. With no tool running
+// they are selected like construction geometry (mitcad#899): the selection
+// keeps them by their pick ids, and the tools that take them make their
+// entities when they use them.
 #include "SketchModel.hpp"
+
+#include <cmath>
+
+#include <QPointF>
+
+#include "../framework/Selection.hpp"
 
 namespace mitcad::sketch {
 
@@ -85,6 +94,38 @@ void SketchModel::addAxisPicks() {
   }
 }
 
+QString SketchModel::axisEntity(const QString& id) const {
+  const QString axisName = axisPickName(id);
+  if (axisName.isEmpty()) {
+    return id;
+  }
+  const QString made = axisName == QStringLiteral("origin") ? originPoint() : axisLine(axisName);
+  return made.isEmpty() ? id : made;
+}
+
+QString SketchModel::axisSelectionPick(const QString& entity) const {
+  if (entity.isEmpty()) {
+    return QString();
+  }
+  if (entity == originPick()) {
+    return entity;
+  }
+  const QString axis = axisOf(entity);
+  return axis.isEmpty() ? QString() : axisPick(axis);
+}
+
+QStringList SketchModel::selectionPicks(const QStringList& names, bool axes) const {
+  QStringList picks;
+  for (const QString& pick : names) {
+    if (!isAxisPick(pick)) {
+      picks << pick;
+    } else if (axes) {
+      picks << axisEntity(pick);
+    }
+  }
+  return picks;
+}
+
 QString originPick() { return QStringLiteral("origin"); }
 
 QString axisPick(const QString& axis) { return axis + QStringLiteral("_axis"); }
@@ -102,6 +143,30 @@ QString axisPickName(const QString& id) {
     return QStringLiteral("y");
   }
   return QString();
+}
+
+SelectionItem axisSelectionItem(const QString& sketch, const QString& pick, const QString& occurrence) {
+  SelectionItem item;
+  const bool origin = pick == originPick();
+  item.kind = origin ? SelectKind::SketchPoint : SelectKind::SketchCurve;
+  item.owner = sketch;
+  item.name = pick;
+  item.geometry = origin ? QStringLiteral("point") : QStringLiteral("line");
+  item.occurrence = occurrence;
+  return item;
+}
+
+bool isAxisSelection(const SelectionItem& item) {
+  return (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint) && isAxisPick(item.name);
+}
+
+std::optional<double> axisScreenDistance(const QPointF& screen, const QPointF& origin, const QPointF& along) {
+  const double length = std::hypot(along.x(), along.y());
+  if (length < 1.0) {
+    return std::nullopt; // the sketch plane seen edge on
+  }
+  const QPointF off = screen - origin;
+  return std::abs(along.x() * off.y() - along.y() * off.x()) / length;
 }
 
 } // namespace mitcad::sketch

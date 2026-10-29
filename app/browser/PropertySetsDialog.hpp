@@ -96,6 +96,9 @@ private:
                         QStringList& rows);
   // Opens a print value's field (the delegate's editor).
   void editPrint(QTreeWidgetItem* item);
+  // The native table mounts real shared setting fields and glyph actions;
+  // its cells do not run Qt delegate painting or mouse hit tests.
+  void createNativePrintCells();
   // Materials for the body or the component shown (Material's row).
   void openPrintMaterial();
   // Own settings of the level shown (`owner`) in the settings form.

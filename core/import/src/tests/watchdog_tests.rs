@@ -292,6 +292,32 @@ fn the_oracle_builds_released_states_again() {
 }
 
 #[test]
+fn the_states_behind_the_replay_are_released_after_each_item() {
+    // The bodies of the history states the replay has gone past go before
+    // its next item, with what the file's geometry built for them alone
+    // (mitcad#885: a design of 116 items kept the bodies of 69 states of
+    // 5 000 faces, 1.3 GB, and their measures to its end), without being
+    // asked to by the memory guard; the extrusions are verified against
+    // their states all the same.
+    let (items, mut geometry) = block_history(Vec::new());
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    for item in &report.items[1..] {
+        assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+        assert_eq!(item.verified, Some(true), "{}", report.text());
+    }
+    assert!(report.history.reached_end, "{}", report.text());
+    // Once the replay is at each state: the empty one before the first
+    // extrusion, the extrusion's before the join, and the join's at the end.
+    assert_eq!(geometry.released_before, [0, 1, 2], "{}", report.text());
+}
+
+#[test]
 fn a_definition_that_takes_longer_than_its_item_is_cut_short() {
     wall_clock();
     // The first extrusion's kernel call would take 30 s, checking for a

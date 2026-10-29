@@ -317,7 +317,7 @@ void showMessage(const Buttons& buttons, const QString& text) {
 }
 
 // A colour picker of the named colours, the annotation's own when it is
-// another, and Other… (the colour dialog).
+// another (kept, mitcad#902), and Custom… (the colour dialog).
 QComboBox* colourBox(QWidget* parent, const QString& current) {
   auto* box = new QComboBox(parent);
   for (const auto& [name, hex] : annotationColours()) {
@@ -326,7 +326,7 @@ QComboBox* colourBox(QWidget* parent, const QString& current) {
   if (box->findData(current) < 0 && !current.isEmpty()) {
     box->addItem(current, current);
   }
-  box->addItem(QObject::tr("Other…"), QString());
+  box->addItem(QObject::tr("Custom…"), QString());
   box->setCurrentIndex(std::max(0, box->findData(current)));
   QObject::connect(box, &QComboBox::activated, parent, [box, parent, current](int index) {
     if (!box->itemData(index).toString().isEmpty()) {
@@ -534,25 +534,33 @@ struct FrameFields {
 } // namespace
 
 const std::vector<std::pair<QString, QString>>& annotationColours() {
-  static const std::vector<std::pair<QString, QString>> colours = {
-      {QObject::tr("Auto"), QStringLiteral("auto")},      {QObject::tr("Orange"), QStringLiteral("#e8590c")},
-      {QObject::tr("Blue"), QStringLiteral("#1864ab")},   {QObject::tr("Green"), QStringLiteral("#2b8a3e")},
-      {QObject::tr("Magenta"), QStringLiteral("#a61e4d")}, {QObject::tr("Violet"), QStringLiteral("#5f3dc4")},
-      {QObject::tr("Amber"), QStringLiteral("#f08c00")},  {QObject::tr("Red"), QStringLiteral("#e03131")},
-      {QObject::tr("Black"), QStringLiteral("#212529")},  {QObject::tr("White"), QStringLiteral("#f8f9fa")}};
+  // A technical drawing's colours (mitcad#902): Auto first, then black and a
+  // dark grey; any other through Custom… (the bright presets are gone; a
+  // colour an annotation has is kept and offered as it is).
+  static const std::vector<std::pair<QString, QString>> colours = {{QObject::tr("Auto"), QStringLiteral("auto")},
+                                                                   {QObject::tr("Black"), QStringLiteral("#212529")},
+                                                                   {QObject::tr("Dark Grey"), QStringLiteral("#495057")}};
   return colours;
 }
 
 std::optional<QString> askAnnotationColour(QWidget* parent, const QString& current, const QString& what) {
   QStringList names;
+  QStringList hexes;
   int at = -1;
   for (const auto& [name, hex] : annotationColours()) {
     if (hex == current) {
       at = static_cast<int>(names.size());
     }
     names << name;
+    hexes << hex;
   }
-  names << QObject::tr("Other…");
+  // A colour of its own (an older preset, a custom one): offered as it is.
+  if (at < 0 && QColor(current).isValid()) {
+    at = static_cast<int>(names.size());
+    names << current;
+    hexes << current;
+  }
+  names << QObject::tr("Custom…");
   qDebug().noquote() << QStringLiteral("Annotation Colour dialog opened: %1 %2 (%3)")
                             .arg(what, current, names.join(QStringLiteral(" | ")));
   bool ok = false;
@@ -563,8 +571,8 @@ std::optional<QString> askAnnotationColour(QWidget* parent, const QString& curre
   }
   const qsizetype index = names.indexOf(chosen);
   QString hex;
-  if (index >= 0 && index < static_cast<qsizetype>(annotationColours().size())) {
-    hex = annotationColours()[static_cast<std::size_t>(index)].second;
+  if (index >= 0 && index < hexes.size()) {
+    hex = hexes.at(index);
   } else {
     const QColor own(current);
     const QColor picked =
@@ -800,7 +808,9 @@ std::optional<AnnotationEdit> editAnnotation(QWidget* parent, const QJsonObject&
   const bool note = kind == QLatin1String("note");
   const bool datum = kind == QLatin1String("datum");
   const bool isFrame = kind == QLatin1String("frame");
-  const bool leader = note || datum || isFrame;
+  // A hole callout's text is its hole's (mitcad#902): shown, not edited.
+  const bool callout = kind == QLatin1String("hole_callout");
+  const bool leader = note || datum || isFrame || callout;
   const QJsonObject format = annotation.value(QStringLiteral("format")).toObject();
   // Outlive the dialog, whose fields call them.
   ToleranceFields tolerance;
@@ -859,6 +869,11 @@ std::optional<AnnotationEdit> editAnnotation(QWidget* parent, const QJsonObject&
     }
     placed->setCurrentIndex(std::max(0, placed->findData(ownOn)));
     form->addRow(QObject::tr("&Placed:"), placed);
+  } else if (callout) {
+    auto* written = new QLabel(annotation.value(QStringLiteral("label")).toObject().value(QStringLiteral("text")).toString(),
+                               &dialog);
+    written->setToolTip(QObject::tr("Written from the hole's feature: it follows the hole's size, depth and thread"));
+    form->addRow(QObject::tr("Callout:"), written);
   } else {
     // The kinds its picks have now.
     const QJsonObject values = annotation.value(QStringLiteral("values")).toObject();
@@ -1147,6 +1162,8 @@ std::optional<AnnotationEdit> editAnnotation(QWidget* parent, const QJsonObject&
       } else if (on != ownOn) {
         change.insert(QStringLiteral("on"), on.isEmpty() ? QJsonValue(QJsonValue::Null) : QJsonValue(on));
       }
+    } else if (callout) {
+      // Nothing of its own to change: its text is its hole's.
     } else {
       QJsonObject formatChange;
       if (prefix->text() != ownPrefix) {

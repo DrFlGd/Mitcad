@@ -10,6 +10,10 @@
 @property(nonatomic, strong) NSView* body;
 @property(nonatomic, strong) NSScrollView* scroll;
 @property(nonatomic, strong) NSView* footer;
+// The least height of the content: the body's minimum and the buttons,
+// within the window's available frame (mitcad#812).
+@property(nonatomic, strong) NSLayoutConstraint* minimumHeight;
+@property(nonatomic, strong) NSLayoutConstraint* viewportHeight;
 @end
 
 @implementation MitcadNativeWindowContent
@@ -37,6 +41,11 @@ namespace {
 
 NSSize g_testLimit = NSZeroSize;
 char g_fitKey = 0;
+
+// Above the window's wish to keep its size and a drag that resizes it,
+// below the controls' compression resistance: the window keeps the body's
+// minimum height, for which the body's preferred heights yield.
+constexpr NSLayoutPriority kMinimumHeight = 600;
 
 NSRect availableFrame(NSWindow* window, NSWindow* sheetHost) {
   NSScreen* screen = sheetHost != nil ? sheetHost.screen : window.screen;
@@ -82,17 +91,50 @@ NSSize naturalSize(MitcadNativeWindowContent* content, CGFloat width) {
   NSView* body = content.body;
   NSLayoutConstraint* probe = [body.widthAnchor constraintEqualToConstant:width];
   probe.priority = NSLayoutPriorityRequired - 1;
-  probe.active = YES;
+  // Measure the rows at their preferred heights before sharing spare space.
+  // This lies between the converted layout's sharing (480) and preferred
+  // sizes (490): otherwise an ordinary form's tallest row makes every
+  // growing row that tall, even before the window has a height to fill.
+  NSLayoutConstraint* compact = [body.heightAnchor constraintEqualToConstant:0];
+  compact.priority = 485;
+  content.viewportHeight.active = NO;
+  [NSLayoutConstraint activateConstraints:@[probe, compact]];
   const NSSize size = body.fittingSize;
-  probe.active = NO;
+  [NSLayoutConstraint deactivateConstraints:@[probe, compact]];
+  content.viewportHeight.active = YES;
   const CGFloat footer = content.footer.hidden ? 0 : content.footer.fittingSize.height;
   return NSMakeSize(size.width, size.height + footer);
+}
+
+// The least content height the body and the buttons need at `width`: the
+// converted layout's minimum, with each control at its own minimum height
+// (a table at its least rows, a tab view at its page's minimum), not at the
+// heights they prefer.
+CGFloat leastHeight(MitcadNativeWindowContent* content, CGFloat width) {
+  NSView* body = content.body;
+  NSLayoutConstraint* across = [body.widthAnchor constraintEqualToConstant:width];
+  across.priority = NSLayoutPriorityRequired - 1;
+  NSLayoutConstraint* least = [body.heightAnchor constraintEqualToConstant:0];
+  least.priority = kMinimumHeight;
+  [NSLayoutConstraint activateConstraints:@[across, least]];
+  const CGFloat height = body.fittingSize.height;
+  [NSLayoutConstraint deactivateConstraints:@[across, least]];
+  const CGFloat footer = content.footer.hidden ? 0 : content.footer.fittingSize.height;
+  return height + footer;
 }
 
 // A window made smaller and moved inside its available frame where needed.
 void keepOnScreen(NSWindow* window) {
   NSWindow* host = window.sheetParent;
   const NSRect area = availableFrame(window, host);
+  if ([window.contentView isKindOfClass:MitcadNativeWindowContent.class]) {
+    // The minimum within the new frame, and no more than the window's
+    // height: a display change makes no window larger.
+    auto* content = (MitcadNativeWindowContent*)window.contentView;
+    const NSSize current = [window contentRectForFrameRect:window.frame].size;
+    const CGFloat most = std::max<CGFloat>(0, area.size.height - chromeOf(window).height);
+    content.minimumHeight.constant = std::min({leastHeight(content, current.width), most, current.height});
+  }
   if (host != nil) {
     // AppKit places a sheet; only its size is ours.
     const NSSize excess = NSMakeSize(std::max<CGFloat>(0, window.frame.size.width - area.size.width),
@@ -149,9 +191,20 @@ NSView* nativeScrollingContent(NSView* body, NSView* footer) {
   // tall as the window, so that the body fills it as it did unscrolled.
   NSLayoutConstraint* windowWidth = [document.widthAnchor constraintEqualToAnchor:clip.widthAnchor];
   windowWidth.priority = NSLayoutPriorityDefaultHigh;
+  // Fill the viewport before sharing spare space inside the body. Without
+  // this preference the document can retain an inflated natural height
+  // after a resize, putting otherwise fitting form fields below the view.
+  // Real control minima and intrinsic compression (750) still win, so a
+  // genuinely long body scrolls instead of squeezing its controls.
+  NSLayoutConstraint* viewportHeight = [document.heightAnchor constraintEqualToAnchor:clip.heightAnchor];
+  viewportHeight.priority = 499;
   // The buttons take their own height, the body the rest.
   NSLayoutConstraint* footerHeight = [footer.heightAnchor constraintEqualToConstant:0];
   footerHeight.priority = NSLayoutPriorityDefaultLow - 50;
+  // No shorter than the converted layout's minimum, which the fitting sets
+  // within the window's available frame; the body scrolls only below that.
+  NSLayoutConstraint* least = [content.heightAnchor constraintGreaterThanOrEqualToConstant:0];
+  least.priority = kMinimumHeight;
   [NSLayoutConstraint activateConstraints:@[
     [body.leadingAnchor constraintEqualToAnchor:document.leadingAnchor],
     [body.trailingAnchor constraintEqualToAnchor:document.trailingAnchor],
@@ -162,6 +215,7 @@ NSView* nativeScrollingContent(NSView* body, NSView* footer) {
     [document.widthAnchor constraintGreaterThanOrEqualToAnchor:clip.widthAnchor],
     windowWidth,
     [document.heightAnchor constraintGreaterThanOrEqualToAnchor:clip.heightAnchor],
+    viewportHeight,
     [scroll.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
     [scroll.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
     [scroll.topAnchor constraintEqualToAnchor:content.topAnchor],
@@ -169,7 +223,8 @@ NSView* nativeScrollingContent(NSView* body, NSView* footer) {
     [footer.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
     [footer.topAnchor constraintEqualToAnchor:scroll.bottomAnchor],
     [footer.bottomAnchor constraintEqualToAnchor:content.bottomAnchor],
-    footerHeight
+    footerHeight,
+    least
   ]];
   if ([footer isKindOfClass:NSStackView.class]) {
     [(NSStackView*)footer setHuggingPriority:NSLayoutPriorityDefaultHigh
@@ -178,6 +233,8 @@ NSView* nativeScrollingContent(NSView* body, NSView* footer) {
   content.body = body;
   content.scroll = scroll;
   content.footer = footer;
+  content.minimumHeight = least;
+  content.viewportHeight = viewportHeight;
   return content;
 }
 
@@ -194,12 +251,16 @@ void fitNativeWindowToScreen(NSWindow* window, NSWindow* sheetHost) {
   NSSize size = NSMakeSize(std::min(requested.width, most.width), std::min(requested.height, most.height));
   if ([window.contentView isKindOfClass:MitcadNativeWindowContent.class]) {
     auto* content = (MitcadNativeWindowContent*)window.contentView;
+    content.minimumHeight.constant = 0;
     // Wrapping text takes its height at the width it will have.
     [window setContentSize:size];
     [content layoutSubtreeIfNeeded];
     const NSSize natural = naturalSize(content, size.width);
     size = NSMakeSize(std::min(std::max(size.width, natural.width), most.width),
                       std::min(std::max(requested.height, natural.height), most.height));
+    // Resizing keeps the converted layout's minimum height, within the
+    // frame (mitcad#812): a dialog's last rows below a tab view stay visible.
+    content.minimumHeight.constant = std::min(leastHeight(content, size.width), most.height);
   }
   if (sheetHost != nil) {
     [window setContentSize:size];

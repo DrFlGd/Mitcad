@@ -11,7 +11,10 @@
 //! - polylines (`LWPOLYLINE`, `POLYLINE`) are split into lines and arcs, a
 //!   bulge giving an arc;
 //! - block references (`INSERT`, also arrays) are expanded with their
-//!   transforms, so a non-uniformly scaled circle becomes an ellipse;
+//!   transforms, so a non-uniformly scaled circle becomes an ellipse; an
+//!   array reads at most [`MAX_ARRAY_CELLS`] cells, and a read places at
+//!   most [`READ_BUDGET`] entities and references in all, with a warning
+//!   for what is left out;
 //! - entities whose object coordinate system is not the XY plane are
 //!   projected onto it.
 //!
@@ -37,7 +40,7 @@ mod writer;
 
 pub use error::Error;
 pub use math::{Affine, bulge_arc};
-pub use reader::{read, read_file, read_str};
+pub use reader::{MAX_ARRAY_CELLS, READ_BUDGET, read, read_file, read_str, read_within};
 pub use types::{Drawing, Entity, Geometry, Layer, Point2, Spline, Text};
 pub use units::Units;
 pub use writer::{DxfVersion, WriteOptions, write_file, write_string};

@@ -310,9 +310,97 @@ fn path_placement<K: Kernel>(
     Ok((at, placement))
 }
 
+/// Measures a bound length against its exact target. Shared by committed
+/// evaluation and read-only BUILD planning; all coordinates are in the
+/// caller's component, with target bodies supplied in their own coordinates.
+#[doc(hidden)]
+#[allow(clippy::too_many_arguments)]
+pub fn measure_to<R: Resolver>(
+    resolver: &mut R,
+    start: [f64; 3],
+    direction: [f64; 3],
+    geometry: &GeomRef,
+    placement: Transform,
+    available_bodies: &[BodyUid],
+    mode: BoundMode,
+    add: f64,
+) -> Result<f64, String> {
+    use crate::build::{box_along, ray_plane, unit};
+    let (point, normal, bodies): (_, _, Vec<BodyUid>) = match geometry {
+        GeomRef::Mount { feature, name } => {
+            let frame = placement.after(
+                &resolver
+                    .mount(*feature, name)
+                    .map_err(|e| format!("to: {e}"))?,
+            );
+            let bodies = available_bodies
+                .iter()
+                .copied()
+                .filter(|uid| uid.feature == *feature)
+                .collect();
+            (frame.translation, crate::build::z_axis(&frame), bodies)
+        }
+        GeomRef::Face { body, face } => {
+            let shape = resolver.shape(*body).map_err(|e| format!("to: {e}"))?;
+            match resolver.kernel().face_geometry(&shape, face) {
+                Ok(SurfaceGeometry::Plane { origin, normal }) => (
+                    placement.apply_point(origin),
+                    placement.apply_vector(normal),
+                    vec![*body],
+                ),
+                Ok(other) => {
+                    return Err(format!("to: face {face} is not planar ({})", other.kind()));
+                }
+                Err(e) => return Err(format!("to: face {face}: {e}")),
+            }
+        }
+        other => return Err(format!("to: {other} is no planar face or frame")),
+    };
+    let normal = unit(normal).ok_or("to: the plane has no normal")?;
+    let distance = ray_plane(start, direction, point, normal)
+        .ok_or_else(|| format!("the ray runs along {} and meets nothing", geometry))?;
+    if distance < -1e-9 {
+        return Err(format!(
+            "the ray meets nothing: {} is behind its start",
+            geometry
+        ));
+    }
+    let length = match mode {
+        BoundMode::Face => distance,
+        BoundMode::Centre | BoundMode::Through => {
+            let mut far = f64::NEG_INFINITY;
+            for body in &bodies {
+                let shape = resolver.shape(*body).map_err(|e| format!("to: {e}"))?;
+                if let Ok(Some(bounds)) = resolver.kernel().bounding_box(&shape) {
+                    far = far.max(box_along(&bounds, &placement, start, direction).1);
+                }
+            }
+            if !far.is_finite() || far < distance {
+                return Err(format!(
+                    "to: the far side of the part of {} is not known",
+                    geometry
+                ));
+            }
+            if mode == BoundMode::Through {
+                far
+            } else {
+                (distance + far) / 2.0
+            }
+        }
+    };
+    let value = length + add;
+    if value.is_nan() || value <= 0.0 {
+        return Err(format!(
+            "the length would be {} mm: the target is at the start",
+            crate::build::round(value)
+        ));
+    }
+    Ok(value)
+}
+
 impl<K: Kernel> Evaluate<K> for BoundLengthDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        use crate::build::{box_along, ray_plane, unit};
+        use crate::build::unit;
         // The start frame in the feature's component.
         let (at, placement) = path_placement(ctx, &self.from.occurrence)?;
         let local = {
@@ -333,77 +421,32 @@ impl<K: Kernel> Evaluate<K> for BoundLengthDef {
             .ok_or("the direction is zero")?;
         // The plane the ray ends on, and the bodies of the part it is of.
         let (at, placement) = path_placement(ctx, &self.to.occurrence)?;
-        let (point, normal, bodies): (_, _, Vec<BodyUid>) = match &self.to.geometry {
-            GeomRef::Mount { feature, name } => {
-                let frame =
-                    placement.after(&ctx.mount(*feature, name).map_err(|e| format!("to: {e}"))?);
-                let bodies = ctx
-                    .bodies_in(at)
-                    .into_iter()
-                    .map(|(uid, _)| uid)
-                    .filter(|uid| uid.feature == *feature)
-                    .collect();
-                (frame.translation, crate::build::z_axis(&frame), bodies)
-            }
-            GeomRef::Face { body, face } => {
-                let shape = ctx.body_in(at, *body).map_err(|e| format!("to: {e}"))?;
-                match ctx.kernel.face_geometry(&shape, face) {
-                    Ok(SurfaceGeometry::Plane { origin, normal }) => (
-                        placement.apply_point(origin),
-                        placement.apply_vector(normal),
-                        vec![*body],
-                    ),
-                    Ok(other) => {
-                        return Err(format!("to: face {face} is not planar ({})", other.kind()));
-                    }
-                    Err(e) => return Err(format!("to: face {face}: {e}")),
-                }
-            }
-            other => return Err(format!("to: {other} is no planar face or frame")),
-        };
-        let normal = unit(normal).ok_or("to: the plane has no normal")?;
-        let distance = ray_plane(start, direction, point, normal)
-            .ok_or_else(|| format!("the ray runs along {} and meets nothing", self.to.geometry))?;
-        if distance < -1e-9 {
-            return Err(format!(
-                "the ray meets nothing: {} is behind its start",
-                self.to.geometry
-            ));
-        }
-        let length = match self.mode {
-            BoundMode::Face => distance,
-            BoundMode::Centre | BoundMode::Through => {
-                let mut far = f64::NEG_INFINITY;
-                for body in &bodies {
-                    let shape = ctx.body_in(at, *body).map_err(|e| format!("to: {e}"))?;
-                    if let Ok(Some(bounds)) = ctx.kernel.bounding_box(&shape) {
-                        far = far.max(box_along(&bounds, &placement, start, direction).1);
-                    }
-                }
-                if !far.is_finite() || far < distance {
-                    return Err(format!(
-                        "to: the far side of the part of {} is not known",
-                        self.to.geometry
-                    ));
-                }
-                if self.mode == BoundMode::Through {
-                    far
-                } else {
-                    (distance + far) / 2.0
-                }
-            }
+        let bodies = if matches!(self.to.geometry, GeomRef::Mount { .. }) {
+            ctx.bodies_in(at)
+                .into_iter()
+                .map(|(uid, _)| uid)
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
         };
         let add = match self.add {
             Some(id) => ctx.param(id)?,
             None => 0.0,
         };
-        let value = length + add;
-        if value.is_nan() || value <= 0.0 {
-            return Err(format!(
-                "the length would be {} mm: the target is at the start",
-                crate::build::round(value)
-            ));
-        }
+        let mut resolver = InComponent {
+            ctx: &mut *ctx,
+            component: at,
+        };
+        let value = measure_to(
+            &mut resolver,
+            start,
+            direction,
+            &self.to.geometry,
+            placement,
+            &bodies,
+            self.mode,
+            add,
+        )?;
         Ok(FeatureOutput {
             measured: vec![(self.parameter, value)],
             ..FeatureOutput::default()

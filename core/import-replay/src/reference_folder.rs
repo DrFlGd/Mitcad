@@ -142,14 +142,16 @@ impl Resolver {
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("f3z"))
             && let Ok(package) = mitcad_f3d_design::package(path)
+            // Each design's manifest, one design inflated at a time
+            // (mitcad#923).
+            && let Ok(designs) = package
+                .documents()
+                .map(|doc| doc.map(|doc| (doc.label().to_owned(), manifest_guids(&doc))))
+                .collect::<Result<Vec<_>, String>>()
         {
             r.package = Some(Package {
                 path: path.to_path_buf(),
-                designs: package
-                    .documents
-                    .iter()
-                    .map(|(label, doc)| (label.clone(), manifest_guids(doc)))
-                    .collect(),
+                designs,
                 root: package.root,
                 described: package
                     .described
@@ -444,17 +446,22 @@ fn list_file(
     out: &mut Vec<Value>,
 ) -> Result<(), String> {
     let package = mitcad_f3d_design::package(path)?;
-    let documents = &package.documents;
     // A package's root design where its manifest names it.
-    let doc = match design.or(package.root.as_deref()) {
-        Some(label) => documents.iter().find(|(l, _)| l == label),
-        None => documents.first(),
+    let index = match design.or(package.root.as_deref()) {
+        Some(label) => package.position(label),
+        None => (!package.is_empty()).then_some(0),
     };
-    let Some((label, doc)) = doc else {
+    let Some(index) = index else {
         return Ok(());
     };
-    let avoid = [label.clone()];
-    for r in referenced_documents(doc)? {
+    // Only that design is inflated, and it is let go before the documents
+    // it refers to are listed (mitcad#923).
+    let doc = package.open(index)?;
+    let avoid = [doc.label().to_owned()];
+    let references = referenced_documents(&doc)?;
+    drop(doc);
+    drop(package);
+    for r in references {
         if r.occurrences == 0 || seen.contains(&r.urn) {
             continue;
         }

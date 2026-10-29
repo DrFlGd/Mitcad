@@ -48,17 +48,23 @@ QString compactJson(const QJsonObject& object) {
   return QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
 }
 
-// A note, a datum label or a feature control frame: on a leader, without a
-// value.
+// A note, a datum label, a feature control frame or a hole callout: on a
+// leader, without a value.
 bool isLeaderKind(const QString& kind) {
-  return kind == QLatin1String("note") || kind == QLatin1String("datum") || kind == QLatin1String("frame");
+  return kind == QLatin1String("note") || kind == QLatin1String("datum") || kind == QLatin1String("frame") ||
+         kind == QLatin1String("hole_callout");
 }
 
-// A datum label or a feature control frame: it marks a feature (a face, an
-// edge, a datum plane or axis), not a vertex or a point.
+// What a feature control frame can stand under: a dimension or a hole
+// callout (mitcad#902).
+bool takesFrameKind(const QString& kind) { return !isLeaderKind(kind) || kind == QLatin1String("hole_callout"); }
+
+// A datum label, a feature control frame or a hole callout: it marks a
+// feature (a face, an edge, a datum plane or axis), not a vertex or a
+// point.
 bool marksFeature(const QJsonArray& annotations, const QString& name) {
   const QString kind = annotationIn(annotations, name).value(QStringLiteral("kind")).toString();
-  return kind == QLatin1String("datum") || kind == QLatin1String("frame");
+  return kind == QLatin1String("datum") || kind == QLatin1String("frame") || kind == QLatin1String("hole_callout");
 }
 
 } // namespace
@@ -184,8 +190,8 @@ void MainWindow::editAnnotationNamed(const QString& name) {
     if (!group.isEmpty() && !context.groups.contains(group)) {
       context.groups << group;
     }
-    // The dimensions a frame can stand under.
-    if (!isLeaderKind(other.value(QStringLiteral("kind")).toString())) {
+    // The dimensions (and hole callouts) a frame can stand under.
+    if (takesFrameKind(other.value(QStringLiteral("kind")).toString())) {
       context.dimensions << other.value(QStringLiteral("name")).toString();
     }
   }
@@ -331,7 +337,7 @@ QJsonArray MainWindow::measuredAnnotations() const {
 
 void MainWindow::addFrameUnder(const QString& dimension) {
   const QJsonObject annotation = annotationIn(m_snapshot.measurements, dimension);
-  if (annotation.isEmpty() || isLeaderKind(annotation.value(QStringLiteral("kind")).toString())) {
+  if (annotation.isEmpty() || !takesFrameKind(annotation.value(QStringLiteral("kind")).toString())) {
     return;
   }
   QWidget* parent = m_annotationsWindow && m_annotationsWindow->isVisible() ? m_annotationsWindow.data()
@@ -407,7 +413,7 @@ void MainWindow::highlightAnnotations(const QStringList& names) {
   }
 }
 
-void MainWindow::addAnnotationHighlights(std::vector<HighlightDisplay>& highlights) {
+void MainWindow::addAnnotationHighlights(std::vector<HighlightDisplay>& /*highlights*/) {
   QStringList logged;
   if (m_mode == Mode::Idle && !m_annotationPick) {
     for (const QString& name : m_viewer->highlightedAnnotations()) {
@@ -416,12 +422,7 @@ void MainWindow::addAnnotationHighlights(std::vector<HighlightDisplay>& highligh
       // is only an anchor and may be stale).
       const QString under = annotation.value(QStringLiteral("on")).toString();
       const QJsonObject picked = under.isEmpty() ? annotation : annotationIn(m_snapshot.measurements, under);
-      // Auto (mitcad#894): the annotation colour of the background tone.
-      QColor colour(annotation.value(QStringLiteral("color")).toString());
-      if (!colour.isValid()) {
-        colour = measurementAutoColor(m_viewer->sketchHaloColor());
-      }
-      // Its picks and its plane's pick, in its colour; clicks go through.
+      // Its picks and its plane's pick.
       const QJsonValue planePick = picked.value(QStringLiteral("plane")).toObject().value(QStringLiteral("pick"));
       QStringList picks;
       for (const QJsonValue& pick : {picked.value(QStringLiteral("a")), picked.value(QStringLiteral("b")), planePick}) {
@@ -438,12 +439,9 @@ void MainWindow::addAnnotationHighlights(std::vector<HighlightDisplay>& highligh
         if (shape.IsNull()) {
           continue;
         }
-        HighlightDisplay shown{*item, shape, colour};
-        shown.pickable = false;
-        if (item->kind == SelectKind::Face || item->kind == SelectKind::Edge) {
-          shown.body = bodyShape(item->owner);
-        }
-        highlights.push_back(std::move(shown));
+        // Not drawn (mitcad#902: a selection recolours only the
+        // annotation's own thin drawing, no filled faces); listed for the
+        // tests' log.
         picks << item->describe();
       }
       if (!picks.isEmpty()) {

@@ -19,6 +19,8 @@
 #include <QPainterPath>
 #include <QPointer>
 #include <QRegion>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QStackedWidget>
 #include <QStyleOptionToolButton>
 #include <QTabBar>
@@ -306,6 +308,92 @@ protected:
   }
 };
 
+// Horizontal overflow stays inside the existing ribbon height. Its arrow
+// buttons reveal the same groups and menus without moving the whole ribbon
+// into QToolBar's overflow menu or clipping individual captions.
+class ClassicRibbonPage final : public QWidget {
+public:
+  explicit ClassicRibbonPage(QWidget* page) {
+    auto* row = new QHBoxLayout(this);
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(0);
+    m_scroll = new ScrollArea;
+    m_scroll->setObjectName(QStringLiteral("ribbonPageScroll"));
+    m_scroll->setFrameShape(QFrame::NoFrame);
+    m_scroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    m_scroll->setWidgetResizable(true);
+    m_scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    m_scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    page->layout()->setSizeConstraint(QLayout::SetMinimumSize);
+    m_scroll->setWidget(page);
+    m_back = arrow(Qt::LeftArrow, tr("Scroll ribbon left"), QStringLiteral("ribbonScrollLeft"));
+    m_next = arrow(Qt::RightArrow, tr("Scroll ribbon right"), QStringLiteral("ribbonScrollRight"));
+    row->addWidget(m_back);
+    row->addWidget(m_scroll, 1);
+    row->addWidget(m_next);
+    connect(m_back, &QToolButton::clicked, this, [this] { move(-1); });
+    connect(m_next, &QToolButton::clicked, this, [this] { move(1); });
+    // Range changes happen while the scroll area is laying out its viewport.
+    // Keep visibility changes in resizeEvent/fitGroups to avoid relaying out
+    // this row from inside that operation.
+    connect(bar(), &QScrollBar::rangeChanged, this, [this] { updateButtons(); });
+    connect(bar(), &QScrollBar::valueChanged, this, [this] { updateButtons(); });
+    m_back->hide();
+    m_next->hide();
+  }
+
+  QScrollBar* bar() const { return m_scroll->horizontalScrollBar(); }
+  void updateOverflow() {
+    const bool needed = m_scroll->widget()->minimumSizeHint().width() > width();
+    m_back->setVisible(needed);
+    m_next->setVisible(needed);
+    updateButtons();
+  }
+
+protected:
+  void resizeEvent(QResizeEvent* event) override {
+    QWidget::resizeEvent(event);
+    updateOverflow();
+  }
+
+private:
+  class ScrollArea final : public QScrollArea {
+  public:
+    QSize sizeHint() const override { return widget() ? widget()->sizeHint() : QSize(); }
+    QSize minimumSizeHint() const override {
+      return QSize(0, widget() ? widget()->minimumSizeHint().height() : 0);
+    }
+  };
+
+  QToolButton* arrow(Qt::ArrowType direction, const QString& text, const QString& name) {
+    auto* button = new QToolButton;
+    button->setObjectName(name);
+    button->setText(text);
+    button->setAccessibleName(text);
+    button->setToolTip(text);
+    button->setArrowType(direction);
+    button->setFocusPolicy(Qt::StrongFocus);
+    button->setAutoRaise(true);
+    button->setAutoRepeat(true);
+    button->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    // Keep the native arrow width as an explicit minimum while the viewport
+    // negotiates its remaining space.
+    button->setMinimumWidth(button->sizeHint().width());
+    return button;
+  }
+  void move(int direction) {
+    bar()->setValue(bar()->value() + direction * std::max(1, m_scroll->viewport()->width() / 2));
+  }
+  void updateButtons() {
+    m_back->setEnabled(bar()->value() > bar()->minimum());
+    m_next->setEnabled(bar()->value() < bar()->maximum());
+  }
+
+  ScrollArea* m_scroll = nullptr;
+  QToolButton* m_back = nullptr;
+  QToolButton* m_next = nullptr;
+};
+
 QToolButton* commandButton(QAction* action, bool mac) {
   QToolButton* button = nullptr;
   if (mac) {
@@ -574,11 +662,15 @@ QWidget* Ribbon::createPage(const QString& tab) {
     first = false;
     GroupInfo info;
     row->addWidget(createGroup(tab, group, &info));
-    if (mac) {
-      infos.push_back(info);
-    }
+    infos.push_back(info);
   }
   row->addStretch();
+  if (!mac) {
+    auto* overflow = new ClassicRibbonPage(page);
+    m_classicPages.insert(page, overflow);
+    connect(overflow->bar(), &QScrollBar::valueChanged, this, [this] { logLayoutIfChanged(); });
+    return overflow;
+  }
   return page;
 }
 
@@ -738,6 +830,19 @@ QWidget* Ribbon::createGroup(const QString& tab, const QString& group, GroupInfo
     if (pinnedCount == 0) {
       widget->setMinimumWidth(info->collapsedWidth);
     }
+  } else {
+    // Preserve the complete caption and its menu indicator. The page can
+    // scroll if even the caption-only groups cannot fit in the viewport.
+    const int margins = column->contentsMargins().left() + column->contentsMargins().right();
+    const int caption = menuButton->sizeHint().width();
+    menuButton->setMinimumWidth(caption);
+    widget->setMinimumWidth(caption + margins);
+    widget->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Preferred);
+    info->capsule = widget;
+    info->buttons = row;
+    info->collapsible = pinnedCount > 0;
+    info->collapsedWidth = caption + margins;
+    info->fullWidth = std::max(info->collapsedWidth, row->layout()->sizeHint().width() + margins);
   }
   return widget;
 }
@@ -771,6 +876,37 @@ void Ribbon::showEvent(QShowEvent* event) {
 }
 
 void Ribbon::fitGroups() {
+  if (m_presentation == Presentation::Classic) {
+    const QMargins outside = layout()->contentsMargins();
+    const int available = std::max(0, width() - outside.left() - outside.right());
+    for (auto it = m_groupsOfPage.begin(); it != m_groupsOfPage.end(); ++it) {
+      QLayout* row = it.key()->layout();
+      const QMargins margins = row->contentsMargins();
+      int total = margins.left() + margins.right() + std::max(0, row->spacing()) * std::max(0, row->count() - 2);
+      for (int item = 0; item < row->count(); ++item) {
+        if (QWidget* child = row->itemAt(item)->widget()) {
+          if (dynamic_cast<GroupSeparator*>(child)) total += child->minimumWidth();
+        }
+      }
+      const QList<GroupInfo>& infos = it.value();
+      for (const GroupInfo& info : infos) total += info.fullWidth;
+      std::vector<bool> collapsed(static_cast<std::size_t>(infos.size()), false);
+      for (int i = static_cast<int>(infos.size()) - 1; i >= 0 && total > available; --i) {
+        if (infos[i].collapsible && infos[i].fullWidth > infos[i].collapsedWidth) {
+          total -= infos[i].fullWidth - infos[i].collapsedWidth;
+          collapsed[static_cast<std::size_t>(i)] = true;
+        }
+      }
+      for (int i = 0; i < infos.size(); ++i) {
+        if (infos[i].collapsible) infos[i].buttons->setVisible(!collapsed[static_cast<std::size_t>(i)]);
+      }
+      row->activate();
+      if (QWidget* overflow = m_classicPages.value(it.key())) {
+        static_cast<ClassicRibbonPage*>(overflow)->updateOverflow();
+      }
+    }
+    return;
+  }
   if (m_presentation != Presentation::Mac) {
     return;
   }

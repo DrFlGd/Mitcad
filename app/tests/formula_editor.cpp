@@ -3,6 +3,7 @@
 
 #include <QApplication>
 #include <QComboBox>
+#include <QDialogButtonBox>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
@@ -93,6 +94,42 @@ void completionTests(mitcad::ParameterSource source,const mitcad::ParameterField
   CHECK(text->toPlainText()==QStringLiteral("Screws.dk"));
   editor.reject();
 }
+
+// Assignment formulas return library identifiers as text. OK must validate
+// the edited text with that kind before accepting the editor's result.
+void textFormulaTests() {
+  using namespace mitcad;
+  const QString expression=QStringLiteral("if(Holes == 'Yes'; 'paint_red'; 'paint_black')");
+  QString queriedExpression;
+  QString queriedKind;
+  ParameterSource source;
+  source.query=[&](const QJsonObject& query) {
+    if (!query.contains(QStringLiteral("expression"))) return QJsonObject{};
+    queriedExpression=query.value(QStringLiteral("expression")).toString();
+    queriedKind=query.value(QStringLiteral("kind")).toString();
+    if (queriedKind!=QStringLiteral("text")) {
+      return QJsonObject{{QStringLiteral("error"),QJsonObject{
+          {QStringLiteral("message"),QStringLiteral("text where a number is expected")}}}};
+    }
+    return QJsonObject{{QStringLiteral("result"),QJsonObject{
+        {QStringLiteral("text"),QStringLiteral("paint_red")}}}};
+  };
+  ParameterFieldOptions options;
+  options.kind=ParameterKind::Text;
+  options.anyKind=true;
+  FormulaEditor editor(source,options,QStringLiteral("'paint_black'"));
+  auto* text=editor.findChild<QPlainTextEdit*>(QStringLiteral("formulaText"));
+  auto* buttons=editor.findChild<QDialogButtonBox*>();
+  CHECK(text && buttons && buttons->button(QDialogButtonBox::Ok));
+  if (!text || !buttons || !buttons->button(QDialogButtonBox::Ok)) return;
+  text->selectAll();
+  typeText(text,expression);
+  buttons->button(QDialogButtonBox::Ok)->click();
+  CHECK(queriedKind==QStringLiteral("text"));
+  CHECK(queriedExpression==expression);
+  CHECK(editor.result()==QDialog::Accepted);
+  CHECK(editor.expression()==expression);
+}
 }
 
 int formulaEditorTests() {
@@ -146,5 +183,6 @@ int formulaEditorTests() {
       {QStringLiteral("argument"),1}});
   CHECK(signature==QStringLiteral("FLOOR(value; <b><u>[step]</u></b>)"));
   completionTests(source,options);
+  textFormulaTests();
   return failures;
 }

@@ -48,6 +48,7 @@
 #include "mitcad/geometry/cancel.hpp"
 #include "mitcad/geometry/geometry.hpp"
 #include "mitcad/geometry/input_check.hpp"
+#include "mitcad_bridge/kernel/exception_probe.h"
 #include "mitcad_bridge/lib.h"
 #include "mitcad_bridge/memory.h"
 #include "rust/cxx.h"
@@ -1518,6 +1519,25 @@ void test_pattern_of_features_in_one_boolean() {
   mitcad::geometry::clear_input_changes();
 }
 
+// C++ exceptions under a bridge call, thrown outside any geometry operation
+// (mitcad#937): each reaches Rust as the kernel's error through the
+// bridges' trycatch (core/cpp/bridge/trycatch.hpp), and the process goes
+// on. An OCCT exception keeps its message, or names its type without one;
+// an object that is no std::exception, which cxx's own trycatch would let
+// end the process, is an error too.
+void test_exceptions_across_the_bridge() {
+  const auto probe = [](const char* kind, const char* message) {
+    return std::string(mitcad::bridge::bridge_exception_probe(kind, message));
+  };
+  CHECK(probe("occt", "an OCCT failure outside an operation") == "Err: an OCCT failure outside an operation");
+  CHECK(probe("occt-empty", "") == "Err: OCCT exception Standard_ConstructionError");
+  CHECK(probe("std", "a standard exception") == "Err: a standard exception");
+  CHECK(probe("other", "") == "Err: unknown C++ exception");
+  CHECK(probe("none", "") == "Ok");
+  // Still alive: a later bridge call works as before.
+  CHECK(probe("occt", "again") == "Err: again");
+}
+
 } // namespace
 
 int main() {
@@ -1547,6 +1567,7 @@ int main() {
   test_out_of_memory_in_an_operation();
   test_live_hub();
   test_pattern_of_features_in_one_boolean();
+  test_exceptions_across_the_bridge();
 
   if (failures == 0) {
     std::puts("test_bridge: all checks passed");

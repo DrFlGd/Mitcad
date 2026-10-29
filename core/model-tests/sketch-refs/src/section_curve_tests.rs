@@ -561,6 +561,7 @@ fn an_edges_crossing_points_follow_it() {
 #[test]
 fn a_bodys_pieces_group_by_their_faces() {
     use mitcad_model::kernel::SectionCurve;
+    use mitcad_model::sketch::ProjectionSource;
     use mitcad_model::sketch::project::section_groups;
     use mitcad_model::topo::{FaceName, TopoName};
     let face = |n: &str| -> FaceName { n.parse().unwrap() };
@@ -589,12 +590,18 @@ fn a_bodys_pieces_group_by_their_faces() {
     ]);
     assert_eq!(groups.len(), 3, "{groups:?}");
     // Two lines on one face: one section of that face.
-    assert_eq!(groups[0].source, Some(TopoName::Face(face("F2:side(c1)"))));
+    assert_eq!(
+        groups[0].source,
+        Some(ProjectionSource::Topo(TopoName::Face(face("F2:side(c1)"))))
+    );
     assert_eq!(groups[0].curves, vec![line(0.0), line(2.0)]);
     assert!(groups[0].chain.is_empty());
     // A spline joined across two faces: the first's section with the
     // second as its chain.
-    assert_eq!(groups[1].source, Some(TopoName::Face(face("F2:side(c2)"))));
+    assert_eq!(
+        groups[1].source,
+        Some(ProjectionSource::Topo(TopoName::Face(face("F2:side(c2)"))))
+    );
     assert_eq!(groups[1].chain, vec![TopoName::Face(face("F2:side(c3)"))]);
     assert_eq!(groups[1].curves, vec![spline]);
     // Pieces on faces without names: unlinked.

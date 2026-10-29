@@ -537,8 +537,9 @@ SketchController::SketchController(SketchHost& host, OcctViewer& viewer, Command
         const bool ours = item.owner == m_uid && (item.kind == SelectKind::SketchCurve ||
                                                   item.kind == SelectKind::SketchPoint);
         // An axis hovered for a command's input (axisPickEvent(),
-        // mitcad#876) stays while the view hovers nothing of the sketch.
-        if (!ours && m_paused && !m_model.axisOf(m_hover).isEmpty()) {
+        // mitcad#876), or an axis or the origin a click would select
+        // (mitcad#899), stays while the view hovers nothing of the sketch.
+        if (!ours && axisHovered()) {
           return;
         }
         setHover(ours ? item.name : QString());
@@ -957,7 +958,9 @@ void SketchController::deleteSelection() {
   QJsonArray items;
   QJsonArray unfix;
   for (const SelectionItem& item : m_host.selection()) {
-    if (item.owner != m_uid) {
+    // The sketch's axes and origin selected (mitcad#899) are left out:
+    // they are not the sketch's to delete.
+    if (item.owner != m_uid || isAxisSelection(item)) {
       continue;
     }
     switch (item.kind) {
@@ -1016,7 +1019,7 @@ void SketchController::toggleConstruction() {
   QJsonArray curves;
   bool allConstruction = true;
   for (const SelectionItem& item : m_host.selection()) {
-    if (item.owner == m_uid && item.kind == SelectKind::SketchCurve) {
+    if (item.owner == m_uid && item.kind == SelectKind::SketchCurve && !isAxisSelection(item)) {
       curves.append(item.name);
       const CurveData* c = m_model.curve(item.name);
       allConstruction = allConstruction && c != nullptr && c->construction;
@@ -1116,7 +1119,8 @@ void SketchController::updateConvertAction() {
 void SketchController::convertProjected() {
   QJsonArray entities;
   for (const SelectionItem& item : m_host.selection()) {
-    if (item.owner == m_uid && (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint)) {
+    if (item.owner == m_uid && (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint) &&
+        !isAxisSelection(item)) {
       entities.append(item.name);
     }
   }
@@ -1162,7 +1166,8 @@ void SketchController::toggleFixed() {
   QJsonArray entities;
   bool all = true;
   for (const SelectionItem& item : m_host.selection()) {
-    if (item.owner != m_uid) {
+    // Fix/Unfix leaves the sketch's axes and origin out (mitcad#899).
+    if (item.owner != m_uid || isAxisSelection(item)) {
       continue;
     }
     if (item.kind == SelectKind::SketchPoint) {
@@ -1782,17 +1787,14 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
       const QPointF origin = toScreen(V2{});
       for (const QString& axis : {QStringLiteral("x"), QStringLiteral("y")}) {
         const V2 step = axis == QStringLiteral("x") ? V2{100.0 * px, 0.0} : V2{0.0, 100.0 * px};
-        const QPointF along = toScreen(step) - origin;
-        const double length = std::hypot(along.x(), along.y());
-        if (length < 1.0) {
+        const std::optional<double> off = axisScreenDistance(screen, origin, toScreen(step) - origin);
+        if (!off) {
           continue; // the sketch plane seen edge on
         }
-        const QPointF off = screen - origin;
-        const double d = std::abs(along.x() * off.y() - along.y() * off.x()) / length;
-        if (d <= kCurvePixels && d + kAxisTiePixels < bestDistance) {
+        if (*off <= kCurvePixels && *off + kAxisTiePixels < bestDistance) {
           const QString line = m_model.axisLine(axis);
           best = line.isEmpty() ? axisPick(axis) : line;
-          bestDistance = d + kAxisTiePixels;
+          bestDistance = *off + kAxisTiePixels;
         }
       }
     }
@@ -1980,8 +1982,9 @@ void SketchController::setPaused(bool paused) {
   m_paused = paused;
   m_axisPress.clear();
   // An axis hovered for a command's input (mitcad#876) is not the next
-  // one's, nor sketch mode's.
-  if (!m_model.axisOf(m_hover).isEmpty()) {
+  // one's, nor sketch mode's; nor is one a click would select (mitcad#899)
+  // a command's.
+  if (axisHovered()) {
     setHover(QString());
   }
   if (!paused) {
@@ -2003,17 +2006,46 @@ QString SketchController::axisAt(const QPointF& screen) const {
   return axis.isEmpty() ? QString() : axisPick(axis);
 }
 
-bool SketchController::axisPickEvent(QEvent* event) {
+QString SketchController::axisSelectionAt(const QPointF& screen) {
+  // A dimension or a constraint's symbol there is the click's.
+  if (m_overlay->hitTest(screen).valid()) {
+    return QString();
+  }
+  // The sketch's own points and curves win, as in the tools.
+  const QString pick = m_model.axisSelectionPick(entityAt(screen, PickAll | PickAxes));
+  if (pick.isEmpty()) {
+    return QString();
+  }
+  // So does what the view picks there itself: a text, a body edge or
+  // vertex in sight, and one behind faces, which the selection filter's
+  // rules (Shift) decide on; not a face or a profile under the axis.
+  return m_viewer.claimsClick(screen) ? QString() : pick;
+}
+
+bool SketchController::axisHovered() const {
+  return m_hover == originPick() || !m_model.axisOf(m_hover).isEmpty();
+}
+
+bool SketchController::axisPickEvent(QEvent* event, bool selecting) {
   const QEvent::Type type = event->type();
   if (type != QEvent::MouseMove && type != QEvent::MouseButtonPress && type != QEvent::MouseButtonRelease) {
     return false;
   }
   const auto* e = static_cast<const QMouseEvent*>(event);
+  // With no tool running, an axis or the origin the selection takes
+  // (mitcad#899); while a command's panel runs, an axis for the input that
+  // takes the axes (mitcad#876).
+  const auto pickAt = [this, selecting](const QPointF& at) {
+    if (selecting) {
+      return axisSelectionAt(at);
+    }
+    return m_host.sketchAxesPickable() ? axisAt(at) : QString();
+  };
   switch (type) {
   case QEvent::MouseMove: {
     if (!m_axisPress.isEmpty() && screenDistance(e->position(), m_pressPosition) > kDragPixels) {
       // A drag from the axis: the view's (a window, an orbit), from where
-      // it was pressed.
+      // it was pressed. The axis itself is never dragged (mitcad#899).
       m_axisPress.clear();
       QMouseEvent press(QEvent::MouseButtonPress, m_pressPosition, m_viewer.mapToGlobal(m_pressPosition),
                         Qt::LeftButton, Qt::LeftButton, m_pressModifiers);
@@ -2022,20 +2054,25 @@ bool SketchController::axisPickEvent(QEvent* event) {
       m_forwarding = false;
     }
     const bool held = (e->buttons() & Qt::LeftButton) != 0;
-    const QString axis = !held && m_host.sketchAxesPickable() ? axisAt(e->position()) : QString();
+    const QString axis = held ? QString() : pickAt(e->position());
     // The hover of the view's own picks is the view's (the hovered signal).
-    if (!axis.isEmpty() || !m_model.axisOf(m_hover).isEmpty()) {
+    if (!axis.isEmpty() || axisHovered()) {
       setHover(axis);
     }
     return false;
   }
   case QEvent::MouseButtonPress: {
-    if (e->button() != Qt::LeftButton || !m_host.sketchAxesPickable() ||
-        m_viewer.isOnOrientationCube(e->position())) {
+    if (e->button() != Qt::LeftButton || m_viewer.isOnOrientationCube(e->position())) {
       return false;
     }
-    const QString axis = axisAt(e->position());
+    const QString axis = pickAt(e->position());
     if (axis.isEmpty()) {
+      return false;
+    }
+    // Sketch mode's selection filter (mitcad#217): the axes and the origin
+    // count as construction geometry there.
+    if (selecting && !m_host.sketchClickable(axisSelectionItem(m_uid, axis, m_host.sketchOccurrence(m_uid)),
+                                             e->modifiers().testFlag(Qt::ShiftModifier))) {
       return false;
     }
     m_axisPress = axis;
@@ -2048,14 +2085,22 @@ bool SketchController::axisPickEvent(QEvent* event) {
       return false;
     }
     const QString axis = std::exchange(m_axisPress, QString());
-    SelectionItem item;
-    item.kind = SelectKind::SketchCurve;
-    item.owner = m_uid;
-    item.name = axis;
-    item.geometry = QStringLiteral("line");
-    item.occurrence = m_host.sketchOccurrence(m_uid);
-    qDebug().noquote() << QStringLiteral("Sketch axis picked for the command: %1 (%2 axis)")
-                              .arg(axis, m_model.axisOf(axis));
+    const SelectionItem item = axisSelectionItem(m_uid, axis, m_host.sketchOccurrence(m_uid));
+    if (selecting) {
+      // The view's picks of earlier clicks first, so that the selection is
+      // in the order of the clicks (mitcad#488).
+      m_host.deliverPendingPicks();
+      // For UI tests: the axis or the origin a click selected; nothing is
+      // made until a tool uses it.
+      if (axis == originPick()) {
+        qDebug().noquote() << QStringLiteral("Sketch origin selected: %1").arg(axis);
+      } else {
+        qDebug().noquote() << QStringLiteral("Sketch axis selected: %1 (%2 axis)").arg(axis, m_model.axisOf(axis));
+      }
+    } else {
+      qDebug().noquote() << QStringLiteral("Sketch axis picked for the command: %1 (%2 axis)")
+                                .arg(axis, m_model.axisOf(axis));
+    }
     m_host.pick({item}, m_pressModifiers);
     m_overlay->update();
     return true;
@@ -2198,7 +2243,7 @@ bool SketchController::viewerEvent(QEvent* event) {
   }
   // A command's input that takes the sketch's axes picks them here
   // (mitcad#876): the view does not show them.
-  if (isActive() && m_paused && !m_forwarding && axisPickEvent(event)) {
+  if (isActive() && m_paused && !m_forwarding && axisPickEvent(event, false)) {
     return true;
   }
   if (!isActive() || m_forwarding || m_paused) {
@@ -2229,6 +2274,10 @@ bool SketchController::viewerEvent(QEvent* event) {
     m_cursorValid = false;
     setPointerText(QString());
     showDimensionTooltip(QString(), QPointF());
+    // An axis or the origin a click would select (mitcad#899).
+    if (!m_tool && axisHovered()) {
+      setHover(QString());
+    }
     if (!m_hoverAnnotation.isEmpty()) {
       m_hoverAnnotation.clear();
     }
@@ -2255,6 +2304,11 @@ bool SketchController::viewerEvent(QEvent* event) {
       placeFields();
       m_overlay->update();
       return (e->buttons() & Qt::LeftButton) != 0;
+    }
+    // The axes and the origin hover like construction geometry
+    // (mitcad#899); a drag from one is the view's.
+    if (!m_editor) {
+      axisPickEvent(event, true);
     }
     const SketchOverlay::Hit hit = clickableHit(e->position(), e->modifiers());
     if (hit.id != m_hoverAnnotation) {
@@ -2314,6 +2368,11 @@ bool SketchController::viewerEvent(QEvent* event) {
       }
       return true;
     }
+    // A click on an axis or the origin with no tool running selects it
+    // like construction geometry (mitcad#899): the view does not show them.
+    if (axisPickEvent(event, true)) {
+      return true;
+    }
     const QString entity = entityAt(e->position());
     // Geometry the selection filter leaves empty is neither dragged nor
     // clicked here: the press is the view's (a window, mitcad#217).
@@ -2359,6 +2418,11 @@ bool SketchController::viewerEvent(QEvent* event) {
         m_tool->release(m_snap);
       }
       m_overlay->update();
+      return true;
+    }
+    // The release of a press on an axis or the origin selects it
+    // (mitcad#899).
+    if (axisPickEvent(event, true)) {
       return true;
     }
     if (m_dragging) {

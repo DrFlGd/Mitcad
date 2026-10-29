@@ -55,6 +55,15 @@ The renderer (mitcad-render.exe)
 Droid Sans (bundled font for sketch text)
   Apache License 2.0; see licenses\droid-sans\LICENSE.txt.
 
+the ISO 3098 type B style technical lettering font of Zefram Cochrane and its
+contributors (https://github.com/hikikomori82), the annotations' lettering, a file of
+its own (bin\fonts\lettering.ttf) loaded at run time, not linked into any
+program
+  Offered under GPL-3.0, GPL-2.0 or LGPL-3.0, each with a font exception;
+  used under GNU LGPL version 3 with the font exception, Copyright 2015-2023
+  Zefram Cochrane; see licenses\iso-lettering\LICENSE.txt (its name and
+  source). Unmodified; replacing the file replaces the lettering.
+
 three.js r170 (https://threejs.org/), inside mitcad.exe and in every web
 page that Export > Web page and the project's web viewer write
   MIT licence, Copyright 2010-2024 three.js authors; see

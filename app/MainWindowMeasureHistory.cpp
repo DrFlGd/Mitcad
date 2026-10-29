@@ -22,6 +22,9 @@
 #include "framework/Command.hpp"
 #include "framework/CommandPanel.hpp"
 #include "framework/CommandSession.hpp"
+#ifdef MITCAD_MACOS_NATIVE_UI
+#include "platform/NativeForms.hpp"
+#endif
 
 namespace mitcad {
 namespace {
@@ -31,12 +34,25 @@ QString measureId() { return QStringLiteral("inspect.measure"); }
 } // namespace
 
 void MainWindow::addMeasureHistory(CommandPanel& panel, const CommandDef& def) {
+  auto* view = createMeasureHistory(def, &panel);
+  if (view == nullptr) return;
+  const QPointer<MeasureHistoryView> guarded(view);
+  panel.addSection(view, [guarded] { return guarded ? guarded->places() : QStringList(); });
+}
+
+#ifdef MITCAD_MACOS_NATIVE_UI
+void MainWindow::addMeasureHistory(NativeCommandForm& form, const CommandDef& def) {
+  if (auto* view = createMeasureHistory(def)) form.addSection(view);
+}
+#endif
+
+MeasureHistoryView* MainWindow::createMeasureHistory(const CommandDef& def, QWidget* parent) {
   if (def.id != measureId()) {
-    return;
+    return nullptr;
   }
   m_measureHistory.beginRun();
   checkMeasureHistory();
-  auto* view = new MeasureHistoryView(m_measureHistory, &panel);
+  auto* view = new MeasureHistoryView(m_measureHistory, parent);
   m_measureShown.clear();
   // Keep and Keep Row (mitcad#649, MainWindowMeasurements.cpp).
   // Note…, Annotations…, Datum Label… and Frame… (mitcad#702,
@@ -56,10 +72,14 @@ void MainWindow::addMeasureHistory(CommandPanel& panel, const CommandDef& def) {
                     [this] {
                       const QHash<QString, Selection> inputs = m_measureShown;
                       keepLeader(inputs, QStringLiteral("frame"));
+                    },
+                    // Hole Callout (mitcad#902).
+                    [this] {
+                      const QHash<QString, Selection> inputs = m_measureShown;
+                      keepLeader(inputs, QStringLiteral("hole_callout"));
                     }});
   m_measureHistoryView = view;
-  const QPointer<MeasureHistoryView> guarded(view);
-  panel.addSection(view, [guarded] { return guarded ? guarded->places() : QStringList(); });
+  return view;
 }
 
 void MainWindow::refreshMeasureHistory() {

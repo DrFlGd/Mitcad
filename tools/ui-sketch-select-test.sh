@@ -80,6 +80,9 @@ DEFAULTS="sketch-geometry=cross, construction-geometry=cross, projected-geometry
 # selected: the last "Selected:" line since the mark.
 selected() { tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "Selected: " | tail -1; }
 
+# since_mark "text": whether a line logged after the mark has the text.
+since_mark() { tail -n +$((${UI_MARK:-0} + 1)) "$UI_LOG" | grep -qF -- "$1"; }
+
 # distinct line regex: how many different matches of the regex the line has.
 distinct() { grep -oE "$2" <<< "$1" | sort -u | wc -l; }
 

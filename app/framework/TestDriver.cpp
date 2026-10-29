@@ -9,15 +9,20 @@
 #include <utility>
 
 #include <QAbstractButton>
+#include <QAbstractItemView>
 #include <QAction>
 #include <QApplication>
+#include <QComboBox>
+#include <QContextMenuEvent>
 #include <QDir>
 #include <QDockWidget>
 #include <QEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QFormLayout>
 #include <QHeaderView>
 #include <QImage>
+#include <QJsonDocument>
 #include <QKeyEvent>
 #include <QKeySequence>
 #include <QLabel>
@@ -109,6 +114,7 @@ const StepSpec kSpecs[] = {
     {"key", 1, -1, kInputOfTarget},
     {"key-now", 1, -1, kPlain},
     {"qt-type-now", 2, 2, kPlain},
+    {"qt-choice", 2, 2, kInputOfTarget},
     {"qt-cancel-progress", 1, 1, kPlain},
     {"cancel-model-job", 1, 1, kPlain},
     {"type", 1, -1, kInputOfTarget},
@@ -126,6 +132,9 @@ const StepSpec kSpecs[] = {
     {"expect-view-image", 2, 2, kIdle},
     {"click-logged", 1, 3, kInputOfMain},
     {"dblclick-logged", 1, 2, kInputOfMain},
+    {"dialog-click-logged", 1, 1, kInputOfTarget},
+    {"dialog-dblclick-logged", 1, 1, kInputOfTarget},
+    {"context-menu-logged", 2, 2, kInputOfMain},
     {"click-pick", 1, 2, kInputOfMain},
     {"expect-pick-offset", 4, 4, kInputOfMain},
     {"click-pick-offset", 4, 4, kInputOfMain},
@@ -133,8 +142,10 @@ const StepSpec kSpecs[] = {
     {"drag-logged", 2, 3, kInputOfMain},
     {"drag-from", 3, 3, kInputOfMain},
     {"sketch-click", 2, 4, kInputOfMain},
+    {"sketch-dblclick", 2, 4, kInputOfMain},
     {"sketch-move", 2, 2, kInputOfMain},
     {"expect-sketch-field-dimension", 3, 3, kIdle},
+    {"expect-sketch-dimension-clear", 1, 1, kIdle},
     {"sketch-drag", 4, 4, kInputOfMain},
     {"sketch-pointer", 3, 3, kInputOfMain},
     {"expect-profiles", 1, 1, kIdle},
@@ -152,6 +163,7 @@ const StepSpec kSpecs[] = {
     {"native-type", 2, 2, kInputOfTarget},
     {"native-choice", 2, 2, kInputOfTarget},
     {"expect-native-duplicate-choices", 0, 0, kIdle},
+    {"expect-native-widget-refresh", 0, 0, kIdle},
     {"expect-native-application-delegate", 0, 0, kIdle},
     {"native-toolbar-item", 2, 2, kInputOfMain},
     {"expect-native-toolbar-item", 2, 2, kIdle},
@@ -172,6 +184,10 @@ const StepSpec kSpecs[] = {
     {"native-file-name", 1, 1, kInputOfTarget},
     {"native-file-directory", 1, 1, kInputOfTarget},
     {"native-file-cancel", 0, 0, kInputOfTarget},
+    {"native-file-state", 0, 1, kPlain},
+    {"native-system-key", 1, 1, kInputOfTarget},
+    {"native-system-type", 1, 1, kInputOfTarget},
+    {"native-system-pointer", 1, 1, kInputOfTarget},
     {"native-resize", 2, 2, kInputOfMain},
     {"window-resize", 2, 2, kInputOfMain},
     {"native-move", 2, 2, kInputOfMain},
@@ -213,21 +229,27 @@ const StepSpec kSpecs[] = {
     {"expect-native-tiles", 1, 4, kIdle},
     {"expect-native-layout", 0, 0, kIdle},
     {"expect-native-history", 0, -1, kIdle},
+    {"expect-native-history-wheel", 0, 0, kIdle},
     {"native-history-drag", 1, 2, kInputOfMain},
     {"native-history-drag-now", 1, 2, kPlain},
     {"expect-model-busy", 1, 1, kPlain},
+    {"hold-model-preview", 1, 1, kPlain},
     {"test-manipulator-feedback", 0, 0, kInputOfMain},
+    {"test-body-highlights", 1, 1, kInputOfMain},
     {"capture-undo-depth", 1, 1, kIdle},
+    {"capture-sketch", 2, 2, kIdle},
     {"expect-undo-depth", 2, 2, kIdle},
     {"expect-model-bodies", 2, 2, kIdle},
     {"expect-model-parameter", 2, 2, kIdle},
     {"expect-input-text", 2, 2, kIdle},
     {"expect-shown-body", 3, 9, kIdle},
+    {"capture-shown-body", 3, 3, kIdle},
     {"expect-native-dialog-gone", 1, 2, kPlain},
     {"focus-dialog", 1, 2, kPlain},
     {"focus-main", 0, 0, kPlain},
     {"focus-widget", 1, 1, kInputOfTarget},
     {"expect-widget-property", 3, 3, kIdle},
+    {"expect-no-qt-popup", 0, 0, kIdle},
     {"expect-projects-layout", 1, 1, kIdle},
     {"expect-sketch-finish-layout", 0, 0, kIdle},
     {"expect-ribbon-labels", 1, -1, kIdle},
@@ -268,6 +290,8 @@ const StepSpec kSpecs[] = {
     {"stay", 0, 0, kPlain},
     // Card widths and windows within the screen (mitcad#818, TestDriverWindowFit.cpp).
     {"expect-dialog-fits", 0, 2, kIdle},
+    {"fit-main-frame", 2, 2, kInputOfMain},
+    {"expect-main-frame", 2, 2, kIdle},
     {"native-card-width", 2, 2, kInputOfMain},
     {"expect-native-card-width", 2, 3, kIdle},
     {"expect-native-name-fits", 2, 2, kIdle},
@@ -278,10 +302,17 @@ const StepSpec kSpecs[] = {
     {"expect-native-command-layout", 0, -1, kIdle},
     // Shared layout bounds, real pointer input and button order (mitcad#812, #817).
     {"expect-native-bounds", 2, 3, kIdle},
+    {"expect-native-form-layout", 1, -1, kIdle},
+    {"expect-native-configuration-layout", 0, 0, kIdle},
+    {"expect-native-spanned-heading", 2, 2, kIdle},
+    {"expect-native-color-field", 4, 5, kIdle},
     {"expect-native-button-order", 1, -1, kIdle},
     {"expect-native-control-focus", 1, 1, kIdle},
     {"expect-native-layout-contract", 0, 0, kIdle},
-    {"native-pointer-click", 1, 1, kInputOfTarget},
+    {"native-pointer-click", 1, 3, kInputOfTarget},
+    {"native-pointer-popup", 2, 3, kInputOfTarget},
+    {"native-pointer-dblclick", 1, 1, kInputOfTarget},
+    {"native-pointer-choice", 4, 34, kInputOfTarget},
     {"native-pointer-button", 1, 1, kInputOfTarget},
     {"native-pointer-drag", 3, 3, kInputOfTarget},
     {"native-dialog-resize", 2, 2, kInputOfTarget},
@@ -495,6 +526,23 @@ QString plainText(QString text) {
     text.chop(1);
   }
   return text.trimmed();
+}
+
+// Stacked workspaces can reuse object names. Resolve the visible instance
+// inside the existing lookup scope, never a hidden page's first match.
+// Property assertions also inspect disabled controls and, when there is no
+// visible match, a unique hidden control (for example visible=false).
+QWidget* namedWidget(QWidget* scope, const QString& name, bool forInput = false) {
+  if (scope == nullptr) return nullptr;
+  const QList<QWidget*> matches = scope->findChildren<QWidget*>(name);
+  QWidget* visible = nullptr;
+  for (QWidget* candidate : matches) {
+    if (!candidate->isVisible() || (forInput && !candidate->isEnabled())) continue;
+    if (visible != nullptr) return nullptr; // ambiguous visible identifier
+    visible = candidate;
+  }
+  if (visible != nullptr || forInput) return visible;
+  return matches.size() == 1 ? matches.first() : nullptr;
 }
 
 } // namespace
@@ -861,6 +909,11 @@ void TestDriver::finish() {
     return;
   }
   if (auto* window = qobject_cast<MainWindow*>(m_main.data())) {
+    if (window->documentSession().m_testHoldPreview->load()) {
+      window->documentSession().m_testHoldPreview->store(false);
+      fail(m_line, QStringLiteral("the preview worker gate was not released"));
+      return;
+    }
     if (!window->documentSession().m_testFailCommand.isEmpty()) {
       fail(m_line, QStringLiteral("the armed recovery command '%1' never started")
                        .arg(window->documentSession().m_testFailCommand));
@@ -1194,14 +1247,46 @@ void TestDriver::queueClick(const QPoint& at, Qt::MouseButton button, Qt::Keyboa
   }
 }
 
+void TestDriver::queueDialogClick(const QPoint& at, int clicks) {
+  const QPointer<QWidget> window(targetWindow());
+  if (!window || window == m_main) {
+    fail(m_line, QStringLiteral("dialog pointer input requires focus-dialog"));
+    return;
+  }
+  const QPoint global = m_main->mapToGlobal(at);
+  const QPoint inWindow = window->mapFromGlobal(global);
+  const QPointer<QWidget> receiver(window->childAt(inWindow));
+  if (!receiver || !receiver->isVisible()) {
+    fail(m_line, QStringLiteral("logged dialog point is outside its visible controls"));
+    return;
+  }
+  const auto send = [window, receiver, global](QEvent::Type type) {
+    if (!window || !receiver) return;
+    const bool released = type == QEvent::MouseButtonRelease;
+    const bool moved = type == QEvent::MouseMove;
+    QMouseEvent event(type, receiver->mapFromGlobal(global), window->mapFromGlobal(global), global,
+                      moved ? Qt::NoButton : Qt::LeftButton,
+                      moved || released ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier);
+    QCoreApplication::sendEvent(receiver, &event);
+  };
+  queue([send] { send(QEvent::MouseMove); });
+  for (int i = 0; i < clicks; ++i) {
+    queue([send, i] { send(i == 0 ? QEvent::MouseButtonPress : QEvent::MouseButtonDblClick); });
+    queue([send] { send(QEvent::MouseButtonRelease); });
+  }
+}
+
 void TestDriver::queueDrag(const QPoint& from, const QPoint& to, Qt::MouseButton button, Qt::KeyboardModifiers modifiers) {
   const int requested = qEnvironmentVariableIntValue("MITCAD_TEST_DRAG_STEPS");
   const int steps = requested > 0 ? std::clamp(requested, 4, 1000) : kDragSteps;
   const int pause = std::clamp(qEnvironmentVariableIntValue("MITCAD_TEST_DRAG_PAUSE_TICKS"), 0, 1000);
+  const bool waitPreview = qEnvironmentVariableIntValue("MITCAD_TEST_DRAG_WAIT_PREVIEW") == 1;
   queue([this, from, modifiers] { sendMouse(QEvent::MouseMove, from, Qt::NoButton, Qt::NoButton, modifiers); });
   auto clock = std::make_shared<QElapsedTimer>();
-  queue([this, from, button, modifiers, clock, requested] {
+  auto gestureStart = std::make_shared<int>(0);
+  queue([this, from, button, modifiers, clock, requested, gestureStart] {
     if (requested > 0) { qInfo("Held drag: begin"); clock->start(); }
+    *gestureStart = lineCount();
     sendMouse(QEvent::MouseButtonPress, from, button, button, modifiers);
   });
   for (int i = 1; i <= steps; ++i) {
@@ -1215,9 +1300,19 @@ void TestDriver::queueDrag(const QPoint& from, const QPoint& to, Qt::MouseButton
   }
   queue([] {}); // a pause before the button goes up
   queue([] {});
-  queue([this, to, button, modifiers, clock, requested, steps] {
+  const auto release = [this, to, button, modifiers, clock, requested, steps, waitPreview] {
+    if (waitPreview) { qInfo("Held drag: exact preview available before release"); }
     sendMouse(QEvent::MouseButtonRelease, to, button, Qt::NoButton, modifiers);
     if (requested > 0) { qInfo() << "Held drag: end, delivered=" << steps << "elapsed_ms=" << clock->elapsed(); }
+  };
+  queue([this, waitPreview, gestureStart, release] {
+    if (!waitPreview) { release(); return; }
+    // The final micro-event owns release: wait ticks keep processing the
+    // worker completion and paints without delivering another move. Only
+    // a solid installed during this gesture counts, never an older preview.
+    const QRegularExpression installed(QStringLiteral("^Preview installed: .+, dragging=1$"));
+    whenReady([this, installed, gestureStart] { return findLine(installed, *gestureStart) >= 0; },
+              6, QStringLiteral("no exact preview was installed while the mouse button was held"), release);
   });
 }
 
@@ -1344,6 +1439,7 @@ void TestDriver::run(const Step& step) {
   }
 
   // --- Keys and text
+  bool stepMatched = true;
   if (name == QLatin1String("expect-picking-on-job")) {
     auto* window = qobject_cast<MainWindow*>(mainWindow);
     auto* session = window ? window->findChild<DocumentSession*>() : nullptr;
@@ -1557,6 +1653,22 @@ void TestDriver::run(const Step& step) {
       const auto* input = window ? window->findChild<QLineEdit*>(id) : nullptr;
       return input && re.match(input->text()).hasMatch();
     }, 6, QStringLiteral("input %1 did not match %2").arg(a.at(0), a.at(1)));
+  } else if (name == QLatin1String("capture-sketch")) {
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    if (!window || window->modelBusy()) {
+      fail(line, QStringLiteral("capture-sketch requires an idle document")); return;
+    }
+    const QJsonValue sketch = window->query({{QStringLiteral("query"), QStringLiteral("sketch")},
+                                             {QStringLiteral("uid"), a.at(0)}});
+    if (!sketch.isObject() || !sketch.toObject().value(QStringLiteral("entities")).isArray()) {
+      fail(line, QStringLiteral("the sketch query returned no entities")); return;
+    }
+    const QByteArray json = QJsonDocument(sketch.toObject()).toJson();
+    QDir().mkpath(QFileInfo(a.at(1)).absolutePath());
+    QFile output(a.at(1));
+    if (!output.open(QIODevice::WriteOnly) || output.write(json) != json.size()) {
+      fail(line, QStringLiteral("cannot write the sketch query snapshot"));
+    }
   } else if (name == QLatin1String("expect-model-parameter")) {
     const QString parameter = a.at(0);
     const bool absent = a.at(1) == QStringLiteral("absent");
@@ -1602,6 +1714,37 @@ void TestDriver::run(const Step& step) {
       m_waitDetail = QStringLiteral("%1 bodies, total volume %2 mm3").arg(bodies.size()).arg(actual, 0, 'g', 12);
       return bodies.size() == count && std::abs(actual - volume) <= std::max(1e-5, volume * 1e-6);
     }, 6, QStringLiteral("expected %1 bodies with total volume %2 mm3").arg(count).arg(volume));
+  } else if (name == QLatin1String("capture-shown-body")) {
+    const QString prefix = a.at(0);
+    const QString uid = a.at(1);
+    const QString occurrence = a.at(2) == QLatin1String("-") ? QString() : a.at(2);
+    whenReady([this, prefix, uid, occurrence] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window || window->modelBusy()) return false;
+      for (const BodyDisplay& body : window->viewer().shownBodies()) {
+        if (QString::fromStdString(body.uid) != uid || QString::fromStdString(body.occurrence) != occurrence || !body.shape)
+          continue;
+        const double volume = geometry::volume(*body.shape);
+        const geometry::Shape world(body.shape->occt().Moved(body.placement));
+        const auto box = geometry::bounding_box(world);
+        if (!std::isfinite(volume) || volume < 0 || box.empty) break;
+        const std::array<double, 7> values{volume, box.min.X(), box.min.Y(), box.min.Z(),
+                                         box.max.X(), box.max.Y(), box.max.Z()};
+        const char* keys[] = {"volume", "min_x", "min_y", "min_z", "max_x", "max_y", "max_z"};
+        for (std::size_t i = 0; i < values.size(); ++i) {
+          if (!std::isfinite(values[i])) return false;
+        }
+        for (std::size_t i = 0; i < values.size(); ++i)
+          m_vars.insert(prefix + QLatin1Char('_') + QLatin1String(keys[i]), QString::number(values[i], 'g', 17));
+        qInfo().noquote() << QStringLiteral("TestDriver: shown body %1: %2 at %3, volume %4, bounds %5 %6 %7 %8 %9 %10")
+            .arg(prefix, uid, occurrence).arg(volume, 0, 'g', 17)
+            .arg(values[1], 0, 'g', 17).arg(values[2], 0, 'g', 17).arg(values[3], 0, 'g', 17)
+            .arg(values[4], 0, 'g', 17).arg(values[5], 0, 'g', 17).arg(values[6], 0, 'g', 17);
+        return true;
+      }
+      m_waitDetail = QStringLiteral("no finite displayed shape and world bounds for %1 at %2").arg(uid, occurrence);
+      return false;
+    }, 6, QStringLiteral("cannot capture displayed geometry for %1 at %2").arg(uid, occurrence));
   } else if (name == QLatin1String("expect-shown-body")) {
     std::array<double, 7> expected{};
     bool valid = a.size() == 3 || a.size() == 9;
@@ -1641,6 +1784,9 @@ void TestDriver::run(const Step& step) {
       m_waitDetail = QStringLiteral("no displayed shape for %1 at %2").arg(uid, occurrence);
       return false;
     }, 6, QStringLiteral("displayed geometry differs for %1 at %2").arg(uid, occurrence));
+  } else if (name == QLatin1String("expect-native-history-wheel")) {
+    QString error;
+    if (!mac::test::historyWheel(error)) { fail(line, error); }
   } else if (name == QLatin1String("expect-native-history")) {
     if (!mac::test::active()) { fail(line, QStringLiteral("expect-native-history requires the native macOS UI")); return; }
     const bool checkSelection = !a.isEmpty();
@@ -1659,8 +1805,53 @@ void TestDriver::run(const Step& step) {
       return mac::test::historyLayout(state, timeline ? timeline->filteredFeatures() : QSet<QString>(),
                                       selected, checkSelection, m_waitDetail);
     }, 6, QStringLiteral("native history does not match the real model timeline"));
+  } else if (name == QLatin1String("test-body-highlights")) {
+    const QString style = a.at(0);
+    if (style != QLatin1String("none") && style != QLatin1String("default") &&
+        style != QLatin1String("opaque") && style != QLatin1String("no-boundaries")) {
+      fail(line, QStringLiteral("test-body-highlights none|default|opaque|no-boundaries"));
+      return;
+    }
+    queue([this, style, line] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window) { fail(line, QStringLiteral("no document window")); return; }
+      const auto bodies = window->viewer().shownBodies();
+      if (bodies.size() != 15) {
+        fail(line, QStringLiteral("whole-body diagnostic requires exactly 15 displayed bodies")); return;
+      }
+      // A fixed navigation contract in this test process only: identical
+      // middle-button orbit and immediate camera resets in every variant.
+      NavigationSettings navigation = window->viewer().navigation();
+      navigation.scheme = NavigationScheme::MiddleOrbit;
+      navigation.animate = false;
+      window->viewer().setNavigation(navigation);
+      std::vector<HighlightDisplay> highlights;
+      if (style != QLatin1String("none")) {
+        for (const BodyDisplay& body : bodies) {
+          SelectionItem item;
+          item.kind = SelectKind::Body;
+          item.owner = QString::fromStdString(body.uid);
+          item.occurrence = QString::fromStdString(body.occurrence);
+          const TopoDS_Shape shape = window->itemShape(item);
+          if (shape.IsNull()) { fail(line, QStringLiteral("a displayed body has no highlight shape")); return; }
+          HighlightDisplay highlight{item, shape, QColor(0x1f, 0x7a, 0xff)};
+          highlight.opaqueWholeBody = style == QLatin1String("opaque");
+          highlight.wholeBodyBoundaries = style != QLatin1String("no-boundaries");
+          highlights.push_back(std::move(highlight));
+        }
+      }
+      window->viewer().setHighlights(highlights);
+      qInfo().noquote() << QStringLiteral("Body highlight diagnostic: %1, 15 bodies, %2 overlays")
+                              .arg(style).arg(highlights.size());
+    });
   } else if (name == QLatin1String("test-manipulator-feedback")) {
     testManipulatorFeedback();
+  } else if (name == QLatin1String("hold-model-preview")) {
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    if (!window || (a.at(0) != QStringLiteral("true") && a.at(0) != QStringLiteral("false"))) {
+      fail(line, QStringLiteral("hold-model-preview true|false requires a document window")); return;
+    }
+    window->documentSession().m_testHoldPreview->store(a.at(0) == QStringLiteral("true"));
   } else if (name == QLatin1String("expect-model-busy")) {
     auto* window = qobject_cast<MainWindow*>(mainWindow);
     if (!window || (a.at(0) != QStringLiteral("true") && a.at(0) != QStringLiteral("false"))) {
@@ -1855,20 +2046,72 @@ void TestDriver::run(const Step& step) {
         return changed ? difference > 0.002 : difference <= 1e-7;
       }, 6, QStringLiteral("the camera orientation did not remain %1").arg(a.at(1)));
     }
-  } else if (name == QLatin1String("native-context-menu") || name == QLatin1String("native-popup")) {
+  } else if (name == QLatin1String("native-context-menu") || name == QLatin1String("native-popup") ||
+             name == QLatin1String("native-pointer-popup")) {
     if (!mac::test::active()) { fail(line, QStringLiteral("%1 requires the native macOS UI").arg(name)); return; }
     queue([this, name, a, line] {
       QString error;
       m_timer->stop();
-      if (name == QLatin1String("native-popup")) {
+      if (name == QLatin1String("native-popup") || name == QLatin1String("native-pointer-popup")) {
         QString clickError;
         const bool tracked = mac::test::trackContextMenu(a.at(1), [&] {
-          mac::test::click(a.at(0), clickError);
-        }, error);
+          if (name == QLatin1String("native-pointer-popup")) mac::test::pointerClick(a.at(0), clickError);
+          else mac::test::click(a.at(0), clickError);
+        }, error, [this] { if (!m_finished) m_timer->start(); },
+            name == QLatin1String("native-pointer-popup") && a.size() == 3 ? a.at(2) : QString());
         if (!clickError.isEmpty()) fail(line, clickError);
         else if (!tracked) fail(line, error);
       } else if (!mac::test::contextMenu(a.at(0), a.at(1), error)) fail(line, error);
       if (!m_finished) m_timer->start();
+    });
+  } else if (name == QLatin1String("context-menu-logged")) {
+    QRegularExpression re;
+    if (!regex(a.at(0), re)) return;
+    const auto at = std::make_shared<QPoint>();
+    const auto receiver = std::make_shared<QPointer<QWidget>>();
+    const auto window = std::make_shared<QPointer<QWidget>>();
+    whenReady([this, re, at, receiver, window] {
+      if (TestSync::settling() || !m_main || !loggedPoint(re, 0, *at)) return false;
+      *window = cardAt(*at);
+      if (!*window) *window = m_main;
+      const QPoint local = (*window)->mapFromGlobal(m_main->mapToGlobal(*at));
+      *receiver = (*window)->childAt(local);
+      return *receiver && (*receiver)->isVisible() && (*receiver)->isEnabled() &&
+          (*receiver)->visibleRegion().contains((*receiver)->mapFrom(*window, local));
+    }, 6, QStringLiteral("no visible widget at the logged context-menu point '%1'").arg(a.at(0)),
+    [this, at, receiver, window, choice = a.at(1), line] {
+      const auto open = [this, at, receiver, window, line] {
+        if (!*receiver || !*window || !m_main) {
+          fail(line, QStringLiteral("the context-menu target was destroyed")); return;
+        }
+        const QPoint global = m_main->mapToGlobal(*at);
+        const QPoint local = (*receiver)->mapFromGlobal(global);
+        if (!(*receiver)->isVisible() || !(*receiver)->isEnabled() ||
+            !(*receiver)->visibleRegion().contains(local) ||
+            (*window)->childAt((*window)->mapFromGlobal(global)) != receiver->data()) {
+          fail(line, QStringLiteral("the context-menu target moved or became covered")); return;
+        }
+        QContextMenuEvent event(QContextMenuEvent::Mouse, local, global);
+        QCoreApplication::sendEvent(receiver->data(), &event);
+      };
+      if (mac::test::active()) {
+        queue([this, open, choice, line] {
+          QString error;
+          m_timer->stop();
+          if (!mac::test::trackContextMenu(choice, open, error, [this] {
+                if (!m_finished) m_timer->start();
+              })) fail(line, error);
+          if (!m_finished) m_timer->start();
+        });
+      } else {
+        // execMenu owns a nested loop. Its following queued step chooses
+        // the real visible QMenu in that loop, as ordinary popup input does.
+        queue(open);
+        queue([this, choice, line] {
+          run(Step{line, {}, choice == QStringLiteral("cancel") ? QStringLiteral("key") : QStringLiteral("popup"),
+                   {choice == QStringLiteral("cancel") ? QStringLiteral("Escape") : choice}});
+        });
+      }
     });
   } else if (name == QLatin1String("view-context-menu") || name == QLatin1String("view-context-menu-logged")) {
     if (!mac::test::active()) { fail(line, QStringLiteral("%1 requires the native macOS UI").arg(name)); return; }
@@ -2108,6 +2351,11 @@ void TestDriver::run(const Step& step) {
               QStringLiteral("native window matching '%1' remains open").arg(a.at(0)));
   } else if (name.startsWith(QLatin1String("native-file-"))) {
     if (!mac::test::active()) { fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name)); return; }
+    if (name == QLatin1String("native-file-state")) {
+      qInfo().noquote() << QStringLiteral("Native file panel state %1: %2")
+          .arg(a.value(0), mac::test::filePanelDiagnostic());
+      return;
+    }
     queue([this, name, a, line] {
       QString error;
       const bool ok = name == QLatin1String("native-file-name") ? mac::test::replaceFileName(a.at(0), error) :
@@ -2122,6 +2370,18 @@ void TestDriver::run(const Step& step) {
       m_waitDetail = error;
       return ready;
     }, 6, QStringLiteral("native disclosure layout did not settle"));
+  } else if (name == QLatin1String("expect-native-color-field")) {
+    if (!mac::test::active() || (a.at(3) != QLatin1String("placeholder") && a.at(3) != QLatin1String("explicit"))) {
+      fail(line, QStringLiteral("expect-native-color-field <id> <color|none> <words|-> placeholder|explicit [AX label] requires native UI"));
+      return;
+    }
+    whenReady([this, a] {
+      QString error;
+      const bool ready = mac::test::colorField(a.at(0), a.at(1), a.at(2) == QLatin1String("-") ? QString() : a.at(2),
+                                              a.at(3) == QLatin1String("placeholder"), a.value(4), error);
+      m_waitDetail = error;
+      return ready;
+    }, 6, QStringLiteral("native colour field did not show its swatch and placeholder"));
   } else if (name == QLatin1String("expect-native-selection-card") ||
              name == QLatin1String("expect-native-command-layout")) {
     // Actual AppKit bounds and hit tests of the cards' actions (mitcad#815).
@@ -2147,6 +2407,16 @@ void TestDriver::run(const Step& step) {
     QString error;
     if (!mac::test::applicationDelegate(error)) {
       fail(line, error.isEmpty() ? QStringLiteral("application delegate check requires the native UI") : error);
+    }
+  } else if (name == QLatin1String("expect-native-widget-refresh")) {
+    QString error;
+    // The contract pumps presenter events. Keep later script steps from
+    // entering while its synthetic controls are mounted.
+    m_timer->stop();
+    const bool passed = mac::test::active() && mac::test::widgetRefreshContract(error);
+    if (!m_finished) m_timer->start();
+    if (!passed) {
+      fail(line, error.isEmpty() ? QStringLiteral("widget refresh requires the native UI") : error);
     }
   } else if (name == QLatin1String("expect-native-duplicate-choices")) {
     auto* window = qobject_cast<MainWindow*>(m_main.data());
@@ -2290,8 +2560,11 @@ void TestDriver::run(const Step& step) {
                 QStringLiteral("native '%1' does not select '%2' as its presenter does").arg(outline, row));
     }
   } else if (name == QLatin1String("expect-native-bounds") || name == QLatin1String("expect-native-button-order") ||
+             name == QLatin1String("expect-native-form-layout") || name == QLatin1String("expect-native-configuration-layout") ||
+             name == QLatin1String("expect-native-spanned-heading") ||
              name == QLatin1String("expect-native-control-focus") || name == QLatin1String("expect-native-layout-contract") ||
-             name == QLatin1String("native-pointer-click") || name == QLatin1String("native-pointer-button") ||
+             name == QLatin1String("native-pointer-click") || name == QLatin1String("native-pointer-dblclick") ||
+             name == QLatin1String("native-pointer-button") ||
              name == QLatin1String("native-pointer-drag") || name == QLatin1String("native-dialog-resize")) {
     // Shared layout bounds, real pointer input and button order (mitcad#812, #817).
     if (!mac::test::active()) {
@@ -2300,8 +2573,52 @@ void TestDriver::run(const Step& step) {
     }
     if (name == QLatin1String("expect-native-bounds")) {
       double minimum = 0;
-      if (!toNumber(a.at(1), minimum) || minimum < 0) {
-        fail(line, QStringLiteral("expect-native-bounds <identifier> <minimum width> [label regex]"));
+      if (a.at(1) == QLatin1String("shared")) {
+        // Read the same populated presenter that owns the native control.
+        // Native modeless windows keep their Qt windows hidden, so lookup
+        // cannot depend on QApplication's active Qt window or hasFocus().
+        QWidget* field = nullptr;
+        for (QWidget* candidate : QApplication::allWidgets()) {
+          if (candidate->objectName() != a.at(0) || candidate->isHidden()) continue;
+          if (field != nullptr) {
+            fail(line, QStringLiteral("shared bounds needs one presenter '%1'").arg(a.at(0))); return;
+          }
+          field = candidate;
+        }
+        if (field == nullptr) {
+          fail(line, QStringLiteral("no shared bounds presenter '%1'").arg(a.at(0))); return;
+        }
+        const auto formOf = [field](QLayout* layout, const auto& self) -> QFormLayout* {
+          if (layout == nullptr) return nullptr;
+          if (auto* form = qobject_cast<QFormLayout*>(layout)) {
+            int row = -1;
+            QFormLayout::ItemRole role = QFormLayout::SpanningRole;
+            form->getWidgetPosition(field, &row, &role);
+            if (row >= 0 && role == QFormLayout::FieldRole) return form;
+          }
+          for (int i = 0; i < layout->count(); ++i) {
+            if (QFormLayout* form = self(layout->itemAt(i)->layout(), self)) return form;
+          }
+          return nullptr;
+        };
+        QFormLayout* form = field->parentWidget() ? formOf(field->parentWidget()->layout(), formOf) : nullptr;
+        const QWidgetItem item(field);
+        const int least = item.minimumSize().width();
+        const int hint = item.sizeHint().width();
+        const auto policy = field->sizePolicy().horizontalPolicy();
+        const bool cappedByForm = form != nullptr &&
+            (form->fieldGrowthPolicy() == QFormLayout::FieldsStayAtSizeHint ||
+             (form->fieldGrowthPolicy() == QFormLayout::ExpandingFieldsGrow &&
+              (int(policy) & int(QSizePolicy::ExpandFlag)) == 0));
+        minimum = cappedByForm ? std::max(least, hint) : least;
+        if (minimum <= 0) {
+          fail(line, QStringLiteral("presenter '%1' has no positive shared width contract").arg(a.at(0))); return;
+        }
+        qInfo().noquote() << QStringLiteral("Native shared bounds: %1 minimum=%2 hint=%3 explicit=%4 policy=%5 formGrowth=%6 required=%7")
+            .arg(a.at(0)).arg(least).arg(hint).arg(field->minimumWidth()).arg(int(policy))
+            .arg(form ? int(form->fieldGrowthPolicy()) : -1).arg(minimum);
+      } else if (!toNumber(a.at(1), minimum) || minimum < 0) {
+        fail(line, QStringLiteral("expect-native-bounds <identifier> <minimum width|shared> [label regex]"));
         return;
       }
       const QString id = a.at(0);
@@ -2313,6 +2630,17 @@ void TestDriver::run(const Step& step) {
           return mac::test::controlBounds(id, minimum, label, ignored);
         }, 6, detail);
       }
+    } else if (name == QLatin1String("expect-native-configuration-layout")) {
+      whenReady([this] { return mac::test::configurationLayout(m_waitDetail); }, 6,
+                QStringLiteral("native configuration controls or captions are clipped or unreachable"));
+    } else if (name == QLatin1String("expect-native-form-layout")) {
+      whenReady([this, entries = a] { return mac::test::formLayout(entries, m_waitDetail); }, 6,
+                QStringLiteral("native form controls are clipped, overlap or have unreadable labels"));
+    } else if (name == QLatin1String("expect-native-spanned-heading")) {
+      QRegularExpression caption;
+      if (!regex(a.at(1), caption)) return;
+      whenReady([this, id = a.at(0), caption] { return mac::test::spannedHeading(id, caption, m_waitDetail); }, 6,
+                QStringLiteral("native '%1' has no whole, visible spanning heading matching '%2'").arg(a.at(0), a.at(1)));
     } else if (name == QLatin1String("expect-native-button-order")) {
       const QStringList patterns = a;
       QString detail;
@@ -2345,31 +2673,82 @@ void TestDriver::run(const Step& step) {
     } else {
       double from = 0;
       double to = 0;
-      if (name == QLatin1String("native-pointer-drag") && (!toNumber(a.at(1), from) || !toNumber(a.at(2), to))) {
-        fail(line, QStringLiteral("native-pointer-drag <identifier> <from fraction> <to fraction>"));
+      const bool fromKnob = name == QLatin1String("native-pointer-drag") && a.at(1) == QLatin1String("knob");
+      double x = 0.5;
+      double y = 0.5;
+      if (name == QLatin1String("native-pointer-click") &&
+          (a.size() == 2 || (a.size() == 3 &&
+              (!toNumber(a.at(1), x) || !toNumber(a.at(2), y) || !(x >= 0 && x <= 1 && y >= 0 && y <= 1))))) {
+        fail(line, QStringLiteral("native-pointer-click <identifier> [<x fraction 0..1> <y fraction 0..1>]"));
+        return;
+      }
+      if (name == QLatin1String("native-pointer-drag") &&
+          ((!fromKnob && !toNumber(a.at(1), from)) || !toNumber(a.at(2), to))) {
+        fail(line, QStringLiteral("native-pointer-drag <identifier> <from fraction|knob> <to fraction>"));
         return;
       }
       const QString target = a.at(0);
       const bool byTitle = name == QLatin1String("native-pointer-button");
       QRegularExpression re;
       if (byTitle && !regex(target, re)) return;
-      const auto perform = [this, line, name, target, re, from, to] {
+      const auto perform = [this, line, name, target, re, from, to, fromKnob, x, y] {
+        // Keep later steps outside a held drag. Button actions can open
+        // modal dialogs that the following script steps must still drive.
+        const bool heldDrag = name == QLatin1String("native-pointer-drag");
+        if (heldDrag) m_timer->stop();
         QString detail;
         const bool ok = name == QLatin1String("native-pointer-button") ? mac::test::pointerButton(re, detail)
-                        : name == QLatin1String("native-pointer-drag") ? mac::test::pointerDrag(target, from, to, detail)
-                                                                       : mac::test::pointerClick(target, detail);
+                        : name == QLatin1String("native-pointer-drag") ? mac::test::pointerDrag(target, from, to, detail, fromKnob)
+                        : name == QLatin1String("native-pointer-dblclick") ? mac::test::pointerDoubleClick(target, detail)
+                                                                       : mac::test::pointerClick(target, detail, x, y);
         if (!ok) fail(line, detail.isEmpty() ? QStringLiteral("native pointer input failed for '%1'").arg(target) : detail);
+        if (heldDrag && !m_finished) m_timer->start();
       };
       if (byTitle) {
         whenReady([re] { return mac::test::buttonExists(re); }, 6,
                   QStringLiteral("no native button matching '%1'").arg(target), [this, perform] { queue(perform); });
       } else {
-        whenReady([target] { return mac::test::controlExists(target); }, 6,
+        whenReady([this, target] { return mac::test::controlExists(target, &m_waitDetail); }, 6,
                   QStringLiteral("no native control '%1'").arg(target), [this, perform] { queue(perform); });
       }
     }
+  } else if (name == QLatin1String("native-system-pointer")) {
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("native-system-pointer requires the native macOS UI")); return;
+    }
+    const QString identifier = a.at(0);
+    whenReady([this, identifier] { return mac::test::controlExists(identifier, &m_waitDetail); }, 6,
+        QStringLiteral("no visible native system pointer target '%1'").arg(identifier), [this, identifier, line] {
+      queue([this, identifier, line] {
+        QString error;
+        if (!mac::test::sendSystemPointer(identifier, error)) fail(line, error);
+      });
+    });
+  } else if (name == QLatin1String("native-pointer-choice")) {
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("native-pointer-choice requires the native macOS UI")); return;
+    }
+    const QString identifier = a.at(0);
+    const QString expected = a.at(1);
+    const QStringList keys = a.mid(2);
+    mac::test::requestKeyEventFocus();
+    whenReady([this, identifier] {
+      if (!mac::test::keyEventFocusReady()) { m_waitDetail = mac::test::keyEventFocusDiagnostic(); return false; }
+      return mac::test::controlExists(identifier, &m_waitDetail);
+    }, 6, QStringLiteral("native pointer choice has no active visible target '%1'").arg(identifier),
+        [this, line, identifier, expected, keys] {
+      queue([this, line, identifier, expected, keys] {
+        // The helper supplies real keys in the menu's tracking loop. Do not
+        // let the next script step run inside that loop before it closes.
+        m_timer->stop();
+        QString error;
+        if (!mac::test::pointerChoice(identifier, expected, keys, error)) { fail(line, error); return; }
+        if (!m_finished) m_timer->start();
+      });
+    });
   } else if (name.startsWith(QLatin1String("native-")) && name != QLatin1String("native-key-now") &&
-             name != QLatin1String("native-key-event")) {
+             name != QLatin1String("native-key-event") && name != QLatin1String("native-system-key") &&
+             name != QLatin1String("native-system-type")) {
     if (!mac::test::active()) {
       fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
       return;
@@ -2399,6 +2778,133 @@ void TestDriver::run(const Step& step) {
     if (name == QLatin1String("native-action")) queue(perform);
     else whenReady([identifier] { return mac::test::controlExists(identifier); }, 6,
                    QStringLiteral("no native control '%1'").arg(identifier), [this, perform] { queue(perform); });
+  } else if (name == QLatin1String("qt-choice")) {
+    QWidget* window = targetWindow();
+    QWidget* field = window ? window->findChild<QWidget*>(a.at(0)) : nullptr;
+    QComboBox* found = qobject_cast<QComboBox*>(field);
+    if (!found && field) { found = field->findChild<QComboBox*>(); }
+    const QPointer<QComboBox> combo(found);
+    const int row = combo ? combo->findText(a.at(1), Qt::MatchExactly | Qt::MatchCaseSensitive) : -1;
+    const QPersistentModelIndex index = row >= 0 ? combo->model()->index(row, combo->modelColumn(), combo->rootModelIndex())
+                                               : QModelIndex();
+    if (mac::test::active() || !combo || !combo->isVisible() || !combo->isEnabled() || !index.isValid() ||
+        !index.flags().testFlag(Qt::ItemIsEnabled) || !index.flags().testFlag(Qt::ItemIsSelectable)) {
+      fail(line, QStringLiteral("qt-choice needs an enabled Qt combo and an enabled item '%1' in '%2'")
+                     .arg(a.at(1), a.at(0))); return;
+    }
+    const QPointer<QAbstractItemView> list(combo->view());
+    const QString identifier = a.at(0);
+    const QString label = a.at(1);
+    const auto nativeSelected = std::make_shared<bool>(false);
+    const auto rowInputSent = std::make_shared<bool>(false);
+    const QPointer<QWidget> popupWindow(list->window());
+    const auto waitClosed = [this, combo, list, popupWindow, identifier, label, nativeSelected, rowInputSent] {
+      // The selected row can synchronously resize its command card. Do not
+      // advance to another field while the real popup still owns input.
+      // A chosen action may open a modal dialog; it must remain available
+      // to subsequent script steps once this original popup has closed.
+      whenReady([this, combo, list, popupWindow, nativeSelected, rowInputSent] {
+        m_waitDetail = QStringLiteral("item view visible=%1, popup visible=%2 active=%3, current='%4', row release sent=%5, native selection=%6")
+            .arg(list && list->isVisible()).arg(popupWindow && popupWindow->isVisible())
+            .arg(popupWindow && QApplication::activePopupWidget() == popupWindow)
+            .arg(combo ? combo->currentText() : QStringLiteral("<deleted>"))
+            .arg(*rowInputSent).arg(*nativeSelected);
+        // Actions can replace their temporary label or destroy the combo.
+        // Completion proves the input and this popup's closure; subsequent
+        // script assertions check the action's actual semantic result.
+        return (*rowInputSent || *nativeSelected) && (!list || !list->isVisible()) &&
+            (!popupWindow || (!popupWindow->isVisible() && QApplication::activePopupWidget() != popupWindow));
+      }, 6, QStringLiteral("Qt choice '%1' in '%2' did not close its real popup").arg(label, identifier),
+      [combo, identifier, label] {
+        qInfo().noquote() << QStringLiteral("Qt choice: popup closed after '%1' in '%2', current='%3'")
+            .arg(label, identifier, combo ? combo->currentText() : QStringLiteral("<deleted>"));
+      });
+    };
+    // Install the wait before opening: a native style may track its popup
+    // in a nested loop. A key sent to the main window must never confirm
+    // the command when its NoFocus combo did not receive that key.
+    whenReady([this, combo, list, index, nativeSelected] {
+      if (*nativeSelected) return true;
+      if (!combo || !list || !index.isValid() || !list->isVisible()) {
+        m_waitDetail = QStringLiteral("the combo's item view is not a visible popup");
+        return false;
+      }
+      list->scrollTo(index, QAbstractItemView::PositionAtCenter);
+      list->doItemsLayout();
+      const QRect rect = list->visualRect(index);
+      QWidget* viewport = list->viewport();
+      // A macOS menu-style row can include trailing layout space beyond
+      // its narrow viewport while its label is fully shown. Hit the real
+      // exposed row, not the center of that non-visible layout space.
+      const QRect exposed = rect.intersected(viewport->rect());
+      const QPoint point = exposed.center();
+      QWidget* hit = QApplication::widgetAt(viewport->mapToGlobal(point));
+      m_waitDetail = QStringLiteral("popup row %1 at %2,%3, viewport %4x%5, exposed %6x%7, index-hit=%8, widget-hit=%9")
+          .arg(index.row()).arg(point.x()).arg(point.y()).arg(viewport->width()).arg(viewport->height())
+          .arg(exposed.width()).arg(exposed.height()).arg(list->indexAt(point) == index)
+          .arg(hit == viewport || (hit && viewport->isAncestorOf(hit)));
+      return !exposed.isEmpty() && list->indexAt(point) == index &&
+          QApplication::activePopupWidget() == list->window() &&
+          (hit == viewport || (hit && viewport->isAncestorOf(hit)));
+    }, 6, QStringLiteral("the real Qt choice popup did not display '%1'").arg(label),
+    [this, combo, list, index, identifier, label, nativeSelected, rowInputSent, waitClosed, line] {
+      waitClosed();
+      if (*nativeSelected) {
+        qInfo().noquote() << QStringLiteral("Qt choice: selected '%1' in '%2' native popup").arg(label, identifier);
+        return;
+      }
+      const auto send = [this, combo, list, index, identifier, label, rowInputSent, line](QEvent::Type type) {
+        if (!combo || !list || !index.isValid()) {
+          fail(line, QStringLiteral("Qt choice '%1' in '%2' lost its live popup row").arg(label, identifier)); return;
+        }
+        const QPointer<QWidget> receiver(list->viewport());
+        list->doItemsLayout();
+        const QRect rect = list->visualRect(index);
+        const QRect exposed = rect.intersected(receiver->rect());
+        const QPoint point = exposed.center();
+        QWidget* hit = QApplication::widgetAt(receiver->mapToGlobal(point));
+        if (!list->isVisible() || exposed.isEmpty() || list->indexAt(point) != index ||
+            QApplication::activePopupWidget() != list->window() ||
+            (hit != receiver && (!hit || !receiver->isAncestorOf(hit)))) {
+          fail(line, QStringLiteral("Qt choice '%1' in '%2' has no exposed popup row").arg(label, identifier)); return;
+        }
+        // Resolve every phase from the persistent row's current geometry.
+        // A press can change the motion type, shrink the floating card and
+        // move its popup before the release; the old screen point is stale.
+        const QPoint global = receiver->mapToGlobal(point);
+        QWidget* popup = receiver->window();
+        const bool moved = type == QEvent::MouseMove;
+        const QString phase = moved ? QStringLiteral("move") : type == QEvent::MouseButtonPress
+            ? QStringLiteral("press") : QStringLiteral("release");
+        qInfo().noquote() << QStringLiteral("Qt choice pointer: %1 phase=%2 row=%3 rect=%4,%5 %6x%7 global=%8,%9 popup-visible=%10 current='%11' exposed=%12,%13 %14x%15 index-hit=1 widget-hit=1")
+            .arg(identifier, phase).arg(index.row()).arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height())
+            .arg(global.x()).arg(global.y()).arg(popup->isVisible()).arg(combo->currentText())
+            .arg(exposed.x()).arg(exposed.y()).arg(exposed.width()).arg(exposed.height());
+        QMouseEvent event(type, receiver->mapFromGlobal(global), popup->mapFromGlobal(global), global,
+                          moved ? Qt::NoButton : Qt::LeftButton,
+                          type == QEvent::MouseButtonPress ? Qt::LeftButton : Qt::NoButton, Qt::NoModifier);
+        // Mark only after the release passed every live row/hit guard, just
+        // before dispatch: its handler may open a dialog in a nested loop.
+        if (type == QEvent::MouseButtonRelease) *rowInputSent = true;
+        QCoreApplication::sendEvent(receiver, &event);
+      };
+      queue([send] { send(QEvent::MouseMove); });
+      queue([send] { send(QEvent::MouseButtonPress); });
+      queue([send, identifier, label] {
+        send(QEvent::MouseButtonRelease);
+        qInfo().noquote() << QStringLiteral("Qt choice: clicked '%1' in '%2' popup").arg(label, identifier);
+      });
+    }, window);
+    if (!list->isVisible()) {
+      queue([this, combo, list, label, nativeSelected, line] {
+        QString error;
+        const auto closed = [nativeSelected] { *nativeSelected = true; };
+        const bool selected = mac::chooseTestPopup(label, [combo] { if (combo) combo->showPopup(); },
+            [list] { return list && list->isVisible(); }, error, closed);
+        if (selected) *nativeSelected = true;
+        if (!error.isEmpty()) fail(line, error);
+      });
+    }
   } else if (name == QLatin1String("qt-type-now")) {
     const QPointer<QLineEdit> edit(m_main ? m_main->findChild<QLineEdit*>(a.at(0)) : nullptr);
     if (mac::test::active() || !edit || !edit->isVisible() || !edit->isEnabled()) {
@@ -2415,6 +2921,28 @@ void TestDriver::run(const Step& step) {
     QKeyEvent up(QEvent::KeyRelease, Qt::Key_unknown, Qt::NoModifier, a.at(1));
     QCoreApplication::sendEvent(edit.data(), &up);
     if (edit->text() != a.at(1)) fail(line, QStringLiteral("the Qt field did not retain the requested text"));
+  } else if (name == QLatin1String("native-system-key") || name == QLatin1String("native-system-type")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("native system input requires the AppKit test UI")); return; }
+    if (name == QLatin1String("native-system-type")) {
+      queue([this, a, line] {
+        // Restoring an XPC file panel can require an AppKit run-loop turn.
+        // Keep unrelated work running, but do not reenter the next step.
+        m_timer->stop();
+        QString error;
+        if (!mac::test::sendSystemFileText(a.at(0), error)) { fail(line, error); return; }
+        if (!m_finished) m_timer->start();
+      });
+    } else {
+      KeyPress press;
+      QString error;
+      if (!parseKeySpec(a.at(0), press.key, press.modifiers, press.text, error)) { fail(line, error); return; }
+      queue([this, press, line] {
+        m_timer->stop();
+        QString error;
+        if (!mac::test::sendSystemFileKey(press.key, press.modifiers, error)) { fail(line, error); return; }
+        if (!m_finished) m_timer->start();
+      });
+    }
   } else if (name == QLatin1String("key") || name == QLatin1String("key-now") || name == QLatin1String("native-key-now") ||
              name == QLatin1String("native-key-event")) {
     if (name.startsWith(QLatin1String("native-")) && !mac::test::active()) {
@@ -2459,9 +2987,17 @@ void TestDriver::run(const Step& step) {
   } else if (name == QLatin1String("type")) {
     const QString text = a.join(QLatin1Char(' '));
     queue([this, text] { sendText(text); });
+  } else {
+    stepMatched = false;
+  }
+  // MSVC refuses an if-else chain of more than 128 links (C1061), so the
+  // steps are split into two chains.
+  if (stepMatched) {
+    return;
+  }
 
-    // --- The mouse in the 3D view
-  } else if (name == QLatin1String("click") || name == QLatin1String("dblclick")) {
+  // --- The mouse in the 3D view
+  if (name == QLatin1String("click") || name == QLatin1String("dblclick")) {
     double x = 0;
     double y = 0;
     Qt::MouseButton button = Qt::LeftButton;
@@ -2644,6 +3180,7 @@ void TestDriver::run(const Step& step) {
       if (click) { queueClick(*at, Qt::LeftButton, Qt::NoModifier, 1); }
     }, mainWindow);
   } else if (name == QLatin1String("click-logged") || name == QLatin1String("dblclick-logged") ||
+             name == QLatin1String("dialog-click-logged") || name == QLatin1String("dialog-dblclick-logged") ||
              name == QLatin1String("click-pick")) {
     const bool pick = name == QLatin1String("click-pick");
     QRegularExpression re;
@@ -2657,7 +3194,8 @@ void TestDriver::run(const Step& step) {
       fail(line, error);
       return;
     }
-    const int clicks = name == QLatin1String("dblclick-logged") ? 2 : 1;
+    const bool dialog = name.startsWith(QLatin1String("dialog-"));
+    const int clicks = name == QLatin1String("dblclick-logged") || name == QLatin1String("dialog-dblclick-logged") ? 2 : 1;
     if (mac::test::active() && !pick && clicks == 1 && button == Qt::LeftButton &&
         modifiers == Qt::NoModifier && a.at(0).contains(QStringLiteral(" input "))) {
       const auto identifier = std::make_shared<QString>();
@@ -2698,7 +3236,10 @@ void TestDriver::run(const Step& step) {
           return loggedPoint(re, from, *at);
         },
         6, QStringLiteral("no place logged for '%1'").arg(a.at(0)),
-        [this, at, button, modifiers, clicks] { queueClick(*at, button, modifiers, clicks); }, mainWindow);
+        [this, at, button, modifiers, clicks, dialog] {
+          if (dialog) queueDialogClick(*at, clicks);
+          else queueClick(*at, button, modifiers, clicks);
+        }, dialog ? targetWindow() : mainWindow);
   } else if (name == QLatin1String("drag-logged") || name == QLatin1String("drag-from")) {
     const bool relative = name == QLatin1String("drag-from");
     QRegularExpression first;
@@ -2802,6 +3343,44 @@ void TestDriver::run(const Step& step) {
         mainWindow);
 
     // --- The mouse at sketch points
+  } else if (name == QLatin1String("expect-sketch-dimension-clear")) {
+    auto* controller = mainWindow->findChild<sketch::SketchController*>();
+    if (!controller || !controller->isActive() || !controller->showDimensions() || !controller->showConstraints()) {
+      fail(line, QStringLiteral("dimension readability requires an active sketch with dimensions and constraints shown")); return;
+    }
+    QRegularExpression expression;
+    if (!regex(a.at(0), expression)) return;
+    const auto& overlay = controller->overlay();
+    const auto glyphs = overlay.constraintGlyphBounds();
+    if (glyphs.empty()) { fail(line, QStringLiteral("no constraint glyphs are drawn")); return; }
+    int matched = 0;
+    for (const auto& dimension : controller->model().dimensions) {
+      const QString text = overlay.dimensionText(dimension);
+      if (!expression.match(text).hasMatch()) continue;
+      ++matched;
+      const QRectF bounds = overlay.dimensionTextRect(dimension.id);
+      if (bounds.isEmpty() || !QRectF(viewer()->rect()).contains(bounds)) {
+        fail(line, QStringLiteral("dimension %1 (%2) is not visible inside the viewport").arg(dimension.id, text)); return;
+      }
+      for (const QRectF& glyph : glyphs) {
+        if (glyph.intersects(bounds.adjusted(-2, -2, 2, 2))) {
+          fail(line, QStringLiteral("dimension %1 (%2) is covered by a constraint glyph").arg(dimension.id, text)); return;
+        }
+      }
+      const auto hit = overlay.hitTest(bounds.center());
+      if (hit.kind != sketch::SketchOverlay::Hit::Kind::Dimension || hit.id != dimension.id) {
+        fail(line, QStringLiteral("dimension %1 lost its ordinary pick target").arg(dimension.id)); return;
+      }
+    }
+    if (matched == 0) { fail(line, QStringLiteral("no dimension text matches '%1'").arg(a.at(0))); return; }
+    for (const QRectF& glyph : glyphs) {
+      const auto kind = overlay.hitTest(glyph.center()).kind;
+      if (kind != sketch::SketchOverlay::Hit::Kind::Constraint && kind != sketch::SketchOverlay::Hit::Kind::Fixed) {
+        fail(line, QStringLiteral("a drawn constraint glyph lost its ordinary pick target")); return;
+      }
+    }
+    qInfo() << "Sketch dimension readability:" << matched << "matching labels clear of" << glyphs.size()
+            << "constraint glyphs; ordinary pick targets retained";
   } else if (name == QLatin1String("expect-sketch-field-dimension")) {
     auto* controller = mainWindow->findChild<sketch::SketchController*>();
     double expected = 0;
@@ -2892,10 +3471,12 @@ void TestDriver::run(const Step& step) {
         sendMouse(QEvent::MouseButtonRelease, *at, Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
       }
     }, mainWindow);
-  } else if (name == QLatin1String("sketch-click") || name == QLatin1String("sketch-drag") ||
+  } else if (name == QLatin1String("sketch-click") || name == QLatin1String("sketch-dblclick") ||
+             name == QLatin1String("sketch-drag") ||
              name == QLatin1String("sketch-move")) {
     const bool drag = name == QLatin1String("sketch-drag");
     const bool move = name == QLatin1String("sketch-move");
+    const int clicks = name == QLatin1String("sketch-dblclick") ? 2 : 1;
     double c[4] = {0, 0, 0, 0};
     const int count = drag ? 4 : 2;
     for (int i = 0; i < count; ++i) {
@@ -2922,13 +3503,13 @@ void TestDriver::run(const Step& step) {
           return sketchPoint(x1, y1, *from) && (!drag || sketchPoint(x2, y2, *to));
         },
         6, QStringLiteral("the app logged no sketch view"),
-        [this, drag, move, from, to, button, modifiers] {
+        [this, drag, move, clicks, from, to, button, modifiers] {
           if (drag) {
             queueDrag(*from, *to, Qt::LeftButton, Qt::NoModifier);
           } else if (move) {
             sendMouse(QEvent::MouseMove, *from, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
           } else {
-            queueClick(*from, button, modifiers, 1);
+            queueClick(*from, button, modifiers, clicks);
           }
         },
         mainWindow);
@@ -3148,25 +3729,58 @@ void TestDriver::run(const Step& step) {
       auto* browser = m_main->findChild<QWidget*>(QStringLiteral("browserDock"));
       auto* tree = m_main->findChild<QTreeWidget*>(QStringLiteral("projectsTree"));
       if (!projects || !browser || !tree || !projects->isVisible() || !browser->isVisible() ||
-          tree->topLevelItemCount() != a.at(0).toInt()) return false;
+          tree->topLevelItemCount() != a.at(0).toInt()) {
+        m_waitDetail = QStringLiteral("missing or hidden panels, or unexpected project count");
+        return false;
+      }
       const QRect actual(projects->mapToGlobal(QPoint()), projects->size());
       const QRect next(browser->mapToGlobal(QPoint()), browser->size());
+      const QRect host(m_main->mapToGlobal(QPoint()), m_main->size());
+      if (!host.contains(actual) || !host.contains(next)) {
+        m_waitDetail = QStringLiteral("Projects or Browser extends outside the main window");
+        return false;
+      }
       auto* card = qobject_cast<GlassCard*>(projects);
       auto* browserCard = qobject_cast<GlassCard*>(browser);
+      if (!card) {
+        auto* browserRows = browser->findChild<QTreeWidget*>();
+        for (QTreeWidget* rows : {tree, browserRows}) {
+          if (!rows || rows->viewport()->height() < std::max(rows->fontMetrics().height() + 6,
+                                                            rows->sizeHintForRow(0))) {
+            m_waitDetail = QStringLiteral("a docked tree cannot show one complete row");
+            return false;
+          }
+        }
+      }
       qInfo() << "Projects layout: actual" << actual << "browser" << next
               << "slot" << (card ? card->slot() : QRect()) << "minimum" << projects->minimumSize();
-      if (actual.intersects(next) || actual.bottom() >= next.top()) return false;
+      if (actual.intersects(next) || actual.bottom() >= next.top()) {
+        m_waitDetail = QStringLiteral("Projects bottom %1 reaches Browser top %2")
+            .arg(actual.bottom()).arg(next.top());
+        return false;
+      }
       if (card && (!browserCard || card->slot().size() != card->size() ||
                    card->slot().intersects(browserCard->slot()) ||
-                   card->parentWidget()->mapToGlobal(card->slot().topLeft()) != actual.topLeft())) return false;
+                   card->parentWidget()->mapToGlobal(card->slot().topLeft()) != actual.topLeft())) {
+        m_waitDetail = QStringLiteral("actual card bounds differ from their slots");
+        return false;
+      }
       auto* toolbar = m_main->findChild<QToolBar*>(QStringLiteral("projectsToolbar"));
       if (!toolbar || ((!card || !card->isCollapsed()) &&
           (toolbar->height() < toolbar->sizeHint().height() || !actual.contains(
-              QRect(toolbar->mapToGlobal(QPoint()), toolbar->size()))))) return false;
+              QRect(toolbar->mapToGlobal(QPoint()), toolbar->size()))))) {
+        m_waitDetail = QStringLiteral("toolbar height %1, preferred %2, Projects height %3")
+            .arg(toolbar ? toolbar->height() : -1).arg(toolbar ? toolbar->sizeHint().height() : -1)
+            .arg(projects->height());
+        return false;
+      }
       if (!card || !card->isCollapsed()) {
         for (auto* button : toolbar->findChildren<QToolButton*>()) {
           if (button->isVisible() && !toolbar->rect().contains(QRect(
-                  button->mapTo(toolbar, QPoint()), button->size()))) return false;
+                  button->mapTo(toolbar, QPoint()), button->size()))) {
+            m_waitDetail = QStringLiteral("toolbar clips visible button '%1'").arg(button->objectName());
+            return false;
+          }
         }
       }
       qInfo() << "Projects layout: passed, projects" << tree->topLevelItemCount()
@@ -3270,9 +3884,23 @@ void TestDriver::run(const Step& step) {
       m_waitDetail = QStringLiteral("no visible editor with text '%1'; found %2").arg(a.at(0), observed.join(QStringLiteral(" | ")));
       return false;
     }, 6, QStringLiteral("rename editor is missing, translucent, misplaced, unselected or paints the old name"));
+  } else if (name == QLatin1String("expect-no-qt-popup")) {
+    QWidget* popup = QApplication::activePopupWidget();
+    if (popup == nullptr) {
+      for (QWidget* candidate : QApplication::topLevelWidgets()) {
+        if (candidate->isVisible() && candidate->windowType() == Qt::Popup) {
+          popup = candidate;
+          break;
+        }
+      }
+    }
+    if (popup != nullptr) {
+      fail(line, QStringLiteral("Qt popup '%1' (%2) owns input or remains logically visible")
+                     .arg(popup->objectName(), QString::fromLatin1(popup->metaObject()->className())));
+    }
   } else if (name == QLatin1String("expect-widget-property")) {
     QWidget* window = targetWindow();
-    QObject* widget = window ? window->findChild<QWidget*>(a.at(0)) : nullptr;
+    QObject* widget = namedWidget(window, a.at(0));
     const QVariant value = widget ? widget->property(a.at(1).toUtf8().constData()) : QVariant();
     if (!value.isValid() || value.toString() != a.at(2)) {
       fail(line, QStringLiteral("widget %1.%2 is '%3', expected '%4'").arg(a.at(0), a.at(1), value.toString(), a.at(2)));
@@ -3294,9 +3922,36 @@ void TestDriver::run(const Step& step) {
   } else if (name == QLatin1String("focus-widget")) {
     QWidget* window = QApplication::activePopupWidget();
     if (!window) window = targetWindow();
-    QWidget* widget = window ? window->findChild<QWidget*>(a.at(0)) : nullptr;
+    QWidget* widget = namedWidget(window, a.at(0), true);
+    const auto describe = [](const QWidget* value) {
+      if (value == nullptr) return QStringLiteral("none");
+      const QRect rect = value->geometry();
+      return QStringLiteral("%1 name='%2' title='%3' visible=%4 hidden=%5 enabled=%6 rect=%7,%8 %9x%10")
+          .arg(QString::fromLatin1(value->metaObject()->className()), value->objectName(), value->windowTitle())
+          .arg(value->isVisible()).arg(value->isHidden()).arg(value->isEnabled())
+          .arg(rect.x()).arg(rect.y()).arg(rect.width()).arg(rect.height());
+    };
+    // Record the real lookup context before changing focus. A floating
+    // command card, a still-active combo popup and a hidden duplicate field
+    // otherwise all reduce to the same unhelpful "no visible widget" error.
+    qInfo().noquote() << QStringLiteral("Qt field focus context: id='%1'; popup={%2}; active={%3}; target={%4}; search={%5}")
+        .arg(a.at(0), describe(QApplication::activePopupWidget()), describe(QApplication::activeWindow()),
+             describe(targetWindow()), describe(window));
+    int candidates = 0;
+    for (QWidget* candidate : QApplication::allWidgets()) {
+      if (candidate->objectName() != a.at(0)) continue;
+      ++candidates;
+      QStringList ancestry;
+      for (QWidget* parent = candidate->parentWidget(); parent != nullptr; parent = parent->parentWidget()) {
+        ancestry << describe(parent);
+      }
+      qInfo().noquote() << QStringLiteral("Qt field focus candidate: selected=%1; field={%2}; window={%3}; host={%4}; parents=[%5]")
+          .arg(candidate == widget).arg(describe(candidate), describe(candidate->window()),
+               describe(GlassCard::hostWindow(candidate)), ancestry.join(QStringLiteral("; ")));
+    }
+    if (candidates == 0) qInfo().noquote() << QStringLiteral("Qt field focus candidate: none for '%1'").arg(a.at(0));
     if (!widget || !widget->isVisible() || !widget->isEnabled()) {
-      fail(line, QStringLiteral("no visible enabled widget '%1'").arg(a.at(0))); return;
+      fail(line, QStringLiteral("no unique visible enabled widget '%1'").arg(a.at(0))); return;
     }
     m_dialog = widget->window();
     widget->setFocus(Qt::TabFocusReason);

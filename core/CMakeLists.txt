@@ -107,7 +107,9 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi_bridges_sources FILES
   # A planar face of a body revolved as a profile (mitcad#539).
   kernel/face_revolve.rs
   # Display meshes kept in the result store (mitcad#858).
-  kernel/display_mesh.rs)
+  kernel/display_mesh.rs
+  # C++ exceptions under bridge calls as errors, tested (mitcad#937).
+  kernel/exception_probe.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -258,6 +260,12 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/display_mesh.cpp
   cpp/bridge/display_mesh.hpp)
+# C++ exceptions under bridge calls as errors: the trycatch every bridge
+# includes, and the test's probe (mitcad#937).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/trycatch.hpp
+  cpp/bridge/exception_probe.cpp
+  cpp/bridge/exception_probe.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 # What corrosion_add_cxxbridge links for a CRATE that Corrosion imported
 # (mitcad#792): the bridge with the Rust library, both ways.

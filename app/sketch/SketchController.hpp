@@ -500,13 +500,25 @@ private:
   // P7), and with it the release: the drag ends when the model is free.
   void interruptDrag();
   void forwardClick(const QMouseEvent* release);
-  // While a command's panel runs (paused): the clicks and the hover on
-  // the sketch's axes for an input that takes them (mitcad#876; the view
-  // does not show them). True when the event was taken.
-  bool axisPickEvent(QEvent* event);
+  // The clicks and the hover on the sketch's axes and origin, which the
+  // view does not show: while a command's panel runs (paused), on the axes
+  // for an input that takes them (mitcad#876); with no tool running
+  // (`selecting`), on the axes and the origin, which a click selects like
+  // construction geometry and a drag never moves (mitcad#899). True when
+  // the event was taken.
+  bool axisPickEvent(QEvent* event, bool selecting);
   // The axis under a view position, as its axisPick() id, when no entity
   // of the sketch is nearer; empty otherwise.
   QString axisAt(const QPointF& screen) const;
+  // What a click with no tool running selects there of the axes and the
+  // origin (their pick ids, SketchModel::axisSelectionPick), when no
+  // dimension, constraint symbol or sketch entity wins it, nor anything
+  // precise the view picks itself (OcctViewer::claimsClick: a text, a body
+  // edge or vertex in sight or behind faces) (mitcad#899); empty
+  // otherwise.
+  QString axisSelectionAt(const QPointF& screen);
+  // Whether the hover is an axis or the origin's pick.
+  bool axisHovered() const;
   int fieldIndex(const QString& id) const;
   QString describeStatus() const;
 
@@ -573,9 +585,9 @@ private:
   // when only m_dragEntity is dragged.
   QStringList m_dragSelection;
   QString m_dragDimension; // a dimension's text
-  // A left press on an axis a command's input takes (axisPickEvent()):
-  // the axis, until the release picks it or a drag hands the press on to
-  // the view.
+  // A left press on an axis a command's input takes, or on an axis or the
+  // origin a click selects (axisPickEvent()): its pick id, until the
+  // release picks it or a drag hands the press on to the view.
   QString m_axisPress;
   V2 m_dragStart;
   V2 m_dragLast;

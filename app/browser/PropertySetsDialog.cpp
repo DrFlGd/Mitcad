@@ -39,6 +39,7 @@
 #include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QVariantMap>
 #include <QtLogging>
@@ -49,6 +50,7 @@
 #include "../framework/IdleCall.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "../print/PrintLibrary.hpp"
 #include "../print/SettingField.hpp"
 #include "DocumentHost.hpp"
@@ -118,6 +120,8 @@ public:
   using Clicked = std::function<void(const QModelIndex&, const QString&)>;
   PrintValueDelegate(QObject* parent, Factory factory, Clicked clicked)
       : QStyledItemDelegate(parent), m_factory(std::move(factory)), m_clicked(std::move(clicked)) {}
+
+  void activate(const QModelIndex& index, const QString& action) const { m_clicked(index, action); }
 
   // Initialises `cell` (the view's option of the cell) for the index, its
   // text the value as painted, and gives the glyphs' places in it.
@@ -515,6 +519,7 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
   layout->addLayout(top);
 
   m_table = new PropertyTable([this](QTreeWidgetItem* item, int column) { edit(item, column); });
+  m_table->setObjectName(QStringLiteral("propertySetsTable"));
   m_table->setColumnCount(4);
   m_table->setHeaderLabels({tr("Property"), tr("Value"), tr("Type"), tr("Source")});
   m_table->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -639,7 +644,9 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
                 emit static_cast<PrintValueDelegate*>(m_table->itemDelegateForColumn(kValue))
                     ->closeEditor(combo, QAbstractItemDelegate::NoHint);
               };
-              QTimer::singleShot(0, combo, [combo] { combo->showPopup(); });
+              if (!nativeDialogsActive()) {
+                QTimer::singleShot(0, combo, [combo] { combo->showPopup(); });
+              }
               return combo;
             }
             const PrintKey* key = m_keys.find(first.data(kPrintKeyRole).toString());
@@ -663,7 +670,9 @@ PropertySetsDialog::PropertySetsDialog(DocumentHost& host, QWidget* parent) : QD
                           value.isNull() ? QJsonObject() : QJsonObject{{QStringLiteral("value"), value}};
                       setPrint(set, name, fields, value.isNull() ? QString() : printValueText(*key, value));
                     });
-            QTimer::singleShot(0, field, [field] { field->startEditing(); });
+            if (!nativeDialogsActive()) {
+              QTimer::singleShot(0, field, [field] { field->startEditing(); });
+            }
             return field;
           },
           // A left click on a print row's value cell: a glyph's action, or
@@ -856,6 +865,7 @@ void PropertySetsDialog::refresh() {
     top->setExpanded(true);
   }
   addPrintSettings(levels, folded, current, rows);
+  createNativePrintCells();
   m_title->setText(titles.join(QStringLiteral(" · ")));
   m_building = false;
   updateButtons();
@@ -872,6 +882,74 @@ void PropertySetsDialog::refresh() {
     }
   }
   QTimer::singleShot(0, this, &PropertySetsDialog::logLayout);
+}
+
+void PropertySetsDialog::createNativePrintCells() {
+  if (!nativeDialogsActive()) {
+    return;
+  }
+  auto* delegate = static_cast<PrintValueDelegate*>(m_table->itemDelegateForColumn(kValue));
+  for (QTreeWidgetItemIterator it(m_table); *it != nullptr; ++it) {
+    QTreeWidgetItem* row = *it;
+    if (row->data(kKey, kLevelRole).toString() != QStringLiteral("print") ||
+        row->data(kKey, kNameRole).toString().isEmpty()) {
+      continue;
+    }
+    const QPersistentModelIndex index(static_cast<PropertyTable*>(m_table)->indexOf(row, kValue));
+    const QString id = QStringLiteral("native.properties.%1.%2.%3")
+        .arg(row->data(kKey, kOwnerRole).toString(), row->data(kKey, kSetRole).toString(),
+             row->data(kKey, kNameRole).toString());
+    row->setData(kKey, NativeControlIdentifierRole, id);
+    auto* cell = new QWidget;
+    auto* layout = new QHBoxLayout(cell);
+    layout->setContentsMargins(2, 0, 2, 0);
+    layout->setSpacing(4);
+    QWidget* editor = nullptr;
+    if (row->flags().testFlag(Qt::ItemIsEditable) &&
+        (!row->data(kKey, kPrintKeyRole).toString().isEmpty() ||
+         !row->data(kKey, kProfileRole).toString().isEmpty())) {
+      editor = delegate->createEditor(cell, QStyleOptionViewItem(), index);
+      delegate->setEditorData(editor, index);
+      QWidget* input = editor;
+      if (auto* field = qobject_cast<SettingField*>(editor)) {
+        input = field->placeWidget();
+      }
+      input->setObjectName(id + QStringLiteral(".value"));
+    } else if (!row->data(kKey, kGlyphsRole).toStringList().isEmpty()) {
+      auto* value = new QPushButton(row->text(kValue), cell);
+      value->setFlat(true);
+      value->setObjectName(id + QStringLiteral(".value"));
+      connect(value, &QPushButton::clicked, this, [delegate, index] {
+        if (index.isValid()) { delegate->activate(index, QString()); }
+      });
+      editor = value;
+    } else {
+      auto* caption = new QLabel(row->text(kValue), cell);
+      caption->setFont(row->font(kValue));
+      if (row->foreground(kValue).style() != Qt::NoBrush) {
+        QPalette palette = caption->palette();
+        palette.setColor(QPalette::WindowText, row->foreground(kValue).color());
+        caption->setPalette(palette);
+      }
+      editor = caption;
+    }
+    layout->addWidget(editor, 1);
+    const QStringList actions = row->data(kKey, kGlyphsRole).toStringList();
+    for (const QString& action : actions) {
+      auto* button = new QToolButton(cell);
+      button->setObjectName(id + QLatin1Char('.') + action);
+      button->setAutoRaise(true);
+      const bool clear = action == QStringLiteral("clear");
+      button->setText(clear ? QStringLiteral("↺") : tr("Edit"));
+      button->setToolTip(clear ? tr("Restore the inherited value") : tr("Edit the selected settings"));
+      if (!clear) { button->setIcon(themeIcon(QStringLiteral("edit"))); }
+      connect(button, &QToolButton::clicked, this, [delegate, index, action] {
+        if (index.isValid()) { delegate->activate(index, action); }
+      });
+      layout->addWidget(button);
+    }
+    m_table->setItemWidget(row, kValue, cell);
+  }
 }
 
 void PropertySetsDialog::addPrintSettings(const QJsonArray& levels, const QSet<QString>& folded,

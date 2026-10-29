@@ -1329,9 +1329,10 @@ fn rectangle_on_projected_line() -> (Document<MockKernel>, String, String, Strin
             {"id": "c3", "type": "line", "start": "p1", "end": "p2", "fixed": true,
              "reference": true}]}}),
     );
-    // The projected line's own fixed ends and fixed curve: what the solver
-    // reports as redundant before anything is drawn.
+    // The projected line's fixed ends hold its fixed curve, which is not
+    // reported redundant on its own (mitcad#877).
     let base = sketch(&d, "F1")["redundant"].clone();
+    assert_eq!(base, json!([]));
     let r = command(
         &mut d,
         json!({"cmd": "sketch.rectangle", "sketch": "F1", "mode": "two_point",

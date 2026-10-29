@@ -487,6 +487,8 @@ const QUERIES: &[(&str, ApiClass)] = &[
     ("cut_sheet", Model),
     // The height of the annotations' texts (mitcad#894).
     ("annotation_text_height", Model),
+    // Clearance holes and head recesses by screw size (mitcad#903).
+    ("hole_sizes", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

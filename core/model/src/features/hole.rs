@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
 use super::geom_ref::{GeomRef, Want};
+use super::hole_sizes::ClearanceFit;
 use super::place_at::PlaceAt;
 use super::reference::{ExtentObject, normalized};
 use super::thread::{
@@ -218,6 +219,19 @@ pub struct HoleThread<P = ParamId> {
     pub starts: Option<P>,
 }
 
+/// A clearance hole's screw size and fit (mitcad#903): `{"size": "M6",
+/// "fit": "normal"}`. It names where the hole's values came from (the
+/// `hole_sizes` table: ISO 273's clearance hole, the head's counterbore or
+/// countersink) so that the Hole panel shows them again; the hole itself
+/// is cut at its own `diameter` and `kind`, plain values as any hole's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HoleClearance {
+    pub size: String,
+    #[serde(default)]
+    pub fit: ClearanceFit,
+}
+
 fn yes() -> bool {
     true
 }
@@ -279,6 +293,10 @@ pub struct HoleDef<P = ParamId> {
     /// tapered holes: 90 degrees less their taper angle, mitcad#4).
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub taper: Option<P>,
+    /// A clearance hole's screw size and fit (mitcad#903); not with a
+    /// `thread`. Holes saved before have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clearance: Option<HoleClearance>,
 }
 
 type Mapper<'a, P, Q, E> = dyn FnMut(&str, &P) -> Result<Q, E> + 'a;
@@ -415,6 +433,7 @@ impl<P> HoleDef<P> {
             flip: self.flip,
             participants: self.participants.clone(),
             taper,
+            clearance: self.clearance.clone(),
         })
     }
 
@@ -579,6 +598,15 @@ impl FeatureInfo for HoleDef {
             if thread.custom.is_none() {
                 thread.size().check(Some(true))?;
             }
+        }
+        // A clearance hole's size is one of the table's (mitcad#903).
+        if let Some(clearance) = &self.clearance {
+            if self.thread.is_some() {
+                return Err(
+                    "a clearance hole has no thread: leave out `clearance` or `thread`".to_owned(),
+                );
+            }
+            super::hole_sizes::lookup(&clearance.size)?;
         }
         check_participants(ctx, Operation::Cut, &self.participants)
     }
@@ -1245,5 +1273,39 @@ mod tests {
             hole_face(FeatureUid(5), 2, "wall").to_string(),
             "F5:hole2.wall"
         );
+    }
+
+    #[test]
+    fn clearance_holes_keep_their_size_and_fit() {
+        // mitcad#903: a hole saved before has no `clearance` and writes
+        // none; a clearance hole writes its size and fit (Normal when left
+        // out).
+        let before = serde_json::json!({
+            "placement": {"type": "sketch_points", "sketch": "F3", "points": [[10.0, 10.0], "c5"]},
+            "diameter": "d4", "kind": {"type": "counterbore", "diameter": "d5", "depth": "d6"},
+            "extent": {"type": "through_all"}});
+        let def: HoleDef<String> = serde_json::from_value(before.clone()).unwrap();
+        assert_eq!(def.clearance, None);
+        assert_eq!(serde_json::to_value(&def).unwrap(), before);
+        let mut clearance = before.clone();
+        clearance["clearance"] = serde_json::json!({"size": "M6"});
+        let def: HoleDef<String> = serde_json::from_value(clearance.clone()).unwrap();
+        assert_eq!(
+            def.clearance,
+            Some(HoleClearance {
+                size: "M6".to_owned(),
+                fit: ClearanceFit::Normal
+            })
+        );
+        clearance["clearance"] = serde_json::json!({"size": "M6", "fit": "normal"});
+        assert_eq!(serde_json::to_value(&def).unwrap(), clearance);
+        // Mapped with the other values.
+        let mapped = def
+            .map_params::<String, ()>(&mut |_, p| Ok(p.clone()))
+            .unwrap();
+        assert_eq!(mapped.clearance, def.clearance);
+        let mut wrong = before;
+        wrong["clearance"] = serde_json::json!({"size": "M6", "fit": "loose"});
+        assert!(serde_json::from_value::<HoleDef<String>>(wrong).is_err());
     }
 }

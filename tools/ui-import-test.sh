@@ -221,9 +221,10 @@ echo "--- Insert Component"
 ui_mark
 ui_step "new design (Ctrl+N)"              ui_key ctrl+n
 ui_expect_new "New document" "an empty document"
-# The component goes into the root: a new design opens with the root
-# active, not its Component1 (which would take it too, mitcad#421, mitcad#426).
-ui_expect_new "Opened with the root active; C1 was active in the file (unmodified)" "the root is active"
+# The component goes into Component1, which takes components (mitcad#421):
+# a new design starts with its Component1 active (mitcad#898), unlike a
+# design read from a file (mitcad#426).
+ui_expect_new "Opened the new design with Component1 active" "Component1 is active"
 ui_mark
 ui_step "Insert Component (search)"        ui_command "Insert Component"
 type_into_dialog 'Insert Component' "$WORK/block.mitcad"

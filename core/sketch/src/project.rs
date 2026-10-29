@@ -417,10 +417,14 @@ pub struct Joined {
 /// those of the linked projections of the same body and link, with the
 /// points their curves end on; for an unlinked one the projected entities
 /// in no projection. A static curve never shares a point a linked one
-/// moves, and a linked one only points that follow the same body.
+/// moves, and a linked one only points that follow the same body. A linked
+/// projection of another sketch's geometry (`sketch`, mitcad#904) joins
+/// only those of the same sketch, one of model geometry only those of
+/// model geometry.
 pub fn joinable(
     def: &SketchDef,
     linked: Option<(Option<BodyUid>, Option<&crate::occurrence::OccurrenceLink>)>,
+    sketch: Option<crate::ids::FeatureUid>,
 ) -> BTreeSet<EntityUid> {
     let in_any: BTreeSet<EntityUid> = def
         .projections
@@ -431,7 +435,11 @@ pub fn joinable(
         Some((body, link)) => def
             .projections
             .iter()
-            .filter(|p| p.body == body && p.link.as_ref() == link)
+            .filter(|p| {
+                p.body == body
+                    && p.link.as_ref() == link
+                    && p.source.sketch().map(|e| e.sketch) == sketch
+            })
             .flat_map(|p| p.entities.iter().map(|r| r.uid()))
             .collect(),
         None => def
@@ -731,10 +739,11 @@ fn shape_of(entities: &[Entity]) -> Vec<(&'static str, Vec<usize>)> {
 
 /// The curves one linked projection follows (mitcad#736): its source and
 /// the faces its curve continues into, or none for curves that come in
-/// unlinked (a section's pieces on faces without names).
+/// unlinked (a section's pieces on faces without names). A curve or point
+/// of another sketch is a source of its own (mitcad#904).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceCurves {
-    pub source: Option<TopoName>,
+    pub source: Option<super::ProjectionSource>,
     pub chain: Vec<TopoName>,
     pub curves: Vec<Curve3>,
 }
@@ -750,11 +759,12 @@ pub fn section_groups(found: Vec<crate::kernel::SectionCurve>) -> Vec<SourceCurv
     for piece in found {
         let faces: Vec<TopoName> = piece.faces.into_iter().map(TopoName::Face).collect();
         let joined = matches!(piece.curve, Curve3::BSpline { .. }) && faces.len() > 1;
-        let (source, chain) = match faces.split_first() {
-            Some((first, rest)) if joined => (Some(first.clone()), rest.to_vec()),
-            Some((first, _)) => (Some(first.clone()), Vec::new()),
-            None => (None, Vec::new()),
-        };
+        let (source, chain): (Option<super::ProjectionSource>, Vec<TopoName>) =
+            match faces.split_first() {
+                Some((first, rest)) if joined => (Some(first.clone().into()), rest.to_vec()),
+                Some((first, _)) => (Some(first.clone().into()), Vec::new()),
+                None => (None, Vec::new()),
+            };
         match groups
             .iter_mut()
             .find(|g| !joined && g.chain.is_empty() && g.source == source)

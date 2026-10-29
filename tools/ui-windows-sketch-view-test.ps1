@@ -391,8 +391,8 @@ function Expect-Centred([string]$Description) {
 
 # Sketch-OnOrigin plane: Create Sketch on an origin plane, clicked in the
 # view: Create Sketch shows the origin planes in every design (mitcad#844),
-# also after New Design, which opens with the root active beside its
-# Component1 (mitcad#426).
+# also after New Design, which starts with its Component1 active
+# (mitcad#898).
 function Sketch-OnOrigin([string]$Plane) {
   $name = $Plane.ToUpperInvariant()
   Ui-Mark
@@ -414,6 +414,7 @@ function Centred-Round([string]$Layout, [string]$Chrome) {
   Ui-Mark
   Ui-Step "${Layout}: new design (Ctrl+N)" { Ui-Key 'ctrl+n' }
   Ui-ExpectNew 'New document' "${Layout}: a new design"
+  Ui-ExpectNew 'Opened the new design with Component1 active' "${Layout}: the new design has Component1 active"
   Ui-WaitIdle
   foreach ($plane in @('xy', 'xz', 'yz')) {
     $name = $plane.ToUpperInvariant()

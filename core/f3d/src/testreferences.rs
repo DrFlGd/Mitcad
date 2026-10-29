@@ -449,7 +449,7 @@ mod tests {
         let path = dir.join("Package.f3z");
         std::fs::write(&path, package_file(true)).unwrap();
         let p = crate::design::package(&path).unwrap();
-        let labels: Vec<&str> = p.documents.iter().map(|(l, _)| l.as_str()).collect();
+        let labels: Vec<&str> = p.labels().collect();
         assert_eq!(
             labels,
             [
@@ -471,7 +471,7 @@ mod tests {
         assert_eq!(described[2], (labels[2], PART.urn, Some("Packaged part")));
         // The assembly's manifest lists the GUIDs of the others too.
         assert_eq!(
-            manifest_guids(&p.documents[0].1),
+            manifest_guids(&p.open(0).unwrap()),
             [
                 ASSEMBLY.document_guid,
                 HOLDER.document_guid,
@@ -481,8 +481,77 @@ mod tests {
 
         std::fs::write(&path, package_file(false)).unwrap();
         let p = crate::design::package(&path).unwrap();
-        assert_eq!(p.documents.len(), 3);
+        assert_eq!(p.len(), 3);
         assert!(p.root.is_none() && p.described.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// mitcad#923: reading a package inflates none of its designs, and
+    /// listing their references inflates one at a time.
+    #[test]
+    fn package_designs_are_inflated_one_at_a_time() {
+        let mut w = Writer::new();
+        w.add(
+            PACKAGE_ENTRIES[0].1,
+            &assembly_listing(&[HOLDER.document_guid]),
+            Method::Deflate,
+        )
+        .unwrap();
+        w.add(PACKAGE_ENTRIES[1].1, &holder_listing(&[]), Method::Deflate)
+            .unwrap();
+        let dir = std::env::temp_dir().join(format!("mitcad-package-lazy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Two.f3z");
+        std::fs::write(&path, w.finish().unwrap()).unwrap();
+
+        let p = crate::design::package(&path).unwrap();
+        assert_eq!(
+            p.labels().collect::<Vec<_>>(),
+            ["Two.f3z!0a5e3b10", "Two.f3z!5b6c7d20"]
+        );
+        assert_eq!((p.open_now(), p.peak_open()), (0, 0));
+        let mut listed = Vec::new();
+        for doc in p.documents() {
+            let doc = doc.unwrap();
+            assert_eq!(p.open_now(), 1);
+            let references: Vec<(String, usize)> = referenced_documents(&doc)
+                .unwrap()
+                .into_iter()
+                .map(|r| (r.urn, r.occurrences))
+                .collect();
+            listed.push((doc.label().to_owned(), manifest_guids(&doc), references));
+        }
+        assert_eq!((p.open_now(), p.peak_open()), (0, 1));
+        assert_eq!(
+            listed,
+            [
+                (
+                    "Two.f3z!0a5e3b10".to_owned(),
+                    vec![
+                        ASSEMBLY.document_guid.to_owned(),
+                        HOLDER.document_guid.to_owned()
+                    ],
+                    vec![(PART.urn.to_owned(), 1), (HOLDER.urn.to_owned(), 2)]
+                ),
+                (
+                    "Two.f3z!5b6c7d20".to_owned(),
+                    vec![HOLDER.document_guid.to_owned()],
+                    vec![(PART.urn.to_owned(), 1)]
+                ),
+            ]
+        );
+
+        // The count sees documents held together, and the eager list of
+        // every document still reads them all.
+        let first = p.open(0).unwrap();
+        let second = p.open(1).unwrap();
+        assert_eq!(p.open_now(), 2);
+        drop((first, second));
+        assert_eq!((p.open_now(), p.peak_open()), (0, 2));
+        assert!(p.open(2).is_err());
+        let all = p.into_documents().unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(manifest_guids(&all[1].1), [HOLDER.document_guid]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

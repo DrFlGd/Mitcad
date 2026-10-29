@@ -16,7 +16,9 @@ use crate::geometry::{
     V3, add, angle_between, cross, dot, inverse, parts, perpendicular, scale, sub, unit, x_axis,
     z_axis,
 };
-use crate::parts::{PartInfo, as_input, default_value, designation, source_state};
+use crate::parts::{
+    PartInfo, as_input, default_value, source_option_values, source_state_with_options,
+};
 use crate::prelude::*;
 use crate::{BuildMeta, BuildRecord, BuildRole, LibrarySourceDef, SourceId};
 // Stored in the design file, so kept in the model (mitcad#777).
@@ -38,6 +40,7 @@ use mitcad_model::joints::{JointKind, Motion, SlideAxis};
 use mitcad_model::kernel::{BoundingBox, Kernel};
 use mitcad_model::library::LibraryRequest;
 use mitcad_model::parameters::ParamId;
+use mitcad_model::part_options::{Naming, PartValue, combination};
 use mitcad_model::transform::Transform;
 use mitcad_model::{DocState, Document, ModelError};
 
@@ -633,7 +636,10 @@ pub enum LengthPlan {
         to: Box<BoundTo>,
         mode: BoundMode,
         add: Option<ValueInput>,
+        /// The validated geometric length used for planning and commit.
         first: f64,
+        /// Stock length in the selected source row, before measurement.
+        source_default: f64,
     },
 }
 
@@ -669,6 +675,64 @@ pub struct Plan {
     /// A member by two points: what its points are on, its ends cut back
     /// to the members they are in (mitcad#509).
     pub between: Option<crate::timber::Between>,
+}
+
+/// The exact length the committed bound feature will measure. The
+/// planner uses the same target geometry calculation, before any edit.
+fn measured_bound_length<K: Kernel>(
+    doc: &Document<K>,
+    plan: &Plan,
+) -> Result<Option<f64>, ModelError> {
+    let LengthPlan::Bound { to, mode, add, .. } = &plan.length else {
+        return Ok(None);
+    };
+    let (start, along) = match &plan.spot {
+        Spot::Grounded(at) => (at.translation, z_axis(at)),
+        Spot::Joint(joint) => joint
+            .ray
+            .as_ref()
+            .map(|ray| (ray.start, ray.along))
+            .ok_or_else(|| refuse("the length cannot be bound here"))?,
+    };
+    let along = unit(along).ok_or_else(|| refuse("the direction is zero"))?;
+    let component = mitcad_model::internal::joints::path_component(
+        doc.assembly(),
+        doc.build_host(),
+        &to.occurrence.0,
+    )
+    .map_err(refuse)?;
+    let target_owner = match &to.geometry {
+        GeomRef::Face { body, .. } => Some(doc.body_component(*body).unwrap_or(ComponentUid::ROOT)),
+        GeomRef::Mount { feature, .. } => doc.feature(*feature).map(|entry| entry.component),
+        _ => None,
+    };
+    if target_owner.is_some_and(|owner| owner != component) {
+        return Err(refuse("the bound target is not in the selected occurrence"));
+    }
+    let bodies = if matches!(to.geometry, GeomRef::Mount { .. }) {
+        doc.bodies_of_components(&[component])
+            .into_iter()
+            .map(|b| b.uid)
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let placement = doc.path_transform(&to.occurrence.0);
+    let add = add
+        .as_ref()
+        .map_or(Ok(0.0), |v| value_in(doc, v, Unit::MM))?;
+    mitcad_model::internal::features::measure_bound_length(
+        &mut doc.resolver(),
+        start,
+        along,
+        &to.geometry,
+        placement,
+        &bodies,
+        *mode,
+        add,
+    )
+    .map(Some)
+    .map_err(refuse)
 }
 
 /// A corner a bound length closes (mitcad#485): the far end of a part
@@ -830,6 +894,13 @@ pub(crate) trait PlaceCrateOps<K: Kernel> {
 
     /// Plans a `build_place`.
     fn plan_place(&self, input: &PlaceInput) -> Result<Plan, ModelError>;
+
+    /// Rebuilds a bound plan once using its measured target length.
+    fn plan_place_with_bound_length(
+        &self,
+        input: &PlaceInput,
+        measured: Option<f64>,
+    ) -> Result<Plan, ModelError>;
 
     /// Whether a part's far end meets `other` end to end, as a corner
     /// (mitcad#485): the ray from `start` along `along` (the part's axis,
@@ -1005,6 +1076,14 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
     }
 
     fn plan_place(&self, input: &PlaceInput) -> Result<Plan, ModelError> {
+        self.plan_place_with_bound_length(input, None)
+    }
+
+    fn plan_place_with_bound_length(
+        &self,
+        input: &PlaceInput,
+        measured: Option<f64>,
+    ) -> Result<Plan, ModelError> {
         let source = self.source_use(&input.part)?;
         let label = source.def.label();
         match source.meta.role {
@@ -1030,20 +1109,6 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
         // options (mitcad#801) under the command's own.
         let mut values = input.part.parameters.clone();
         values.extend(input.parameters.clone());
-        let mut numbers = Vec::new();
-        let design = source.def.design.state().ok();
-        for (name, value) in &values {
-            // A text option takes no part in the frames and the box.
-            let text = design.as_ref().is_some_and(|d| {
-                d.parameters
-                    .find(name)
-                    .and_then(|id| d.parameters.get(id))
-                    .is_some_and(|p| p.unit().is_text())
-            });
-            if !text {
-                numbers.push((name.clone(), value_in(self, value, Unit::MM)?));
-            }
-        }
         let config = source.config.as_deref();
         // A member by two points: their distance unless a length is given
         // (mitcad#478).
@@ -1090,7 +1155,8 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
                         }),
                         mode: *mode,
                         add: add.clone(),
-                        first: default,
+                        first: measured.unwrap_or(default),
+                        source_default: default,
                     },
                 }
             }
@@ -1103,15 +1169,57 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
         if let (Some(meta), LengthPlan::Value(value, _)) = (&source.meta.length, &length) {
             values.insert(meta.parameter.clone(), value.clone());
         }
-        if let (Some(meta), Some(v)) = (&source.meta.length, length_value) {
-            numbers.retain(|(n, _)| *n != meta.parameter);
-            numbers.push((meta.parameter.clone(), v));
+        let mut planning_values = values.clone();
+        if let (Some(meta), LengthPlan::Bound { .. }, Some(v)) =
+            (&source.meta.length, &length, length_value)
+        {
+            planning_values.insert(meta.parameter.clone(), ValueInput::Number(v));
         }
         // The new part's frames and box.
-        let state = source_state(&source.def, config, &numbers)
+        let mut chosen = source_option_values(self, &source.def, &planning_values)?;
+        if let (Some(meta), LengthPlan::Bound { .. }, Some(_)) =
+            (&source.meta.length, &length, measured)
+        {
+            // The planned number stands for a geometry-bound length; the
+            // committed derived part cannot move that binding either.
+            chosen.pinned.insert(meta.parameter.clone());
+        }
+        let configured = source_state_with_options(&source.def, config, &chosen)
             .map_err(|e| refuse(format!("{label}: {e}")))?;
+        // Keep repaired constants as component-option edits do. Bound
+        // expressions stay untouched because the cascade cannot move them.
+        for moved in &configured.moves {
+            values.insert(
+                moved.option.clone(),
+                ValueInput::Name(moved.to_expression.clone()),
+            );
+        }
+        warnings.extend(
+            configured
+                .moves
+                .iter()
+                .map(|m| format!("{label}: {}", m.text)),
+        );
+        let normalized = chosen.normalized(&configured).map_err(refuse)?;
+        let state = &configured.state;
+        if let (Some(meta), LengthPlan::Value(expression, current)) =
+            (&source.meta.length, &mut length)
+        {
+            let id = state
+                .parameters
+                .find(&meta.parameter)
+                .ok_or_else(|| refuse("the length parameter is missing"))?;
+            *current = state
+                .parameters
+                .value(id)
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| refuse("the configured length is not finite"))?;
+            if let Some(moved) = configured.moves.iter().find(|m| m.option == meta.parameter) {
+                *expression = ValueInput::Name(moved.to_expression.clone());
+            }
+        }
         let evaluated =
-            evaluate_source(self.kernel(), &state).map_err(|e| refuse(format!("{label}: {e}")))?;
+            evaluate_source(self.kernel(), state).map_err(|e| refuse(format!("{label}: {e}")))?;
         let bounds = bounds_of(self.kernel(), &evaluated.bodies);
         let mounts = evaluated.mounts;
         let rotate = match &input.rotate {
@@ -1495,8 +1603,10 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
             }
         }
         let mut shown = BTreeMap::new();
-        for (name, v) in &numbers {
-            shown.insert(name.clone(), *v);
+        for (name, value) in &normalized {
+            if let PartValue::Number(number) = value {
+                shown.insert(name.clone(), *number);
+            }
         }
         // A member by two points keeps how it was placed (mitcad#478).
         let source_id = source.def.id;
@@ -1510,8 +1620,19 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
             };
             serde_json::to_value(&base).unwrap_or_default()
         });
-        let designation = designation(&source.def, config, &shown);
-        Ok(Plan {
+        let designation = combination(
+            state,
+            config,
+            &Naming {
+                pattern: &source.def.library.designation,
+                standard: &source.def.standard,
+                name: &label,
+                fallback: "{name} {config}",
+            },
+            &shown,
+        )
+        .designation;
+        let plan = Plan {
             source,
             values,
             length,
@@ -1532,7 +1653,17 @@ impl<K: Kernel> PlaceCrateOps<K> for Document<K> {
             points,
             closing,
             between: None,
-        })
+        };
+        if let Some(length) = measured_bound_length(self, &plan)? {
+            if let Some(previous) = measured {
+                if (length - previous).abs() > 1e-9 {
+                    return Err(refuse("the bound length changes its own placement"));
+                }
+            } else {
+                return self.plan_place_with_bound_length(input, Some(length));
+            }
+        }
+        Ok(plan)
     }
 
     fn closing_corner(
@@ -3113,6 +3244,7 @@ pub(crate) fn attach_part(
         mode,
         add,
         first,
+        ..
     } = &plan.length
     {
         let ray = match &plan.spot {

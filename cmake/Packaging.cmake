@@ -82,6 +82,13 @@ install(FILES "${PROJECT_SOURCE_DIR}/LICENSE" DESTINATION .)
 install(FILES "${PROJECT_SOURCE_DIR}/packaging/windows/THIRD-PARTY-NOTICES.txt" DESTINATION .)
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/droid-sans/LICENSE.txt"
   DESTINATION licenses/droid-sans)
+# The annotations' technical lettering (mitcad#902): a file of its own in
+# bin/fonts beside mitcad.exe, loaded at run time (LGPL-3.0 with the font
+# exception).
+if(EXISTS "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/lettering.ttf")
+  install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/lettering.ttf" DESTINATION bin/fonts)
+  install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/iso-lettering/LICENSE.txt" DESTINATION licenses/iso-lettering)
+endif()
 # three.js, embedded for the web viewer (app/web/viewer).
 install(FILES "${PROJECT_SOURCE_DIR}/third_party/three/LICENSE" DESTINATION licenses/three)
 # SolidCraft's format upgrade steps, adapted for the .solidcraft import (third_party/solidcraft).

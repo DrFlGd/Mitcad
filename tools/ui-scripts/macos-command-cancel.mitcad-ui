@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Real Qt fields with asynchronous previews and synchronous explicit commands.
-# The harness delays only preview/add/edit jobs and uses a synthetic box.
+# A worker gate holds each preview while the real UI sends competing input.
 expect-ever 'View area'
 window-resize 1280 820
 sleep 600
@@ -19,6 +19,7 @@ dblclick-logged '^Timeline Box1 at'
 expect-log 'Editing F1 with Box'
 wait-idle 30
 mark
+hold-model-preview true
 qt-type-now input_height '11 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
@@ -26,6 +27,7 @@ qt-type-now input_height '11.2 mm'
 qt-type-now input_height '11.4 mm'
 qt-type-now input_height '12 mm'
 key-now Return
+hold-model-preview false
 expect-log 'Edited F1' 30
 expect-model-bodies 1 12000
 expect-undo-depth ${initial_depth} 1
@@ -39,11 +41,13 @@ dblclick-logged '^Timeline Box1 at'
 expect-log 'Editing F1 with Box'
 wait-idle 30
 mark
+hold-model-preview true
 qt-type-now input_height '13 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 qt-type-now input_height '12 mm'
 key-now Return
+hold-model-preview false
 expect-log 'Edited F1' 30
 expect-model-bodies 1 12000
 capture-undo-depth committed_depth
@@ -57,9 +61,11 @@ dblclick-logged '^Timeline Box1 at'
 expect-log 'Editing F1 with Box'
 wait-idle 30
 mark
+hold-model-preview true
 qt-type-now input_height '14 mm'
 wait-log 'Computing preview started' 30
 cancel-model-job Box
+hold-model-preview false
 wait-log 'Computing preview cancelled after ' 30
 expect-log 'Preview Box: cancelled' 30
 focus-main
@@ -83,10 +89,12 @@ dblclick-logged '^Timeline Box1 at'
 expect-log 'Editing F1 with Box'
 wait-idle 30
 mark
+hold-model-preview true
 qt-type-now input_height '99 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 key-now Escape
+hold-model-preview false
 wait-log 'Computing preview cancelled after ' 30
 expect-log 'Command Box cancelled' 30
 command solid.sphere
@@ -105,12 +113,14 @@ dblclick-logged '^Timeline Box1 at'
 expect-log 'Editing F1 with Box'
 wait-idle 30
 mark
+hold-model-preview true
 qt-type-now input_height '16 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 open-file-now '${MITCAD_TEST_WORK}/root-design.mitcad'
 focus-dialog '^MitCad$|^Save changes'
 button '^Cancel$'
+hold-model-preview false
 focus-main
 expect-log 'Command Box cancelled' 30
 expect-model-bodies 1 12000
@@ -125,12 +135,14 @@ dblclick-logged '^Timeline Box1 at'
 expect-log 'Editing F1 with Box'
 wait-idle 30
 mark
+hold-model-preview true
 qt-type-now input_height '15 mm'
 wait-log 'Computing preview started' 30
 expect-model-busy true
 menu-now 'File/Exit'
 focus-dialog '^MitCad$|^Save changes'
 button '^Cancel$'
+hold-model-preview false
 focus-main
 expect-log 'Command Box cancelled' 30
 expect-model-bodies 1 12000

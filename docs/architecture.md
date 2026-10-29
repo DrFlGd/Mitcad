@@ -46,7 +46,7 @@ values continue to reach the model through the existing sketch commands.
 | `core/import-primitives` (`mitcad-import-primitives`) | Rust | The replay's primitives family above its core: boxes, cylinders, spheres, tori and coils placed on a plane (mitcad#785; [README](../core/import-primitives/README.md)). |
 | `core/import-appearances` (`mitcad-import-appearances`) | Rust | The replay's appearances family above its core: the file's appearances and physical materials on the replay's bodies, faces and occurrences, as an extension trait on the core's `Importer`; the report's types stay in the core (mitcad#791; [README](../core/import-appearances/README.md)). |
 | `core/freecad` (`mitcad-freecad`) | Rust | `.FCStd` reader: typed objects and properties, placements, links, sketches, spreadsheets, expressions. No geometry. |
-| `core/zip` (`mitcad-zip`) | Rust | Zip container for `.f3d` and `.FCStd` (stored, deflate, zstd; a writer for tests). |
+| `core/zip` (`mitcad-zip`) | Rust | Zip container for `.f3d` and `.FCStd` (stored, deflate, zstd; a writer for tests). An entry inflates to at most 256 MiB unless the caller opts in to up to 4 GiB (body blobs, `.f3z` documents, large meshes), and never to more than 1032 bytes per compressed byte (mitcad#923). |
 | `core/ipt` (`mitcad-ipt`) | Rust | `.ipt` part files: compound file container (MS-CFB), property sets (MS-OLEPS), the segment database, the B-rep record converted by `core/asm`, the meshes of mesh features, the definitions segment (parameters, sketches, features) as the import's dump IR, and `.iam` assemblies (referenced files, occurrences, placements; [README](../core/ipt/README.md)). No geometry. |
 | `core/ifc` (`mitcad-ifc`) | Rust | IFC files (IFC2X3, IFC4, IFC4X3; `.ifczip`): an own ISO 10303-21 reader, units, the spatial structure, products and their placements, relationships, styles, and the shapes' representation items decoded (profiles, swept solids, booleans, breps, face sets, mapped items; [README](../core/ifc/README.md)). No geometry. |
 | `core/solidcraft` (`mitcad-solidcraft`) | Rust | `.solidcraft` designs: the JSON document or its container, upgraded from any file format to one by SolidCraft's own steps (`third_party/solidcraft`), typed sketches and feature kinds, expressions in MitCad's language. No geometry. |
@@ -452,6 +452,21 @@ design in a project.
   offscreen at a larger size (`OcctViewer::snapshot`, OCCT's
   `V3d_View::ToPixMap`; all, or one group) and over Render Image's image;
   the Annotations window lists and edits them (`app/view/AnnotationsWindow`).
+  Since mitcad#902 hole callouts (`api/hole_callouts.rs`) are annotations
+  whose text the model writes from the hole's feature with the exported
+  drawing's engine (`compose::hole_callout`, in ISO 129-1's symbols);
+  leaders report which end of their text the leader meets and end in a
+  dot on a face; a plane's extension line starts at the picked face's
+  own outline (`MeasuredPicks::outlines`); default places are in text
+  heights. The app paints the reference look: the bundled technical
+  lettering (an ISO 3098 type B style font, a file loaded at run time, LGPL-3.0 with the font
+  exception), crisp lines on the pixel grid, arrowheads in the
+  annotation's plane, the text between a floor and a ceiling on screen,
+  selection and hover as a recolouring only, Auto's ink chosen over what
+  lies behind (the view's frame grabbed once the camera rests,
+  `MeasurementBackdrop`; lines and terminators piece by piece, text and
+  frames one ink each; no casing or halo), and
+  pictures in the tone of their own background.
 - **Drawings in the design** (mitcad#707, `core/model/src/drawing/def.rs`,
   `document/drawings.rs`, `api/drawings.rs`): drawings kept in the
   definition state in the root's and components' Drawings folders, each
@@ -1170,6 +1185,21 @@ the `Shape` type.
   (`run` in `geometry/src/util.hpp`) and on OCCT's own threads while one
   runs; any other fault goes to the filter installed before them, the
   crash report, with the stack from the fault.
+- C++ exceptions never cross the bridge (mitcad#937). Every
+  `#[cxx::bridge]` with an `extern "C++"` block includes
+  `core/cpp/bridge/trycatch.hpp` (`include!("bridge/trycatch.hpp")`; a
+  new bridge does the same), which overrides cxx's
+  `rust::behavior::trycatch`: the shim of each C++ function returning
+  `Result` catches `Standard_Failure` (its message, or "OCCT exception
+  <type>" without one), `std::exception` and anything else ("unknown C++
+  exception"), and Rust gets an `Err` that becomes `KernelError::Failed`.
+  cxx's own `trycatch` catches only `std::exception`, so an exception of
+  another type, thrown by a bridge function that calls OCCT or the
+  geometry's helpers outside `run_operation`, would have reached the
+  shim's `noexcept` and ended the process. OCCT 8.0.1's `Standard_Failure`
+  derives from `std::exception`, but the boundary does not rely on it.
+  `core.bridge` (`test_exceptions_across_the_bridge`, through
+  `core/ffi/src/kernel/exception_probe.rs`) throws each kind.
 - Where OCCT cannot impose what a feature asks, the geometry builds the
   surfaces itself (`geometry/src/skin.hpp`: interpolation with end
   derivatives, Gordon surfaces). Lofts with end conditions or rails
@@ -2148,6 +2178,11 @@ select widget-backed storage before setting their initial file and filter,
 so AppKit can read them without showing a Qt chooser. Native alerts and
 secondary modal sheets preserve existing synchronous result semantics;
 native command previews, inspections and commits use the asynchronous model API.
+Physical Properties carries ordered section and label/value rows through
+`Inspection::report` into a shared `QFormLayout`. Each value is a plain,
+selectable label and only body/Total section headings are emphasized. This
+keeps both frontends' two-column report semantics without flattening an
+HTML table or drawing interactive widgets as images.
 
 Child windows of a presenter (context menus, message boxes) are not part of
 its native structure, so they never rebuild its controls or move their
@@ -2327,6 +2362,18 @@ and hash; missing data fails its base feature with a message. The
 per-user display state (Origin folder, Isolate) is kept out of versioned
 files in `.mitcad/local/display/<path>.json`. Autosave and the import
 process always write single-file designs (format 2).
+
+**Size limits on reading** (mitcad#928): a design file and its project's
+store come from other people too (git, cloud sync, zip), so sizes are
+checked before anything is inflated (`features/base.rs`,
+`build/sources.rs`). A B-rep's `size` is at most 512 MiB (`MAX_SIZE`)
+and at most 64 times its zlib data plus 1 MiB (`max_inflated`); all the
+B-rep data one file decodes, inside it or from the store, is at most
+2 GiB (`MAX_FILE_SIZE`, a per-thread `FileBudget` while `load_state`
+reads). A library source's design text in the store is inflated to at
+most 512 MiB and `max_inflated` of its store file, and the sources'
+texts together to at most 2 GiB; a store file that decodes to more is
+"damaged" and leaves the source a reference with a warning.
 
 Autosave publishes immutable snapshots named
 `<session UUID>.<generation UUID>.mitcad` in the user's recovery folder.

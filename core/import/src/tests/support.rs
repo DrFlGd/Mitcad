@@ -880,6 +880,8 @@ pub(super) struct TestGeometry {
     pub(super) starts: HashMap<i64, usize>,
     /// Per state, the lineage (`StoredBody::lineage`) of each body.
     pub(super) lineages: Vec<Vec<u64>>,
+    /// The states `release_before` was given, in order.
+    pub(super) released_before: Vec<usize>,
 }
 
 impl StoredGeometry<MockShape> for TestGeometry {
@@ -938,6 +940,10 @@ impl StoredGeometry<MockShape> for TestGeometry {
         self.items
             .contains_key(&index)
             .then(|| self.component.into_iter().collect())
+    }
+
+    fn release_before(&mut self, state: usize) {
+        self.released_before.push(state);
     }
 }
 

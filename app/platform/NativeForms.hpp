@@ -25,6 +25,11 @@ public:
   // A command in the title row, after the command's name (Change
   // Parameters, mitcad#564), as CommandPanel::addHeaderAction.
   virtual void addHeaderAction(QAction*) {}
+  // Takes ownership of a shared presenter section above the result, as
+  // CommandPanel::addSection does. Its controls are adapted to native views;
+  // the QWidget itself is never shown. It survives input-row rebuilds and
+  // is destroyed with the form, after detaching its native bindings.
+  virtual void addSection(QWidget* section) = 0;
 };
 
 #ifdef Q_OS_MACOS

@@ -711,8 +711,12 @@ Run in the isolated environments:
   licences. `core.vcs.*` and `cli.remote` use a bare repository in a temp
   folder and a fake `ssh`; no network; skipped without git. `cli.library`
   makes a small parts library of fasteners with
-  `tools/libraries/make-fastener-library.py` in the build tree (needs git
-  and Python 3; skipped without them); `cli.profile-library` likewise one
+  `tools/libraries/make-fastener-library.py` in the build tree, then one
+  of every size with the smallest and largest rows inserted (needs git
+  and Python 3; skipped without them); `cli.fastener-tables` checks that
+  generator's dimension tables (sizes, pitches, length series, each
+  standard's rows, the earlier versions' rows kept; Python 3 only);
+  `cli.profile-library` likewise one
   of BUILD parts with `tools/libraries/make-profile-library.py` from
   sections it makes; `cli.library-previews` renders two fasteners'
   previews with both generators and the render worker (skipped where it
@@ -1050,6 +1054,79 @@ recovery, projects and thumbnails go to a temp folder, and
 through the in-process test driver (`MITCAD_TEST_INPUT`), so it works over
 SSH. Helpers: [tools/ui-macos-lib.sh](../tools/ui-macos-lib.sh) (bash 3.2,
 BSD userland).
+
+Before `focus-widget` attempts focus, its diagnostics record Qt's active
+popup, active window, target and lookup window. Every matching named field
+reports visibility, enabled state, geometry, its actual window, GlassCard
+host and parent chain. This distinguishes an open popup or a hidden
+duplicate from a command field that the presenter has not shown. The
+diagnostics do not dismiss popups, change visibility or bypass the existing
+visible/enabled checks.
+
+`qt-choice` sends real pointer move, press and release events to a populated
+combo popup. Each phase resolves the persistent item's current visual
+rectangle and screen point again: selecting a motion type can resize its
+floating command card during the press. The log records each phase's
+rectangle, screen point, popup visibility and current caption. The driver
+then requires the original popup's actual closure within six seconds before
+advancing. It logs the resulting caption without assuming that an action
+such as New Printer keeps its temporary menu label. It never selects the model item or
+hides the popup directly; a dialog opened by the selected action remains
+available to subsequent script steps.
+
+`app.ui-macos-print-occurrences` and its native counterpart exercise
+3MF occurrence selection and Send in both appearances (mitcad#856, #857): one
+selected placement, two placements independently put on their print bed
+faces, and a selected parent component sent as assembled by its button or
+turned together onto a picked green face. Escape ends only the question,
+sends nothing and leaves the panel open; a second Escape cancels it.
+Nothing is exported or launched before the face choice is answered. A local
+recording program stands in for the external slicer. The checks read its actual 3MF
+ZIP/XML, placements, normals and build objects, verify visible status text
+and unchanged model/undo state, and retain a capture per case. No external
+GUI or network is opened.
+
+All `ui_run_app` launches share the per-user kernel advisory lock at
+`~/.mitcad/macos-ui.lock`, across checkouts and independent CTest runs.
+The reserved shell descriptor 9 and the actual application share ownership;
+no PID file, stale-lock removal or environment opt-out is involved. The
+lock is acquired before the per-application `UI_TIMEOUT` clock starts and
+released after that application is reaped. An interrupted waiter is
+cleaned up; if its shell is killed, a still-running application retains
+the lock until it exits. The application remains `UI_PID`, so existing
+cancellation and crash handling keep targeting the real child.
+Coordinate **whole GUI queues one at a time**: this per-application lock
+is a backstop, and an outer CTest deadline still includes time queued for
+it. Existing test deadlines are unchanged. Frozen older release checkouts
+without this helper must finish their GUI queue before another starts.
+`repo.macos-ui-lock` exercises the actual helper with processes that open
+no windows: cross-process exclusion, queue time outside `UI_TIMEOUT`,
+direct child identity, nonzero exit, interrupted waiting, a killed shell
+with a live child, and application timeout cleanup. A real `TestDriver: FAIL`
+line gives a lingering application up to one second to exit within its
+existing deadline, then stops that
+owned application and reports the assertion while preserving its actual
+exit code and log. Script traces quoting that text do not trigger cleanup;
+explicit LLDB runs retain their debugger lifecycle. The process regression
+also covers this failure cleanup, trace exclusion and subsequent lock use.
+
+The native slicer and table/configuration parity workflows also exercise
+an actual `NSOpenPanel`. macOS hosts that chooser's editor in an XPC
+service, so these workflows use the driver's `native-system-key` and
+`native-system-type` steps for its Go to Folder field and Open action.
+Those steps post real WindowServer keyboard/Unicode events and require
+**Accessibility / event-posting permission for the Mitcad test app** in
+System Settings, Privacy & Security. A missing permission fails clearly;
+it is never treated as a successful import or replaced with a model API
+call. An explicitly authorized local run can set
+`MITCAD_TEST_REQUEST_EVENT_ACCESS=1` to request permission from Mitcad;
+ordinary runs only preflight the existing grant. These input steps require
+`MITCAD_TEST_INPUT`, an actual native file panel, and this app as the
+active/frontmost key-window owner. A changed target stops the input.
+`native-file-state [label]` records the panel's public selection and focus
+state alongside the event-access and target-frame diagnostics.
+The ordinary in-process UI and screenshot checks retain their existing
+permission requirements.
 
 `app.ui-macos-dialogs` checks the default Qt command search and parameter
 sheet with real keyboard input in both light and dark appearance. It saves
@@ -1627,6 +1704,15 @@ runs one step after another. Build and lint use half the cores unless
   patches are published with the source, the third-party notices name them,
   and [its README](../third_party/vcpkg-ports/README.md) gives their origin
   and licences.
+- The annotations' technical lettering (mitcad#902, an ISO 3098 type B
+  style font, `third_party/fonts/iso-lettering`, its README gives the
+  name and the source), is offered
+  under GPL-3.0, GPL-2.0 or LGPL-3.0, each with a font exception, and used
+  under LGPL-3.0 with the font exception: shipped unchanged as a file of
+  its own (beside the executables, `share/mitcad/fonts` in the AppImage,
+  `Resources/fonts` in a macOS bundle) and loaded at run time, as LGPL
+  components are linked dynamically; never embedded in a program. The
+  packages carry its licence text and the third-party notices name it.
 - If GPL components are ever included, the distribution becomes
   GPL-3.0-or-later; keep such components behind replaceable interfaces.
 - Rust dependencies are checked by cargo-deny (`core/deny.toml`).

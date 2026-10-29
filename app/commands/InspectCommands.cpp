@@ -18,6 +18,7 @@
 
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFormLayout>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeySequence>
@@ -1178,26 +1179,41 @@ CommandDef printAnalysisCommand(const CommandContext& model) {
 // Physical Properties
 
 Inspection propertiesInspection(const QJsonObject& answer) {
-  QString html = QStringLiteral("<table cellspacing='4'>");
-  const auto row = [&html](const QString& label, const QString& value) {
-    html += QStringLiteral("<tr><td>%1</td><td>%2</td></tr>").arg(label, value);
+  // Keep the report's semantics across both frontends: a section heading
+  // or a label/value row. Flattening an HTML table loses its columns and
+  // makes all native text inherit the headings' emphasis.
+  QJsonArray rows;
+  const auto heading = [&rows](const QString& key, const QString& text) {
+    rows.append(QJsonObject{{QStringLiteral("key"), key}, {QStringLiteral("heading"), text}});
+  };
+  const auto row = [&rows](const QString& key, const QString& label, const QString& value) {
+    rows.append(QJsonObject{{QStringLiteral("key"), key}, {QStringLiteral("label"), label},
+                            {QStringLiteral("value"), value}});
   };
   QStringList log;
+  int index = 0;
   for (const QJsonValue& value : answer.value(QStringLiteral("bodies")).toArray()) {
     const QJsonObject body = value.toObject();
     const QString name = body.value(QStringLiteral("name")).toString();
-    html += QStringLiteral("<tr><td colspan='2'><b>%1</b></td></tr>").arg(name.toHtmlEscaped());
-    row(QObject::tr("Material"), body.value(QStringLiteral("material")).toString(QStringLiteral("steel")));
-    row(QObject::tr("Density"), QStringLiteral("%1 g/cm³").arg(n(body.value(QStringLiteral("density")).toDouble(), 4)));
-    row(QObject::tr("Mass"), QStringLiteral("%1 kg").arg(n(body.value(QStringLiteral("mass")).toDouble(), 6)));
-    row(QObject::tr("Volume"), QStringLiteral("%1 mm³").arg(n(body.value(QStringLiteral("volume")).toDouble())));
-    row(QObject::tr("Area"), QStringLiteral("%1 mm²").arg(n(body.value(QStringLiteral("area")).toDouble())));
-    row(QObject::tr("Center of Mass"), xyz(body.value(QStringLiteral("center_of_mass"))) + QStringLiteral(" mm"));
+    const QString prefix = QStringLiteral("propertiesBody%1_").arg(index++);
+    heading(prefix + QStringLiteral("heading"), name);
+    row(prefix + QStringLiteral("material"), QObject::tr("Material"),
+        body.value(QStringLiteral("material")).toString(QStringLiteral("steel")));
+    row(prefix + QStringLiteral("density"), QObject::tr("Density"),
+        QStringLiteral("%1 g/cm³").arg(n(body.value(QStringLiteral("density")).toDouble(), 4)));
+    row(prefix + QStringLiteral("mass"), QObject::tr("Mass"),
+        QStringLiteral("%1 kg").arg(n(body.value(QStringLiteral("mass")).toDouble(), 6)));
+    row(prefix + QStringLiteral("volume"), QObject::tr("Volume"),
+        QStringLiteral("%1 mm³").arg(n(body.value(QStringLiteral("volume")).toDouble())));
+    row(prefix + QStringLiteral("area"), QObject::tr("Area"),
+        QStringLiteral("%1 mm²").arg(n(body.value(QStringLiteral("area")).toDouble())));
+    row(prefix + QStringLiteral("center"), QObject::tr("Center of Mass"),
+        xyz(body.value(QStringLiteral("center_of_mass"))) + QStringLiteral(" mm"));
     const QJsonArray moments = body.value(QStringLiteral("principal_moments")).toArray();
     if (moments.size() == 3) {
-      row(QObject::tr("Principal Moments"), QStringLiteral("%1, %2, %3 kg mm²")
-                                               .arg(n(moments[0].toDouble()), n(moments[1].toDouble()),
-                                                    n(moments[2].toDouble())));
+      row(prefix + QStringLiteral("moments"), QObject::tr("Principal Moments"),
+          QStringLiteral("%1, %2, %3 kg mm²")
+              .arg(n(moments[0].toDouble()), n(moments[1].toDouble()), n(moments[2].toDouble())));
     }
     log << QStringLiteral("%1 volume %2 mass %3 center %4")
                .arg(name, n(body.value(QStringLiteral("volume")).toDouble()),
@@ -1205,13 +1221,15 @@ Inspection propertiesInspection(const QJsonObject& answer) {
                     xyz(body.value(QStringLiteral("center_of_mass"))));
   }
   const QJsonObject total = answer.value(QStringLiteral("total")).toObject();
-  html += QStringLiteral("<tr><td colspan='2'><b>%1</b></td></tr>").arg(QObject::tr("Total"));
-  row(QObject::tr("Mass"), QStringLiteral("%1 kg").arg(n(total.value(QStringLiteral("mass")).toDouble(), 6)));
-  row(QObject::tr("Volume"), QStringLiteral("%1 mm³").arg(n(total.value(QStringLiteral("volume")).toDouble())));
-  row(QObject::tr("Center of Mass"), xyz(total.value(QStringLiteral("center_of_mass"))) + QStringLiteral(" mm"));
-  html += QStringLiteral("</table>");
+  heading(QStringLiteral("propertiesTotal_heading"), QObject::tr("Total"));
+  row(QStringLiteral("propertiesTotal_mass"), QObject::tr("Mass"),
+      QStringLiteral("%1 kg").arg(n(total.value(QStringLiteral("mass")).toDouble(), 6)));
+  row(QStringLiteral("propertiesTotal_volume"), QObject::tr("Volume"),
+      QStringLiteral("%1 mm³").arg(n(total.value(QStringLiteral("volume")).toDouble())));
+  row(QStringLiteral("propertiesTotal_center"), QObject::tr("Center of Mass"),
+      xyz(total.value(QStringLiteral("center_of_mass"))) + QStringLiteral(" mm"));
   Inspection result;
-  result.text = html;
+  result.report.insert(QStringLiteral("property_rows"), rows);
   result.log = log.join(QStringLiteral("; "));
   return result;
 }
@@ -1219,12 +1237,44 @@ Inspection propertiesInspection(const QJsonObject& answer) {
 void presentProperties(const Inspection& result, QWidget* window) {
   qDebug().noquote() << QStringLiteral("Physical properties: %1").arg(result.log);
   QDialog dialog(window);
+  dialog.setObjectName(QStringLiteral("physicalPropertiesDialog"));
   dialog.setWindowTitle(QObject::tr("Properties"));
   auto* layout = new QVBoxLayout(&dialog);
-  auto* label = new QLabel(result.text);
-  label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  auto* report = new QWidget;
+  report->setObjectName(QStringLiteral("physicalPropertiesReport"));
+  auto* form = new QFormLayout(report);
+  form->setContentsMargins(4, 4, 4, 4);
+  form->setHorizontalSpacing(12);
+  form->setVerticalSpacing(4);
+  form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+  for (const QJsonValue& entry : result.report.value(QStringLiteral("property_rows")).toArray()) {
+    const QJsonObject row = entry.toObject();
+    const QString key = row.value(QStringLiteral("key")).toString();
+    if (row.contains(QStringLiteral("heading"))) {
+      auto* heading = new QLabel(QStringLiteral("<b>%1</b>")
+                                     .arg(row.value(QStringLiteral("heading")).toString().toHtmlEscaped()));
+      heading->setObjectName(key);
+      heading->setTextFormat(Qt::RichText);
+      form->addRow(heading);
+      continue;
+    }
+    const QString caption = row.value(QStringLiteral("label")).toString();
+    auto* value = new QLabel(row.value(QStringLiteral("value")).toString());
+    value->setObjectName(key);
+    value->setTextFormat(Qt::PlainText);
+    value->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::TextSelectableByKeyboard);
+    value->setFocusPolicy(Qt::StrongFocus);
+    value->setWordWrap(true);
+    value->setAccessibleName(caption);
+    auto* label = new QLabel(caption);
+    label->setObjectName(key + QStringLiteral("_label"));
+    label->setTextFormat(Qt::PlainText);
+    label->setBuddy(value);
+    form->addRow(label, value);
+  }
   auto* scroll = new QScrollArea;
-  scroll->setWidget(label);
+  scroll->setObjectName(QStringLiteral("physicalPropertiesScroll"));
+  scroll->setWidget(report);
   scroll->setWidgetResizable(true);
   layout->addWidget(scroll);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);

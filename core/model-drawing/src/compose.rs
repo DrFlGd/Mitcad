@@ -565,6 +565,86 @@ pub fn hole_text(h: &HoleInput, units: Units) -> HoleText {
     }
 }
 
+/// How a hole callout writes its depths and its counterbore or countersink
+/// (mitcad#902): in the exported drawing's words (`10`, `CBORE Ø11 DEPTH
+/// 6.8`, `CSK Ø12 x 90°`), or in ISO 129-1's symbols as the annotations on
+/// the model have them (`↧ 10`, `⌴ Ø11 ↧ 6.8`, `⌵ Ø12 × 90°`). `THRU` either
+/// way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalloutStyle {
+    Words,
+    Symbols,
+}
+
+/// A hole callout's lines, one engine for the exported drawing and the
+/// annotations on the model (mitcad#902): the count of equal holes (`4x`,
+/// none for one), the thread's designation of a tapped hole or else `Ø`
+/// and the diameter, then `THRU` or the depth; a tapped hole whose thread
+/// ends before the hole does (`thread_depth`) has the thread's depth on the
+/// first line and the drill's size and depth on the second; then the
+/// counterbore or countersink.
+pub fn hole_callout(
+    h: &HoleInput,
+    count: usize,
+    thread_depth: Option<f64>,
+    units: Units,
+    style: CalloutStyle,
+) -> Vec<String> {
+    let hole = &h.hole;
+    let symbols = style == CalloutStyle::Symbols;
+    let depth = |d: f64| {
+        if symbols {
+            format!("↧ {}", units.length(d))
+        } else {
+            units.length(d)
+        }
+    };
+    let through_or_depth = if hole.through {
+        "THRU".to_owned()
+    } else {
+        depth(hole.depth)
+    };
+    let size = format!("Ø{}", units.length(hole.diameter));
+    let count = if count > 1 {
+        format!("{count}x ")
+    } else {
+        String::new()
+    };
+    let mut lines = Vec::new();
+    match (&h.thread, thread_depth) {
+        // The thread ends before the hole: its depth, then the drill's.
+        (Some(thread), Some(t)) if hole.through || (t - hole.depth).abs() > 1e-6 => {
+            lines.push(format!("{count}{thread} {}", depth(t)));
+            lines.push(format!("{size} {through_or_depth}"));
+        }
+        (Some(thread), _) => lines.push(format!("{count}{thread} {through_or_depth}")),
+        (None, _) => lines.push(format!("{count}{size} {through_or_depth}")),
+    }
+    let extra = match (hole.counterbore, hole.countersink, symbols) {
+        (Some((d, depth)), _, false) => Some(format!(
+            "CBORE Ø{} DEPTH {}",
+            units.length(d),
+            units.length(depth)
+        )),
+        (Some((d, depth)), _, true) => {
+            Some(format!("⌴ Ø{} ↧ {}", units.length(d), units.length(depth)))
+        }
+        (None, Some((d, angle)), false) => Some(format!(
+            "CSK Ø{} x {}°",
+            units.length(d),
+            super::trim_number(angle.to_degrees(), 1)
+        )),
+        (None, Some((d, angle)), true) => Some(format!(
+            "⌵ Ø{} × {}°",
+            units.length(d),
+            super::trim_number(angle.to_degrees(), 1)
+        )),
+        (None, None, _) => None,
+    };
+    lines.extend(extra);
+    lines
+}
+
 /// A callout of a hole size in a view.
 struct Callout {
     view: usize,
@@ -675,11 +755,9 @@ fn plan<'a>(
         for (index, holes) in &tagged {
             let mut sizes: Vec<(String, Vec<&ViewHole<'_>>)> = Vec::new();
             for h in holes {
-                let text = hole_text(h.input, units);
-                // A tapped hole by its thread, others by their diameter.
-                let first = text.thread.unwrap_or(text.size);
-                let mut lines = vec![format!("{first} {}", text.depth)];
-                lines.extend(text.extra);
+                // A tapped hole by its thread, others by their diameter: the
+                // engine of the model's hole callouts too (mitcad#902).
+                let lines = hole_callout(h.input, 1, None, units, CalloutStyle::Words);
                 let key = lines.join("\n");
                 match sizes.iter_mut().find(|(k, _)| *k == key) {
                     Some((_, members)) => members.push(h),
@@ -1780,4 +1858,72 @@ pub fn section_spec(plane: &CutPlane, hidden: bool, smooth: bool, exact: bool) -
 /// The unit normal of a plane given by any normal.
 pub fn cut_plane(origin: Vec3, normal: Vec3) -> Option<CutPlane> {
     unit(normal).map(|normal| CutPlane { origin, normal })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hole(diameter: f64, through: bool, depth: f64) -> RoundHole {
+        RoundHole {
+            face: None,
+            opening: [0.0, 0.0, 0.0],
+            direction: [0.0, 0.0, -1.0],
+            diameter,
+            through,
+            depth,
+            counterbore: None,
+            countersink: None,
+        }
+    }
+
+    #[test]
+    fn hole_callouts_in_words_and_in_symbols() {
+        // mitcad#902: one engine for the drawing's words and the model's
+        // symbols.
+        let mut plain = HoleInput {
+            hole: hole(6.6, true, 10.0),
+            thread: None,
+        };
+        plain.hole.counterbore = Some((11.0, 6.8));
+        assert_eq!(
+            hole_callout(&plain, 4, None, Units::MM, CalloutStyle::Words),
+            ["4x Ø6.6 THRU", "CBORE Ø11 DEPTH 6.8"]
+        );
+        assert_eq!(
+            hole_callout(&plain, 4, None, Units::MM, CalloutStyle::Symbols),
+            ["4x Ø6.6 THRU", "⌴ Ø11 ↧ 6.8"]
+        );
+        let mut sunk = HoleInput {
+            hole: hole(5.0, false, 12.0),
+            thread: None,
+        };
+        sunk.hole.countersink = Some((10.0, std::f64::consts::FRAC_PI_2));
+        assert_eq!(
+            hole_callout(&sunk, 1, None, Units::MM, CalloutStyle::Words),
+            ["Ø5 12", "CSK Ø10 x 90°"]
+        );
+        assert_eq!(
+            hole_callout(&sunk, 1, None, Units::MM, CalloutStyle::Symbols),
+            ["Ø5 ↧ 12", "⌵ Ø10 × 90°"]
+        );
+        // A tapped hole by its thread; one whose thread ends first has the
+        // drill's size and depth below.
+        let tapped = HoleInput {
+            hole: hole(5.0, false, 15.0),
+            thread: Some("M6x1 - 6H".to_owned()),
+        };
+        assert_eq!(
+            hole_callout(&tapped, 1, Some(15.0), Units::MM, CalloutStyle::Symbols),
+            ["M6x1 - 6H ↧ 15"]
+        );
+        assert_eq!(
+            hole_callout(&tapped, 2, Some(12.0), Units::MM, CalloutStyle::Symbols),
+            ["2x M6x1 - 6H ↧ 12", "Ø5 ↧ 15"]
+        );
+        assert_eq!(
+            hole_callout(&tapped, 1, None, Units::MM, CalloutStyle::Words),
+            ["M6x1 - 6H 15"]
+        );
+    }
 }

@@ -15,6 +15,10 @@
 //                          event of a gesture, per tick
 //   MITCAD_TEST_SETTLE_MS  the pause after an input before the next step
 //                          (default 250)
+//   MITCAD_TEST_DRAG_WAIT_PREVIEW=1  after a drag's final move, keep its
+//                          button held until a new exact preview is installed
+//                          while dragging (requires MITCAD_LOG_TIMING=1);
+//                          poll without blocking, fail after 6 seconds
 // The driver also reads variables for the script: ${NAME} in an argument is
 // the environment variable NAME (see below).
 //
@@ -62,6 +66,8 @@
 //                           mnemonic) triggers it unless the focused widget
 //                           takes the key as text.
 //   type <text>             the characters as key events
+//   expect-no-qt-popup     no Qt popup owns input or remains logically
+//                           visible, including hidden native presenters
 //   expect-widget-property <object-name> <property> <value>
 //                           a Qt target widget's property as text
 //   expect-projects-layout <count>  actual Projects/Browser bounds and card
@@ -72,6 +78,8 @@
 //                           accessibility, and no all-caps group captions
 //   collapse-card <object-name> true|false  use the card's chevron button
 //   expect-setting <key> <value>     the current saved QSettings value
+//   expect-native-configuration-layout complete visible configuration
+//                           controls/captions and reachable slider track/knob
 //   expect-dialog-gone <title-regex> no matching Qt tool window remains visible
 //   hover-logged <regex>       move to a logged control without clicking
 //   timeline-leave             leave the timeline and clear its preview
@@ -99,6 +107,15 @@
 //                           has "at <x>,<y>" ("Datum xy at ...", "Ribbon ...
 //                           at ...", "Panel <command> input <id> at ...")
 //   dblclick-logged <regex>
+//   dialog-click-logged <regex>
+//   dialog-dblclick-logged <regex>  logged main-window coordinates delivered
+//                           to the visible Qt dialog chosen by focus-dialog
+//   context-menu-logged <regex> <entry|cancel> a real context-menu event at
+//                           the visible live Qt widget under a logged point;
+//                           choose its actual Qt/AppKit menu entry
+//   test-body-highlights none|default|opaque|no-boundaries
+//                           diagnostic overlays for exactly 15 shown bodies;
+//                           fixes navigation in this test process only
 //   click-pick <regex>      like click-logged, among the "Pick <kind> <name>
 //                           at x,y" lines after the last "Pick places:"
 //   expect-pick-offset <regex> <dx> <dy> <item-regex>
@@ -114,11 +131,19 @@
 //   sketch-click <x> <y> [button] [mods]   a sketch point in mm, from the
 //                           logged "Sketch view" (the origin, (100, 0) and
 //                           (0, 100) in window coordinates)
+//   sketch-dblclick <x> <y> [button] [mods]  double-click through the same
+//                           viewport pointer path at a sketch coordinate
+//   capture-sketch <uid> <path>   save an idle sketch's real JSON query,
+//                           including solved points, curves and constraints
+//   expect-sketch-dimension-clear <text regex>   visible text clear of all
+//                           shown glyph bounds, with ordinary pick targets
 //   sketch-drag <x1> <y1> <x2> <y2>
 //   sketch-pointer press|move|release <x> <y>  separate held left-drag events
 //   expect-profiles <count> inspect the actual displayed profile objects
 //   type-in <regex> <text>  reveal/focus the identified panel field, select
 //                           all and type through its actual frontend editor
+//   qt-choice <id> <label> open a Qt combo (or a wrapper's child combo),
+//                           then click its displayed enabled popup row
 //   expect-input-text <id> <regex> check the actual Qt or AppKit field text
 //   expect-model-parameter <name> <value|absent> check a user parameter in mm
 //   command <id>            trigger the command's action (objectName
@@ -141,9 +166,30 @@
 //                           control's registered hover owner
 //   native-type <id> <text> replace an AppKit field editor's text
 //   native-choice <id> <title> choose a native popup item or workspace segment
+//   expect-native-spanned-heading <table id> <caption regex>
+//                           verify a visible full-row caption and selection
+//                           policy against the shared tree, without scrolling
+//   native-pointer-click <id> [<x fraction> <y fraction>]
+//                           press a real, uncovered point within a control;
+//                           the default point is its centre
+//   native-pointer-dblclick <id> two guarded native pointer clicks; the
+//                           second carries AppKit's double-click count
+//   native-pointer-popup <id> <choice> [capture path]
+//                           open a real menu with guarded pointer events,
+//                           optionally capture it while tracking, then choose
+//                           its enabled action (or cancel)
+//   native-pointer-choice <id> <expected-title> Up|Down... Return
+//                           open the real popup by pointer, navigate its
+//                           menu with key events, then verify the result
+//   expect-native-color-field <id> <color|none> <words|-> placeholder|explicit [AX label]
+//                           inspect actual swatch pixels and drawn placeholder
+//                           text and optional accessibility label in the field
 //   expect-native-duplicate-choices
 //                           verify distinct values with duplicate native labels
 //                           in command forms and secondary-dialog bindings
+//   expect-native-widget-refresh
+//                           verify production widget refresh, caption/icon
+//                           modes and no property writes for unchanged values
 //   expect-native-form-controls
 //                           verify native icon artwork, values and disclosure;
 //                           mount a synthetic disclosure command for layout checks
@@ -177,6 +223,13 @@
 //   qt-cancel-progress <job> await the actual modal Qt ComputeProgress for
 //                           the newest started job and click its real Cancel
 //                           button, requiring modelBusy and cancelling state
+//   native-system-key <chord> / native-system-type <text> WindowServer
+//                           input for this app's active file panel only;
+//                           requires macOS Accessibility/event-post access
+//   native-system-pointer <native-id> actual WindowServer pointer movement
+//                           over a visible, uncovered control of this active
+//                           app; preflight existing access, never requests it
+//   native-file-state [label] log the native panel, selection and public responder state
 //   native-key-event <key>... await actual AppKit activation/key focus, then
 //                            send key down/up through NSApp's event dispatch
 //   expect-native-application-delegate check Qt activation signals, deactivate
@@ -237,11 +290,16 @@
 //                           shows: error (red text, and a red fill in a
 //                           cell), warning, normal, bold, regular, editable,
 //                           readonly, editing, not-editing, single-line,
-//                           truncated, in-view; <table id>/<row>/<column>
+//                           truncated, in-view, readable-fill (opaque cell
+//                           fill/text contrast >= 4.5); <table id>/<row>/<column>
 //                           addresses a cell without an identifier (6 s)
+//                           caption checks an NSButton's displayed single-line
+//                           title mode and full native title bounds, including
+//                           text-only and text-with-icon buttons (6 s)
 //   expect-native-columns <id> [fit|scroll|any] the native columns keep
 //                           the shared header's sizes, hidden sections and
-//                           stretching; fit: no sideways scrolling (6 s)
+//                           stretching; content-sized headers fit their
+//                           actual native title bounds; fit: no sideways scrolling (6 s)
 //   native-dialog-size <w> <h> set the focused native dialog's content size
 //   native-drag <row-id> <row-id> drag a native outline row onto another
 //                           through the outline's own drag source and drop
@@ -251,7 +309,8 @@
 //                           text matches (a row being named)
 //   expect-native-selection <outline-id> <row-id|-|*> the native outline's
 //                           selected row, in sight, is its presenter's (6 s);
-//                           - none, * whichever the presenter selected
+//                           - none, * whichever the presenter selected;
+//                           <table-id> <count> checks both actual row counts
 //   expect-native-layout    full-window canvas, floating card geometry and
 //                           real AppKit hit testing above/around the canvas
 //   expect-native-history [uid...] compare horizontal native history icons,
@@ -264,6 +323,10 @@
 //   native-history-drag-now begin|to <index>|end send the same actual event
 //                           immediately, including while the model is busy
 //   expect-model-busy true|false assert the worker's actual state immediately
+//   hold-model-preview true|false hold asynchronous previews before model
+//                           work until released or cancelled by real UI input
+//   expect-native-history-wheel  mouse/trackpad history scrolling reaches
+//                           both endpoints without leaving the history strip
 //   test-manipulator-feedback check actual subpixel length/angle overlay
 //                           events at two zooms, placements and cancellation
 //   menu-now <menu path> invoke the actual menu action without waiting for
@@ -277,6 +340,9 @@
 //   expect-shown-body <uid> <occurrence|-> <volume-mm3>
 //                           [min-x min-y min-z max-x max-y max-z] compare
 //                           the viewer's actual clipped shape and world bounds
+//   capture-shown-body <prefix> <uid> <occurrence|-> save that actual shape's
+//                           volume and world bounds as prefix_volume,
+//                           prefix_min_x/y/z and prefix_max_x/y/z variables
 //   expect-native-dialog-gone <regex> [seconds] assert native window closed
 //                           These native steps require the macOS AppKit UI.
 //                           key/type/button/menu/focus-dialog/screenshot
@@ -307,6 +373,9 @@
 //                           screen's available area (at most w x h), its
 //                           dialog buttons visible outside any scroll area
 //                           and its scroll areas reaching their ends
+//   fit-main-frame <w> <h> resize the Qt main window into an available
+//                           frame using its actual titlebar/border margins
+//   expect-main-frame <w> <h> its real frame fits that process-local area
 //   native-card-width <card> <w> drag a native side card's width handle
 //                           (native.projectsCard, native.sidebar or
 //                           native.inspectorCard) with AppKit mouse events
@@ -462,6 +531,7 @@ private:
   void sendMouse(QEvent::Type type, const QPoint& windowPos, Qt::MouseButton button, Qt::MouseButtons buttons,
                  Qt::KeyboardModifiers modifiers);
   void queueClick(const QPoint& at, Qt::MouseButton button, Qt::KeyboardModifiers modifiers, int clicks);
+  void queueDialogClick(const QPoint& at, int clicks);
   void queueDrag(const QPoint& from, const QPoint& to, Qt::MouseButton button, Qt::KeyboardModifiers modifiers);
   void testManipulatorFeedback();
   void showDialogStyleFixture(const QString& kind);

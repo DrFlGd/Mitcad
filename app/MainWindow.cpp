@@ -597,6 +597,10 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
 #endif
 
   recompute();
+  // The untitled design at the start is a new design too (mitcad#898).
+  if (!demo) {
+    logNewDesignActive();
+  }
   showHint(m_registry->shortcutWarnings().isEmpty()
                ? tr("Create a sketch to start modelling. %1 finds commands.")
                      .arg(m_registry->shortcutHint(QStringLiteral("tools.search")))
@@ -1767,6 +1771,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
       // The value fields' fx tools use this window's parameters (mitcad#815).
       m_nativeForm = createNativeCommandForm(*guarded, this);
       addParametersButton(*m_nativeForm, guarded->def()); // mitcad#564
+      addMeasureHistory(*m_nativeForm, guarded->def());   // mitcad#648
       m_nativeWindow->showInspector(true);
       m_nativeWindow->setInspectorView(m_nativeForm->nativeView(), m_nativeForm->nativeFooterView());
       if (!m_nativeFocusInput.isEmpty()) {
@@ -3689,6 +3694,14 @@ void MainWindow::inputActivated(SelectFilter filter) {
                                 .arg(SelectionItem::kindName(item.kind), item.owner, item.name)
                                 .arg(point.x())
                                 .arg(point.y());
+      // Preserve the original diagnostic for existing scripts; repeated
+      // component placements need an unambiguous point of their own.
+      if (!item.occurrence.isEmpty()) {
+        qDebug().noquote() << QStringLiteral("Pick occurrence %1 %2/%3 in %4 at %5,%6")
+                                  .arg(SelectionItem::kindName(item.kind), item.owner, item.name, item.occurrence)
+                                  .arg(point.x())
+                                  .arg(point.y());
+      }
     }
   }
   if (filter & (SelectKind::SketchCurve | SelectKind::SketchPoint)) {
@@ -4617,9 +4630,11 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
           menu.addSeparator();
         }
       }
-      // Copy, Cut and Paste of sketch geometry (mitcad#788).
+      // Copy, Cut and Paste of sketch geometry (mitcad#788); not of the
+      // sketch's axes and origin (mitcad#899).
       if (std::any_of(m_selection.begin(), m_selection.end(), [](const SelectionItem& s) {
-            return s.kind == SelectKind::SketchCurve || s.kind == SelectKind::SketchPoint;
+            return (s.kind == SelectKind::SketchCurve || s.kind == SelectKind::SketchPoint) &&
+                   !sketch::isAxisSelection(s);
           })) {
         add(m_registry->action(QStringLiteral("sketch.cut")));
         add(m_registry->action(QStringLiteral("sketch.copy")));
@@ -5581,8 +5596,8 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   double milliseconds = 0.0;
   QString previousActive; // the component the file had active (mitcad#426)
   QString activateError;
-  // New Design in a project keeps the component its new file has active
-  // (mitcad#844).
+  // A new design keeps the component it has active: New Design in a
+  // project (mitcad#844) and an empty design (mitcad#898).
   const bool newDesign = m_openingNewDesign;
   // The result store (P7d): costly features come from it, and what was
   // costly to compute goes to it.
@@ -5615,8 +5630,9 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
       readMs = reading.elapsed();
       // Every design opens with its root active (mitcad#426), whatever the
       // file stores: no undo step, no new revision, so not modified. A new
-      // design of a project keeps its Component1 active (mitcad#844), as
-      // the untitled design at the start does.
+      // design keeps its Component1 active, as the untitled design at the
+      // start does: one of a project (mitcad#844) and an empty one
+      // (mitcad#898).
       try {
         if (!newDesign) {
           previousActive = parseObject(document->command(rustStr(compactJson(
@@ -5734,9 +5750,7 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   logOpenTimes(label, opening.elapsed(), readMs, milliseconds, recomputed, persisted, meshing, viewMs);
   m_viewer->logFirstFrame(QStringLiteral("Open %1").arg(label), opening);
   if (newDesign) {
-    const DocumentSnapshot::Component* active = m_snapshot.component(m_snapshot.activeComponent);
-    qInfo().noquote() << QStringLiteral("Opened the new design with %1 active")
-                             .arg(active != nullptr ? active->name : m_snapshot.activeComponent);
+    logNewDesignActive();
   }
   if (!m_keepView) {
     m_viewer->fitAll();
@@ -5808,8 +5822,16 @@ void MainWindow::persistResults(const QString& label) {
 
 bool MainWindow::installEmptyDocument(const QString& name, QString* error) {
   QString reason;
-  if (!installDocument(name.isEmpty() ? tr("Untitled") : name, QString(),
-                       [](ModelJob&) { return new_design_document(); }, reason)) {
+  // A new, empty design (New, Close, an empty project, the open design
+  // deleted) starts with its Component1 active, as the untitled design at
+  // the start does (mitcad#898), not with the root as a design read from a
+  // file (mitcad#426).
+  const bool wasOpeningNewDesign = m_openingNewDesign;
+  m_openingNewDesign = true;
+  const bool installed = installDocument(name.isEmpty() ? tr("Untitled") : name, QString(),
+                                         [](ModelJob&) { return new_design_document(); }, reason);
+  m_openingNewDesign = wasOpeningNewDesign;
+  if (!installed) {
     if (error != nullptr) {
       *error = reason;
     } else if (!reason.isEmpty()) {
@@ -5820,6 +5842,12 @@ bool MainWindow::installEmptyDocument(const QString& name, QString* error) {
   m_documentName = name;
   updateWindowTitle();
   return true;
+}
+
+void MainWindow::logNewDesignActive() {
+  const DocumentSnapshot::Component* active = m_snapshot.component(m_snapshot.activeComponent);
+  qInfo().noquote() << QStringLiteral("Opened the new design with %1 active")
+                           .arg(active != nullptr ? active->name : m_snapshot.activeComponent);
 }
 
 // Leaves any command or sketch, so the next document starts idle.

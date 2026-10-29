@@ -107,6 +107,7 @@ struct NativeMacTreeItem {
   bool canToggleVisibility = false;
   bool visible = true;
   bool hasVisibility = false;
+  int bindings = 0;
 };
 
 struct NativeMacHistoryItem {
@@ -120,6 +121,7 @@ struct NativeMacHistoryItem {
   bool suppressed = false;
   bool enabled = true;
   bool filtered = false; // Hidden by the shared component timeline filter.
+  int bindings = 0;
 };
 
 struct NativeMacWindowCallbacks {
@@ -147,9 +149,11 @@ struct NativeMacWindowCallbacks {
   std::function<void(const QString&, bool)> treeExpanded;
   std::function<void(bool, const QPoint&)> browserIssues;
   std::function<void(const QString&, const QPoint&)> treeContextMenu;
+  std::function<void(const QString&, const QRect&, bool)> treeBindings;
   std::function<void(const QStringList&)> historySelection;
   std::function<void(const QString&, int)> historyReordered;
   std::function<void(const QString&, const QPoint&)> historyContextMenu;
+  std::function<void(const QString&, const QRect&, bool)> historyBindings;
   std::function<void(const QPoint&)> historyFilterMenu;
   std::function<void()> timelineSearchOpened;
   std::function<void(const QString&)> timelineSearchChanged;
@@ -219,6 +223,7 @@ public:
   void setDocument(const QString& title, const QString& path, bool edited);
   void setSketchMode(bool sketching);
   void setProjectsView(void* view, bool shown);
+  void setConfigurationView(void* view);
   bool projectsShown() const;
   // Names a Projects row in place (mitcad#816): the shown outline's row
   // whose cell has `identifier` edits `text` in its own text field, its

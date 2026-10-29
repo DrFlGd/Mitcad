@@ -47,6 +47,7 @@ SettingsForm::SettingsForm(QWidget* parent) : QWidget(parent) {
   layout->addLayout(top);
   m_tabs = new QTabBar;
   m_tabs->setObjectName(QStringLiteral("settingsTabs"));
+  m_tabs->setAccessibleName(tr("Print settings category"));
   m_tabs->setExpanding(false);
   m_tabs->setDrawBase(true);
   // The selected tab clearly marked (mitcad#655): bold, underlined.
@@ -125,6 +126,8 @@ void SettingsForm::setKeys(const PrintKeyTable& table, const QString& set, const
         // [unit | %] only where the design's slicer takes a percentage
         // (mitcad#655).
         row.field = new SettingField(*key, nullptr, key->kind != PrintKey::Kind::NumberOrPercent || key->takesPercent(dialect));
+        if (QWidget* editor = row.field->placeWidget())
+          editor->setObjectName(QStringLiteral("printSetting_") + key->key);
         row.field->setDialect(dialect); // its range (mitcad#746)
         row.field->setReadOnly(m_readOnly);
         connect(row.field, &SettingField::committed, this, &SettingsForm::valueChanged);

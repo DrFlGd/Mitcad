@@ -14,9 +14,8 @@
 # Everything the app writes of its own goes to a private temporary
 # directory (UI_ROOT: settings, recovery folder, projects folder, thumbnails,
 # result store off), removed on exit, so the user's ~/Library/Preferences and
-# Application Support are never read or changed. What macOS itself keeps
-# for an app (saved window state, crash reports) is outside the tests'
-# reach.
+# Application Support are never read or changed. AppKit window restoration is
+# disabled for each test launch; a previous crash cannot show a restore alert.
 #
 # Usage: ui_init <app> <out directory>, then ui_run_app <name> <arguments>...
 # runs the app with its log in <out>/<name>.log. Variables set in front of
@@ -31,8 +30,14 @@ UI_PID=""
 UI_EXIT=0
 UI_SIGNAL=""
 UI_TIMED_OUT=0
+UI_ASSERTION_FAILED=0
 UI_LOG_FILE=""
 UI_FAILURES=0
+# FD 9 is reserved for the per-user GUI lock. The shell and the actual
+# application share its open file description until the app has exited.
+UI_GUI_LOCK_FD_OPEN=0
+UI_GUI_LOCK_HELD=0
+UI_GUI_LOCK_WAITER=""
 UI_STATS=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ui-image-stats.py
 # Seconds the app may take for one run (a screenshot run exits after 2 s
 # plus the start-up and the recompute; the first start can be slow).
@@ -45,26 +50,68 @@ ui_fail() { echo "FAIL: $1"; UI_FAILURES=$((UI_FAILURES + 1)); }
 # (an import worker) go first.
 ui_stop_app() {
   if [ -n "$UI_PID" ] && kill -0 "$UI_PID" 2> /dev/null; then
-    pkill -TERM -P "$UI_PID" 2> /dev/null
-    kill -TERM "$UI_PID" 2> /dev/null
+    pkill -TERM -P "$UI_PID" 2> /dev/null || true
+    kill -TERM "$UI_PID" 2> /dev/null || true
     local i=0
     while [ "$i" -lt 30 ] && kill -0 "$UI_PID" 2> /dev/null; do
       sleep 0.1
       i=$((i + 1))
     done
     if kill -0 "$UI_PID" 2> /dev/null; then
-      pkill -KILL -P "$UI_PID" 2> /dev/null
-      kill -KILL "$UI_PID" 2> /dev/null
+      pkill -KILL -P "$UI_PID" 2> /dev/null || true
+      kill -KILL "$UI_PID" 2> /dev/null || true
     fi
   fi
+}
+
+# Kernel flock ownership survives the short Python helper: its inherited
+# descriptor and this shell's FD 9 refer to the same open file description.
+# Never unlink the file or unlock in Python; either would let another
+# checkout enter while the real application still owns the GUI.
+ui_gui_lock() {
+  if [ "$UI_GUI_LOCK_FD_OPEN" = 1 ]; then
+    ui_fail "a macOS UI run already owns or awaits the GUI lock"
+    return 1
+  fi
+  mkdir -p "$HOME/.mitcad" || return 1
+  exec 9> "$HOME/.mitcad/macos-ui.lock" || return 1
+  UI_GUI_LOCK_FD_OPEN=1
+  echo "Waiting for the shared macOS UI lock"
+  python3 -c 'import fcntl; fcntl.flock(9, fcntl.LOCK_EX)' 9>&9 &
+  UI_GUI_LOCK_WAITER=$!
+  local result=0
+  # A background helper plus wait keeps INT/TERM traps responsive while
+  # another checkout's app is running. No timeout belongs to this queue.
+  wait "$UI_GUI_LOCK_WAITER" || result=$?
+  UI_GUI_LOCK_WAITER=""
+  if [ "$result" -ne 0 ]; then
+    ui_gui_unlock
+    ui_fail "could not acquire the shared macOS UI lock (exit $result)"
+    return 1
+  fi
+  UI_GUI_LOCK_HELD=1
+}
+
+ui_gui_unlock() {
+  if [ -n "$UI_GUI_LOCK_WAITER" ]; then
+    kill -TERM "$UI_GUI_LOCK_WAITER" 2> /dev/null || true
+    wait "$UI_GUI_LOCK_WAITER" 2> /dev/null || true
+    UI_GUI_LOCK_WAITER=""
+  fi
+  if [ "$UI_GUI_LOCK_FD_OPEN" = 1 ]; then
+    exec 9>&-
+    UI_GUI_LOCK_FD_OPEN=0
+  fi
+  UI_GUI_LOCK_HELD=0
 }
 
 ui_cleanup() {
   ui_stop_app
   if [ -n "$UI_PID" ]; then
-    wait "$UI_PID" 2> /dev/null
+    wait "$UI_PID" 2> /dev/null || true
     UI_PID=""
   fi
+  ui_gui_unlock
   [ -n "$UI_ROOT" ] && rm -rf "$UI_ROOT"
 }
 
@@ -159,35 +206,58 @@ ui_crash_report() {
 # after UI_TIMEOUT seconds (macOS has no GNU timeout), with stdout and stderr in
 # <out>/<name>.log (Qt messages go to stderr with QT_FORCE_STDERR_LOGGING).
 # Sets UI_EXIT (the exit code; 128 + n after signal n), UI_SIGNAL,
-# UI_TIMED_OUT and UI_LOG_FILE, and records a failure for a timeout, a
-# crash and a non-zero exit. A session without a window server ends the
+# UI_TIMED_OUT, UI_ASSERTION_FAILED and UI_LOG_FILE. Records an assertion,
+# timeout, crash or non-zero exit. A session without a window server ends the
 # test with 77, ctest's SKIP (MITCAD_UI_REQUIRE_GUI=1 makes it a failure).
 ui_run_app() {
   local name=$1
   shift
   UI_LOG_FILE=$UI_OUT/$name.log
   UI_TIMED_OUT=0
+  UI_ASSERTION_FAILED=0
   UI_SIGNAL=""
   rm -f "$UI_LOG_FILE"
+  # Cross-checkout exclusion starts before launching the app or counting
+  # UI_TIMEOUT. UI_PID stays the actual app (or the existing lldb mode).
+  if ! ui_gui_lock; then return 1; fi
   if [ "${MITCAD_UI_LLDB:-0}" = 1 ] && command -v lldb > /dev/null; then
-    lldb --batch -o run -o 'bt all' -- "$UI_APP" "$@" > "$UI_LOG_FILE" 2>&1 &
+    lldb --batch -o run -o 'bt all' -- "$UI_APP" -ApplePersistenceIgnoreState YES "$@" > "$UI_LOG_FILE" 2>&1 &
   else
-    "$UI_APP" "$@" > "$UI_LOG_FILE" 2>&1 &
+    "$UI_APP" -ApplePersistenceIgnoreState YES "$@" > "$UI_LOG_FILE" 2>&1 &
   fi
   UI_PID=$!
-  local ticks=0 limit=$((UI_TIMEOUT * 5))
+  local ticks=0 limit=$((UI_TIMEOUT * 5)) assertion_tick=-1
   while kill -0 "$UI_PID" 2> /dev/null; do
+    if [ "${MITCAD_UI_LLDB:-0}" != 1 ]; then
+      # A native modal loop can outlive the driver's failed assertion and
+      # Qt exit request. Match the actual diagnostic, never a traced script
+      # line containing that text, and give normal shutdown one second.
+      if [ "$assertion_tick" -lt 0 ] && [ -f "$UI_LOG_FILE" ] &&
+          grep -Eq '^TestDriver: FAIL([[:space:]]|$)' "$UI_LOG_FILE"; then
+        assertion_tick=$ticks
+      fi
+      if [ "$assertion_tick" -ge 0 ] && [ "$((ticks - assertion_tick))" -ge 5 ]; then
+        UI_ASSERTION_FAILED=1
+        ui_stop_app
+        break
+      fi
+    fi
     if [ "$ticks" -ge "$limit" ]; then
-      UI_TIMED_OUT=1
+      # Keep the outer deadline even when the assertion arrived just now;
+      # the recorded assertion is still the reason this run failed.
+      if [ "$assertion_tick" -ge 0 ]; then UI_ASSERTION_FAILED=1; else UI_TIMED_OUT=1; fi
       ui_stop_app
       break
     fi
     sleep 0.2
     ticks=$((ticks + 1))
   done
-  wait "$UI_PID" 2> /dev/null
-  UI_EXIT=$?
+  # Preserve the application's failure for the report even when a caller
+  # enables errexit; wait must not terminate the harness first.
+  UI_EXIT=0
+  wait "$UI_PID" 2> /dev/null || UI_EXIT=$?
   UI_PID=""
+  ui_gui_unlock
   if [ "${MITCAD_UI_LLDB:-0}" = 1 ]; then
     # lldb's own exit code says nothing: the app's is in its message, and
     # no such message means it stopped on a signal.
@@ -195,16 +265,19 @@ ui_run_app() {
     code=$(sed -n 's/.*Process [0-9]* exited with status = \([0-9]*\).*/\1/p' "$UI_LOG_FILE" | tail -n 1)
     if [ -n "$code" ]; then UI_EXIT=$code; elif [ "$UI_TIMED_OUT" = 0 ]; then UI_EXIT=134; fi
   fi
-  if [ "$UI_EXIT" -gt 128 ] && [ "$UI_TIMED_OUT" = 0 ]; then
+  if [ "$UI_EXIT" -gt 128 ] && [ "$UI_TIMED_OUT" = 0 ] && [ "$UI_ASSERTION_FAILED" = 0 ]; then
     UI_SIGNAL=$((UI_EXIT - 128))
   fi
 
-  if [ "$UI_TIMED_OUT" = 0 ] && ui_gui_unavailable && [ "${MITCAD_UI_REQUIRE_GUI:-0}" != 1 ]; then
+  if [ "$UI_TIMED_OUT" = 0 ] && [ "$UI_ASSERTION_FAILED" = 0 ] && ui_gui_unavailable && [ "${MITCAD_UI_REQUIRE_GUI:-0}" != 1 ]; then
     echo "SKIP: $name: no window server or OpenGL context in this session (MITCAD_UI_REQUIRE_GUI=1 to fail instead)"
     ui_log_tail
     exit 77
   fi
-  if [ "$UI_TIMED_OUT" = 1 ]; then
+  if [ "$UI_ASSERTION_FAILED" = 1 ]; then
+    ui_fail "$name: TestDriver assertion failed; stopped its lingering app (exit code $UI_EXIT)"
+    ui_log_tail
+  elif [ "$UI_TIMED_OUT" = 1 ]; then
     ui_fail "$name: Mitcad did not exit within $UI_TIMEOUT s"
     ui_log_tail
   elif [ -n "$UI_SIGNAL" ]; then

@@ -299,6 +299,15 @@ void addForm(QFormLayout* form, const Render& render, Grid& grid) {
       if (makeItem(label, render, item)) {
         item.row = row;
         item.formLabel = true;
+        if (const auto* caption = qobject_cast<const QLabel*>(label->widget()); caption && !caption->wordWrap()) {
+          // Qt's metrics can be narrower than the AppKit font. A form's
+          // single-line caption keeps its complete native text, including
+          // a trailing colon, instead of wrapping at the last character.
+          CGFloat width = item.view.fittingSize.width;
+          if (item.horizontal.maximum >= 0) width = std::min(width, item.horizontal.maximum);
+          item.horizontal.minimum = std::max(item.horizontal.minimum, width);
+          item.horizontal.preferred = std::max(item.horizontal.preferred, item.horizontal.minimum);
+        }
         item.horizontal.cap = true;
         item.horizontal.grows = false;
         item.horizontal.expands = false;
@@ -324,6 +333,19 @@ void addForm(QFormLayout* form, const Render& render, Grid& grid) {
         item.formField = true;
         item.regime = !wrap;
         item.growth = growth;
+        const bool capped = growth == FieldGrowth::None ||
+            (growth == FieldGrowth::Expanding && !item.horizontal.expands);
+        if (const auto* caption = qobject_cast<const QLabel*>(field->widget()); capped && caption && caption->wordWrap() &&
+            (int(caption->sizePolicy().horizontalPolicy()) & int(QSizePolicy::IgnoreFlag)) == 0) {
+          // A form that keeps fields at their hints also keeps a wrapping
+          // label's reading width. Its longest word is only the shrinkable
+          // minimum; using that as the natural width stacks the paragraph
+          // vertically even when the form has room. Keep the hint soft so
+          // a smaller window can still wrap it, within shared min/max.
+          CGFloat preferred = std::max<CGFloat>(item.horizontal.minimum, caption->sizeHint().width());
+          if (item.horizontal.maximum >= 0) preferred = std::min(preferred, item.horizontal.maximum);
+          item.horizontal.preferred = preferred;
+        }
         item.horizontal.place = Place::Leading;
         grid.items.push_back(std::move(item));
       }
@@ -451,6 +473,8 @@ void constrainAxis(NSView* host, const Grid& grid, const Guides& guides, bool ho
   int stretch = 0;
   bool anyExpanding = false;
   for (std::size_t t = 0; t < count; ++t) {
+    // Explicit empty grid tracks are spacing too, unlike filtered rows.
+    if (tracks[t].minimum > 0) present[t] = 1;
     if (present[t] == 0) { continue; }
     stretch += std::max(0, tracks[t].stretch);
     anyExpanding = anyExpanding || expanding[t] != 0;
@@ -467,6 +491,24 @@ void constrainAxis(NSView* host, const Grid& grid, const Guides& guides, bool ho
   }
   const bool sharing = base < count;
 
+  // Hidden rows do not participate in the graph at all. Keeping a zero
+  // track and a cell for every filtered setting ties hundreds of invisible
+  // descendants to one engine, although Qt lays out only the shown rows.
+  const auto presentGuide = [host](NSLayoutGuide* guide, bool active) {
+    if (active && guide.owningView == nil) [host addLayoutGuide:guide];
+    else if (!active && guide.owningView == host) [host removeLayoutGuide:guide];
+  };
+  std::size_t firstPresent = count;
+  std::size_t lastPresent = count;
+  for (std::size_t t = 0; t < count; ++t) {
+    presentGuide(trackGuides[t], present[t] != 0);
+    if (present[t] != 0) {
+      if (firstPresent == count) firstPresent = t;
+      lastPresent = t;
+    }
+  }
+  for (std::size_t i = 0; i < grid.items.size(); ++i) presentGuide(guides.cells[i], visible[i] == kShown);
+
   // The content box inside the margins, and the block of tracks within it.
   const Edges outer = edges(host, horizontal);
   const Edges inner = edges(guides.content, horizontal);
@@ -475,8 +517,10 @@ void constrainAxis(NSView* host, const Grid& grid, const Guides& guides, bool ho
   const CGFloat endInset = horizontal ? grid.margins.right : grid.margins.bottom;
   require([inner.start constraintEqualToAnchor:outer.start constant:startInset]);
   require([inner.end constraintEqualToAnchor:outer.end constant:-endInset]);
-  require([block.start constraintEqualToAnchor:track(0).start]);
-  require([block.end constraintEqualToAnchor:track(count - 1).end]);
+  if (firstPresent < count) {
+    require([block.start constraintEqualToAnchor:track(firstPresent).start]);
+    require([block.end constraintEqualToAnchor:track(lastPresent).end]);
+  } else { require([block.size constraintEqualToConstant:0]); }
   const Place place = horizontal ? grid.content : Place::Leading;
   if (sharing) {
     require([block.start constraintEqualToAnchor:inner.start]);
@@ -497,41 +541,41 @@ void constrainAxis(NSView* host, const Grid& grid, const Guides& guides, bool ho
   const CGFloat gap = horizontal ? grid.horizontalSpacing : grid.verticalSpacing;
   const Edges crossHost = edges(host, !horizontal);
   bool seen = false;
+  std::size_t previous = count;
   for (std::size_t t = 0; t < count; ++t) {
+    if (present[t] == 0) continue;
     const Edges g = track(t);
     const Edges cross = edges(trackGuides[t], !horizontal);
     require([cross.start constraintEqualToAnchor:crossHost.start]);
     require([cross.size constraintEqualToConstant:0]);
-    if (t > 0) {
-      require([g.start constraintEqualToAnchor:track(t - 1).end constant:(occupied[t] != 0 && seen) ? gap : 0]);
+    if (previous < count) {
+      require([g.start constraintEqualToAnchor:track(previous).end constant:(occupied[t] != 0 && seen) ? gap : 0]);
     }
+    previous = t;
     if (occupied[t] != 0) { seen = true; }
     require([g.size constraintGreaterThanOrEqualToConstant:0]);
     const CGFloat minimum = std::max<CGFloat>(0, tracks[t].minimum);
-    if (present[t] == 0) {
-      prefer([g.size constraintEqualToConstant:minimum], kLimit);
-      continue;
-    }
     if (minimum > 0) { prefer([g.size constraintGreaterThanOrEqualToConstant:minimum], kLimit); }
     if (weight[t] <= 0) {
-      prefer([g.size constraintEqualToConstant:0], kTrackHug);
+      // A zero-stretch spacer must yield spare space to a sibling with
+      // positive Qt stretch. Otherwise its priority-2 hug absorbs that
+      // space to preserve the sibling control's intrinsic hugging (250),
+      // leaving an expanding input at its tiny intrinsic width. Content
+      // tracks keep their natural sizing; nonzero spacer hints/minima
+      // still win at their preferred/limit priorities.
+      const NSLayoutPriority hug = stretch > 0 && occupied[t] == 0 ? kShare : kTrackHug;
+      prefer([g.size constraintEqualToConstant:0], hug);
     } else if (t != base) {
       prefer([g.size constraintEqualToAnchor:track(base).size multiplier:weight[t] / weight[base]], kShare);
     }
   }
 
   for (std::size_t i = 0; i < grid.items.size(); ++i) {
+    if (visible[i] != kShown) continue;
     const Item& item = grid.items[i];
     NSView* view = item.view;
     const Edges v = edges(view, horizontal);
     const Edges cell = edges(guides.cells[i], horizontal);
-    if (visible[i] != kShown) {
-      // A hidden item takes no space; its own content keeps a position.
-      if (visible[i] == kHidden) { require([v.start constraintEqualToAnchor:outer.start]); }
-      require([cell.start constraintEqualToAnchor:outer.start]);
-      require([cell.size constraintEqualToConstant:0]);
-      continue;
-    }
     const auto [first, last] = span(item, horizontal, count);
     require([cell.start constraintEqualToAnchor:track(first).start]);
     require([cell.end constraintEqualToAnchor:track(last).end]);
@@ -596,6 +640,7 @@ namespace mlayout = mitcad::mac::layout;
 - (void)mitcadItemsChanged;
 - (BOOL)mitcadStretchesAlong:(BOOL)horizontal;
 - (BOOL)mitcadOwns:(const mitcad::mac::layout::Item&)item;
+- (void)mitcadVisibility:(BOOL)hidden removing:(NSMutableArray<NSLayoutConstraint*>*)constraints;
 @end
 
 @implementation MitcadNativeLayoutView {
@@ -609,6 +654,10 @@ namespace mlayout = mitcad::mac::layout;
   NSLayoutGuide* _block;
   __weak NSView* _detaching;  // an item being taken away by another owner
   BOOL _applying;
+  BOOL _needsRebuild;
+  BOOL _hasContract;
+  BOOL _suspended;
+  std::vector<unsigned char> _contractState;
 }
 
 // Another owner may move an item's view elsewhere (a secondary window's
@@ -658,6 +707,8 @@ namespace mlayout = mitcad::mac::layout;
   [_rows removeAllObjects];
   [_cells removeAllObjects];
   _grid = grid;
+  _contractState.clear();
+  _hasContract = NO;
   if (_grid.columns.empty()) { _grid.columns.emplace_back(); }
   if (_grid.rows.empty()) { _grid.rows.emplace_back(); }
   NSMutableSet<NSView*>* kept = [NSMutableSet set];
@@ -675,7 +726,8 @@ namespace mlayout = mitcad::mac::layout;
     return created;
   };
   for (std::size_t i = 0; i < _grid.columns.size(); ++i) { [_columns addObject:guide()]; }
-  for (std::size_t i = 0; i < _grid.rows.size(); ++i) { [_rows addObject:guide()]; }
+  const std::size_t rows = _grid.wrapWidth > 0 ? std::max(_grid.rows.size(), _grid.items.size()) : _grid.rows.size();
+  for (std::size_t i = 0; i < rows; ++i) { [_rows addObject:guide()]; }
   _content = guide();
   _block = guide();
   // Every item keeps a view and a cell guide, so indices stay aligned.
@@ -698,27 +750,94 @@ namespace mlayout = mitcad::mac::layout;
 }
 
 - (void)mitcadRebuildConstraints {
-  [NSLayoutConstraint deactivateConstraints:_active];
-  [_active removeAllObjects];
+  if (_suspended || self.isHiddenOrHasHiddenAncestor) return;
   std::vector<char> visible(_grid.items.size(), mlayout::kHidden);
+  std::vector<unsigned char> state;
+  state.reserve(_grid.items.size() * 2);
+  const bool wrapped = _grid.wrapWidth > 0 && NSWidth(self.bounds) > 0 && NSWidth(self.bounds) < _grid.wrapWidth;
+  if (_grid.wrapWidth > 0) state.push_back(wrapped ? 1 : 0);
   for (std::size_t i = 0; i < _grid.items.size(); ++i) {
     const mlayout::Item& item = _grid.items[i];
     visible[i] = ![self mitcadOwns:item] ? mlayout::kDetached : mlayout::shown(item) ? mlayout::kShown : mlayout::kHidden;
+    state.push_back(static_cast<unsigned char>(visible[i]));
+    const mlayout::Axis horizontal = mlayout::effectiveAxis(item, true);
+    const mlayout::Axis vertical = mlayout::effectiveAxis(item, false);
+    state.push_back(static_cast<unsigned char>((horizontal.grows ? 1 : 0) | (horizontal.expands ? 2 : 0) |
+        (horizontal.cap ? 4 : 0) | (vertical.grows ? 8 : 0) | (vertical.expands ? 16 : 0) | (vertical.cap ? 32 : 0)));
   }
+  _needsRebuild = NO;
+  if (_hasContract && state == _contractState) return;
+  _hasContract = YES;
+  _contractState = std::move(state);
+  [NSLayoutConstraint deactivateConstraints:_active];
+  [_active removeAllObjects];
   const mlayout::Guides guides{_columns, _rows, _cells, _content, _block};
-  mlayout::constrainAxis(self, _grid, guides, true, visible, _active);
-  mlayout::constrainAxis(self, _grid, guides, false, visible, _active);
+  if (wrapped) {
+    mlayout::Grid grid = _grid;
+    // A bounded card may be narrower than Qt's side-by-side reading hint.
+    // Preserve its controls, source order and item sizing, in one column.
+    // Spanning notices remain a whole row; no item is omitted or elided.
+    std::vector<std::size_t> order(grid.items.size());
+    for (std::size_t i = 0; i < order.size(); ++i) order[i] = i;
+    std::stable_sort(order.begin(), order.end(), [&grid](std::size_t a, std::size_t b) {
+      const mlayout::Item& left = grid.items[a];
+      const mlayout::Item& right = grid.items[b];
+      return left.row < right.row || (left.row == right.row && left.column < right.column);
+    });
+    grid.columns.assign(1, mlayout::Track{1, 0});
+    grid.rows.assign(order.size(), mlayout::Track{});
+    for (std::size_t row = 0; row < order.size(); ++row) {
+      mlayout::Item& item = grid.items[order[row]];
+      item.row = static_cast<int>(row);
+      item.column = 0;
+      item.rowSpan = item.columnSpan = 1;
+    }
+    mlayout::constrainAxis(self, grid, guides, true, visible, _active);
+    mlayout::constrainAxis(self, grid, guides, false, visible, _active);
+  } else {
+    mlayout::constrainAxis(self, _grid, guides, true, visible, _active);
+    mlayout::constrainAxis(self, _grid, guides, false, visible, _active);
+  }
   [NSLayoutConstraint activateConstraints:_active];
+}
+
+- (void)setFrameSize:(NSSize)size {
+  const bool before = _grid.wrapWidth > 0 && NSWidth(self.bounds) > 0 && NSWidth(self.bounds) < _grid.wrapWidth;
+  [super setFrameSize:size];
+  const bool after = _grid.wrapWidth > 0 && size.width > 0 && size.width < _grid.wrapWidth;
+  if (before != after) [self mitcadItemsChanged];
 }
 
 - (void)mitcadItemsChanged {
   // Nothing rebuilds while this view applies a grid or is deallocated, also
   // when a child layout reports a change during that teardown.
-  if (_applying) { return; }
-  [self mitcadRebuildConstraints];
+  if (_applying || _suspended || _needsRebuild) { return; }
+  // A presenter changes many hidden fields in one refresh. Rebuilding each
+  // ancestor's full constraint graph at every KVO notification makes large
+  // settings forms spend seconds in the solver. Coalesce that whole batch.
+  _needsRebuild = YES;
+  self.needsUpdateConstraints = YES;
   // The parent's spacing and shares follow this layout's shown items.
   NSView* parent = self.superview;
   if ([parent isKindOfClass:MitcadNativeLayoutView.class]) { [(MitcadNativeLayoutView*)parent mitcadItemsChanged]; }
+}
+
+- (void)updateConstraints {
+  if (_needsRebuild && !_applying) [self mitcadRebuildConstraints];
+  [super updateConstraints];
+}
+
+- (void)mitcadVisibility:(BOOL)hidden removing:(NSMutableArray<NSLayoutConstraint*>*)constraints {
+  if (_applying || _suspended == hidden) return;
+  _suspended = hidden;
+  // A restored subtree must rebuild even when its own children's flags
+  // stayed unchanged while an ancestor hid the whole category.
+  _hasContract = NO;
+  if (hidden) {
+    [constraints addObjectsFromArray:_active];
+    [_active removeAllObjects];
+    _needsRebuild = NO;
+  } else { [self mitcadItemsChanged]; }
 }
 
 - (void)observeValueForKeyPath:(NSString*)keyPath
@@ -773,7 +892,20 @@ namespace mlayout = mitcad::mac::layout;
 
 namespace mitcad::mac::layout {
 
-NSView* build(QLayout* layout, const std::function<NSView*(QLayoutItem*)>& render, bool equalColumns) {
+void updateVisibility(NSView* root) {
+  NSMutableArray<NSLayoutConstraint*>* removing = [NSMutableArray new];
+  const auto visit = [&removing](NSView* view, bool hidden, const auto& self) -> void {
+    hidden = hidden || view.hidden;
+    if ([view isKindOfClass:MitcadNativeLayoutView.class]) {
+      [(MitcadNativeLayoutView*)view mitcadVisibility:hidden removing:removing];
+    }
+    for (NSView* child in view.subviews) self(child, hidden, self);
+  };
+  visit(root, root.isHiddenOrHasHiddenAncestor, visit);
+  if (removing.count > 0) [NSLayoutConstraint deactivateConstraints:removing];
+}
+
+NSView* build(QLayout* layout, const std::function<NSView*(QLayoutItem*)>& render, bool equalColumns, bool responsive) {
   if (layout == nullptr) { return nil; }
   Grid grid;
   if (auto* form = qobject_cast<QFormLayout*>(layout)) { addForm(form, render, grid); }
@@ -783,6 +915,7 @@ NSView* build(QLayout* layout, const std::function<NSView*(QLayoutItem*)>& rende
   const QMargins margins = layout->contentsMargins();
   grid.margins = NSEdgeInsetsMake(margins.top(), margins.left(), margins.bottom(), margins.right());
   grid.equalColumns = equalColumns;
+  if (responsive && grid.columns.size() > 1) grid.wrapWidth = layout->sizeHint().width();
   MitcadNativeLayoutView* view = [[MitcadNativeLayoutView alloc] initWithFrame:NSZeroRect];
   [view applyGrid:grid];
   return view;

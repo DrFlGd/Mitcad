@@ -40,6 +40,7 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/Numbers.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/NativeDialogs.hpp"
 
 namespace mitcad {
 namespace {
@@ -85,7 +86,7 @@ std::optional<double> numberOf(const QJsonValue& value) {
 // colour picker.
 class ColorFieldButton : public QPushButton {
 public:
-  ColorFieldButton() {
+  explicit ColorFieldButton(const QString& role) : m_role(role) {
     setAutoDefault(false);
     setFocusPolicy(Qt::StrongFocus);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
@@ -95,6 +96,16 @@ public:
     m_color = color;
     m_words = words;
     m_placeholder = placeholder;
+    setProperty(NativeColorFieldProperty, color);
+    setProperty(NativeColorFieldTextProperty, words);
+    setProperty(NativeColorFieldPlaceholderProperty, placeholder);
+    // A generic button value does not describe this custom painting. Its
+    // name also identifies the field and the visible colour's source.
+    // Keep the custom-painted swatch and words unchanged.
+    const QString value = placeholder && color.isValid() ? tr("%1, inherited from %2").arg(color.name(), words)
+                          : color.isValid() ? color.name()
+                          : words.isEmpty() ? tr("Unset") : words;
+    setAccessibleName(tr("%1: %2").arg(m_role, value));
     update();
   }
 
@@ -130,6 +141,7 @@ protected:
   }
 
 private:
+  QString m_role;
   QColor m_color;
   QString m_words;
   bool m_placeholder = false;
@@ -456,7 +468,7 @@ void SettingField::build() {
       // A field as wide as the others (mitcad#655): the colour's swatch and,
       // unset, the grey word for what is used instead (ColorFieldButton); a
       // click opens the colour picker. No code to type.
-      m_swatch = new ColorFieldButton;
+      m_swatch = new ColorFieldButton(m_key.name);
       m_swatch->setToolTip(tr("Choose a colour"));
       connect(m_swatch, &QPushButton::clicked, this, &SettingField::pickColor);
       editor->addWidget(m_swatch, 1);

@@ -5,12 +5,14 @@
 // threads, names, and the speed on a body of thousands of faces; the
 // tools of faces far apart built in parallel and applied together
 // (mitcad#843) with the result made face by face; a pitch of one's own,
-// multi-start threads and the trapezoidal profile (mitcad#893).
+// multi-start threads and the trapezoidal profile (mitcad#893); a shank
+// whose end under a serrated head is uneven (mitcad#901).
 
 #include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <exception>
 #include <limits>
 #include <memory>
 #include <set>
@@ -19,8 +21,11 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
@@ -28,6 +33,8 @@
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeHalfSpace.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
@@ -35,6 +42,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <gp_Pln.hxx>
 
 #include "../src/face_join.hpp"
 #include "../src/history.hpp"
@@ -1519,6 +1527,113 @@ void test_thread_faces_close_together_in_order() {
   CHECK(BRepCheck_Analyzer(planned->occt()).IsValid());
 }
 
+// A screw shaped as the parts library's self-forming screws (mitcad#901):
+// a shank of radius `radius` from 0 into a head of radius `head` (named S,
+// its side S:side(c1)) whose underside is serrated as the supplier's
+// solids are: `teeth` planar ramps round the axis, each falling from a
+// radial step, where it lies level at `length` from the axis to the rim,
+// to `depth` lower at the rim by the step before it. The shank's side ends
+// against the ramps: its top edge is a sawtooth from `length - depth *
+// radius / head` up to `length`, and the steps' top edges lie level at
+// `length`, the shank's highest point.
+ShapePtr serrated_screw(double radius, double length, double head, int teeth, double depth) {
+  const double low = length - depth;
+  TopoDS_Shape cap = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, low), gp_Dir(0, 0, 1)), head, 4.0).Shape();
+  const double reach = 1.5 * head;
+  for (int k = 0; k < teeth; ++k) {
+    const double a = 2.0 * kPi * k / teeth;
+    const double b = 2.0 * kPi * (k + 1) / teeth;
+    // The tooth's sector, out past the rim, from below the head up through
+    // the ramp.
+    const gp_Pnt centre(0, 0, low - 1.0);
+    BRepBuilderAPI_MakePolygon sector(centre, gp_Pnt(reach * std::cos(a), reach * std::sin(a), low - 1.0),
+                                      gp_Pnt(reach * std::cos(b), reach * std::sin(b), low - 1.0), true);
+    const TopoDS_Shape prism =
+        BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(sector.Wire(), true).Face(), gp_Vec(0, 0, depth + 2.0)).Shape();
+    // What lies below the ramp's plane: through the step's radial line at
+    // `length`, and `depth` lower at the rim by the step before.
+    const gp_Pnt axis(0, 0, length);
+    const gp_Pnt on_step(head * std::cos(b), head * std::sin(b), length);
+    const gp_Pnt at_rim(head * std::cos(a), head * std::sin(a), low);
+    gp_Dir normal(gp_Vec(axis, on_step).Crossed(gp_Vec(axis, at_rim)));
+    if (normal.Z() < 0.0) {
+      normal.Reverse();
+    }
+    const TopoDS_Face plane = BRepBuilderAPI_MakeFace(gp_Pln(axis, normal)).Face();
+    const TopoDS_Shape below = BRepPrimAPI_MakeHalfSpace(plane, centre).Solid();
+    cap = BRepAlgoAPI_Cut(cap, BRepAlgoAPI_Common(prism, below).Shape()).Shape();
+  }
+  const Shape head_shape(cap);
+  const ShapePtr shank = extrude("S", {circle(1, 0, 0, radius)}, 0, length + 1.0);
+  const BooleanResult joined = boolean(BooleanOp::Join, {&head_shape}, *shank);
+  CHECK(joined.pieces.size() == 1);
+  return joined.pieces.at(0).shape;
+}
+
+void test_thread_under_a_serrated_head() {
+  // The parts library's self-forming screws (mitcad#901): S7x25 (M7 as its
+  // stand-in) and S12x30 (M12), their shanks under heads serrated as the
+  // supplier's: 24 ramps 0.2 mm deep at the rim. The shank's top end is
+  // uneven, so the grooves stop a hundredth of a pitch short of its lowest
+  // point. Up to its highest point they would cut into the head where the
+  // ramps lie lower, and their end would lie on the steps' level top edges,
+  // which left the shell open ("the thread produced an invalid shape").
+  struct Case {
+    double d;
+    double pitch;
+    double length;
+    double head;
+  };
+  const Case cases[] = {{7, 1.0, 25, 8.85}, {12, 1.75, 30, 9.8}};
+  const int teeth = 24;
+  const double step = 2.0 * kPi / teeth;
+  for (const Case& c : cases) {
+    const double radius = c.d / 2.0;
+    const double depth = 0.2;
+    const ShapePtr screw = serrated_screw(radius, c.length, c.head, teeth, depth);
+    // The ramp's height at a radius, at `f` of a tooth after its low side.
+    const auto ramp = [&](double r, double f) {
+      return c.length - depth * r / c.head * std::sin((1.0 - f) * step) / std::sin(step);
+    };
+    const double lowest = ramp(radius, 0.0);
+    const Diameters size = basic(c.d, c.pitch);
+    ShapePtr threaded;
+    try {
+      threaded = modeled_thread(*screw, spec_of("T", "S:side(c1)", c.pitch, size));
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "M%g under a serrated head: %s\n", c.d, error.what());
+    }
+    CHECK(threaded != nullptr);
+    if (!threaded) {
+      continue;
+    }
+    CHECK(BRepCheck_Analyzer(threaded->occt()).IsValid());
+    CHECK(!threaded->find_faces("T:thread(S:side(c1))").empty());
+    // The thread from the tip to just under the shank's lowest point at the
+    // head: the shank's section less the bolt's.
+    const double removed = volume(*screw) - volume(*threaded);
+    const double per_mm = kPi * radius * radius - bolt_per_mm(c.pitch, size);
+    CHECK(removed > per_mm * (lowest - 0.02 * c.pitch));
+    CHECK(removed < per_mm * lowest);
+    // A groove and a tooth at the pitch diameter halfway up, on the X axis
+    // (the groove spans the first half pitch from the tip there).
+    const double rp = size.pitch / 2.0;
+    const double middle = std::floor(0.5 * lowest / c.pitch) * c.pitch;
+    CHECK(!inside(*threaded, gp_Pnt(rp, 0, middle + 0.25 * c.pitch)));
+    CHECK(inside(*threaded, gp_Pnt(rp, 0, middle + 0.75 * c.pitch)));
+    // The head is whole: over the threaded radii, between the ramps low
+    // in each tooth and the steps' level, the material stays.
+    for (int k = 0; k < teeth; k += 2) {
+      const double angle = step * (k + 0.2);
+      for (const double r : {size.minor / 2.0 + 0.05, rp, radius - 0.05}) {
+        const gp_Pnt point(r * std::cos(angle), r * std::sin(angle), 0.5 * (ramp(r, 0.2) + c.length));
+        CHECK(inside(*screw, point));
+        CHECK(inside(*threaded, point));
+      }
+    }
+  }
+}
+
 } // namespace
 
 // The suite's parts thread.1-thread.3 (test_main.cpp), each a ctest of its
@@ -1543,6 +1658,7 @@ void thread_tests_2() {
   guarded("test_rounding_along_a_thread_keeps_its_pieces", test_rounding_along_a_thread_keeps_its_pieces);
   guarded("test_thread_faces_close_together_in_order", test_thread_faces_close_together_in_order);
   guarded("test_multi_start_threads", test_multi_start_threads);
+  guarded("test_thread_under_a_serrated_head", test_thread_under_a_serrated_head);
 }
 
 void thread_tests_3() {

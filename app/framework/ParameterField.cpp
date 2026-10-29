@@ -425,7 +425,7 @@ void ParameterField::fetch() {
 }
 
 void ParameterField::textEdited() {
-  if (m_inserting) {
+  if (m_inserting || !m_popupEnabled) {
     return;
   }
   // A column after `Table.` (mitcad#667).
@@ -488,6 +488,7 @@ void ParameterField::caretMoved() {
 }
 
 void ParameterField::open(Mode mode) {
+  if (!m_popupEnabled) return;
   m_mode = mode;
   if (!m_popup) {
     QWidget* window = m_edit->window();
@@ -1015,6 +1016,7 @@ void ParameterField::insert(const QString& name, const QString& how, const Ancho
 }
 
 void ParameterField::openBrowser() {
+  if (!m_popupEnabled) return;
   if (m_mode == Mode::Browsing) {
     close(QStringLiteral("fx"));
     return;
@@ -1093,6 +1095,11 @@ void ParameterField::openCreateEditor() {
   }
   fetch(); // the new one is offered from now on
   insert(dialog.chosen(), dialog.created() ? QStringLiteral("created") : QStringLiteral("existing"), at);
+}
+
+void ParameterField::setPopupEnabled(bool enabled) {
+  m_popupEnabled = enabled;
+  if (!enabled) close();
 }
 
 void ParameterField::refreshParameters() { fetch(); }

@@ -6,7 +6,8 @@
 //! read unchanged, the geometry drawn in their planes, ISO 286 fit codes,
 //! several edited and deleted as one undo step, and leader notes; lengths
 //! placed outside the body and stacked, the old default colours read as
-//! Auto and the texts' height (mitcad#894).
+//! Auto and the texts' height (mitcad#894); hole callouts written from
+//! their holes' features, a frame under one (mitcad#902).
 
 use serde_json::{Value, json};
 
@@ -86,7 +87,10 @@ fn near(actual: &Value, expected: f64) {
 
 fn near_point(actual: &Value, expected: [f64; 3]) {
     for (i, e) in expected.into_iter().enumerate() {
-        near(&actual[i], e);
+        let value = actual[i]
+            .as_f64()
+            .unwrap_or_else(|| panic!("{actual} is no point"));
+        assert!((value - e).abs() < 1e-6, "{actual} instead of {expected:?}");
     }
 }
 
@@ -307,7 +311,14 @@ fn a_note_on_a_component_follows_its_occurrence() {
     // The view's right (X) in the Block's coordinates, turned with it.
     near_point(&note["plane"]["x"], [0.0, -1.0, 0.0]);
     near_point(&note["drawing"]["plane"]["x"], [1.0, 0.0, 0.0]);
-    near_point(&note["drawing"]["text"]["at"], [109.0, 43.0, 61.0]);
+    // Its text out of the Block the shortest way on an oblique leader
+    // (mitcad#902), 2 text heights clear, after a landing of 1.5; no pixels
+    // of the view kept.
+    near_point(
+        &note["drawing"]["text"]["at"],
+        [99.785_533_905_932_74, 20.964_466_094_067_262, 61.0],
+    );
+    assert!(note.get("text_offset").is_none(), "{note}");
     // The Block moved in its Assembly: the note goes with it.
     command(
         &mut doc,
@@ -368,25 +379,21 @@ fn a_dimension_is_drawn_in_its_plane_relative_to_its_picks() {
     let [p, q] = [vector(&offset["points"][0]), vector(&offset["points"][1])];
     // Along -Z, so in the plane square to Y (the axis least along it, a
     // plane of the block's sides), the line outside the block along -X
-    // (mitcad#894): the block reaches 10 mm past the ends either way, the
-    // line 1.5 text heights (2.5 mm, the block being small) past it; the
-    // extension lines from the block's outline there, not across its top.
+    // (mitcad#894): the ends slid within both faces to their edge there and
+    // to their far edge along the plane's normal (mitcad#902: the block's
+    // corner at x 0, y 0), the line 6 text heights (2.5 mm, the block being
+    // small) past the block; the extension lines from the faces' corners,
+    // not across the top.
     near_point(&drawing["plane"]["normal"], [0.0, 1.0, 0.0]);
     near_point(&drawing["plane"]["x"], [0.0, 0.0, -1.0]);
     near_point(&drawing["plane"]["y"], [-1.0, 0.0, 0.0]);
     near(&drawing["text_height"], 2.5);
-    near(&drawing["line_offset"], 13.75);
-    near_point(&drawing["extension_lines"][0][0], [p[0] - 10.0, p[1], p[2]]);
-    near_point(
-        &drawing["extension_lines"][0][1],
-        [p[0] - 13.75, p[1], p[2]],
-    );
-    near_point(
-        &drawing["dimension_lines"][0][1],
-        [q[0] - 13.75, q[1], q[2]],
-    );
+    near(&drawing["line_offset"], 15.0);
+    near_point(&drawing["extension_lines"][0][0], [0.0, 0.0, p[2]]);
+    near_point(&drawing["extension_lines"][0][1], [-15.0, 0.0, p[2]]);
+    near_point(&drawing["dimension_lines"][0][1], [-15.0, 0.0, q[2]]);
     near_point(&drawing["arrows"][1]["direction"], [0.0, 0.0, -1.0]);
-    near_point(&drawing["text"]["at"], [p[0] - 13.75, p[1], 10.0]);
+    near_point(&drawing["text"]["at"], [-15.0, 0.0, 10.0]);
     near_point(&drawing["text"]["direction"], [0.0, 0.0, -1.0]);
 
     // The text dragged along and off the line, the line to the other side.
@@ -397,14 +404,14 @@ fn a_dimension_is_drawn_in_its_plane_relative_to_its_picks() {
     );
     assert_eq!(undo_label(&doc), "Edit Offset1");
     let drawing = annotation(&doc, "Offset1")["drawing"].clone();
-    near_point(&drawing["text"]["at"], [p[0] - 7.0 - 1.0, p[1], 10.0 - 3.0]);
+    near_point(&drawing["text"]["at"], [-7.0 - 1.0, 0.0, 10.0 - 3.0]);
     // The block made higher: the places follow the picks.
     command(
         &mut doc,
         json!({"cmd": "set_parameter", "name": "height", "value": 30}),
     );
     let drawing = annotation(&doc, "Offset1")["drawing"].clone();
-    near_point(&drawing["text"]["at"], [p[0] - 8.0, p[1], 15.0 - 3.0]);
+    near_point(&drawing["text"]["at"], [-8.0, 0.0, 15.0 - 3.0]);
     // Back to the defaults with null.
     command(
         &mut doc,
@@ -413,7 +420,7 @@ fn a_dimension_is_drawn_in_its_plane_relative_to_its_picks() {
     );
     let stored = annotation(&doc, "Offset1");
     assert!(stored.get("text_offset").is_none(), "{stored}");
-    near(&stored["drawing"]["line_offset"], 13.75);
+    near(&stored["drawing"]["line_offset"], 15.0);
 
     // A plane picked: the XZ plane, which the length lies in already.
     command(
@@ -452,9 +459,10 @@ fn a_view_suggests_the_plane_and_the_places() {
     // the line outside the block (mitcad#894), 1.5 text heights past its
     // side, on +X (both sides as clear: neither is the view's upper one).
     assert_eq!(offset["plane"], json!({"normal": [0.0, -1.0, 0.0]}));
-    near(&offset["line_offset"], 13.75);
+    near(&offset["line_offset"], 15.0);
     near_point(&offset["drawing"]["plane"]["y"], [1.0, 0.0, 0.0]);
-    // A note there: its text along the view's right, 40 and 30 pixels off.
+    // A note there: its text along the view's right, four and three text
+    // heights off (mitcad#902: no pixels of the view kept).
     command(
         &mut doc,
         json!({"cmd": "add_annotation", "a": top(), "at": [3, 4, 25], "text": "Deburr\nall edges",
@@ -462,11 +470,17 @@ fn a_view_suggests_the_plane_and_the_places() {
     );
     let note = annotation(&doc, "Note1");
     assert_eq!(note["kind"], "note");
-    assert_eq!(note["text_offset"], json!([20.0, 15.0]));
+    assert!(note.get("text_offset").is_none(), "{note}");
     near_point(&note["drawing"]["plane"]["x"], [1.0, 0.0, 0.0]);
     near_point(&note["drawing"]["plane"]["y"], [0.0, 0.0, 1.0]);
     near_point(&note["drawing"]["arrows"][0]["tip"], [3.0, 4.0, 20.0]);
-    near_point(&note["drawing"]["text"]["at"], [23.0, 4.0, 35.0]);
+    // Its text out of the part the shortest way on an oblique leader
+    // (mitcad#902): up and out to its side (-X), 2 text heights past the
+    // block, after a landing of 1.5.
+    near_point(
+        &note["drawing"]["text"]["at"],
+        [-3.586_067_977_499_79, 4.0, 25.672_135_954_999_58],
+    );
 }
 
 #[test]
@@ -486,7 +500,13 @@ fn notes_point_at_their_picks() {
     let drawing = &note["drawing"];
     near_point(&drawing["plane"]["normal"], [0.0, 0.0, 1.0]);
     near_point(&drawing["arrows"][0]["tip"], [3.0, 4.0, 20.0]);
-    near_point(&drawing["text"]["at"], [13.0, 14.0, 20.0]);
+    // Out of the part the shortest way on an oblique leader (mitcad#902):
+    // from its corner's side (-X, -Y) at 45 degrees, 2 text heights
+    // (2.5 mm each) past the block, after a landing of 1.5.
+    near_point(
+        &drawing["text"]["at"],
+        [-7.785_533_905_932_736, -3.035_533_905_932_736, 20.0],
+    );
     near_point(&drawing["dimension_lines"][0][1], [3.0, 4.0, 20.0]);
     // Its text edited; it follows the face.
     command(
@@ -729,7 +749,9 @@ fn datums_and_feature_control_frames_are_kept_on_their_picks() {
                "tolerance": "Ø0.05 Ⓜ"})
     );
     near_point(&frame["drawing"]["arrows"][0]["tip"], [10.0, 10.0, 20.0]);
-    assert!(frame["drawing"].get("terminator").is_none());
+    // Its leader on a face ends in a dot (mitcad#902: a dot on a face, an
+    // arrow on an edge or an outline, as on the reference drawing).
+    assert_eq!(frame["drawing"]["terminator"], "dot");
     // Refused: the rules of ISO 1101.
     for (tolerance, why) in [
         (
@@ -1400,11 +1422,12 @@ fn lengths_are_placed_outside_the_body_and_stack_outside_each_other() {
             assert!(x < 0.0, "inside the block's extent: {drawing}");
         }
     }
-    // 1.5 text heights (2.5 mm) past the block; the second 1.2 text
-    // heights further out.
-    near(&offset["line_offset"], 13.75);
-    near(&distance["line_offset"], 16.75);
-    near(&distance["dimension_lines"][0][0][0], -6.75);
+    // 6 text heights (2.5 mm) past the block, their ends slid to the
+    // faces' edge at x 0 (mitcad#902); the second 2.5 text heights further
+    // out.
+    near(&offset["line_offset"], 15.0);
+    near(&distance["line_offset"], 21.25);
+    near(&distance["dimension_lines"][0][0][0], -21.25);
     // Hidden, the first leaves its place to the second.
     command(
         &mut doc,
@@ -1412,7 +1435,7 @@ fn lengths_are_placed_outside_the_body_and_stack_outside_each_other() {
     );
     near(
         &annotation(&doc, "Distance1")["drawing"]["line_offset"],
-        13.75,
+        15.0,
     );
     command(
         &mut doc,
@@ -1435,8 +1458,8 @@ fn lengths_are_placed_outside_the_body_and_stack_outside_each_other() {
     let first = annotation(&doc, "Offset1");
     let second = annotation(&doc, "Distance1");
     assert_eq!(second["plane"], json!({"normal": [0.0, -1.0, 0.0]}));
-    near(&first["line_offset"], 13.75);
-    near(&second["line_offset"], 16.75);
+    near(&first["line_offset"], 15.0);
+    near(&second["line_offset"], 21.25);
     near_point(&second["drawing"]["plane"]["y"], [1.0, 0.0, 0.0]);
     // Kept: the first moved by hand stays where it was put.
     command(
@@ -1446,7 +1469,7 @@ fn lengths_are_placed_outside_the_body_and_stack_outside_each_other() {
     near(&annotation(&doc, "Offset1")["drawing"]["line_offset"], 30.0);
     near(
         &annotation(&doc, "Distance1")["drawing"]["line_offset"],
-        16.75,
+        21.25,
     );
 }
 
@@ -1521,7 +1544,7 @@ fn the_text_height_is_automatic_or_set_for_the_design() {
     assert_eq!(height(&doc)["in_use"], 5.0);
     let drawing = annotation(&doc, "Offset1")["drawing"].clone();
     near(&drawing["text_height"], 5.0);
-    near(&drawing["line_offset"], 17.5);
+    near(&drawing["line_offset"], 30.0);
     // Kept in the file, read back.
     let saved = doc.to_json();
     let file: Value = serde_json::from_str(&saved).unwrap();
@@ -1548,4 +1571,181 @@ fn the_text_height_is_automatic_or_set_for_the_design() {
     );
     assert_ne!(bad, saved);
     assert!(Document::from_json(&bad, MockKernel::default()).is_err());
+}
+
+/// mitcad#902: the block with a hole feature (F3) on its top face at
+/// `points`, its drill the parameter `drill` (6.6 mm), with `extra` fields
+/// (its extent, kind, thread).
+fn holed(points: Value, extra: Value) -> Document<MockKernel> {
+    let mut doc = block();
+    let mut def = json!({"type": "hole",
+        "placement": {"type": "face", "body": "F2.b0", "face": format!("F2:end({R})"),
+                      "points": points},
+        "diameter": "drill", "extent": {"type": "distance", "depth": 10}});
+    for (key, field) in extra.as_object().unwrap() {
+        def[key] = field.clone();
+    }
+    command(
+        &mut doc,
+        json!([
+            {"cmd": "add_parameter", "name": "drill", "value": "6.6 mm"},
+            {"cmd": "add_feature", "def": def},
+        ]),
+    );
+    doc
+}
+
+/// A hole callout on wall `index` of the hole feature F3, picked at
+/// `at`; its lines.
+fn callout(doc: &mut Document<MockKernel>, index: usize, at: [f64; 3]) -> Value {
+    let added = command(
+        doc,
+        json!({"cmd": "add_annotation", "kind": "hole_callout",
+               "a": {"body": "F2.b0", "face": format!("F3:hole{index}.wall")}, "at": at}),
+    );
+    let name = added["name"].as_str().unwrap().to_owned();
+    annotation(doc, &name)["label"]["lines"].clone()
+}
+
+#[test]
+fn hole_callouts_write_their_holes_from_the_feature() {
+    // A simple hole to a depth: its drill and depth (ISO 129-1 symbols).
+    let mut doc = holed(json!([[10, 10, 20]]), json!({}));
+    assert_eq!(
+        callout(&mut doc, 0, [10.0, 13.3, 20.0]),
+        json!(["Ø6.6 ↧ 10"])
+    );
+    let simple = annotation(&doc, "HoleCallout1");
+    assert_eq!(simple["kind"], "hole_callout");
+    assert_eq!(simple["label"]["text"], "Ø6.6 ↧ 10");
+    assert!(simple.get("value").is_none());
+    // On a leader with an arrow to the hole's edge, not a dot; its text
+    // runs from the leader's end.
+    let drawing = &simple["drawing"];
+    assert_eq!(drawing["arrows"].as_array().unwrap().len(), 1, "{drawing}");
+    assert!(drawing.get("terminator").is_none(), "{drawing}");
+    assert!(
+        drawing["align"] == "start" || drawing["align"] == "end",
+        "{drawing}"
+    );
+    // Associative: the drill's size followed.
+    command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": "drill", "value": 8}),
+    );
+    assert_eq!(
+        annotation(&doc, "HoleCallout1")["label"]["lines"],
+        json!(["Ø8 ↧ 10"])
+    );
+    // Kept in the design file as the other annotations.
+    let saved: Value = serde_json::from_str(&doc.to_json()).unwrap();
+    assert!(
+        saved["annotations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["name"] == "HoleCallout1" && a["kind"] == "hole_callout"),
+        "{saved}"
+    );
+
+    // Four through holes with a counterbore: counted, THRU, ⌴ Ø ↧.
+    let mut doc = holed(
+        json!([[4, 4, 20], [16, 4, 20], [4, 16, 20], [16, 16, 20]]),
+        json!({"extent": {"type": "through_all"},
+               "kind": {"type": "counterbore", "diameter": 11, "depth": 6.8}}),
+    );
+    assert_eq!(
+        callout(&mut doc, 2, [4.0, 16.0, 20.0]),
+        json!(["4x Ø6.6 THRU", "⌴ Ø11 ↧ 6.8"])
+    );
+
+    // A countersink: ⌵ Ø × the full angle.
+    let mut doc = holed(
+        json!([[10, 10, 20]]),
+        json!({"kind": {"type": "countersink", "diameter": 12,
+                        "angle": std::f64::consts::FRAC_PI_2}}),
+    );
+    assert_eq!(
+        callout(&mut doc, 0, [10.0, 10.0, 20.0]),
+        json!(["Ø6.6 ↧ 10", "⌵ Ø12 × 90°"])
+    );
+
+    // A tapped hole by its thread and class; a thread along part of the
+    // wall has its depth and the drill's below it.
+    let mut doc = holed(
+        json!([[10, 10, 20]]),
+        json!({"extent": {"type": "distance", "depth": 12},
+               "thread": {"designation": "M6x1", "class": "6H"}}),
+    );
+    assert_eq!(
+        callout(&mut doc, 0, [10.0, 10.0, 20.0]),
+        json!(["M6x1 - 6H ↧ 12"])
+    );
+    let mut doc = holed(
+        json!([[10, 10, 20]]),
+        json!({"extent": {"type": "distance", "depth": 12},
+               "thread": {"designation": "M6x1", "class": "6H", "length": 8}}),
+    );
+    assert_eq!(
+        callout(&mut doc, 0, [10.0, 10.0, 20.0]),
+        json!(["M6x1 - 6H ↧ 8", "Ø4.92 ↧ 12"])
+    );
+
+    // A custom thread: its size and starts.
+    let mut doc = holed(
+        json!([[10, 10, 20]]),
+        json!({"extent": {"type": "distance", "depth": 12},
+               "thread": {"standard": "custom", "custom": {"major": 10, "pitch": 1.5},
+                          "starts": 2}}),
+    );
+    assert_eq!(
+        callout(&mut doc, 0, [10.0, 10.0, 20.0]),
+        json!(["10x1.5 2 STARTS ↧ 12"])
+    );
+}
+
+#[test]
+fn a_hole_callout_takes_a_frame_and_breaks_with_its_hole() {
+    let mut doc = holed(
+        json!([[5, 5, 20], [15, 15, 20]]),
+        json!({"extent": {"type": "through_all"}}),
+    );
+    assert_eq!(
+        callout(&mut doc, 0, [5.0, 5.0, 20.0]),
+        json!(["2x Ø6.6 THRU"])
+    );
+    // A position frame under it, on the same leader (mitcad#902).
+    command(
+        &mut doc,
+        json!({"cmd": "add_annotation", "a": {"body": "F2.b0", "face": "F3:hole0.wall"},
+               "on": "HoleCallout1", "name": "Position",
+               "frame": {"characteristic": "position", "value": 0.1, "diameter": true}}),
+    );
+    let frame = annotation(&doc, "Position");
+    assert_eq!(frame["on"], "HoleCallout1");
+    let drawing = &frame["drawing"];
+    assert_eq!(drawing["attached"], "HoleCallout1", "{frame}");
+    assert_eq!(drawing["under_lines"], 1, "{frame}");
+    assert_eq!(
+        drawing["align"],
+        annotation(&doc, "HoleCallout1")["drawing"]["align"]
+    );
+    // A hole callout on a pick that is no face or edge is refused.
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "add_annotation", "kind": "hole_callout", "a": {"body": "F2.b0"}}),
+    );
+    assert!(error.contains("a hole callout points at a hole"), "{error}");
+    let error = refused(
+        &mut doc,
+        json!({"cmd": "add_annotation", "kind": "hole_callout", "a": {"datum": "xy"}}),
+    );
+    assert!(error.contains("a hole callout points at a hole"), "{error}");
+    // The hole deleted: broken with the reason, as other annotations are;
+    // its frame with it.
+    command(&mut doc, json!({"cmd": "delete_feature", "uid": "F3"}));
+    let broken = annotation(&doc, "HoleCallout1");
+    assert!(broken["error"].is_string(), "{broken}");
+    assert!(broken.get("drawing").is_none(), "{broken}");
+    assert!(annotation(&doc, "Position")["error"].is_string());
 }

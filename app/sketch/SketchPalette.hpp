@@ -47,10 +47,12 @@ signals:
   void autoSectionShown(QWidget* section);
 
 protected:
+  void changeEvent(QEvent* event) override;
   bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
   void refresh();
+  void refreshTitle();
   // The Auto constraint section (mitcad#189): shown once the drawing tool
   // has drawn an entity, with the choices of its session.
   void refreshAuto();

@@ -1165,9 +1165,16 @@ annotation, *Annotations* below; the model's *Measurement objects* and
   **Datum Label** dialog, the model's `next_datum_letter` offered: A to Z
   without I, O and Q, then AA …; kept, no `letter` is sent and the model
   chooses it), Frame… for a feature control frame (the **Feature Control
-  Frame** dialog, *Annotations* below). A datum label and a frame stand on
-  a feature: on a vertex or a datum point a hint says so and no dialog
-  opens (the model refuses them too). The change runs outside the panel's
+  Frame** dialog, *Annotations* below). **Hole Callout** beside them
+  (mitcad#902; enabled as Datum Label…) puts a hole callout on the hole
+  picked — its round face (a wall, a counterbore's or countersink's face)
+  or a rim — without a dialog: the model writes its text from the hole's
+  feature (`4x Ø6.6 THRU`, `⌴ Ø11 ↧ 6.8`, `M8x1.25 - 6H ↧ 15`; the
+  model's *Hole callouts and the reference look*) and points its arrow at
+  the hole's edge where it was clicked; a pick that is no hole is refused
+  with the reason (`Leader hole_callout not added: …`). A datum label, a
+  frame and a hole callout stand on a feature: on a vertex or a datum
+  point a hint says so and no dialog opens (the model refuses them too). The change runs outside the panel's
   undo range as a light bulb's does (`CommandSession::runVisibility`): it stays when the panel
   is cancelled and is an undo step of its own. The macOS AppKit form
   (`MITCAD_MACOS_NATIVE_UI`), which has no history, has no Keep either;
@@ -1195,9 +1202,9 @@ annotation, *Annotations* below; the model's *Measurement objects* and
 - **Log.** `Annotations: <name> <kind>[ (hidden)][ in <group>] | <name>
   broken: <why>` (`none`) when they change; `Annotation kept: <name>`;
   `Measure Keep enabled|disabled[: <reason>]`, `Measure Note enabled|disabled` (Datum
-  Label… and Frame… with it), `Measure Keep at x,y` (` (disabled)`),
+  Label…, Frame… and Hole Callout with it), `Measure Keep at x,y` (` (disabled)`),
   `Measure Note at x,y`, `Measure Datum Label at x,y`, `Measure Frame at
-  x,y`, `Measure Annotations at x,y` and `Measure history Keep at x,y`
+  x,y`, `Measure Hole Callout at x,y`, `Measure Annotations at x,y` and `Measure history Keep at x,y`
   with the panel's places; `Measure Keep clicked`, `Measure Note
   clicked`, `Measure Datum Label clicked`, `Measure Frame clicked`,
   `Measure Annotations clicked`,
@@ -1259,32 +1266,71 @@ read-only window.
   from a font that may lack them: `paintCharacteristic`),
   or, under a dimension, centred just below that dimension's line where
   its text is (not dragged on its own).
-  **The look of a technical drawing** (mitcad#894; ISO 129-1, ISO 3098,
-  ISO 1101; `paintMeasurements`), in both background tones: the text
-  plain, regular weight, with no card under it and a thin outline (at
-  most a pixel) in the background tone round its glyphs; it is the
-  model's `text_height` (mm) high in its plane, so it grows and shrinks
-  with the model like the lines, and never under 9 pixels on screen
-  (zoomed out); a dimension's value centred above its line a quarter of
-  that height off. Text reads from the bottom or from the right (ISO
-  129-1): never mirrored, left to right, and a text that would run down
-  within 30 degrees of straight down runs up instead, so vertical and
-  near-vertical texts read bottom to top from every side. Lines are
-  thin (1 pixel times the picture's scale, ISO 128) with no halo;
-  arrowheads closed and filled, 30 degrees, 0.8 text heights long (at
-  least 5 pixels), without a halo (`measurementArrowHead`; a datum
-  label's triangle as high); extension lines start a quarter text height
-  off the measured point and run half a text height past the dimension
-  line; a frame's cells and a datum label's square are outlined thinly,
-  filled in the background tone. An annotation of the colour **Auto**
-  (the model's `auto`, a new one's) is drawn in the neutral annotation
-  colour of the background tone (`measurementAutoColor`: near-black on
-  the light background, light grey on the dark one); its picks are
-  highlighted in it too. A highlighted one has a band of the
-  selection's blue under its lines and its text, and its picks (and its
-  plane's pick) are highlighted in its colour
-  (`MainWindow::addAnnotationHighlights`; they take no clicks). A selection made in the view (or another document) takes the
-  highlight away and deselects the window's rows
+  **The look of a technical drawing** (mitcad#894, mitcad#902: the
+  reference PMI look; ISO 129-1, ISO 3098, ISO 128, ISO 1101;
+  `paintMeasurements`), in both background tones: the text in the
+  bundled technical lettering (an ISO 3098 type B style font,
+  `third_party/fonts/iso-lettering`, a file beside the program loaded at run
+  time, `measurementFontFamily`; the UI's font when it is missing), regular
+  weight with ISO 3098's tight spacing, with no card or outline under it;
+  it is the model's `text_height` (mm) high in its plane, so it grows and
+  shrinks with the model like the lines, but its capitals as seen on
+  screen (foreshortened as the plane turns away; measured on an H's ink,
+  not the font's own cap height) never under 9 pixels
+  (zoomed out) nor over 16 (zoomed in), times a picture's scale
+  (`measurementTextFloor`, `measurementTextCeiling`); the depth symbol ↧
+  is drawn in strokes (an arrow onto a bar) in the glyph's own advance,
+  as fonts blur it at that size; a dimension's value
+  centred above its line a quarter of that height off. Text reads from the
+  bottom or from the right (ISO 129-1): never mirrored, left to right, and
+  a text that would run down within 30 degrees of straight down runs up
+  instead, so vertical and near-vertical texts read bottom to top from
+  every side. Lines are crisp and thin (1 pixel times the picture's scale,
+  ISO 128, on the pixel grid: `measurementSnapped`) with no halo;
+  arrowheads closed and filled, 30 degrees, a text height long (at
+  least 5 pixels), laid in the annotation's plane as its text is (so they
+  foreshorten with it, but keep at least 0.6 of their width seen
+  obliquely), a datum label's triangle as high, a leader on a
+  face ending in a dot (the model's `terminator`), a circle's centre mark
+  a cross in its plane; extension lines start half a text height off
+  the point the model gives (the picked edge, vertex, or the picked face's
+  own outline), a visible gap, and run 0.8 text heights past the
+  dimension line; a
+  frame's cells two text heights high and a datum label's square outlined
+  thinly, not filled, the stem meeting the middle of the side it comes
+  to. A note's, a hole callout's and a diameter on a leader's lines are
+  1.6 text heights apart, the first level with the landing and the others
+  below it, set flush left, and start at the leader's end, or end there
+  where the model's `align` says so (the landing then runs on to the
+  first line's end); a frame under a hole callout stands below its lines
+  flush with their left edge (`measurementDisplays` gives each the
+  other's words: `overLines`, `framesUnder`). No pixel sizes are frozen when an annotation is
+  added: its default places are in text heights (the model's). An
+  annotation of the colour **Auto** (the model's `auto`, a new one's) is
+  drawn in the neutral annotation colour of the background tone
+  (`measurementAutoColor`: near-black on the light background, a light grey
+  on the dark one, not chalk-white).
+  Over the model, Auto's ink follows what lies behind it: the overlay
+  grabs the view's frame once the camera rests or the scene changes
+  (`MeasurementBackdrop`, `Annotation backdrop: W x H` is logged): each
+  piece of a line (5 pixels: extension and dimension lines, leaders) and
+  each terminator (arrowhead, dot, datum triangle) takes the dark ink over
+  a light backdrop and the light grey over a dark one, so that a leader
+  stays readable over a body (its tone changes where it leaves the
+  body); an annotation's text and frames take one ink, by what lies
+  behind most of them (`measurementAutoInk`); no casing or halo. Until a
+  frame is grabbed, the background tone's colour.
+  Snapshots and Render Image take the tone of the picture's own
+  background (`measurementPictureTone`; a transparent snapshot the
+  view's). A selected one is drawn in the selection's blue, a hovered one
+  in the hover's, with the same thin lines (at most 1.5 pixels) and the
+  same text: no band, no box (`Annotation hovered: <name>|none` is
+  logged). Its picks are not filled in the selection's colour
+  (mitcad#902: only the annotation recolours;
+  `MainWindow::addAnnotationHighlights` logs `Annotation picks
+  highlighted` and draws nothing). A selection made in the view (or
+  another document) takes the highlight away and deselects the window's
+  rows
   (`MainWindow::dropAnnotationHighlight`).
 - **The mouse.** The overlay lets the mouse through, but watches the
   view's: on an annotation's text or a length's dimension line (an
@@ -1308,11 +1354,12 @@ read-only window.
   or for Limits **Upper limit** and **Lower limit**, the sizes as they are
   to be written (kept as deviations from the value), in mm or degrees;
   **Fit** an editable list of ISO 286-2's common codes, **Show
-  deviations**), **Colour** (Auto first, then the named colours —
-  orange, blue, green, magenta, violet, amber, red, black, white, none of
-  them one of the six old rotating defaults the model reads as Auto —,
-  Other… with the colour dialog), **Group** (editable, the groups there
-  are), **Shown**; a note
+  deviations**), **Colour** (Auto first, then Black and Dark Grey,
+  mitcad#902: a technical drawing's colours, the bright presets gone; an
+  annotation's own colour, an older preset's too, kept and offered as it
+  is; Custom… with the colour dialog), **Group** (editable, the groups
+  there are), **Shown**; a hole callout shows its text (the hole's,
+  **Callout**, not edited); a note
   has **Text** (several lines) instead of the value's fields, a datum
   label its **Letter**, a feature control frame the frame's fields
   (below) and **Placed** (On its leader, or Under each dimension: `on`).
@@ -1383,15 +1430,15 @@ read-only window.
   selected rows (Decimals and Tolerance for the dimensions among them,
   Tolerance not for angles and lengths together;
   each one `edit_annotation` with `names`, one undo step), and **Add
-  Frame…** for one dimension that is not broken (a feature control frame
+  Frame…** for one dimension or hole callout that is not broken (a feature control frame
   under it: `add_annotation` with its first pick, `on`, its colour and
   group), and **Text Height…** (Alt+X, mitcad#894; the design's, not the
   rows'): the **Annotation Text Height** dialog, an editable list of Auto
   (with the height it gives, `Auto (2.5 mm)`) and the ISO 3098 series
   2.5, 3.5, 5, 7, 10 mm, a typed height taken from 0.1 to 1000 mm; OK runs
   `set_annotation_text_height` (`null` for Auto), one undo step. The
-  Colour column shows `Auto` for an annotation in Auto. Kinds are Distance … Diameter, Note, Datum label and Feature
-  control frame; a frame's Value is its cells (`⟂ | Ø0.05 Ⓜ | A`, a
+  Colour column shows `Auto` for an annotation in Auto. Kinds are Distance … Diameter, Note, Datum label, Feature
+  control frame and Hole callout (mitcad#902; its Value its lines); a frame's Value is its cells (`⟂ | Ø0.05 Ⓜ | A`, a
   warning in its tooltip for a datum no label has), its Tolerance the
   tolerance cell, its Text `Under <dimension>`. The table has
   the keyboard when it opens (arrows, type-ahead, Ctrl+A); every button
@@ -1400,8 +1447,8 @@ read-only window.
   editor. The window follows the model after every refresh and keeps the
   whole selection (selected at once, `selectRows`); closing it takes the
   highlight away.
-- **Several at once:** **Annotation Colour** (Auto, the named colours and
-  Other…), **Annotation Group** (editable; empty for none), **Annotation
+- **Several at once:** **Annotation Colour** (Auto, Black, Dark Grey, the
+  first's own colour when it is another, and Custom…), **Annotation Group** (editable; empty for none), **Annotation
   Decimals** (Automatic, 0 to 6), **Annotation Tolerance** (the editor's
   tolerance fields; Limits as deviations, the values being several).
 - **Log.** `Annotations drawn: <name> = <label> (#rrggbb|auto) | …` (`none`)
@@ -1464,10 +1511,14 @@ limits typed as sizes read back exactly, a colour changed alone; a datum
 label and a frame from the Measure panel, listed and filtered, a row
 highlighting its pick, a frame added under a dimension and edited, a
 datum label's pick and a frame's plane picked again in the view (a
-click on nothing waiting on, Esc cancelling), saved; the Windows test
-without the broken one, the filters, the line drag and the picks again).
+click on nothing waiting on, Esc cancelling), saved; a hole callout on a
+plate's counterbored holes from the Measure panel's Hole Callout,
+written from the hole's feature in the bundled lettering, saved
+(mitcad#902); the Windows test without the broken one, the filters, the
+line drag and the picks again).
 `tools/ui-annotation-colour-test.sh` (mitcad#764): Edit Annotation's
-Colour, a named one and Other…, for an annotation whose picks are in an
+Colour, a named one and Custom… (Auto, Black, Dark Grey and Custom…
+offered, a stored colour kept, mitcad#902), for an annotation whose picks are in an
 occurrence and a root one, with the Measure panel closed and open (the
 window from its Annotations…): the view and the window show it at once,
 it stays as the panel closes, Undo and Redo, saved; both stored in the
@@ -1478,7 +1529,20 @@ vertical and half a degree off vertical from the front, from below and
 from behind (bottom to top or left to right, never mirrored), no box
 painted behind a value, the arrowhead's 30 degrees and its length of 0.8
 text heights, the model's text height on screen and its floor, Auto's
-colour on a light and a dark background.
+colour on a light and a dark background; and the reference look of
+mitcad#902: no band and no box under a selected or hovered one, lines on
+whole-pixel centres, the text between its floor and its ceiling at a
+large and a small zoom, arrowheads and a centre mark in the plane, the
+extension lines from the model's points, frames two text heights high,
+the bundled lettering found, a leader's dot, a hole callout's lines and a
+frame under it (the first line level with the landing, flush left with
+the frame), a picture's own background tone, Auto's ink piece by piece
+along a line over both halves of a picture and one ink for a text over
+them. `tools/ui-annotations-look.sh <dir>`
+(not a recurring test) models a part like the reference drawing and
+saves the screen with nothing and with a dimension selected on the white
+and the dark background, each with the 3D view cut out of the same
+picture (`tools/xwd2png.py` with a rectangle), for a look against it.
 
 ## Sketch mode
 
@@ -1949,15 +2013,53 @@ one undo step, named after what the action makes.
   action), logged `Made the sketch x axis for a pick: c3` (`… origin …`),
   so undo takes it back with the dimension or constraint. The axis lines
   and their far ends are never drawn as geometry (`sketchEntities`
-  leaves entities with `axis` out), snapped to, dragged or picked
-  otherwise, but by a command panel's input that takes them (Mirror's
-  Mirror Line, mitcad#876; "Sketch commands with panels" below); a
+  leaves entities with `axis` out), snapped to or dragged; they are
+  picked by the tools above, by a command panel's input that takes them
+  (Mirror's Mirror Line, mitcad#876; "Sketch commands with panels"
+  below) and selected with no tool running (below); a
   dimension or a constraint's glyph on one is drawn at the axis near the
   origin, and its extension lines take the axis as infinite.
   `tools/ui-sketch-axes-test.sh` and
   `tools/ui-windows-sketch-axes-test.ps1` dimension a point 30 mm from
   the x axis, give a line 25° to it and put a point on the y axis in a
-  new sketch, and mirror a circle about the y axis (mitcad#876).
+  new sketch, mirror a circle about the y axis (mitcad#876), and select a
+  point and the y axis first, then Coincident, and the point and the x
+  axis, then Sketch Dimension (mitcad#899).
+- **Selecting the axes and origin first** (mitcad#899): with no tool
+  running, the x axis, the y axis and the origin hover and select like
+  construction geometry (`SketchController::axisPickEvent` with
+  `selecting`; the view does not show them, so sketch mode takes the
+  press): `axisSelectionAt` asks `entityAt` with `PickAll | PickAxes`,
+  so a dimension's or constraint's symbol and the sketch's points and
+  curves win ties, and then leaves the click to the view wherever the
+  view picks a precise target itself (`OcctViewer::claimsClick`: a text,
+  a body edge or vertex in sight, or one behind faces, which the
+  selection filter's rules and Shift decide on; a face or a profile under
+  the axis does not count). Otherwise it gives the pick id
+  (`SketchModel::axisSelectionPick`: `x_axis`, `y_axis`, also where the
+  model made the line; `origin` before a step made its point, after which
+  the origin is a point of the sketch the view picks). Hover and the
+  selection are drawn as the tools draw them: the axis across the view,
+  the origin's dot. The click logs `Sketch axis selected: y_axis (y axis)`
+  or `Sketch origin selected: origin` and goes to the selection as a
+  sketch curve of geometry `line` (an axis) or a sketch point (the
+  origin) with the pick id (`axisSelectionItem`); Ctrl adds and removes
+  as with other picks, the selection filter counts them as construction
+  geometry, and a drag from one is the view's (a window), never a move.
+  Selecting makes nothing and changes no undo history: the pick id is
+  turned into the model's entity (`SketchModel::axisEntity`, the entity
+  there is) or made with `sketch.axis` in the step that uses it, as for
+  the tools' picks. The constraint tools (Fix/Unfix excepted) take such a
+  selection through `takeSelection` and `constrainSelection`, decided on
+  the sketch with the picks added (`addAxisPicks`) and with the "one of
+  the origin and axes per constraint" rule; Sketch Dimension's
+  preselection takes it (a point and an axis: the point's distance; a
+  line and an axis: the angle; the origin and a point: the distances);
+  Mirror's Mirror Line takes a selected axis (the command's preselection
+  gives an axis pick only to an input with `sketchAxes`, so Objects and
+  other commands' inputs leave it out, `isAxisSelection`). Delete,
+  Construction, Convert to Sketch Geometry, Fix/Unfix, Copy and Cut leave
+  the axes and origin out.
 - **Snapping to bodies** (mitcad#258): a tool whose `bodySnaps()` is true
   gives the snapper the body geometry (`SnapSettings::body`), which then
   offers body vertices as `Snap::Kind::BodyVertex` (with the points' rank
@@ -2045,6 +2147,30 @@ not fit names the line and the largest radius that does) are the panel's
 error. `describe`: `Sketch fillet of c1 and c2, radius 5`, or `Sketch
 fillet of c1, c2, c3, c4, radius 5`. Keywords: round corners, rounded
 rectangle.
+
+**Project** (`sketch.project`, CREATE's References, **P**, icon
+`project`, keywords include, reference) is a panel of Geometry (one or
+more) and Projection Link (checked: the projection follows its source).
+Geometry takes edges, faces (their edges) and vertices of the bodies, and
+(mitcad#904) curves and points of other sketches (lines, arcs, circles,
+ellipses, splines, points, construction and projected ones too), also of
+other components where an occurrence shows them, and a whole sketch
+picked in the browser (all its curves); the edited sketch's own geometry
+and the sketch itself are not taken (`withAccepts`). While it runs its
+selection filter context has a row for other sketches' curves and points
+(a cross by default: a click and a window take them, the hover shows them
+as its candidates), the only place where they are selectable. `build`
+sends one `sketch.project` per pick: a body item's name as `source` with
+its `body`; a sketch item's reference as `source`
+(`{"sketch": "F1", "curve": "c3"}`, `{"sketch": "F1", "point": "p2"}`,
+`{"sketch": "F1"}`), no body; `linked` and the pick's `occurrence` for
+both. A later sketch's geometry fails the preview with the model's reason
+in the panel (it comes after the sketch in the timeline), OK off.
+Described `Projected <n> item(s)`, with the other sketches' items named
+(`Projected 1 item(s): sketch curve c3 of F1`). Tests: the selection
+scope's (`app/tests/selection_scope.cpp`), the Project step of
+`tools/ui-sketch-intersect-test.sh` and of
+`tools/ui-windows-projections-test.ps1`.
 
 **Intersect** (`sketch.intersect`, CREATE's References after Project,
 icon `sketch-intersect`, keywords section, cut, reference, project; no
@@ -2563,18 +2689,23 @@ computing`. Tests: `tools/ui-parameters-edit-test.sh`, the unit test
   `logLayout` also logs each row with children's arrow as `Browser arrow
   <path> at x,y`. Test: `tools/ui-browser-collapse-test.sh`.
 - **A design as it opens** (mitcad#426): every design that comes to the
-  window (`MainWindow::installDocument`: Open, a version, a copy, a
-  recovered document, an import of any format, New) opens with the root
+  window from a file (`MainWindow::installDocument`: Open, a version, a
+  copy, a recovered document, an import of any format) opens with the root
   active, whatever active component its file stores: right after reading,
   on the worker, `activate_component` with `"opening": true` (no undo step,
   no new revision, so a design opened unmodified stays unmodified; the
   file stores what is active when it is saved, as before). Logged when the
   file had another one active: `Opened with the root active; C1 was
-  active in the file (unmodified)`. The one exception is New Design in a
-  project (`createDesignInProject`, mitcad#844): the design it made opens
-  with the component its file stores as active, Component1, as the
-  untitled design at the start does (`m_openingNewDesign`; logged as
-  `Opened the new design with Component1 active`). Then
+  active in the file (unmodified)`. Every new design starts with its
+  Component1 active instead, so its first sketch and feature go into
+  Component1, whichever way it is made (`m_openingNewDesign`; each logged
+  as `Opened the new design with Component1 active`): the untitled design
+  at the start (`DocumentSession`, logged after the first recompute; not
+  the `--demo` design), New and Close (`newDocument`, `closeDocument`), an
+  empty project opened and the open design deleted in the Projects panel
+  (all four through `installEmptyDocument`, mitcad#898), and New Design in
+  a project (`createDesignInProject`, mitcad#844: the design it made, with
+  the component its file stores as active). Then
   `BrowserController::designOpened`
   makes the browser rebuild with the rows' default states
   (`BrowserPanel::designOpened` forgets what the design before left open)
@@ -7222,8 +7353,11 @@ sketch edit starts with (`SelectionScope::sketch`):
 | Occluded body edges | empty |
 | Body faces, body vertices, bodies, components, planes/axes/points | empty |
 
-- Another sketch's geometry has no row and is never selectable
-  (`filterRowOf`). A window collects every kind the filter lets a window
+- Another sketch's curves and points have a row of their own, Other
+  sketches' curves and points (`other-sketch-geometry`, mitcad#904), which
+  only Project's context has: in the sketch's context they are never
+  selectable, Shift included (`filterRowOf`); another sketch's profiles,
+  dimensions and constraints have no row at all. A window collects every kind the filter lets a window
   take, not one preferred kind; dimensions and constraints come from the
   overlay (`SketchController::annotationsIn`) when their row is a cross.
 - Visible or occluded: for a body edge, the view looks from the picked
@@ -7254,9 +7388,12 @@ sketch edit starts with (`SelectionScope::sketch`):
   Reset to Defaults (`command_select.filter.reset`).
 - Project (`commandSelectionScope("sketch.project")`, `CommandHost::commandScope`)
   has its own context while it runs: visible edges cross, occluded edges
-  empty, faces and vertices square; the control shows and changes it, and
-  Shift widens a click to occluded edges. The input's own kinds (edges,
-  faces, vertices) always hold. On OK and on Cancel the sketch's rows are
+  empty, faces and vertices square, other sketches' curves and points
+  cross (mitcad#904; the edited sketch is `CommandHost::editedSketch`, its
+  own geometry is in none of Project's rows); the control shows and
+  changes it, and Shift widens a click to occluded edges. The input's own
+  kinds (edges, faces, vertices, sketch curves and points, sketches)
+  always hold. On OK and on Cancel the sketch's rows are
   as they were before. Other commands' inputs decide with their own
   filters as before.
 
@@ -7351,6 +7488,34 @@ SVG at several sizes (`themeIcon`).
   origin axes and saves `at`, one of several positions keeps them as
   Placement Earlier Positions until By Pick is chosen. Flip is on the
   Placement line.
+- **Hole: Clearance holes** (mitcad#903): Hole Tap Type has a third
+  option, Clearance (`clearance`, after Simple and Tapped), which shows
+  Screw Size (`clearance_size`, the model's `hole_sizes` sizes M1.6 to
+  M24, M6 first) and Fit (`clearance_fit`: Fine, Normal, Coarse, Normal
+  first; ISO 273's fine, medium and coarse series) after Drill Point. The
+  size fills Diameter (the fit's clearance hole), Counterbore Diameter
+  and Depth (DIN 974-1 for the ISO 4762 head, M6: 11 and 6.4),
+  Countersink Diameter and Angle (90°; the larger of ISO 10642's head
+  and ISO 15065's countersink, M6: 13.44; none for M24) and Counterdrill
+  Diameter, Depth (the counterbore's) and Angle (90°), all of them while
+  the Hole Type is any. A tapped hole's Countersink Diameter and Angle
+  follow its thread: just over the major diameter (`hole_sizes` with
+  `major`, M6x1: 6.6), at 90°. A field the size fills follows the size,
+  the fit, the Hole Type and the thread size until a value is typed in it
+  (or dragged): that value stays (logged `Hole cb_depth typed: kept when
+  the size changes`), and so does a field that holds an expression.
+  Choosing a Hole Tap Type fills every field again but expressions. Each
+  fill is logged `Hole sizes for M6 normal: diameter 6.6 mm, cb_diameter
+  11 mm, …; kept cb_depth`. The definition stores the values as plain
+  values, as before, and `"clearance": {"size": "M6", "fit": "normal"}`;
+  `load` sets Clearance, the size and the fit from it, and the stored
+  values that the size does not give (or expressions) count as typed
+  (logged `Hole values kept from the size: …`), so an edited hole keeps
+  them when its size changes. A tapped hole loaded the same way keeps a
+  countersink other than its thread's. Holes saved before have no
+  `clearance` and open as they were. The description adds `(clearance
+  M6 normal)` to the diameter. Tests: `tools/ui-create-test.sh` (Hole,
+  Clearance), `tools/ui-windows-workflow-test.ps1` (12.).
 - **Press Pull** on one face of a fillet opens the fillet for the radius
   of the set that rounds its edge (`Built::editing`).
 - **Fillet and Chamfer handles** (`withManipulator`, mitcad#534): each
@@ -8354,7 +8519,7 @@ next screenshot.
 | `Import of part.f3d started`, `Import item 3: Extrude2 parametric`, `Import of part.f3d: stop requested after 12 s`, `Import of part.f3d stopping: the remaining items take the file's bodies`, `Import of part.f3d cancelled`, `Import of part.f3d failed: …`, `Imported part.f3d: 2 bodies; items …[; stopped at Extrude3 (item 5)]`, `Import report: part.f3d: 28 items (25 parametric, …), 2 bodies, 2 of the file's 2 solids match[, stopped at Extrude3 (item 5)]`, `Import report summary: <the report's text above its list>`, `Import report kept: Pad.Length = Sheet.w * 2: <why>` | an `.f3d` or FreeCAD import (`stopped after the last item` when only the final comparison was left; `kept`: a FreeCAD expression kept as its value) |
 | `References dialog: Part version 2 of Assembly v1.f3d` (`?` without a name), `References dialog: chose Part v2.f3d`, `References dialog: skipped`, `Import references of Assembly v1.f3d: 2 found, 0 skipped`, `Imported Assembly v1.f3d: documents referred to: Part linked, Holder skipped` | an `.f3d` design's documents referred to (mitcad#196): a file dialog for one not found, the choice, the documents found before the import, how each came in |
 | `Import Assembly dialog opened: top.iam, parts with their design history on`, `Import Assembly: parts with their design history off` (the box toggled), `Import Assembly: top.iam, parts with their design history on` (accepted), `Import Assembly cancelled`, `Import of top.iam: parts with their design history on`, `Import of top.iam: part 2 of 3: cube.ipt`, `Import of top.iam: part 2 of 3: cube.ipt: replayed in 1.25 s` (`bodies`), `Import report part: cube.ipt: replayed, 2 items (2 parametric, 0 partial, 0 fallback, 0 skipped), 2 verified, 1 parameters` (`stored bodies: <reason>`), `Imported top.iam: component cube: 2 features, 1 bodies, volume 1000.000000 mm3` (the volume with `MITCAD_LOG_VOLUMES`) | an `.iam` assembly (mitcad#507): the Import Assembly dialog, the parts' progress, each part's outcome in the report and each component after the import; `tools/ui-iam-history-test.sh`, `tools/ui-windows-iam-history-test.ps1` |
-| `Recent files: a.mitcad \| b.step`, `Dropped <paths>`, `Document closed`, `File menu: New Design \| Open \| Open Recent > \| … \| - \| Project > [New Project \| … \| Project Settings] \| … \| Exit` (debug, as it opens: `-` a separator, names without underlines and dots, mitcad#175) | the File menu |
+| `Recent files: a.mitcad \| b.step`, `Dropped <paths>`, `Document closed`, `New document` (each after `Opened the new design with Component1 active`, mitcad#898), `File menu: New Design \| Open \| Open Recent > \| … \| - \| Project > [New Project \| … \| Project Settings] \| … \| Exit` (debug, as it opens: `-` a separator, names without underlines and dots, mitcad#175) | the File menu |
 | `Remote status: synced` (`ahead N`, `behind N`, `push`, `fetch`, `sync`, `conflict`, `offline`, `sign-in needed`, `remote not found`), `Remote task <command> started\|done\|failed (<class>): <message>`, `Remote push: sent N version(s) to origin/main`, `Remote check: ahead N, behind M`, `Remote notice: <text> [Sync Now, Dismiss]`, `Sync: <case>[ (<class>)], N replayed, sent\|nothing sent`, `Sync conflict: <path> (<kind>): <choice>`, `Sync done: <text>` | the current Cloud project's remote: its state (the indicator shows it), a remote task, a push, a check, the notice, a sync and its conflicts |
 | `Computing part.mitcad started`, `Computing part.mitcad: 57 of 196, Extrude6` (when the feature changes, at most 5 a second, after the first 50 ms), `Progress dialog shown: part.mitcad`, `Computing part.mitcad: cancel requested after <ms> ms`, `Computing part.mitcad cancelled after <ms> ms`, `Computing part.mitcad done in <ms> ms (<n> evaluated)`, `Opening part.mitcad cancelled` | a job on the model's worker thread (opening a design, an imported design, New, Close) |
 | `Computing set_parameter started` … `Computing set_parameter done in <ms> ms (<n> evaluated)` (a model command's job is named by its `cmd` and logged only when it takes over 50 ms; `Computing preview …` for a panel's preview, which has no progress dialog (mitcad#634) and logs `Computing preview: cancel requested after <ms> ms` when Esc, Cancel or a newer input stops it), `Command set_parameter cancelled`, `Command undo refused: the model is busy computing`, `Preview Extrude: cancelled`, `Extrude: OK cancelled`, `Extrude: OK not done`, `Parameter d1 expression: 70 cancelled`, `Finish Sketch cancelled: Sketch1 stays open`, `Command Extrude: the timeline stays rolled back`, `Drag of p3 ended by a dialog`, `Manipulator Extrude distance dragged to 25 (ended by a dialog)`, `Context menu dropped: the model is computing` | commands and previews as jobs: a cancel, a call that came while a job ran (refused, or waiting until it is done), a drag the progress dialog ended |

@@ -520,10 +520,12 @@ fn line_spacing(contours: &[Contour], angle: f64, m: &[[f64; 4]; 4]) -> Option<f
 
 /// A clamped B-spline as Bézier pieces (their control points): every
 /// interior knot inserted until it is `degree` times there (exact). None
-/// for a spline that is not clamped or not laid out so.
+/// for a spline that is not clamped or not laid out so, or one with a
+/// knot that is not a finite number (the file's own values: a NaN knot
+/// equals no knot, so its insertion would never end).
 fn bezier_pieces(degree: usize, knots: &[f64], poles: &[[f64; 2]]) -> Option<Vec<Vec<[f64; 2]>>> {
     let p = degree;
-    if p == 0 || knots.len() != poles.len() + p + 1 {
+    if p == 0 || knots.len() != poles.len() + p + 1 || knots.iter().any(|k| !k.is_finite()) {
         return None;
     }
     let (lo, hi) = (knots[0], knots[knots.len() - 1]);
@@ -535,6 +537,10 @@ fn bezier_pieces(degree: usize, knots: &[f64], poles: &[[f64; 2]]) -> Option<Vec
         return None;
     }
     let (mut u, mut q) = (knots.to_vec(), poles.to_vec());
+    // Every interior knot is inserted at most `p - 1` times, so a sound
+    // spline never needs more than `p * knots.len()` insertions; the bound
+    // only stops a loop that a knot the checks above missed would not end.
+    let mut insertions = p * knots.len();
     let mut at = p + 1;
     while at < u.len() - p - 1 {
         let t = u[at];
@@ -543,6 +549,10 @@ fn bezier_pieces(degree: usize, knots: &[f64], poles: &[[f64; 2]]) -> Option<Vec
             at += mult;
             continue;
         }
+        if mult == 0 || insertions == 0 {
+            return None;
+        }
+        insertions -= 1;
         // One insertion of t (Boehm): s the last knot index at t.
         let s = at + mult - 1;
         let mut next = Vec::with_capacity(q.len() + 1);
@@ -791,24 +801,37 @@ fn contour_json(k: &Contour, m: &[[f64; 4]; 4]) -> Value {
     json!({"pen": xy(k.pen), "pieces": pieces})
 }
 
+/// How far after `\F` the `;` of a font code is looked for (bytes): room
+/// for a u32's ten digits with a margin.
+const FONT_CODE_WINDOW: usize = 16;
+
 /// The text's string without its font codes, and the font table entries
 /// it uses: the one it starts with, then each `\F<n>;` that some
 /// character follows.
 pub fn plain(content: &str, first: u32) -> (String, Vec<u32>) {
     let mut out = String::new();
     let mut fonts: Vec<u32> = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
     let mut current = first;
     let mut rest = content;
     while let Some(c) = rest.chars().next() {
+        // The `;` that ends a font code is looked for only in a short
+        // window: a u32 index has at most ten digits, so a code that runs
+        // longer is text, and a long text of `\F` without `;` is not
+        // scanned to its end for every one of them.
         if let Some(code) = rest.strip_prefix("\\F")
-            && let Some(end) = code.find(';')
+            && let Some(end) = code
+                .as_bytes()
+                .iter()
+                .take(FONT_CODE_WINDOW)
+                .position(|b| *b == b';')
             && let Ok(n) = code[..end].parse::<u32>()
         {
             current = n;
             rest = &code[end + 1..];
             continue;
         }
-        if c != '\n' && !fonts.contains(&current) {
+        if c != '\n' && seen.insert(current) {
             fonts.push(current);
         }
         out.push(c);
@@ -1129,6 +1152,40 @@ mod tests {
         // Not clamped: none.
         let open: Vec<f64> = (0..11).map(f64::from).collect();
         assert_eq!(bezier_pieces(3, &open, &poles), None);
+    }
+
+    #[test]
+    fn a_spline_with_a_nan_knot_has_no_bezier_pieces() {
+        // mitcad#933: a NaN equals no knot, so it was inserted again and
+        // again without the walk moving on. Rejected before any insertion.
+        let poles = [[0.0, 0.0], [1.0, 1.0], [2.0, 1.0], [3.0, 0.0]];
+        let start = std::time::Instant::now();
+        assert_eq!(
+            bezier_pieces(2, &[0.0, 0.0, 0.0, f64::NAN, 1.0, 1.0, 1.0], &poles),
+            None
+        );
+        let inf = [0.0, 0.0, 0.0, f64::INFINITY, 1.0, 1.0, 1.0];
+        assert_eq!(bezier_pieces(2, &inf, &poles), None);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        // The same spline with a finite interior knot still splits.
+        let pieces =
+            bezier_pieces(2, &[0.0, 0.0, 0.0, 0.5, 1.0, 1.0, 1.0], &poles).expect("pieces");
+        assert_eq!(pieces.len(), 2);
+    }
+
+    #[test]
+    fn a_long_text_of_unended_font_codes_is_kept_as_text() {
+        // mitcad#933: `\F` without a `;` near it is text, found without
+        // scanning the rest of the string for every one of them.
+        let content = "\\F".repeat(50_000) + ";";
+        let (out, fonts) = plain(&content, 3);
+        assert_eq!(out.len(), content.len());
+        assert_eq!(fonts, vec![3]);
+        // A code whose `;` is past the window is text as well.
+        assert_eq!(
+            plain("\\F00000000000000001;a", 1).0,
+            "\\F00000000000000001;a"
+        );
     }
 
     #[test]

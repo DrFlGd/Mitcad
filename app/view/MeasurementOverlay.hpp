@@ -2,6 +2,8 @@
 #pragma once
 
 #include <QPointF>
+
+#include "MeasurementDrawing.hpp"
 #include <QString>
 #include <QWidget>
 
@@ -40,6 +42,13 @@ private:
   int hitAt(const QPointF& at, QString* name) const;
   // The mouse on the view: true when an annotation takes it.
   bool mouse(QEvent* event);
+  // The annotation under the mouse (none: empty), drawn in the hover's
+  // colour (mitcad#902); logs "Annotation hovered: <name>|none".
+  void setHovered(const QString& name);
+  // A picture of the view under the annotations (mitcad#902), taken once
+  // the camera rests or they change: Auto's ink is chosen against it.
+  void scheduleBackdrop();
+  void grabBackdrop();
 
   OcctViewer* m_viewer;
   QString m_drawnKey; // placesKey when drawn last
@@ -50,6 +59,11 @@ private:
   QPointF m_delta;
   bool m_dragging = false;
   bool m_hovering = false; // the hand cursor is shown
+  QString m_hovered;       // the annotation drawn in the hover's colour
+  MeasurementBackdrop m_backdrop;
+  QString m_backdropKey; // placesKey when it was taken
+  bool m_backdropQueued = false;
+  bool m_grabbing = false;
   // The release after a double-click or a right click on an annotation,
   // whose press the view did not see either.
   bool m_swallowRelease = false;

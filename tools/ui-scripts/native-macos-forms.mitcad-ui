@@ -5,6 +5,9 @@
 # and a narrow 900 x 640 point window.
 expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 wait-idle 30
+# Includes the production widget refresh contract: caption/icon modes must
+# survive replacement images, and unchanged refreshes must make no writes.
+expect-native-widget-refresh
 native-resize 1280 820
 native-appearance ${MITCAD_FORMS_APPEARANCE}
 command view.fit
@@ -58,6 +61,9 @@ native-resize 1280 820
 # parameter into the field.
 mark
 native-click input_distance
+# Focusing the value can publish a preview and its display refinement;
+# the parameter menu must read the model after that work has settled.
+wait-idle 30
 native-popup fx_distance 'Create User Parameter…'
 expect-log 'Create User Parameter opened for Extrude Distance'
 focus-dialog '^Create User Parameter$'
@@ -78,6 +84,7 @@ mark
 native-type input_distance '7 mm'
 wait-idle 30
 native-click input_distance
+wait-idle 30
 native-popup fx_distance 'ui_depth'
 expect-log 'Parameter browser inserted ui_depth into Extrude Distance: ui_depth'
 expect-native-text input_distance '^ui_depth$'
@@ -87,6 +94,7 @@ expect-native-enabled commandOk true
 # fx: Name This Value writes `name = value` with the name selected.
 mark
 native-click input_distance
+wait-idle 30
 native-popup fx_distance 'Name This Value (name = value)'
 expect-log 'Parameter naming for Extrude Distance: [A-Za-z_][A-Za-z0-9_]* = ui_depth'
 expect-native-text input_distance '^[A-Za-z_][A-Za-z0-9_]* = ui_depth$'
@@ -96,6 +104,7 @@ mark
 native-type input_distance 'ui_depth'
 wait-idle 30
 native-click input_distance
+wait-idle 30
 native-popup fx_distance 'Edit Formula…'
 focus-dialog '^Formula Editor$'
 wait-idle 30

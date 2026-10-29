@@ -2,6 +2,7 @@
 # check-all sources: app/sketch app/framework/ModelShapes.cpp
 # check-all sources: core/sketch core/model-api/src/sketch.rs core/solver tools/cli
 # check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp
+# check-all sources: app/MainWindowSelection.cpp app/OcctViewer.cpp
 # Input-driven Windows UI test of the sketch's axes and origin as picks of
 # Sketch Dimension and the constraint tools (mitcad#500) in the build VM
 # (tools/ui-windows-lib.ps1 says how the input is posted), as
@@ -23,6 +24,14 @@
 #      Mirror Line active; a click on the y axis picks it, the preview and
 #      OK mirror the circle to (-10, 12), the y axis made in the same step;
 #      the saved sketch has the copy symmetric about the axis.
+#   7. The axes selected before a tool (mitcad#899): Sketch3 has free
+#      points p1 at (-6, 8) and p2 at (14, -3), which the fit shows with
+#      the axes between them (4 DOF). A click on p1 and a Ctrl+click on
+#      the x axis select both with no tool running; Sketch Dimension
+#      offers p1's distance from the x axis, 8.00, and 5 typed makes the
+#      x axis and the dimension in one step (3 DOF). p1 and the y axis
+#      selected the same way, which makes nothing, Coincident makes the y
+#      axis in its step and puts p1 on it (2 DOF); undo takes both back.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-sketch-axes-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -51,7 +60,10 @@ Set-Content -Encoding ascii $script @'
   {"cmd": "sketch.add_point", "sketch": "F1", "at": [-8, 15]},
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_point", "sketch": "F2", "at": [-8, 5]},
-  {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [10, 12], "radius": 3}
+  {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [10, 12], "radius": 3},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_point", "sketch": "F3", "at": [-6, 8]},
+  {"cmd": "sketch.add_point", "sketch": "F3", "at": [14, -3]}
 ]
 '@
 $made = & $cli run $script --save $design
@@ -212,5 +224,64 @@ Set-Content -Encoding ascii $checkMirror @'
 $mirrored = & $cli run $checkMirror --open $design
 if ($LASTEXITCODE -ne 0) { Ui-Fail "the saved mirror about the y axis: $($mirrored -join ' / ')" }
 Write-Host 'ok   the copy saved symmetric about the y axis'
+
+# Ui-CtrlSketchClick x y: a click at a sketch point (mm) with Ctrl held,
+# adding to the selection.
+function Ui-CtrlSketchClick([double]$X, [double]$Y) {
+  $at = Ui-SketchAt $X $Y
+  Ui-ClickWith 'ctrl' $at[0] $at[1]
+}
+
+Write-Host '--- 7. The axes selected before a tool: Sketch Dimension, then Coincident (mitcad#899)'
+Ui-Mark
+Ui-Step 'edit Sketch3 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch3' }
+Ui-ExpectNew 'Editing sketch F3 (Sketch3)' 'Sketch3 is edited' 30
+Ui-ExpectNew 'Sketch Sketch3: 4 DOF' 'two free points'
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Start-Sleep -Milliseconds 800
+Ui-Step 'zoom out to show the axes'      { Ui-ZoomOut 2 }
+Ui-Mark
+Ui-Step 'select p1'                      { Ui-SketchClick -6 8 }
+Ui-ExpectNew 'Selected: 1 sketch point' 'p1 selected'
+Ui-Mark
+Ui-Step 'and the x axis (Ctrl)'          { Ui-CtrlSketchClick 8 0 }
+Ui-ExpectNew 'Sketch axis selected: x_axis (x axis)' 'the x axis selected with no tool running'
+Ui-ExpectNew 'Selected: 1 sketch curve, 1 sketch point [sketch point p1 of F3; sketch curve x_axis of F3]' 'p1 and the x axis in the selection'
+Ui-Mark
+Ui-Step 'sketch dimension (D)'           { Ui-Key 'd' }
+Ui-ExpectNew 'Sketch tool Sketch Dimension' 'Sketch Dimension takes the selection'
+Ui-Step 'place the value'                { Ui-SketchClick -12 2 }
+Ui-ExpectNew 'Sketch value editor at' 'the value editor opened'
+Ui-ExpectNew ' with 8.00' "p1's distance from the x axis offered"
+Ui-Step 'type 5, Enter'                  { Ui-Key 'ctrl+a'; Ui-Type '5'; Start-Sleep -Milliseconds 200; Ui-Key 'Return' }
+Ui-ExpectNew 'Made the sketch x axis for a pick: c' "the x axis made in the dimension's step"
+Ui-ExpectNew 'point_line_distance' "p1's distance from the x axis"
+Ui-ExpectNew 'Sketch Sketch3: 3 DOF' 'p1 held 5 mm from the x axis'
+Ui-Step 'end the tool (Esc)'             { Ui-Key 'Escape' }
+Ui-Mark
+Ui-Step 'select p1'                      { Ui-SketchClick -6 5 }
+Ui-ExpectNew 'Selected: 1 sketch point' 'p1 selected again'
+Ui-Mark
+Ui-Step 'and the y axis (Ctrl)'          { Ui-CtrlSketchClick 0 7 }
+Ui-ExpectNew 'Sketch axis selected: y_axis (y axis)' 'the y axis selected with no tool running'
+Ui-ExpectNew 'Selected: 1 sketch curve, 1 sketch point [sketch point p1 of F3; sketch curve y_axis of F3]' 'p1 and the y axis in the selection'
+if (@(Ui-NewLines | Where-Object { $_.Contains('Made the sketch') }).Count -ne 0) {
+  Ui-Fail 'selecting the y axis made it'
+}
+Ui-Mark
+Ui-Step 'coincident (Shift+F5)'          { Ui-Key 'shift+F5' }
+Ui-ExpectNew 'Made the sketch y axis for a pick: c' "the y axis made in the constraint's step"
+Ui-ExpectNew 'Added constraint coincident k' 'p1 on the y axis'
+Ui-ExpectNew 'on p1, c' "p1 and the y axis's line"
+Ui-ExpectNew 'Sketch Sketch3: 2 DOF' 'p1 held on the y axis'
+Ui-Mark
+Ui-Step 'undo (Ctrl+Z)'                  { Ui-Key 'ctrl+z' }
+Ui-ExpectNew 'Sketch Sketch3: 3 DOF' 'the constraint and the y axis taken back as one step'
+Ui-Mark
+Ui-Step 'redo (Ctrl+Y)'                  { Ui-Key 'ctrl+y' }
+Ui-ExpectNew 'Sketch Sketch3: 2 DOF' 'both again'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'Sketch3 finished'
 
 Ui-Finish 'UI Windows sketch axes test'

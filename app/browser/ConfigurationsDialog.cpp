@@ -34,6 +34,7 @@
 #include "../framework/Icons.hpp"
 #include "../framework/PlaceWatcher.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "ConfigurationBindingsPage.hpp"
 #include "DocumentHost.hpp"
 
@@ -678,6 +679,12 @@ QWidget* ConfigurationsDialog::makeOptionsPage() {
   connect(m_options, &QTreeWidget::itemChanged, this, &ConfigurationsDialog::optionEdited);
   connect(m_options, &QTreeWidget::itemSelectionChanged, this, [this] {
     const bool selected = !selectedOption().isEmpty();
+    if (!qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
+      const auto* current = m_options->currentItem();
+      qDebug().noquote() << QStringLiteral("Configurations option selection: current=%1 selected=%2 domain=%3")
+          .arg(current != nullptr ? current->data(kOptionName, kNameRole).toString() : QStringLiteral("none"))
+          .arg(current != nullptr && current->isSelected()).arg(selected);
+    }
     for (QPushButton* button : {m_removeOption, m_editDomain, m_up, m_down}) {
       button->setEnabled(selected);
     }
@@ -910,6 +917,7 @@ void ConfigurationsDialog::fillOptions() {
     // Dragged into its order, never onto another option.
     item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsDragEnabled | Qt::ItemIsEditable);
     item->setData(kOptionName, kNameRole, name);
+    item->setData(kOptionName, NativeControlIdentifierRole, QStringLiteral("configurationOption.") + name);
     item->setText(kOptionName, name);
     item->setText(kOptionUnit, parameter.value(QStringLiteral("unit")).toString());
     const bool driven = report != nullptr && report->driven;
@@ -1060,6 +1068,9 @@ void ConfigurationsDialog::fillRows() {
       }
       auto* item = new QTableWidgetItem(shown);
       item->setData(kNameRole, row.name);
+      if (column.kind == RowColumn::Name) {
+        item->setData(NativeControlIdentifierRole, QStringLiteral("configurationRow.") + row.name);
+      }
       item->setFlags(Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsEditable);
       if (column.kind == RowColumn::Name && row.name == m_table.defaultRow) {
         QFont font = item->font();

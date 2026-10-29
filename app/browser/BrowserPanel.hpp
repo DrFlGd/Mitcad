@@ -126,6 +126,7 @@ public:
     bool expanded = false;
     bool hasActivation = false;
     bool active = false;
+    int bindings = 0; // Same fx count as the shared row's delegate.
   };
   QVector<PresentationRow> presentationRows() const;
   void setPresentationExpanded(const QString& key, bool expanded);

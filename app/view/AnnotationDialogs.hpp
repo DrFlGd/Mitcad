@@ -29,12 +29,14 @@ namespace mitcad {
 
 // The colours offered for annotations, (name, #rrggbb or "auto"): Auto
 // first (mitcad#894: the neutral annotation colour of the background tone,
-// a new annotation's), then orange, blue, green, magenta, violet, amber,
-// red, black and white. None of them is one of the six colours new
-// annotations took in turn before, which the model reads as Auto.
+// a new annotation's), then Black and Dark Grey (mitcad#902: a technical
+// drawing's; the bright presets are gone, a colour an annotation has is
+// kept). Neither is one of the six colours new annotations took in turn
+// before, which the model reads as Auto.
 const std::vector<std::pair<QString, QString>>& annotationColours();
 
-// The annotation's own colour of these, or Other… with the colour dialog.
+// The annotation's own colour of these (a colour of its own offered as it
+// is), or Custom… with the colour dialog.
 std::optional<QString> askAnnotationColour(QWidget* parent, const QString& current, const QString& what);
 // A group's name of those there are, or a new one; empty: no group.
 std::optional<QString> askAnnotationGroup(QWidget* parent, const QStringList& groups, const QString& current,

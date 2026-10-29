@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: MIT
+# Qt counterpart of macos-native-configurations.mitcad-ui.
+expect-ever 'View area'
+wait-idle
+window-resize 1280 820
+expect-model-bodies 1 600000
+capture-undo-depth before
+mark
+focus-widget configurationField_Length
+key Ctrl+a
+type '1200 mm'
+key Return
+expect-log '^Configuration chosen: Length = 1200'
+wait-idle
+expect-model-bodies 1 480000
+expect-undo-depth ${before} 1
+screenshot '${MITCAD_TEST_WORK}/configuration-bar-${MITCAD_TEST_COLOR_SCHEME}.png'
+command solid.configurations
+focus-dialog '^Configurations$'
+dialog-click-logged 'Configurations tab Rules'
+expect-log 'Configurations page Rules'
+focus-widget rulesList
+key Home
+focus-widget ruleCanvas
+dialog-dblclick-logged 'Rule canvas then.0.0 block'
+focus-widget ruleBlockEditor
+key Ctrl+a
+type '900 mm'
+key Return
+expect-log '^Rules saved: Set then\.0\.0 to 900 mm'
+mark
+dialog-dblclick-logged 'Rule canvas then.0.0 block'
+focus-widget ruleBlockEditor
+type '800 mm'
+key Escape
+focus-dialog '^Configurations$'
+expect-no-log '^Rules saved:'
+button '^View as Text$'
+expect-log 'Rule as text Black is short: .*Length max 900 mm'
+screenshot-dialog '${MITCAD_TEST_WORK}/configuration-rules-${MITCAD_TEST_COLOR_SCHEME}.png'
+button '^Check Rules$'
+expect-log 'Check Rules'
+button '^Close$'
+focus-main
+mark
+focus-widget configurationChooser_Color
+key Home
+key Return
+expect-log '^Configuration chosen: Color = Black'
+wait-idle
+expect-model-bodies 1 360000
+screenshot '${MITCAD_TEST_WORK}/configuration-rule-result-${MITCAD_TEST_COLOR_SCHEME}.png'

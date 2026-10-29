@@ -1,0 +1,10 @@
+[
+  {"cmd":"add_feature","def":{"type":"box","plane":"xy","corner":[-70,-10],"length":40,"width":20,"height":20,"operation":"new_body"}},
+  {"cmd":"add_feature","def":{"type":"box","plane":"xy","corner":[-20,-10],"length":40,"width":20,"height":20,"operation":"new_body"}},
+  {"cmd":"add_feature","def":{"type":"box","plane":"xy","corner":[30,-10],"length":40,"width":20,"height":20,"operation":"new_body"}},
+  {"cmd":"add_parameter","name":"Color","unit":"Text","expression":"'Black'","values":["'Black'","'Red'"]},
+  {"cmd":"add_parameter","name":"Holes","unit":"Text","expression":"'No'","values":["'No'","'Yes'"]},
+  {"cmd":"set_configurations","configurations":{"options":["Color","Holes"],"closed":false,"rows":[]}},
+  {"cmd":"set_body_appearance","uid":"F3.b0","expression":"switch(Color; 'Black'; 'paint_black'; 'Red'; 'paint_purple'; 'paint_black')"},
+  {"expect":{"bodies":3}}
+]

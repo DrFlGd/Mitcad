@@ -66,6 +66,7 @@ struct MeshPlan;
 class FloatingLayout;
 class GlassCard;
 class LockController;
+class MeasureHistoryView;
 class ProjectIndicator;
 class ProjectsPanel;
 class RemoteController;
@@ -347,6 +348,7 @@ private:
   std::unique_ptr<NativeCommandForm> m_nativeForm;
   std::unique_ptr<NativeWidgetView> m_nativeIdleForm;
   std::unique_ptr<NativeWidgetView> m_nativeProjectsForm;
+  std::unique_ptr<NativeWidgetView> m_nativeConfigurationForm;
   bool m_nativeProjectsShown = false;
   QHash<QString, QPointer<QAction>> m_nativeActions;
   QHash<QString, BrowserNode> m_nativeNodes;
@@ -1141,6 +1143,8 @@ private:
   // A new, empty document (New, Close, a file brought in as a document).
   // False when replacing the current design is cancelled or refused.
   bool installEmptyDocument(const QString& name, QString* error = nullptr);
+  // Logs `Opened the new design with <name> active` (mitcad#844, mitcad#898).
+  void logNewDesignActive();
   void resetCommandState();
   void updateWindowTitle();
 
@@ -1198,9 +1202,11 @@ private:
   // Open Read-Only is opening a design: the lock controller takes no edit
   // lock on it, and the window is read-only.
   bool m_openingReadOnly = false;
-  // New Design in a project is opening the design it made (mitcad#844): it
-  // opens with the component its file stores as active (Component1), not
-  // with the root as every other design (mitcad#426).
+  // A new design is opening (mitcad#844, mitcad#898): New Design in a
+  // project opening the design it made, or an empty design (New, Close, an
+  // empty project, the open design deleted). It opens with the component
+  // it stores as active (Component1), not with the root as a design read
+  // from a file (mitcad#426).
   bool m_openingNewDesign = false;
   // The open design's edit lock and the read-only mode (mitcad#89).
   LockController* m_locks = nullptr;
@@ -1465,6 +1471,10 @@ private:
   // opens), shown in each Measure panel above its result; a row clicked is
   // measured again in the panel, a row whose picks are gone is grey.
   void addMeasureHistory(CommandPanel& panel, const CommandDef& def);
+#ifdef MITCAD_MACOS_NATIVE_UI
+  void addMeasureHistory(NativeCommandForm& form, const CommandDef& def);
+#endif
+  MeasureHistoryView* createMeasureHistory(const CommandDef& def, QWidget* parent = nullptr);
   void refreshMeasureHistory();
   // Marks the rows whose picks the view no longer has (not while the
   // model computes).

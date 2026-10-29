@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! ASCII DXF reader (R12 to R2018).
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use mitcad_vec3::{cross, norm};
@@ -22,11 +22,31 @@ pub fn read_str(text: &str) -> Result<Drawing, Error> {
     read(text.as_bytes())
 }
 
+/// The most entities and block references a read places in the drawing
+/// (counting a block's contents once per reference to it, at every level):
+/// an INSERT array may have many cells, and nested blocks multiply
+/// (mitcad#926). What is left over is not read, with a warning.
+pub const READ_BUDGET: u64 = 1_000_000;
+
+/// The most cells of one INSERT array that are read (`columns × rows`);
+/// a larger array keeps its first rows, with a warning (mitcad#926).
+pub const MAX_ARRAY_CELLS: u64 = 100_000;
+
 /// Reads the bytes of an ASCII DXF file. Text is UTF-8 (R2007 and newer) or
-/// Windows-1252. Binary DXF is not supported.
+/// Windows-1252. Binary DXF is not supported. Block references place at
+/// most [`READ_BUDGET`] entities and references.
 pub fn read(bytes: &[u8]) -> Result<Drawing, Error> {
+    read_within(bytes, READ_BUDGET)
+}
+
+/// Reads like [`read`], placing at most `limit` entities and block
+/// references (each reference's contents counted once per reference).
+pub fn read_within(bytes: &[u8], limit: u64) -> Result<Drawing, Error> {
     let pairs = tokenize(bytes)?;
-    let mut reader = Reader::default();
+    let mut reader = Reader {
+        budget_left: limit,
+        ..Reader::default()
+    };
     let mut drawing = Drawing::default();
     let mut model = Vec::new();
     for section in sections(&pairs) {
@@ -41,6 +61,11 @@ pub fn read(bytes: &[u8]) -> Result<Drawing, Error> {
     let mut entities = Vec::new();
     reader.expand(&model, &Affine::IDENTITY, None, 0, &mut entities);
     drawing.entities = entities;
+    if reader.exhausted {
+        reader.warnings.push(format!(
+            "the drawing places more than {limit} entities and block references (counting each reference's contents): the rest are not read"
+        ));
+    }
     drawing.warnings = reader.warnings;
     for (kind, count) in reader.skipped {
         drawing
@@ -336,12 +361,37 @@ enum Item {
     Insert(Insert),
 }
 
+/// A block reference. An array's cells are made as they are expanded,
+/// never stored (mitcad#926: an array may have 10^8 cells).
 struct Insert {
     block: String,
     layer: String,
-    /// One transform per array element (one for a plain INSERT).
-    transforms: Vec<Affine>,
+    /// The block's base point to the insertion point, rotated: the
+    /// placement of the first cell before the scale.
+    placement: Affine,
+    scale: Affine,
+    /// Cells per row and rows read (1 × 1 for a plain INSERT), at most
+    /// [`MAX_ARRAY_CELLS`] cells.
+    columns: u64,
+    rows: u64,
+    column_spacing: f64,
+    row_spacing: f64,
     line: usize,
+}
+
+impl Insert {
+    /// The transform of each cell, row by row.
+    fn cells(&self) -> impl Iterator<Item = Affine> + '_ {
+        (0..self.rows).flat_map(move |row| {
+            (0..self.columns).map(move |column| {
+                let offset = Affine::translation(
+                    column as f64 * self.column_spacing,
+                    row as f64 * self.row_spacing,
+                );
+                self.placement.then_after(&offset).then_after(&self.scale)
+            })
+        })
+    }
 }
 
 struct Block {
@@ -352,7 +402,14 @@ struct Block {
 struct Reader {
     blocks: HashMap<String, Block>,
     warnings: Vec<String>,
+    /// Warnings of the expansion already given: an insert inside a block
+    /// is expanded once per reference to the block.
+    reported: HashSet<String>,
     skipped: BTreeMap<String, usize>,
+    /// Entities and block references the expansion may still place.
+    budget_left: u64,
+    /// Something did not fit the budget: nothing more is placed.
+    exhausted: bool,
 }
 
 /// Block nesting deeper than this is taken as a reference cycle.
@@ -399,6 +456,24 @@ impl Reader {
         *self.skipped.entry(kind.to_owned()).or_default() += 1;
     }
 
+    /// Adds a warning of the expansion unless it was given already.
+    fn warn_once(&mut self, warning: String) {
+        if self.reported.insert(warning.clone()) {
+            self.warnings.push(warning);
+        }
+    }
+
+    /// Takes one entity or block reference of the budget; false, taking
+    /// nothing, when it is spent.
+    fn take(&mut self) -> bool {
+        if self.exhausted || self.budget_left == 0 {
+            self.exhausted = true;
+            return false;
+        }
+        self.budget_left -= 1;
+        true
+    }
+
     fn read_items(&mut self, records: &[Record<'_>]) -> Vec<Item> {
         let mut items = Vec::new();
         let mut i = 0;
@@ -422,7 +497,7 @@ impl Reader {
                     self.polyline(record, vertices, &mut items)
                 }
                 "LWPOLYLINE" => self.lwpolyline(record, &mut items),
-                "INSERT" => match insert(record) {
+                "INSERT" => match self.insert(record) {
                     Ok(Some(insert)) => {
                         items.push(Item::Insert(insert));
                         Ok(())
@@ -537,6 +612,8 @@ impl Reader {
 
     /// Expands block references into `out`. Entities on layer 0 inside a
     /// block take the layer of the reference (the DXF rule for layer 0).
+    /// Each entity placed and each reference (array cell) taken counts
+    /// against the budget; once it is spent nothing more is placed.
     fn expand(
         &mut self,
         items: &[Item],
@@ -547,8 +624,14 @@ impl Reader {
     ) {
         let identity = *transform == Affine::IDENTITY;
         for item in items {
+            if self.exhausted {
+                return;
+            }
             match item {
                 Item::Entity(entity) => {
+                    if !self.take() {
+                        return;
+                    }
                     let layer_name = match layer {
                         Some(layer) if entity.layer == "0" => layer.to_owned(),
                         _ => entity.layer.clone(),
@@ -562,7 +645,7 @@ impl Reader {
                 }
                 Item::Insert(insert) => {
                     if depth >= MAX_BLOCK_DEPTH {
-                        self.warnings.push(format!(
+                        self.warn_once(format!(
                             "line {}: block {} nested too deeply (reference cycle?)",
                             insert.line, insert.block
                         ));
@@ -571,7 +654,7 @@ impl Reader {
                     let key = insert.block.to_ascii_uppercase();
                     // Take the block out while expanding it, so a cycle finds it missing.
                     let Some(block) = self.blocks.remove(&key) else {
-                        self.warnings.push(format!(
+                        self.warn_once(format!(
                             "line {}: block {} is missing or refers to itself",
                             insert.line, insert.block
                         ));
@@ -581,14 +664,20 @@ impl Reader {
                         Some(layer) if insert.layer == "0" => layer.to_owned(),
                         _ => insert.layer.clone(),
                     };
-                    for element in &insert.transforms {
+                    for cell in insert.cells() {
+                        if !self.take() {
+                            break;
+                        }
                         self.expand(
                             &block.items,
-                            &transform.then_after(element),
+                            &transform.then_after(&cell),
                             Some(&insert_layer),
                             depth + 1,
                             out,
                         );
+                        if self.exhausted {
+                            break;
+                        }
                     }
                     self.blocks.insert(key, block);
                 }
@@ -604,9 +693,7 @@ fn shifted(item: Item, shift: &Affine) -> Item {
             entity.geometry.transformed(shift),
         )),
         Item::Insert(mut insert) => {
-            for t in &mut insert.transforms {
-                *t = shift.then_after(t);
-            }
+            insert.placement = shift.then_after(&insert.placement);
             Item::Insert(insert)
         }
     }
@@ -636,40 +723,55 @@ fn push_polyline(
     }
 }
 
-fn insert(record: &Record<'_>) -> Result<Option<Insert>, Error> {
-    let block = record.string(2).unwrap_or_default().trim().to_owned();
-    let position = record.point(10)?;
-    let sx = record.f64_or(41, 1.0)?;
-    let sy = record.f64_or(42, 1.0)?;
-    let rotation = record.f64_or(50, 0.0)?.to_radians();
-    let columns = record.int_or(70, 1)?.clamp(1, 10_000);
-    let rows = record.int_or(71, 1)?.clamp(1, 10_000);
-    let column_spacing = record.f64_or(44, 0.0)?;
-    let row_spacing = record.f64_or(45, 0.0)?;
-    let Some(ocs) = ocs_to_xy(record.extrusion()?, position[2]) else {
-        return Ok(None);
-    };
-    let placement = ocs
-        .then_after(&Affine::translation(position[0], position[1]))
-        .then_after(&Affine::rotation(rotation));
-    let mut transforms = Vec::new();
-    for row in 0..rows {
-        for column in 0..columns {
-            let offset =
-                Affine::translation(column as f64 * column_spacing, row as f64 * row_spacing);
-            transforms.push(
-                placement
-                    .then_after(&offset)
-                    .then_after(&Affine::scale(sx, sy)),
-            );
-        }
+/// The cells per row and rows of an array of `columns × rows` cells that
+/// are read: all of them, or the first rows within [`MAX_ARRAY_CELLS`].
+fn array_cells(columns: u64, rows: u64) -> (u64, u64) {
+    if columns.saturating_mul(rows) <= MAX_ARRAY_CELLS {
+        (columns, rows)
+    } else if columns >= MAX_ARRAY_CELLS {
+        (MAX_ARRAY_CELLS, 1)
+    } else {
+        (columns, MAX_ARRAY_CELLS / columns)
     }
-    Ok(Some(Insert {
-        block,
-        layer: record.layer(),
-        transforms,
-        line: record.line,
-    }))
+}
+
+impl Reader {
+    fn insert(&mut self, record: &Record<'_>) -> Result<Option<Insert>, Error> {
+        let block = record.string(2).unwrap_or_default().trim().to_owned();
+        let position = record.point(10)?;
+        let sx = record.f64_or(41, 1.0)?;
+        let sy = record.f64_or(42, 1.0)?;
+        let rotation = record.f64_or(50, 0.0)?.to_radians();
+        let columns = record.int_or(70, 1)?.max(1).unsigned_abs();
+        let rows = record.int_or(71, 1)?.max(1).unsigned_abs();
+        let column_spacing = record.f64_or(44, 0.0)?;
+        let row_spacing = record.f64_or(45, 0.0)?;
+        let Some(ocs) = ocs_to_xy(record.extrusion()?, position[2]) else {
+            return Ok(None);
+        };
+        let placement = ocs
+            .then_after(&Affine::translation(position[0], position[1]))
+            .then_after(&Affine::rotation(rotation));
+        let (read_columns, read_rows) = array_cells(columns, rows);
+        if (read_columns, read_rows) != (columns, rows) {
+            self.warnings.push(format!(
+                "line {}: INSERT of {block} is an array of {columns} x {rows} cells: only the first {} cells ({read_rows} rows of {read_columns}) are read",
+                record.line,
+                read_columns * read_rows
+            ));
+        }
+        Ok(Some(Insert {
+            block,
+            layer: record.layer(),
+            placement,
+            scale: Affine::scale(sx, sy),
+            columns: read_columns,
+            rows: read_rows,
+            column_spacing,
+            row_spacing,
+            line: record.line,
+        }))
+    }
 }
 
 enum Converted {

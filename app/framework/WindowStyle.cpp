@@ -12,6 +12,7 @@
 #include <QEnterEvent>
 #include <QEvent>
 #include <QFontMetrics>
+#include <QHeaderView>
 #include <QItemSelectionModel>
 #include <QMainWindow>
 #include <QMenuBar>
@@ -19,6 +20,7 @@
 #include <QPainter>
 #include <QPen>
 #include <QProxyStyle>
+#include <QScrollBar>
 #include <QSizePolicy>
 #include <QStyle>
 #include <QStyleFactory>
@@ -27,6 +29,7 @@
 #include <QtLogging>
 
 #include "AutoselectPanel.hpp"
+#include "ChromeStyle.hpp"
 #include "SelectionCreate.hpp"
 #include "Theme.hpp"
 #include "../platform/WindowsFrame.hpp"
@@ -188,6 +191,20 @@ QStyleOptionViewItem panelRowOption(const QStyleOptionViewItem& option) {
   QStyleOptionViewItem plain = option;
   plain.state &= ~(QStyle::State_Selected | QStyle::State_HasFocus);
   return plain;
+}
+
+QSize dockedTreeMinimumSize(const QTreeView* tree, const QSize& fallback) {
+  if (chromeStyle() != ChromeStyle::Docked) {
+    return fallback;
+  }
+  int height = std::max(panel::kRowHeight, tree->fontMetrics().height() + 6) + 2 * tree->frameWidth();
+  if (!tree->header()->isHidden()) {
+    height += tree->header()->sizeHint().height();
+  }
+  if (tree->horizontalScrollBar()->isVisible()) {
+    height += tree->horizontalScrollBar()->sizeHint().height();
+  }
+  return QSize(fallback.width(), height);
 }
 
 void stylePanelTree(QTreeView* tree) {

@@ -11,6 +11,7 @@
 #include <cstdlib>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <new>
 #include <optional>
 #include <sstream>
@@ -20,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -39,7 +41,9 @@
 #include <BRepTools.hxx>
 #include <BRepTools_ReShape.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2dAPI_Interpolate.hxx>
 #include <Geom2dConvert.hxx>
@@ -64,6 +68,7 @@
 #include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
 #include <gp_GTrsf2d.hxx>
+#include <gp_Lin.hxx>
 #include <gp_Pnt2d.hxx>
 #include <gp_Trsf.hxx>
 // OSD_Parallel.hxx brings in windows.h on Windows, whose empty near and far
@@ -119,6 +124,9 @@ Flanks flanks_of(double angle) {
 constexpr double kSame = 1.0e-6;
 // The narrowest crest a flank clearance may leave, in pitches.
 constexpr double kMinCrest = 0.02;
+// How far short of an uneven end against the body a thread's tools stop
+// (mitcad#901), in pitches.
+constexpr double kUnevenEndClearance = 0.01;
 // How near the screw surfaces of the grooves' faces keep to the screw
 // motion (mm), finer than the sweeps a turn at a time (on_screw_surfaces).
 constexpr double kScrewExact = 1.0e-7;
@@ -490,6 +498,73 @@ bool material_past(const TopoDS_Shape& body, const Thread& t, double at, double 
   return false;
 }
 
+// How far a face covers its cylinder all round at its ends (mitcad#901),
+// along the thread's axis: the highest point of its low end and the lowest
+// point of its high end, angle by angle about the axis. A face that meets
+// faces square to its axis at both ends gives 0 and the thread's length; a
+// face whose end is uneven (a shank under a head's serrated underside, a
+// wall at a slant) ends at those heights only at some angles. Only the
+// face's boundary within a pitch of each end counts (an opening further
+// in, a cross hole or a key seat, is not an end); angles where the face
+// has no boundary at all (a face of part of a turn) are passed over, and
+// so are its edges along the axis (a seam, a step of the end), whose ends
+// the edges either side of them have.
+struct FaceEnds {
+  double low = 0.0;
+  double high = 0.0;
+};
+
+FaceEnds face_ends(const Shape& body, const std::string& face, const Thread& t) {
+  // Angles in bins of a tenth of a degree; the boundary sampled at most
+  // half a bin's arc apart, so that each bin it crosses gets its points.
+  constexpr int kBins = 3600;
+  constexpr int kMostSamples = 20000;
+  const double step = 0.5 * kTwoPi / kBins * t.face_radius;
+  std::vector<double> lowest(kBins, std::numeric_limits<double>::infinity());
+  std::vector<double> highest(kBins, -std::numeric_limits<double>::infinity());
+  const gp_Vec along(t.along);
+  const gp_Vec x(t.reference);
+  const gp_Vec y(t.along.Crossed(t.reference));
+  for (const int i : body.find_faces(face)) {
+    for (TopExp_Explorer e(body.face(i), TopAbs_EDGE); e.More(); e.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+      if (BRep_Tool::Degenerated(edge)) {
+        continue;
+      }
+      const BRepAdaptor_Curve curve(edge);
+      if (curve.GetType() == GeomAbs_Line && curve.Line().Direction().IsParallel(t.along, 1.0e-9)) {
+        continue;
+      }
+      const double first = curve.FirstParameter();
+      const double last = curve.LastParameter();
+      const double length = GCPnts_AbscissaPoint::Length(curve);
+      const int samples = std::clamp(static_cast<int>(std::ceil(length / step)), 1, kMostSamples);
+      for (int k = 0; k <= samples; ++k) {
+        const gp_Vec v(t.origin, curve.Value(first + (last - first) * k / samples));
+        const double s = v.Dot(along);
+        double angle = std::atan2(v.Dot(y), v.Dot(x));
+        if (angle < 0.0) {
+          angle += kTwoPi;
+        }
+        const auto bin = static_cast<std::size_t>(std::min(kBins - 1, static_cast<int>(angle / kTwoPi * kBins)));
+        lowest[bin] = std::min(lowest[bin], s);
+        highest[bin] = std::max(highest[bin], s);
+      }
+    }
+  }
+  FaceEnds ends{0.0, t.length};
+  for (int b = 0; b < kBins; ++b) {
+    const auto bin = static_cast<std::size_t>(b);
+    if (lowest[bin] <= t.pitch) {
+      ends.low = std::max(ends.low, lowest[bin]);
+    }
+    if (highest[bin] >= t.length - t.pitch) {
+      ends.high = std::min(ends.high, highest[bin]);
+    }
+  }
+  return ends;
+}
+
 // Whether an axis points "up": its Z component positive, or for axes
 // across Z its Y component, or for the X axis X. The thread's helix is
 // placed in that direction, whichever way the face's surface runs.
@@ -806,6 +881,11 @@ struct FacePlan {
   // A taper pipe thread's free ends (mitcad#733), as its start was read.
   bool free_low = false;
   bool free_high = false;
+  // Where a modelled straight thread's face ends all round (face_ends):
+  // 0 and the thread's length for ends square to the axis, within for
+  // uneven ones.
+  double even_low = 0.0;
+  double even_high = std::numeric_limits<double>::infinity();
   // A modelled thread's faces' name.
   std::string name;
 };
@@ -890,6 +970,21 @@ std::vector<Step> other_steps(const Shape& body, const FacePlan& p, const Thread
       const Timed timed(checks_time(trace));
       free_low = from <= kSame && !material_past(body.occt(), t, from, -1.0, inner, outer);
       free_high = to >= t.length - kSame && !material_past(body.occt(), t, to, 1.0, inner, outer);
+    }
+    // At an end against the body that is uneven (mitcad#901: a shank under
+    // a head's serrated underside), the tools stop a little short of where
+    // the face ends all round: up to its furthest point they would cut into
+    // the material beyond the face where the end is shorter, and their end
+    // would touch the body's edges there, which the booleans leave open.
+    const double short_of = kUnevenEndClearance * t.pitch;
+    if (!free_low && from <= kSame && p.even_low > from + kSame) {
+      from = p.even_low + short_of;
+    }
+    if (!free_high && to >= t.length - kSame && p.even_high < to - kSame) {
+      to = p.even_high - short_of;
+    }
+    if (to - from <= kSame) {
+      throw std::invalid_argument("face " + p.face + " is too short all round for the thread");
     }
     // The end chamfers, before the grooves: the first turn starts on the
     // cone.
@@ -1498,6 +1593,11 @@ FacePlan plan_face(const Shape& body, const ThreadSpec& spec, std::size_t k, Fac
   plan.chamfers = chamfers;
   plan.free_low = free_low;
   plan.free_high = free_high;
+  if (spec.groove && thread.slope == 0.0) {
+    const FaceEnds ends = face_ends(body, face, thread);
+    plan.even_low = ends.low;
+    plan.even_high = ends.high;
+  }
   if (spec.groove) {
     plan.name = face_name(spec.feature, "thread", face);
   }

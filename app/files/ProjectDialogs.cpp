@@ -370,6 +370,9 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   // As tall as its contents (no fixed maximum): the dialog opens at its
   // full height, and the scroll bar is for a screen too low for it.
   auto* scroll = new FittingScrollArea;
+  // The AppKit secondary window already scrolls the full form above its
+  // buttons, as this fitting area does in Qt; do not nest another scroller.
+  scroll->setProperty("nativeWindowBody", true);
   m_scroll = scroll;
   scroll->setWidgetResizable(true);
   scroll->setFrameShape(QFrame::NoFrame);

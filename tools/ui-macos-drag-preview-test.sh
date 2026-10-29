@@ -9,6 +9,9 @@ ui_init "$1" "$3"
 cli=$2
 frontend=${4:-qt}
 UI_TIMEOUT=240
+# Enough distinct held positions to install useful previews and replace pending
+# motion, without making a software-rendered VM spend minutes painting them.
+drag_steps=48
 export MITCAD_TEST_WORK=$UI_OUT/files
 mkdir -p "$MITCAD_TEST_WORK"
 for fixture in box curved; do
@@ -57,18 +60,24 @@ PY
   # The controlled delay exceeds the modal threshold even on a simple box.
   # Six held ticks make the pause shorter than a running preview, then input
   # resumes without cancellation or a backlog of intermediate field actions.
+  # At the final position the button stays down until a useful exact solid
+  # is installed. The driver polls without blocking or adding move events.
   MITCAD_LOG_TIMING=1 MITCAD_TEST_STEP_MS=16 MITCAD_TEST_SETTLE_MS=0 \
-    MITCAD_TEST_DRAG_STEPS=180 MITCAD_TEST_DRAG_PAUSE_TICKS=6 \
+    MITCAD_TEST_DRAG_STEPS=$drag_steps MITCAD_TEST_DRAG_PAUSE_TICKS=6 \
+    MITCAD_TEST_DRAG_WAIT_PREVIEW=1 \
     MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=500 MITCAD_TEST_INPUT=$UI_OUT/drag.mitcad-ui \
     ui_run_app "$fixture" --ui="$frontend" --no-recovery --no-mcp --open "$MITCAD_TEST_WORK/drag.mitcad"
   ui_expect_log '^TestDriver: done' "$fixture: all held-drag and history assertions completed"
   ui_expect_no_log 'Progress dialog shown: preview' "$fixture: preview never blocks input"
   ui_expect_no_log 'Computing preview cancelled' "$fixture: numeric motion never cancels useful work"
-  python3 - "$UI_LOG_FILE" "$MITCAD_TEST_WORK/drag.mitcad" <<'PY'
+  if ! python3 - "$UI_LOG_FILE" "$MITCAD_TEST_WORK/drag.mitcad" "$drag_steps" <<'PY'
 import json, re, sys
 text = open(sys.argv[1], encoding="utf-8").read()
+steps = int(sys.argv[3])
+assert "Held drag: begin\n" in text and "Held drag: end," in text, "missing completed held drag"
 gesture = text.split("Held drag: begin\n", 1)[1].split("Held drag: end,", 1)[0]
 assert "Preview installed: Extrude, dragging=1" in gesture, "no useful solid before release"
+assert "Held drag: exact preview available before release" in gesture, "no completed final held wait"
 assert "Preview numeric replaced:" in gesture, "did not replace pending numeric motion"
 assert not re.search(r"pending= [2-9]", gesture), "more than one pending distance"
 assert "Preview Extrude: intermediate numeric result" in gesture, "no intermediate solid installed"
@@ -76,9 +85,9 @@ assert "Held drag: resumed" in gesture
 feedback = re.search(r"Manipulator feedback Extrude distance: moves=(\d+) semantic=(\d+) visual=(\d+) paints=(\d+)", text)
 assert feedback, "missing delivered/semantic/visual/paint counters"
 moves, semantic, visual, paints = map(int, feedback.groups())
-assert moves == 180 and visual > semantic > 0 and paints > 0, feedback[0]
+assert moves == steps and visual > semantic > 0 and paints > 0, feedback[0]
 delivered = re.search(r"Held drag: end, delivered= (\d+) elapsed_ms= (\d+)", text)
-assert delivered and int(delivered[1]) == 180
+assert delivered and int(delivered[1]) == steps
 distance = float(re.search(r"Manipulator Extrude distance dragged to ([0-9.]+)", text)[1])
 design = json.load(open(sys.argv[2], encoding="utf-8"))
 feature = next(f for f in design["features"] if f["name"] == "Drag boss")
@@ -91,6 +100,9 @@ print("Held drag evidence:", "events", delivered[1], "elapsed_ms", delivered[2],
       "solid_installs", gesture.count("Preview installed:"), "committed_mm", distance,
       "semantic_changes", semantic, "visual_updates", visual, "overlay_paints", paints)
 PY
+  then
+    ui_fail "$fixture: held-drag evidence failed (see $UI_LOG_FILE)"
+  fi
   [ "$UI_FAILURES" = 0 ] || exit 1
 done
 echo "PASS: nonblocking held drag, latest numeric value and exact committed history ($frontend)"

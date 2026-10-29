@@ -26,12 +26,17 @@ pub mod ffi {
 
     unsafe extern "C++" {
         include!("bridge/memory.hpp");
+        include!("bridge/trycatch.hpp");
 
         fn memory_use() -> MemoryUse;
+
+        /// Gives the memory the C library's allocator holds free back to
+        /// the system (glibc's `malloc_trim`; elsewhere nothing).
+        fn release_free_memory();
     }
 }
 
-pub use ffi::{MemoryUse, memory_use};
+pub use ffi::{MemoryUse, memory_use, release_free_memory};
 
 impl MemoryUse {
     /// The share of the limit in use (0 without a limit).

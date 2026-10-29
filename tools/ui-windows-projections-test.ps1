@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp app/sketch
 # check-all sources: core/sketch core/model-api/src/sketch.rs tools/cli
+# check-all sources: app/framework/SelectionScope.cpp core/model/src/features/sketch.rs
 # Input-driven Windows UI test of Clean Up Projections (mitcad#232) in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted):
 #   1. A 40 x 25 block 20 high; a sketch on its front face.
@@ -29,6 +30,10 @@
 #      it. Intersect (a shortcut of the test's) takes the block picked in the
 #      browser: its section, linked. Extrude1 made 30 high: the sketch has
 #      no warning and the section's corner is at the new top.
+#   8. A design (mitcad-cli, mitcad#904): Sketch1 with a line and a circle
+#      on XY, Sketch2 on XY after it. Project in Sketch2: its selection
+#      filter has the row for other sketches' curves and points, a click
+#      takes Sketch1's line, and OK logs it by name.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-projections-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -364,6 +369,50 @@ Ui-Sync
 $since = @(Ui-LogLines | Select-Object -Skip $script:UiMark)
 if ($since -match 'Drag of |Dragged ') { Ui-Fail 'a section curve stayed at the old top' }
 Write-Host 'ok   nothing of the section is left at the old top'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'Sketch2 finished'
+if ((Ui-LogLines) -match 'Recompute failed') { Ui-Fail 'a recompute failed' }
+Write-Host '--- Project: a curve of an earlier sketch (mitcad#904)'
+# Sketch1 (F1) on XY: a line c3 from (-20, 10) to (20, 10) and a circle c5
+# round (0, -10); Sketch2 (F2) on XY after it, empty.
+$script = Join-Path $work 'sketches.json'
+$design = Join-Path $work 'sketches.mitcad'
+Set-Content -Encoding ascii $script @'
+[
+  {"cmd": "add_feature", "def": {"type": "sketch", "plane": "xy", "entities": [
+    {"id": "p1", "type": "point", "at": [-20, 10]},
+    {"id": "p2", "type": "point", "at": [20, 10]},
+    {"id": "c3", "type": "line", "start": "p1", "end": "p2"},
+    {"id": "p4", "type": "point", "at": [0, -10]},
+    {"id": "c5", "type": "circle", "center": "p4", "radius": 8}]}},
+  {"cmd": "sketch.create", "plane": "xy"}
+]
+'@
+$made = & $cli run $script --save $design
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $design)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+Ui-StartApp 'sketches' @('--open', $design)
+Ui-ExpectLog 'sketches.mitcad' 'the design opened'
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-Mark
+Ui-Step 'edit Sketch2 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch2' }
+Ui-ExpectNew 'Editing sketch F2 (Sketch2)' 'Sketch2 edited' 30
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-Sync
+Ui-Mark
+Ui-Step 'project (P)'                    { Ui-Key 'p' }
+Ui-ExpectNew 'Command Project started' 'Project started'
+Ui-ExpectNew 'other-sketch-geometry=cross' 'Project''s filter has the row for other sketches'' geometry'
+Ui-ExpectNew 'Sketch entity F1/c3 at' 'Sketch1''s line can be picked'
+Ui-Step 'pick Sketch1''s line'           { Ui-ClickLogged 'Sketch entity F1/c3' }
+Ui-ExpectNew 'Project Geometry: 1 sketch curve [sketch curve c3 of F1]' 'the line went to Project'
+Ui-ExpectNew 'Preview Project: ok' 'the projection previewed' 30
+Ui-WaitIdle
+Ui-FocusMain
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Projected 1 item(s): sketch curve c3 of F1' 'the log names the projected curve'
 Ui-Mark
 Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
 Ui-ExpectNew 'Sketch finished' 'Sketch2 finished'

@@ -3,6 +3,7 @@
 # check-all sources: app/sketch app/framework/ModelShapes.cpp tools/cli
 # check-all sources: core/sketch core/model-api/src/sketch.rs core/solver
 # check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp
+# check-all sources: app/MainWindowSelection.cpp app/OcctViewer.cpp
 # The sketch's axes and origin as picks of Sketch Dimension and the
 # constraint tools (mitcad#500), on a design mitcad-cli makes: Sketch1 (F1)
 # on XY with a free point p1 at (20, 12), a free line c2 from (40, 5) to
@@ -29,6 +30,14 @@
 #      click on the y axis picks it (no sketch entity there), the preview
 #      and OK mirror the circle to (-10, 12), the y axis made in the same
 #      step; the saved sketch has the copy symmetric about the axis.
+#   7. The axes selected before a tool (mitcad#899): Sketch4 (F4, on XY)
+#      has a free point p1 at (-6, 8) (2 DOF). A click on p1 and a Ctrl+
+#      click on the x axis select both with no tool running; Sketch
+#      Dimension then offers p1's distance from the x axis, 8.00, and 15
+#      typed makes the x axis and the dimension in one step (1 DOF). p1
+#      and the y axis selected the same way, which makes nothing,
+#      Coincident makes the y axis in its step and puts p1 on it (0 DOF);
+#      undo takes both back.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-axes-test.sh [screenshot.png]
@@ -52,7 +61,9 @@ cat > "$WORK/model.json" << 'EOF'
   {"cmd": "sketch.circle", "sketch": "F2", "mode": "center", "center": [-27, -16], "radius": 5},
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_point", "sketch": "F3", "at": [-8, 5]},
-  {"cmd": "sketch.circle", "sketch": "F3", "mode": "center", "center": [10, 12], "radius": 3}
+  {"cmd": "sketch.circle", "sketch": "F3", "mode": "center", "center": [10, 12], "radius": 3},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_point", "sketch": "F4", "at": [-6, 8]}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
@@ -254,5 +265,56 @@ EOF3
 "$CLI" run "$WORK/check-mirror.json" --open "$FILE" > "$WORK/check-mirror.log" 2>&1 ||
   { cat "$WORK/check-mirror.log"; ui_fail "the saved mirror about the y axis"; }
 echo "ok   the copy saved symmetric about the y axis"
+
+echo "--- 7. The axes selected before a tool: Sketch Dimension, then Coincident (mitcad#899)"
+ui_mark
+ui_step "double-click Sketch4"           ui_double_click_logged "Timeline Sketch4"
+ui_expect_new "Editing sketch F4 (Sketch4)" "Sketch4 edited"
+ui_expect_new "Sketch Sketch4: 2 DOF" "a free point"
+ui_step "show the point and the axes"    zoom_to_show -15 -5 20 20
+ui_mark
+ui_step "select p1"                      ui_sketch_click -6 8
+ui_expect_new "Selected: 1 sketch point" "p1 selected"
+ui_mark
+ui_step "and the x axis (Ctrl)"          ctrl_sketch_click 12 0
+ui_expect_new "Sketch axis selected: x_axis (x axis)" "the x axis selected with no tool running"
+ui_expect_new "Selected: 1 sketch curve, 1 sketch point [sketch point p1 of F4; sketch curve x_axis of F4]" \
+  "p1 and the x axis in the selection"
+ui_mark
+ui_step "sketch dimension (D)"           ui_key d
+ui_expect_new "Sketch tool Sketch Dimension" "Sketch Dimension takes the selection"
+ui_step "place the value"                ui_sketch_click -12 3
+ui_expect_new "Sketch value editor at" "the value editor opened"
+ui_expect_new " with 8.00" "p1's distance from the x axis offered"
+ui_step "type 15"                        xdotool type --delay 40 "15"
+ui_step "Enter"                          ui_key Return
+ui_expect_new "Made the sketch x axis for a pick: c" "the x axis made in the dimension's step"
+ui_expect_new "point_line_distance" "p1's distance from the x axis"
+ui_expect_new "Sketch Sketch4: 1 DOF" "p1 held 15 mm from the x axis"
+ui_step "end the tool (Esc)"             ui_key Escape
+ui_mark
+ui_step "select p1"                      ui_sketch_click -6 15
+ui_expect_new "Selected: 1 sketch point" "p1 selected again"
+ui_mark
+ui_step "and the y axis (Ctrl)"          ctrl_sketch_click 0 5
+ui_expect_new "Sketch axis selected: y_axis (y axis)" "the y axis selected with no tool running"
+ui_expect_new "Selected: 1 sketch curve, 1 sketch point [sketch point p1 of F4; sketch curve y_axis of F4]" \
+  "p1 and the y axis in the selection"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Made the sketch" && ui_fail "selecting the y axis made it"
+ui_mark
+ui_step "coincident (search)"            ui_command "Coincident"
+ui_expect_new "Made the sketch y axis for a pick: c" "the y axis made in the constraint's step"
+ui_expect_new "Added constraint coincident k" "p1 on the y axis"
+ui_expect_new "on p1, c" "p1 and the y axis's line"
+ui_expect_new "Sketch Sketch4: 0 DOF" "p1 held on the y axis"
+ui_mark
+ui_step "undo (Ctrl+Z)"                  ui_key ctrl+z
+ui_expect_new "Sketch Sketch4: 1 DOF" "the constraint and the y axis taken back as one step"
+ui_mark
+ui_step "redo (Ctrl+Y)"                  ui_key ctrl+y
+ui_expect_new "Sketch Sketch4: 0 DOF" "both again"
+ui_mark
+ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
+ui_expect_new "Sketch finished" "Sketch4 finished"
 
 ui_finish "UI sketch axes test"

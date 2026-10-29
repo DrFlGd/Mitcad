@@ -2,6 +2,7 @@
 #include "platform/NativeTestInput.hpp"
 
 #import <AppKit/AppKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <QuartzCore/QuartzCore.h>
 
 #include <QApplication>
@@ -35,6 +36,8 @@
 #include <QPainter>
 #include <QPalette>
 #include <QRegion>
+#include <QRectF>
+#include <QTemporaryDir>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QtLogging>
@@ -42,6 +45,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <memory>
 #include <vector>
 #include <unistd.h>
 
@@ -49,6 +53,9 @@
 #include "platform/NativeDialogs.hpp"
 #include "platform/NativeForms.hpp"
 #include "platform/NativeMacWindow.hpp"
+#include "NativeNavigationGuide.hpp"
+#include "NativeColorField.hpp"
+#include "NativeTableCells.hpp"
 #include "browser/DocumentSnapshot.hpp"
 #include "browser/TimelinePresentation.hpp"
 #include "framework/CachePreferences.hpp"
@@ -62,6 +69,12 @@
 @protocol MITCADNativeHistoryFeatureTest <NSObject>
 - (void)selectHistoryFeature;
 - (void)activateHistoryFeature;
+@end
+
+// Read-only diagnostic of the actual NSSlider mouseDown stack, maintained
+// by the production control around AppKit's native cell tracking.
+@protocol MITCADNativeSliderTrackingTest <NSObject>
+- (BOOL)pointerTracking;
 @end
 
 // NSEvent exposes magnification and phase as read-only properties and has
@@ -88,6 +101,32 @@
 - (NSTimeInterval)timestamp { return eventTime; }
 // The Cocoa gesture reader uses zero for the default trackpad device.
 - (NSUInteger)deviceID { return 0; }
+@end
+
+@interface MITCADTestScrollEvent : NSEvent {
+@public
+  NSWindow* __weak target;
+  NSPoint point;
+  CGFloat dx;
+  CGFloat dy;
+  BOOL precise;
+}
+@end
+
+@implementation MITCADTestScrollEvent
+- (NSEventType)type { return NSEventTypeScrollWheel; }
+- (NSWindow*)window { return target; }
+- (NSInteger)windowNumber { return target.windowNumber; }
+- (NSPoint)locationInWindow { return point; }
+- (CGFloat)deltaX { return dx; }
+- (CGFloat)deltaY { return dy; }
+- (CGFloat)scrollingDeltaX { return dx; }
+- (CGFloat)scrollingDeltaY { return dy; }
+- (BOOL)hasPreciseScrollingDeltas { return precise; }
+- (NSEventPhase)phase { return precise ? NSEventPhaseChanged : NSEventPhaseNone; }
+- (NSEventPhase)momentumPhase { return NSEventPhaseNone; }
+- (NSEventModifierFlags)modifierFlags { return 0; }
+- (NSTimeInterval)timestamp { return NSProcessInfo.processInfo.systemUptime; }
 @end
 
 namespace mitcad::mac::test {
@@ -464,6 +503,8 @@ NSView* findControl(const QString& identifier, NSTableView** rowTable = nullptr,
   return nil;
 }
 
+NSView* tableCell(const QString& identifier, QString* detail = nullptr);
+
 NSButton* findButton(const QRegularExpression& expression) {
   const auto match = [&](NSView* view) {
     if (![view isKindOfClass:NSButton.class] || !((NSButton*)view).enabled) return false;
@@ -508,7 +549,8 @@ NSString* characters(int key, const QString& text) {
   switch (key) {
   case Qt::Key_Return: case Qt::Key_Enter: character = NSCarriageReturnCharacter; break;
   case Qt::Key_Escape: character = 0x1b; break;
-  case Qt::Key_Tab: case Qt::Key_Backtab: character = NSTabCharacter; break;
+  case Qt::Key_Tab: character = NSTabCharacter; break;
+  case Qt::Key_Backtab: character = NSBackTabCharacter; break;
   case Qt::Key_Backspace: character = NSBackspaceCharacter; break;
   case Qt::Key_Delete: character = NSDeleteFunctionKey; break;
   case Qt::Key_Left: character = NSLeftArrowFunctionKey; break;
@@ -529,6 +571,7 @@ NSString* characters(int key, const QString& text) {
 
 unsigned short virtualKey(int key) {
   switch (key) {
+  case Qt::Key_G: return 5;
   case Qt::Key_Z: return 6;
   case Qt::Key_Return: return 36;
   case Qt::Key_Enter: return 76;
@@ -634,12 +677,12 @@ bool applicationDelegate(QString& error) {
   return true;
 }
 
-bool controlExists(const QString& identifier) {
+bool controlExists(const QString& identifier, QString* detail) {
   if (!active()) return false;
   for (NSToolbarItem* item in documentWindow().toolbar.items) {
     if (qt(item.itemIdentifier) == identifier) return true;
   }
-  return findControl(identifier) != nil;
+  return tableCell(identifier, detail) != nil;
 }
 
 bool textOf(const QString& identifier, QString& value) {
@@ -664,17 +707,26 @@ bool textOf(const QString& identifier, QString& value) {
     return true;
   }
   NSView* view = findControl(identifier);
+  if ([view isKindOfClass:NSScrollView.class] &&
+      [((NSScrollView*)view).documentView isKindOfClass:NSTextView.class]) view = ((NSScrollView*)view).documentView;
   // A model cell's identifier is on its cell view; read its shown text.
   if ([view isKindOfClass:NSTableCellView.class] && ((NSTableCellView*)view).textField) view = ((NSTableCellView*)view).textField;
   NSString* text = nil;
   if ([view isKindOfClass:NSTextField.class]) text = ((NSTextField*)view).stringValue;
+  else if ([view isKindOfClass:NSTextView.class]) text = ((NSTextView*)view).string;
   // An outline row's cell: its name as shown (mitcad#816).
   else if ([view isKindOfClass:NSTableCellView.class]) text = ((NSTableCellView*)view).textField.stringValue;
   else if ([view isKindOfClass:NSPopUpButton.class]) {
     NSPopUpButton* popup = (NSPopUpButton*)view;
-    text = popup.pullsDown ? popup.title : popup.titleOfSelectedItem;
+    text = popup.pullsDown ? popup.title : (popup.selectedItem != nil ? popup.titleOfSelectedItem : @"");
+  }
+  // A read-only probe of the live control, independent of the Qt presenter.
+  else if ([view isKindOfClass:NSSlider.class]) {
+    value = QString::number(((NSSlider*)view).integerValue);
+    return true;
   }
   else if ([view isKindOfClass:NSButton.class]) text = ((NSButton*)view).title;
+  else if ([view isKindOfClass:NSImageView.class]) text = ((NSImageView*)view).image.accessibilityDescription;
   if (!text) return false;
   value = qt(text);
   return true;
@@ -1222,6 +1274,67 @@ bool historyLayout(const QJsonObject& timeline, const QSet<QString>& filtered, c
   return true;
 }
 
+bool historyWheel(QString& error) {
+  NSWindow* window = documentWindow();
+  NSView* view = identifiedView(window.contentView, QStringLiteral("native.historyScroll"));
+  if (![view isKindOfClass:NSScrollView.class]) {
+    error = QStringLiteral("the native history scroll view is missing");
+    return false;
+  }
+  NSScrollView* scroll = (NSScrollView*)view;
+  [window layoutIfNeeded];
+  [window.contentView layoutSubtreeIfNeeded];
+  NSClipView* clip = scroll.contentView;
+  const CGFloat maximum = scroll.documentView.frame.size.width - clip.bounds.size.width;
+  if (maximum < 50) {
+    error = QStringLiteral("the history fixture does not overflow its viewport");
+    return false;
+  }
+  const auto send = [&](CGFloat x, CGFloat y, bool precise) {
+    const NSPoint middle = NSMakePoint(NSMidX(clip.bounds), NSMidY(clip.bounds));
+    const NSPoint point = [clip convertPoint:middle toView:nil];
+    NSView* hit = [window.contentView hitTest:[window.contentView.superview convertPoint:point fromView:nil]];
+    if (hit == nil || (hit != scroll && ![hit isDescendantOf:scroll])) { return false; }
+    MITCADTestScrollEvent* event = [MITCADTestScrollEvent new];
+    event->target = window;
+    event->point = point;
+    event->dx = x;
+    event->dy = y;
+    event->precise = precise;
+    [hit scrollWheel:event];
+    return true;
+  };
+  [clip scrollToPoint:NSZeroPoint];
+  [scroll reflectScrolledClipView:clip];
+  if (!send(0, -1, false) || clip.bounds.origin.x <= 0) {
+    error = QStringLiteral("a vertical mouse wheel did not move the native history towards newer features");
+    return false;
+  }
+  const CGFloat oneLine = clip.bounds.origin.x;
+  for (int i = 0; i < int(std::ceil(maximum / std::max<CGFloat>(oneLine, 1))) + 2; ++i) {
+    if (!send(0, -1, false)) { error = QStringLiteral("the history wheel left its viewport"); return false; }
+  }
+  if (std::abs(clip.bounds.origin.x - maximum) > 1 || !send(0, -2, false) ||
+      std::abs(clip.bounds.origin.x - maximum) > 1) {
+    error = QStringLiteral("the native history wheel did not stop at the newer end");
+    return false;
+  }
+  if (!send(0, maximum + 100, true) || std::abs(clip.bounds.origin.x) > 1) {
+    error = QStringLiteral("precise history scrolling did not reach the older end");
+    return false;
+  }
+  if (!send(-17.5, -2, true) || std::abs(clip.bounds.origin.x - 17.5) > 1) {
+    error = QStringLiteral("horizontal/diagonal trackpad history scrolling lost its point delta");
+    return false;
+  }
+  if (!send(0, 100, true) || std::abs(clip.bounds.origin.x) > 1) {
+    error = QStringLiteral("the native history did not return to its older end");
+    return false;
+  }
+  qInfo().noquote() << QStringLiteral("Native history wheel: mouse and precise trackpad, both endpoints, maximum %1 points").arg(maximum);
+  return true;
+}
+
 bool historyMarkerEvent(const QString& phase, int index, QString& error) {
   NSView* marker = phase == QStringLiteral("begin")
       ? identifiedView(documentWindow().contentView, QStringLiteral("native.historyMarker")) : draggedHistoryMarker;
@@ -1413,6 +1526,17 @@ bool replaceText(const QString& identifier, const QString& text, QString& error)
 
 bool choose(const QString& identifier, const QString& title, QString& error) {
   NSView* view = findControl(identifier);
+  if ([view isKindOfClass:NSTabView.class]) {
+    NSTabView* tabs = (NSTabView*)view;
+    for (NSTabViewItem* item in tabs.tabViewItems) {
+      if (qt(item.label).compare(title, Qt::CaseInsensitive) == 0) {
+        [tabs selectTabViewItem:item];
+        return true;
+      }
+    }
+    error = QStringLiteral("native tabs '%1' have no '%2' page").arg(identifier, title);
+    return false;
+  }
   if ([view isKindOfClass:NSSegmentedControl.class]) {
     NSSegmentedControl* segments = (NSSegmentedControl*)view;
     for (NSInteger i = 0; segments.enabled && i < segments.segmentCount; ++i) {
@@ -1916,6 +2040,19 @@ bool widgetRefreshContract(QString& error) {
   named(combo, QStringLiteral("refresh.combo"));
   named(table, QStringLiteral("refresh.table"));
   named(tree, QStringLiteral("refresh.tree"));
+  const auto tool = [&named](const QString& name, Qt::ToolButtonStyle style) {
+    auto* result = new QToolButton;
+    result->setText(QStringLiteral("Refresh action"));
+    result->setIcon(swatchIcon(Qt::red));
+    result->setToolButtonStyle(style);
+    named(result, name);
+    return result;
+  };
+  const std::vector<std::pair<QToolButton*, NSCellImagePosition>> toolModes{
+      {tool(QStringLiteral("refresh.tool-text"), Qt::ToolButtonTextOnly), NSNoImage},
+      {tool(QStringLiteral("refresh.tool-beside"), Qt::ToolButtonTextBesideIcon), NSImageLeading},
+      {tool(QStringLiteral("refresh.tool-icon"), Qt::ToolButtonIconOnly), NSImageOnly},
+      {tool(QStringLiteral("refresh.tool-tile"), Qt::ToolButtonTextUnderIcon), NSImageAbove}};
   combo->addItems({QStringLiteral("First"), QStringLiteral("Second")});
   QStandardItemModel model(2, 1), replacement(1, 1);
   model.setData(model.index(0, 0), QStringLiteral("Row one"));
@@ -1934,6 +2071,27 @@ bool widgetRefreshContract(QString& error) {
     return nativeWidgetPropertyWrites() == before || fail(QStringLiteral("unchanged widget refresh assigned AppKit properties"));
   };
   if (!unchanged()) { return false; }
+  const auto toolPresentation = [&toolModes, &control, &fail] {
+    for (const auto& [source, position] : toolModes) {
+      NSButton* native = (NSButton*)control(source->objectName());
+      const QString caption = position == NSImageOnly ? QString() : source->text();
+      if (native == nil || native.image == nil || native.imagePosition != position || qt(native.title) != caption ||
+          qt(native.accessibilityLabel) != source->text()) {
+        return fail(QStringLiteral("native tool button '%1' lost its caption/icon mode after an image update")
+                        .arg(source->objectName()));
+      }
+    }
+    return true;
+  };
+  if (!toolPresentation()) { return false; }
+  // A new image with unchanged text/style must restore the final native
+  // image position even when the source presentation cache already matches.
+  for (const auto& [source, position] : toolModes) {
+    (void)position;
+    source->setIcon(swatchIcon(Qt::blue));
+  }
+  view->refresh();
+  if (!toolPresentation() || !unchanged()) { return false; }
 
   // All of these signals/events must arrive before the slow fallback.
   caption->setText(QStringLiteral("<b>Changed label</b>"));
@@ -2183,12 +2341,14 @@ bool activate(const QString& identifier, QString& error) {
   [table scrollRowToVisible:row];
   return [NSApp sendAction:table.doubleAction to:table.target from:table];
 }
-bool trackContextMenu(const QString& choice, const std::function<void()>& open, QString& error) {
+bool trackContextMenu(const QString& choice, const std::function<void()>& open, QString& error,
+                      const std::function<void()>& onClosed, const QString& screenshotPath) {
   __block NSMenu* tracked = nil;
   __block NSTimer* response = nil;
   __block bool began = false;
   __block bool ended = false;
   __block bool selected = false;
+  __block bool captured = screenshotPath.isEmpty();
   __block QStringList available;
   const bool cancel = choice == QStringLiteral("cancel");
   NSString* title = choice.toNSString();
@@ -2209,6 +2369,7 @@ bool trackContextMenu(const QString& choice, const std::function<void()>& open, 
     // directly or allowing the script's next step to race its closure.
     response = [NSTimer timerWithTimeInterval:0.05 repeats:NO block:^(NSTimer* timer) {
       (void)timer;
+      if (!screenshotPath.isEmpty()) captured = captureOwnWindows(screenshotPath);
       if (!cancel) {
         const auto label = [](NSString* text) { return qt(text).remove(QLatin1Char('&')).trimmed(); };
         // Performs the enabled leaf titled `wanted` in `menu`, listing what
@@ -2252,7 +2413,12 @@ bool trackContextMenu(const QString& choice, const std::function<void()>& open, 
   }];
   id endObserver = [center addObserverForName:NSMenuDidEndTrackingNotification object:nil queue:nil
       usingBlock:^(NSNotification* notice) {
-    if (notice.object == tracked) ended = true;
+    if (notice.object == tracked && !ended) {
+      ended = true;
+      // A popup's shared action can synchronously enter another modal
+      // loop. Its script must resume after tracking, before open() returns.
+      if (onClosed) onClosed();
+    }
   }];
   open();
   // Browser and viewport owners intentionally queue their context-menu
@@ -2269,6 +2435,9 @@ bool trackContextMenu(const QString& choice, const std::function<void()>& open, 
   [center removeObserver:endObserver];
   if (!began || !ended) {
     error = QStringLiteral("the real native context menu did not begin and finish tracking"); return false;
+  }
+  if (!captured) {
+    error = QStringLiteral("could not capture the tracking native menu at '%1'").arg(screenshotPath); return false;
   }
   if (!cancel && !selected) {
     error = QStringLiteral("native context menu has no enabled leaf action '%1': %2")
@@ -2420,6 +2589,35 @@ bool setFileDirectory(const QString& directory, QString& error) {
   panel.directoryURL = [NSURL fileURLWithPath:path isDirectory:YES];
   return true;
 }
+QString filePanelDiagnostic() {
+  NSSavePanel* panel = (__bridge NSSavePanel*)nativeFileDialogPanel();
+  if (panel == nil) return QStringLiteral("panel=nil; %1").arg(keyEventFocusDiagnostic());
+  QStringList urls;
+  if ([panel isKindOfClass:NSOpenPanel.class]) {
+    for (NSURL* url in ((NSOpenPanel*)panel).URLs) urls << qt(url.path);
+  } else if (panel.URL != nil) {
+    urls << qt(panel.URL.path);
+  }
+  QStringList fields;
+  const auto collect = [&fields](NSView* view, const auto& self) -> void {
+    if (view == nil || view.hidden) return;
+    if ([view isKindOfClass:NSTextField.class] && ((NSTextField*)view).editable) {
+      fields << QStringLiteral("%1=%2").arg(qt(NSStringFromClass(view.class)), qt(((NSTextField*)view).stringValue));
+    }
+    for (NSView* child in view.subviews) self(child, self);
+  };
+  collect(panel.contentView, collect);
+  collect(panel.attachedSheet.contentView, collect);
+  NSButtonCell* defaultButton = panel.defaultButtonCell;
+  const QString defaultState = defaultButton == nil ? QStringLiteral("remote/unavailable")
+      : QStringLiteral("title=%1 enabled=%2 view=%3")
+          .arg(qt(defaultButton.title)).arg(bool(defaultButton.enabled))
+          .arg(qt(NSStringFromClass(defaultButton.controlView.class)));
+  return QStringLiteral("panel=%1 title=%2 directory=%3 names=%4 selected=[%5] editable=[%6] default=[%7] prompt=%8; %9")
+      .arg(qt(NSStringFromClass(panel.class)), qt(panel.title), qt(panel.directoryURL.path),
+           qt(panel.nameFieldStringValue), urls.join(QLatin1Char('|')), fields.join(QLatin1Char('|')),
+           defaultState, qt(panel.prompt), keyEventFocusDiagnostic());
+}
 bool cancelFilePanel(QString& error) {
   NSSavePanel* panel = filePanel();
   if (!panel) { error = QStringLiteral("no focused native file panel"); return false; }
@@ -2499,11 +2697,20 @@ bool sendNativeKey(int key, Qt::KeyboardModifiers modifiers, const QString& text
   if (modifiers.testFlag(Qt::ShiftModifier) || key == Qt::Key_Backtab) flags |= NSEventModifierFlagShift;
   // AppKit ignores Command/Control/Option here, but preserves Shift. A
   // lowercase Command-Shift-Z event can match Undo instead of Redo.
-  NSString* ignoringModifiers = characters(key, QString());
+  const bool tab = key == Qt::Key_Tab || key == Qt::Key_Backtab;
+  const bool backtab = tab && (flags & NSEventModifierFlagShift) != 0;
+  NSString* ignoringModifiers = characters(backtab ? Qt::Key_Backtab : key, QString());
   if ((flags & NSEventModifierFlagShift) && key >= Qt::Key_A && key <= Qt::Key_Z) {
     ignoringModifiers = ignoringModifiers.uppercaseString;
   }
-  NSString* string = text.isEmpty() ? ignoringModifiers : characters(key, text);
+  // The portable parser supplies '\t' for Shift+Tab. AppKit's standard
+  // text bindings require NSBackTabCharacter (0x19) for insertBacktab:,
+  // rather than NSTabCharacter (0x09), in both character fields.
+  NSString* string = (backtab || text.isEmpty()) ? ignoringModifiers : characters(key, text);
+  if (tab)
+    qInfo().noquote() << QStringLiteral("Native Tab input: backward=%1 characters=%2 ignoring=%3 physical=%4")
+        .arg(backtab).arg(string.length ? int([string characterAtIndex:0]) : -1)
+        .arg(ignoringModifiers.length ? int([ignoringModifiers characterAtIndex:0]) : -1).arg(virtualKey(key));
   NSEvent* down = [NSEvent keyEventWithType:NSEventTypeKeyDown location:NSZeroPoint modifierFlags:flags
         timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil
         characters:string charactersIgnoringModifiers:ignoringModifiers isARepeat:NO keyCode:virtualKey(key)];
@@ -2531,6 +2738,225 @@ bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text) {
 
 bool sendKeyEvent(int key, Qt::KeyboardModifiers modifiers, const QString& text) {
   return sendNativeKey(key, modifiers, text, true);
+}
+
+namespace {
+bool systemFileTarget(NSWindow* expected, QString& error) {
+  NSSavePanel* panel = (__bridge NSSavePanel*)nativeFileDialogPanel();
+  const auto ownActivePanel = [panel, expected] {
+    NSWindow* target = panel;
+    while (target.attachedSheet != nil) target = target.attachedSheet;
+    NSRunningApplication* front = NSWorkspace.sharedWorkspace.frontmostApplication;
+    return !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") && active() && panel != nil &&
+        panel == (__bridge NSSavePanel*)nativeFileDialogPanel() && panel.visible && target == expected &&
+        NSApp.active && front != nil && front.processIdentifier == getpid();
+  };
+  // Closing the XPC Go to Folder sheet can leave AppKit's key window nil.
+  // Recover only this still-visible panel directly attached to our visible
+  // document, while our app remains active and frontmost. Ordering it also
+  // requests WindowServer focus for the XPC view; makeKeyWindow alone only
+  // restored AppKit's local key-window state after Go to Folder closed.
+  // A different key window, modal window or sheet must never be displaced.
+  NSWindow* document = documentWindow();
+  if (ownActivePanel() && NSApp.keyWindow == nil && expected == panel && panel.attachedSheet == nil &&
+      document.visible && panel.sheetParent == document && document.attachedSheet == panel &&
+      (NSApp.modalWindow == nil || NSApp.modalWindow == panel) && panel.canBecomeKeyWindow) {
+    NSResponder* remoteResponder = panel.firstResponder;
+    [panel makeKeyAndOrderFront:nil];
+    // Let the public ordering request and remote view notifications run
+    // before posting WindowServer input. The driver pauses only its step
+    // timer around this helper, so the next input cannot reenter this turn.
+    QElapsedTimer turn;
+    turn.start();
+    while (turn.elapsed() < 100 && ownActivePanel() && NSApp.keyWindow == expected &&
+           expected.firstResponder == remoteResponder) {
+      [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+                            beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+    }
+    const bool retained = expected.firstResponder == remoteResponder;
+    qInfo().noquote() << QStringLiteral("Native system file input: own attached panel ordered front, key focus restored=%1 remote responder retained=%2")
+                            .arg(NSApp.keyWindow == panel).arg(retained);
+    if (!retained || !document.visible || panel.sheetParent != document || document.attachedSheet != panel ||
+        (NSApp.modalWindow != nil && NSApp.modalWindow != panel)) {
+      error = QStringLiteral("native file panel changed while its WindowServer focus was restored: %1")
+          .arg(filePanelDiagnostic());
+      return false;
+    }
+  }
+  if (!ownActivePanel() || NSApp.keyWindow != expected) {
+    error = QStringLiteral("system file input requires this test app's active, frontmost native file panel: %1")
+        .arg(filePanelDiagnostic());
+    return false;
+  }
+  return true;
+}
+
+bool systemFileAccess(NSWindow* expected, QString& error) {
+  if (!systemFileTarget(expected, error)) return false;
+  bool allowed = CGPreflightPostEventAccess();
+  if (!allowed && qEnvironmentVariableIntValue("MITCAD_TEST_REQUEST_EVENT_ACCESS") == 1) {
+    allowed = CGRequestPostEventAccess();
+  }
+  qInfo().noquote() << QStringLiteral("Native system file input: postEventAccess=%1 target=%2 frame=%3,%4 %5x%6")
+      .arg(allowed).arg(qlonglong(expected.windowNumber)).arg(expected.frame.origin.x).arg(expected.frame.origin.y)
+      .arg(expected.frame.size.width).arg(expected.frame.size.height);
+  if (!allowed) {
+    error = QStringLiteral("macOS event posting permission is required for native file panel tests; "
+                           "allow the Mitcad test application in System Settings > Privacy & Security > Accessibility. "
+                           "MITCAD_TEST_REQUEST_EVENT_ACCESS=1 explicitly requests access from this app.");
+    return false;
+  }
+  // A permission prompt may have changed the active application.
+  return systemFileTarget(expected, error);
+}
+
+bool postSystemFilePair(NSWindow* expected, CGKeyCode code, CGEventFlags flags, const QString& text,
+                        QString& error) {
+  if (!systemFileTarget(expected, error)) return false;
+  CGEventSourceRef source = CGEventSourceCreate(kCGEventSourceStatePrivate);
+  CGEventRef down = source ? CGEventCreateKeyboardEvent(source, code, true) : nullptr;
+  CGEventRef up = source ? CGEventCreateKeyboardEvent(source, code, false) : nullptr;
+  if (source) CFRelease(source);
+  if (down == nullptr || up == nullptr) {
+    if (down) CFRelease(down);
+    if (up) CFRelease(up);
+    error = QStringLiteral("could not create a native file panel system key event");
+    return false;
+  }
+  CGEventSetFlags(down, flags);
+  CGEventSetFlags(up, 0);
+  if (!text.isEmpty()) {
+    CGEventKeyboardSetUnicodeString(down, text.size(), reinterpret_cast<const UniChar*>(text.utf16()));
+  }
+  // This is the real WindowServer route, including the file panel's XPC
+  // editor. It never substitutes a model import or sets a selected URL.
+  CGEventPost(kCGHIDEventTap, down);
+  CGEventPost(kCGHIDEventTap, up);
+  CFRelease(down);
+  CFRelease(up);
+  return true;
+}
+} // namespace
+
+bool sendSystemFileKey(int key, Qt::KeyboardModifiers modifiers, QString& error) {
+  NSWindow* expected = targetWindow();
+  if (!systemFileAccess(expected, error)) return false;
+  // Physical ANSI positions for ordinary shortcut letters. A is code zero,
+  // so an unsupported key must be rejected rather than using that default.
+  static constexpr CGKeyCode letters[] = {
+      0, 11, 8, 2, 14, 3, 5, 4, 34, 38, 40, 37, 46, 45, 31, 35, 12, 15, 1, 17, 32, 9, 13, 7, 16, 6};
+  CGKeyCode code = 0;
+  if (key >= Qt::Key_A && key <= Qt::Key_Z) {
+    code = letters[key - Qt::Key_A];
+  } else {
+    switch (key) {
+    case Qt::Key_Return: case Qt::Key_Enter: case Qt::Key_Tab: case Qt::Key_Backtab:
+    case Qt::Key_Space: case Qt::Key_Backspace: case Qt::Key_Delete: case Qt::Key_Escape:
+    case Qt::Key_Left: case Qt::Key_Right: case Qt::Key_Up: case Qt::Key_Down:
+      code = virtualKey(key);
+      break;
+    default:
+      error = QStringLiteral("unsupported native system file key %1").arg(key);
+      return false;
+    }
+  }
+  CGEventFlags flags = 0;
+  if (modifiers.testFlag(Qt::ControlModifier)) flags |= kCGEventFlagMaskCommand;
+  if (modifiers.testFlag(Qt::MetaModifier)) flags |= kCGEventFlagMaskControl;
+  if (modifiers.testFlag(Qt::AltModifier)) flags |= kCGEventFlagMaskAlternate;
+  if (modifiers.testFlag(Qt::ShiftModifier) || key == Qt::Key_Backtab) flags |= kCGEventFlagMaskShift;
+  return postSystemFilePair(expected, code, flags, {}, error);
+}
+
+bool sendSystemFileText(const QString& text, QString& error) {
+  NSWindow* expected = targetWindow();
+  if (!systemFileAccess(expected, error)) return false;
+  if (text.size() > 4096) { error = QStringLiteral("native system file text exceeds 4096 UTF-16 units"); return false; }
+  // Short Unicode packets preserve arbitrary local filenames without
+  // keyboard-layout assumptions. Never split a UTF-16 surrogate pair.
+  for (qsizetype start = 0; start < text.size();) {
+    qsizetype length = std::min<qsizetype>(16, text.size() - start);
+    if (start + length < text.size() && text.at(start + length - 1).isHighSurrogate()) --length;
+    if (!postSystemFilePair(expected, 0, 0, text.mid(start, length), error)) return false;
+    start += length;
+  }
+  return true;
+}
+
+bool sendSystemPointer(const QString& identifier, QString& error) {
+  NSView* view = findControl(identifier);
+  NSWindow* window = view.window;
+  const auto ownedActive = [view, window] {
+    NSRunningApplication* front = NSWorkspace.sharedWorkspace.frontmostApplication;
+    return active() && !qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") && view != nil &&
+        view.window == window && window.visible && [NSApp.windows containsObject:window] &&
+        viewVisible(view) && NSApp.active && front != nil && front.processIdentifier == getpid();
+  };
+  if (!ownedActive() || nativeDialogModalActive()) {
+    error = QStringLiteral("system pointer requires this test app's active, visible native control '%1'").arg(identifier);
+    return false;
+  }
+  if (!CGPreflightPostEventAccess()) {
+    error = QStringLiteral("system pointer needs the already granted macOS event-posting permission");
+    return false;
+  }
+  [window layoutIfNeeded];
+  [window.contentView layoutSubtreeIfNeeded];
+  // AppKit can return a clipping ancestor's visible rectangle outside a
+  // descendant's own bounds. Its centre then points at a neighbouring
+  // control, even though this exact target is fully visible.
+  const NSRect exposed = NSIntersectionRect(view.bounds, view.visibleRect);
+  if (NSIsEmptyRect(exposed)) {
+    error = QStringLiteral("system pointer target '%1' has no visible area inside its bounds").arg(identifier);
+    return false;
+  }
+  const NSPoint local = NSMakePoint(NSMidX(exposed), NSMidY(exposed));
+  const NSPoint inWindow = [view convertPoint:local toView:nil];
+  NSView* hit = [window.contentView hitTest:[window.contentView.superview convertPoint:inWindow fromView:nil]];
+  if (hit != view && ![hit isDescendantOf:view]) {
+    const auto describe = [window](NSView* candidate) {
+      if (candidate == nil) return QStringLiteral("nil");
+      const NSRect inWindow = [candidate convertRect:candidate.bounds toView:nil];
+      const NSRect onScreen = [window convertRectToScreen:inWindow];
+      return QStringLiteral("%1 id='%2' identifier='%3' frame=%4 bounds=%5 visible=%6 window=%7 screen=%8")
+          .arg(qt(NSStringFromClass(candidate.class)), qt(candidate.accessibilityIdentifier), qt(candidate.identifier),
+               qt(NSStringFromRect(candidate.frame)), qt(NSStringFromRect(candidate.bounds)),
+               qt(NSStringFromRect(candidate.visibleRect)), qt(NSStringFromRect(inWindow)), qt(NSStringFromRect(onScreen)));
+    };
+    QStringList ancestry;
+    for (NSView* parent = hit; parent != nil && ancestry.size() < 8; parent = parent.superview) {
+      ancestry.append(describe(parent));
+    }
+    error = QStringLiteral("system pointer target '%1' is covered; target {%2}; hit ancestry {%3}; "
+                           "point local=%4 window=%5, owned window=%6")
+        .arg(identifier, describe(view), ancestry.join(QStringLiteral(" -> ")),
+             qt(NSStringFromPoint(local)), qt(NSStringFromPoint(inWindow)))
+        .arg(qlonglong(window.windowNumber));
+    return false;
+  }
+  const NSPoint screen = [window convertPointToScreen:inWindow];
+  const CGPoint point = CGPointMake(screen.x, NSMaxY(NSScreen.screens.firstObject.frame) - screen.y);
+  // AppKit returns the window that would actually receive mouseDown,
+  // excluding input-transparent system overlays whose CG bounds can span
+  // the entire display. A different app's input target is still refused.
+  const NSInteger recipient = [NSWindow windowNumberAtPoint:screen belowWindowWithWindowNumber:0];
+  if (recipient != window.windowNumber || NSEvent.pressedMouseButtons != 0 || !ownedActive()) {
+    error = QStringLiteral("system pointer '%1' requires own mouse recipient %2, found %3, pressed=%4")
+        .arg(identifier).arg(qlonglong(window.windowNumber)).arg(qlonglong(recipient))
+        .arg(qulonglong(NSEvent.pressedMouseButtons));
+    return false;
+  }
+  CGEventRef event = CGEventCreateMouseEvent(nullptr, kCGEventMouseMoved, point, kCGMouseButtonLeft);
+  if (event == nullptr) {
+    error = QStringLiteral("could not create the system pointer event");
+    return false;
+  }
+  CGEventSetFlags(event, 0);
+  CGEventPost(kCGHIDEventTap, event);
+  CFRelease(event);
+  qInfo().noquote() << QStringLiteral("Native system pointer: %1 at %2,%3 own window %4, access=1")
+      .arg(identifier).arg(point.x).arg(point.y).arg(qlonglong(window.windowNumber));
+  return true;
 }
 
 bool sendText(const QString& text) {
@@ -2612,9 +3038,15 @@ namespace {
 
 // "<table id>/<row>/<column>" addresses a cell by its native row and model
 // column, for tables without identifiers of their cells.
-NSView* tableCell(const QString& identifier) {
+NSView* tableCell(const QString& identifier, QString* detail) {
+  // An exact identifier may itself contain slashes, such as occurrence
+  // paths. Only interpret a positional locator after that lookup misses.
+  if (NSView* direct = findControl(identifier)) return direct;
   const QStringList parts = identifier.split(QLatin1Char('/'));
-  if (parts.size() != 3) return findControl(identifier);
+  if (parts.size() != 3) {
+    if (detail) *detail = QStringLiteral("no native control '%1'").arg(identifier);
+    return nil;
+  }
   bool rowValid = false;
   bool columnValid = false;
   const NSInteger row = parts.at(1).toInt(&rowValid);
@@ -2622,6 +3054,12 @@ NSView* tableCell(const QString& identifier) {
   NSView* view = findControl(parts.at(0));
   NSScrollView* scroll = [view isKindOfClass:NSScrollView.class] ? (NSScrollView*)view : view.enclosingScrollView;
   NSTableView* table = [scroll.documentView isKindOfClass:NSTableView.class] ? (NSTableView*)scroll.documentView : nil;
+  if (detail) {
+    *detail = QStringLiteral("cell locator '%1': base %2, document %3, native rows %4 columns %5, requested %6/%7")
+                  .arg(identifier, view ? qt(NSStringFromClass(view.class)) : QStringLiteral("nil"),
+                       scroll.documentView ? qt(NSStringFromClass(scroll.documentView.class)) : QStringLiteral("nil"))
+                  .arg(table ? table.numberOfRows : -1).arg(table ? table.numberOfColumns : -1).arg(row).arg(column);
+  }
   if (!rowValid || !columnValid || !table || row < 0 || column < 0 || row >= table.numberOfRows ||
       column >= table.numberOfColumns) return nil;
   [table scrollRowToVisible:row];
@@ -2659,10 +3097,68 @@ CGFloat cellFill(NSView* cell, bool* red) {
   return pixel.alphaComponent;
 }
 
+double opaqueCellTextContrast(NSTableCellView* cell) {
+  if (cell == nil || cell.textField == nil || NSWidth(cell.bounds) < 4 || NSHeight(cell.bounds) < 4) return 0;
+  NSBitmapImageRep* bitmap = [cell bitmapImageRepForCachingDisplayInRect:cell.bounds];
+  if (bitmap == nil) return 0;
+  __block double result = 0;
+  [cell.effectiveAppearance performAsCurrentDrawingAppearance:^{
+    [cell cacheDisplayInRect:cell.bounds toBitmapImageRep:bitmap];
+    NSColor* fill = [[bitmap colorAtX:1 y:bitmap.pixelsHigh / 2] colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    NSColor* ink = [cell.textField.textColor colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+    // A transparent cached cell needs its parent composited before its
+    // contrast can be known. This contract is for an actual opaque fill.
+    if (fill == nil || ink == nil || fill.alphaComponent < 0.99) return;
+    const auto channel = [](double value) {
+      return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4);
+    };
+    const auto luminance = [&](NSColor* color) {
+      return 0.2126 * channel(color.redComponent) + 0.7152 * channel(color.greenComponent) +
+             0.0722 * channel(color.blueComponent);
+    };
+    const double background = luminance(fill);
+    const double foreground = luminance([ink blendedColorWithFraction:1 - ink.alphaComponent ofColor:fill]);
+    result = (std::max(background, foreground) + 0.05) / (std::min(background, foreground) + 0.05);
+  }];
+  return result;
+}
+
 bool boldFont(NSFont* font) {
   NSDictionary* traits = [font.fontDescriptor objectForKey:NSFontTraitsAttribute];
   const double weight = [traits[NSFontWeightTrait] doubleValue];
   return weight >= 0.2 || (font.fontDescriptor.symbolicTraits & NSFontDescriptorTraitBold) != 0;
+}
+
+struct DisplayedFontWeight {
+  NSUInteger bold = 0;
+  NSUInteger regular = 0;
+  NSUInteger unknown = 0;
+
+  bool allBold() const { return bold > 0 && regular == 0 && unknown == 0; }
+  bool allRegular() const { return regular > 0 && bold == 0 && unknown == 0; }
+};
+
+DisplayedFontWeight displayedFontWeight(NSTextField* field) {
+  // Rich labels carry the displayed font on attributed glyph runs, while
+  // NSControl.font can still be the plain base font. A mixed label must
+  // satisfy neither whole-label bold nor whole-label regular.
+  __block DisplayedFontWeight result;
+  const auto record = [](DisplayedFontWeight& weights, NSFont* font) {
+    if (font == nil) ++weights.unknown;
+    else if (boldFont(font)) ++weights.bold;
+    else ++weights.regular;
+  };
+  NSAttributedString* displayed = field.attributedStringValue;
+  NSCharacterSet* glyphs = NSCharacterSet.whitespaceAndNewlineCharacterSet.invertedSet;
+  [displayed enumerateAttribute:NSFontAttributeName inRange:NSMakeRange(0, displayed.length) options:0
+      usingBlock:^(id value, NSRange range, BOOL* stop) {
+    (void)stop;
+    if ([displayed.string rangeOfCharacterFromSet:glyphs options:0 range:range].location == NSNotFound) return;
+    NSFont* font = [value isKindOfClass:NSFont.class] ? (NSFont*)value : field.font;
+    record(result, font);
+  }];
+  if (result.bold + result.regular + result.unknown == 0) record(result, field.font);
+  return result;
 }
 
 QHeaderView* sharedHeader(const QString& identifier) {
@@ -2678,10 +3174,63 @@ QHeaderView* sharedHeader(const QString& identifier) {
 
 bool nativeStyle(const QString& identifier, const QStringList& states, QString& detail) {
   NSView* view = tableCell(identifier);
+  if (states == QStringList{QStringLiteral("artwork")}) return mac::navigationGuideArtwork(view, detail);
+  if (states == QStringList{QStringLiteral("caption")}) {
+    NSButton* button = [view isKindOfClass:NSButton.class] ? (NSButton*)view : nil;
+    if (button == nil) { detail = QStringLiteral("no native button for its displayed caption"); return false; }
+    NSButtonCell* cell = (NSButtonCell*)button.cell;
+    const NSRect titleFrame = [cell titleRectForBounds:button.bounds];
+    NSAttributedString* attributed = button.attributedTitle;
+    NSFont* font = button.font != nil ? button.font : [NSFont systemFontOfSize:0];
+    const NSSize glyphs = attributed.length > 0 ? attributed.size
+        : [button.title sizeWithAttributes:@{NSFontAttributeName: font}];
+    // A title or accessibility label can survive NSImageOnly while AppKit
+    // draws no caption. Check the actual cell mode and finite title area.
+    const bool displayed = button.imagePosition != NSImageOnly && button.title.length > 0;
+    const bool finite = std::isfinite(NSMinX(titleFrame)) && std::isfinite(NSMinY(titleFrame)) &&
+                        std::isfinite(NSWidth(titleFrame)) && std::isfinite(NSHeight(titleFrame));
+    const bool fits = finite && glyphs.width > 0 && glyphs.height > 0 &&
+        glyphs.width <= NSWidth(titleFrame) + 0.5 && glyphs.height <= NSHeight(titleFrame) + 0.5 &&
+        NSContainsRect(NSInsetRect(button.visibleRect, -0.5, -0.5), titleFrame);
+    detail = QStringLiteral("button '%1': image position %2, image %3, displayed caption %4, "
+                            "title area %5, glyphs %6x%7, visible %8, fits %9")
+        .arg(qt(button.title)).arg(button.imagePosition).arg(button.image != nil).arg(displayed)
+        .arg(qt(NSStringFromRect(titleFrame))).arg(glyphs.width).arg(glyphs.height)
+        .arg(viewVisible(button)).arg(fits);
+    return displayed && viewVisible(button) && fits;
+  }
+  if (states.contains(QStringLiteral("current-row"))) {
+    NSTableView* table = mac::owningTable(view);
+    const NSInteger row = table != nil ? [table rowForView:view] : -1;
+    NSTableRowView* native = row >= 0 ? [table rowViewAtRow:row makeIfNecessary:NO] : nil;
+    auto* cursor = [native isKindOfClass:MitcadNativeCurrentRowView.class] ? (MitcadNativeCurrentRowView*)native : nil;
+    [cursor displayIfNeeded];
+    NSButton* check = [view isKindOfClass:NSButton.class] ? (NSButton*)view : nil;
+    if (check == nil) {
+      for (NSView* child in view.subviews) if ([child isKindOfClass:NSButton.class]) { check = (NSButton*)child; break; }
+    }
+    NSColor* titleColor = check.attributedTitle.length > 0
+        ? [check.attributedTitle attribute:NSForegroundColorAttributeName atIndex:0 effectiveRange:nullptr] : nil;
+    const bool warning = titleColor != nil && sameColor(titleColor, NSColor.systemOrangeColor, check.effectiveAppearance);
+    const bool framed = cursor != nil && cursor.currentFocus && cursor.paintedCurrentFocus && !cursor.selected &&
+        !NSIsEmptyRect(cursor.visibleRect) && cursor.window != nil;
+    detail = QStringLiteral("current-row frame %1, painted %2, selected %3, checkbox state %4, warning %5, row %6")
+        .arg(framed).arg(bool(cursor.paintedCurrentFocus)).arg(bool(cursor.selected))
+        .arg(check != nil ? check.state : -2).arg(warning).arg(row);
+    for (const QString& state : states) {
+      const bool matches = state == QLatin1String("current-row") ? framed :
+          state == QLatin1String("checked") ? check != nil && check.state == NSControlStateValueOn :
+          state == QLatin1String("unchecked") ? check != nil && check.state == NSControlStateValueOff :
+          state == QLatin1String("warning") ? warning : false;
+      if (!matches) return false;
+    }
+    return true;
+  }
   NSTableCellView* cell = [view isKindOfClass:NSTableCellView.class] ? (NSTableCellView*)view : nil;
   NSTextField* field = cell ? cell.textField : [view isKindOfClass:NSTextField.class] ? (NSTextField*)view : nil;
   if (!field) { detail = QStringLiteral("no native text cell or label"); return false; }
   NSAppearance* appearance = field.effectiveAppearance;
+  const DisplayedFontWeight weight = displayedFontWeight(field);
   const bool redText = sameColor(field.textColor, NSColor.systemRedColor, appearance);
   const bool orangeText = sameColor(field.textColor, NSColor.systemOrangeColor, appearance);
   bool redFill = false;
@@ -2689,6 +3238,25 @@ bool nativeStyle(const QString& identifier, const QStringList& states, QString& 
   NSTableView* table = nil;
   for (NSView* parent = field.superview; parent && !table; parent = parent.superview) {
     if ([parent isKindOfClass:NSTableView.class]) table = (NSTableView*)parent;
+  }
+  const NSInteger nativeRow = cell != nil && table != nil ? [table rowForView:cell] : -1;
+  NSTableRowView* rowView = nativeRow >= 0 ? [table rowViewAtRow:nativeRow makeIfNecessary:NO] : nil;
+  const bool rowSelected = rowView != nil && rowView.selected &&
+      [table.selectedRowIndexes containsIndex:static_cast<NSUInteger>(nativeRow)];
+  bool sourceSingleCell = false;
+  if (states.contains(QStringLiteral("source-single-cell")) && table != nil && cell != nil) {
+    const QString tableId = qt(table.enclosingScrollView.accessibilityIdentifier);
+    const QString cellId = qt(cell.accessibilityIdentifier);
+    for (QWidget* widget : QApplication::allWidgets()) {
+      const auto* source = qobject_cast<QAbstractItemView*>(widget);
+      if (source == nullptr || source->objectName() != tableId || source->selectionModel() == nullptr) continue;
+      const QModelIndex current = source->selectionModel()->currentIndex();
+      sourceSingleCell = source->selectionBehavior() == QAbstractItemView::SelectItems && current.isValid() &&
+          current.model()->columnCount(current.parent()) > 1 &&
+          current.data(NativeControlIdentifierRole).toString() == cellId &&
+          source->selectionModel()->isSelected(current) && source->selectionModel()->selectedIndexes().size() == 1;
+      break;
+    }
   }
   const NSRect frame = cell ? [field convertRect:field.bounds toView:cell] : field.bounds;
   const NSLineBreakMode mode = field.lineBreakMode;
@@ -2716,21 +3284,36 @@ bool nativeStyle(const QString& identifier, const QStringList& states, QString& 
   detail = QStringLiteral("text '%1', red %2, orange %3, fill alpha %4 red %5, bold %6, editable %7, editing %8, "
                           "single line %9, truncated %10, in view %11, in window %12, focus %13")
                .arg(qt(field.stringValue)).arg(redText).arg(orangeText).arg(double(fill), 0, 'f', 2).arg(redFill)
-               .arg(boldFont(field.font)).arg(bool(field.editable)).arg(field.currentEditor != nil).arg(singleLine)
+               .arg(weight.allBold()).arg(bool(field.editable)).arg(field.currentEditor != nil).arg(singleLine)
                .arg(truncated).arg(inView).arg(field.window != nil).arg(focused);
+  detail += QStringLiteral(", displayed font runs bold=%1 regular=%2 unknown=%3, base bold=%4")
+      .arg(qulonglong(weight.bold)).arg(qulonglong(weight.regular)).arg(qulonglong(weight.unknown))
+      .arg(boldFont(field.font));
+  if (states.contains(QStringLiteral("row-selected")) || states.contains(QStringLiteral("source-single-cell")))
+    detail += QStringLiteral(", native row selected %1, presenter single current cell selected %2")
+        .arg(rowSelected).arg(sourceSingleCell);
+  const double textContrast = states.contains(QStringLiteral("readable-fill")) ? opaqueCellTextContrast(cell) : 0;
+  if (states.contains(QStringLiteral("readable-fill")))
+    detail += QStringLiteral(", opaque fill text contrast %1").arg(textContrast, 0, 'f', 2);
   for (const QString& state : states) {
     const bool matches =
         state == QLatin1String("error") ? redText && (!cell || (fill > 0.04 && redFill)) :
         state == QLatin1String("warning") ? orangeText :
         state == QLatin1String("normal") ? !redText && !orangeText && fill <= 0.04 :
-        state == QLatin1String("bold") ? boldFont(field.font) :
-        state == QLatin1String("regular") ? !boldFont(field.font) :
+        state == QLatin1String("bold") ? weight.allBold() :
+        state == QLatin1String("regular") ? weight.allRegular() :
         state == QLatin1String("editable") ? bool(field.editable) :
         state == QLatin1String("readonly") ? !field.editable :
+        state == QLatin1String("selectable") ? bool(field.selectable) :
+        state == QLatin1String("selected") ? field.currentEditor != nil && field.currentEditor.selectedRange.length > 0 :
+        state == QLatin1String("row-selected") ? rowSelected :
+        state == QLatin1String("source-single-cell") ? sourceSingleCell :
+        state == QLatin1String("readable-fill") ? textContrast >= 4.5 :
         state == QLatin1String("editing") ? field.currentEditor != nil :
         state == QLatin1String("not-editing") ? field.currentEditor == nil :
         state == QLatin1String("single-line") ? singleLine :
         state == QLatin1String("truncated") ? truncated :
+        state == QLatin1String("untruncated") ? !truncated :
         state == QLatin1String("in-view") ? inView : false;
     if (!matches) {
       detail = QStringLiteral("not %1: %2").arg(state, detail);
@@ -2760,11 +3343,34 @@ bool nativeColumns(const QString& identifier, const QString& mode, QString& deta
       return false;
     }
     if (column.hidden) continue;
+    const bool contentSized = header->sectionResizeMode(section) == QHeaderView::ResizeToContents ||
+        (header->sectionResizeMode(section) == QHeaderView::Interactive &&
+         header->property(NativeColumnContentsRequestProperty).toULongLong() != 0);
+    if (contentSized && table.headerView != nil) {
+      const NSUInteger visual = [table.tableColumns indexOfObjectIdenticalTo:column];
+      NSRect frame = [table.headerView headerRectOfColumn:static_cast<NSInteger>(visual)];
+      NSOutlineView* outline = [table isKindOfClass:NSOutlineView.class] ? (NSOutlineView*)table : nil;
+      const CGFloat indentation = outline.outlineTableColumn == column ? outline.indentationPerLevel : 0;
+      const CGFloat outside = std::max<CGFloat>(0, column.width - NSWidth(frame));
+      const CGFloat unreported = std::max<CGFloat>(0, indentation - outside);
+      frame.origin.x += unreported;
+      frame.size.width = std::max<CGFloat>(0, NSWidth(frame) - unreported);
+      const NSRect title = [column.headerCell titleRectForBounds:frame];
+      NSFont* font = column.headerCell.font != nil ? column.headerCell.font : [NSFont systemFontOfSize:NSFont.systemFontSize];
+      const NSSize glyphs = [column.title sizeWithAttributes:@{NSFontAttributeName:font}];
+      detail = QStringLiteral("header '%1' needs %2x%3, its native title rect %4 in column %5, outline reserve %6 (%7 unreported)")
+          .arg(qt(column.title)).arg(glyphs.width).arg(glyphs.height).arg(qt(NSStringFromRect(title))).arg(column.width)
+          .arg(indentation).arg(unreported);
+      if (NSWidth(title) + 1 < glyphs.width || NSHeight(title) + 1 < glyphs.height) return false;
+      qInfo().noquote() << QStringLiteral("Native content-sized %1: %2").arg(identifier, detail);
+    }
     total += column.width + table.intercellSpacing.width;
     if ((column.resizingMask & NSTableColumnAutoresizingMask) != 0) {
       ++stretching;
       atMinimum = atMinimum && column.width <= column.minWidth + 1;
-    } else if (std::abs(column.width - header->sectionSize(section)) > 1) {
+    } else if (contentSized
+                   ? column.width + 1 < header->sectionSize(section)
+                   : std::abs(column.width - header->sectionSize(section)) > 1) {
       detail = QStringLiteral("column %1 is %2 wide, its shared section %3").arg(section).arg(double(column.width))
                    .arg(header->sectionSize(section));
       return false;
@@ -3157,6 +3763,29 @@ bool focusedIn(const QString& identifier, const QRegularExpression* editor, QStr
 }
 
 bool selectedRow(const QString& outlineIdentifier, const QString& row, QString& detail) {
+  bool counted = false;
+  const int expected = row.toInt(&counted);
+  if (counted && expected >= 0) {
+    NSView* found = findControl(outlineIdentifier);
+    if ([found isKindOfClass:NSScrollView.class]) found = ((NSScrollView*)found).documentView;
+    if (![found isKindOfClass:NSTableView.class] || !viewVisible(found)) {
+      detail = QStringLiteral("no visible native table '%1'").arg(outlineIdentifier);
+      return false;
+    }
+    NSTableView* table = (NSTableView*)found;
+    qsizetype shared = -1;
+    int presenters = 0;
+    for (QWidget* widget : QApplication::allWidgets()) {
+      auto* view = qobject_cast<QAbstractItemView*>(widget);
+      if (view == nullptr || view->objectName() != outlineIdentifier || view->selectionModel() == nullptr) continue;
+      ++presenters;
+      shared = view->selectionModel()->selectedRows().size();
+    }
+    detail = QStringLiteral("table '%1': native selected %2/%3 rows, presenter selected %4 (%5 presenters)")
+                 .arg(outlineIdentifier).arg(table.selectedRowIndexes.count).arg(table.numberOfRows)
+                 .arg(shared).arg(presenters);
+    return presenters == 1 && shared == expected && table.selectedRowIndexes.count == NSUInteger(expected);
+  }
   NSWindow* window = documentWindow();
   if (!active() || window == nil) return false;
   NSView* root = window.contentView.superview != nil ? window.contentView.superview : window.contentView;
@@ -3663,10 +4292,21 @@ bool tileCheck(const QStringList& args, QString& detail) {
     return panel != nil && panel.level >= NSFloatingWindowLevel && !panel.keyWindow && key == document;
   }
   if (check == QStringLiteral("document")) {
-    // The keyboard returned to the document once a panel closed.
+    // The keyboard returned to the document once a panel closed. A live
+    // command field editor is valid recovery too; a detached panel editor
+    // or a stale field must not pass just because the document is key.
     NSWindow* key = NSApp.keyWindow;
-    detail = QStringLiteral("key=%1 active=%2").arg(qt(key.title)).arg(bool(NSApp.active));
-    return key != nil && key == documentWindow();
+    NSResponder* responder = key.firstResponder;
+    NSTextView* editor = [responder isKindOfClass:NSTextView.class] && ((NSTextView*)responder).isFieldEditor
+        ? (NSTextView*)responder : nil;
+    NSTextField* field = [editor.delegate isKindOfClass:NSTextField.class] ? (NSTextField*)editor.delegate : nil;
+    const bool liveEditor = editor == nil || (field != nil && field.window == key && field.currentEditor == editor &&
+        [field isDescendantOf:key.contentView] && !field.isHiddenOrHasHiddenAncestor);
+    detail = QStringLiteral("key=%1 active=%2 responder=%3 field=%4 field-window=%5 live-editor=%6")
+        .arg(qt(key.title)).arg(bool(NSApp.active)).arg(qt(NSStringFromClass(responder.class)), qt(field.accessibilityIdentifier))
+        .arg(field != nil ? qlonglong(field.window.windowNumber) : -1).arg(liveEditor);
+    qInfo().noquote() << QStringLiteral("Native picker document focus: %1").arg(detail);
+    return key != nil && key == documentWindow() && liveEditor;
   }
   if (check == QStringLiteral("qt-hidden")) {
     // The presenter is never on the screen: no Qt window takes input.
@@ -3844,8 +4484,8 @@ NSView* buttonTitled(NSView* root, const QRegularExpression& expression, bool en
 }
 
 // Real AppKit mouse input: the window hit-tests the press and the control
-// tracks the queued drags and release, as for input from the pointer.
-bool pointerEvents(NSView* view, NSPoint from, NSPoint to, QString& error) {
+// tracks the drags and release, as for input from the pointer.
+bool pointerEvents(NSView* view, NSPoint from, NSPoint to, QString& error, int clickCount = 1) {
   NSWindow* window = view.window;
   if (window == nil) { error = QStringLiteral("the native pointer target has no window"); return false; }
   // Clear of a scrolled body's edges, where overlay scrollers appear.
@@ -3866,32 +4506,114 @@ bool pointerEvents(NSView* view, NSPoint from, NSPoint to, QString& error) {
     error = QStringLiteral("the native pointer target is covered by %1").arg(qt(NSStringFromClass(hit.class)));
     return false;
   }
-  const NSTimeInterval time = NSProcessInfo.processInfo.systemUptime;
+  // Keep the second press later than the first click's queued release,
+  // without pumping the next script step between a double-click's phases.
+  const NSTimeInterval time = NSProcessInfo.processInfo.systemUptime + (clickCount - 1) * 0.02;
   const int steps = NSEqualPoints(start, end) ? 0 : 6;
-  for (int step = 1; step <= steps; ++step) {
-    const CGFloat part = CGFloat(step) / CGFloat(steps);
+  const bool paced = [view isKindOfClass:NSSlider.class];
+  const auto postFollowup = [window, start, end, steps, clickCount](int step, NSTimeInterval timestamp) {
+    const bool release = step > steps;
+    const CGFloat part = release ? 1 : CGFloat(step) / CGFloat(steps);
     const NSPoint point = NSMakePoint(start.x + (end.x - start.x) * part, start.y + (end.y - start.y) * part);
-    [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseDragged location:point modifierFlags:0
-        timestamp:time + 0.01 * step windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1]
-             atStart:NO];
-  }
-  [NSApp postEvent:[NSEvent mouseEventWithType:NSEventTypeLeftMouseUp location:end modifierFlags:0
-      timestamp:time + 0.01 * (steps + 1) windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:0]
-           atStart:NO];
-  NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:start modifierFlags:0
-      timestamp:time windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:1 pressure:1];
-  if (window.keyWindow) {
-    [window sendEvent:down];
+    [NSApp postEvent:[NSEvent mouseEventWithType:release ? NSEventTypeLeftMouseUp : NSEventTypeLeftMouseDragged
+        location:point modifierFlags:0 timestamp:timestamp windowNumber:window.windowNumber context:nil
+        eventNumber:0 clickCount:clickCount pressure:release ? 0 : 1] atStart:NO];
+  };
+  __block int delivered = 0;
+  NSTimer* trackingInput = nil;
+  if (paced) {
+    // Focus acquisition during mouseDown may discard already queued mouse
+    // events. Real future motion arrives after that transition, while the
+    // slider tracks; produce it there instead of pre-queuing future input.
+    trackingInput = [NSTimer timerWithTimeInterval:0.01 repeats:YES block:^(NSTimer* timer) {
+      postFollowup(++delivered, NSProcessInfo.processInfo.systemUptime);
+      if (delivered > steps) [timer invalidate];
+    }];
+    [NSRunLoop.currentRunLoop addTimer:trackingInput forMode:NSEventTrackingRunLoopMode];
   } else {
-    // An inactive test session would spend the first click on activation.
-    qInfo().noquote() << QStringLiteral("Native pointer: the window is not key; the press goes to its hit view");
-    [hit mouseDown:down];
+    for (int step = 1; step <= steps + 1; ++step) postFollowup(step, time + 0.01 * step);
   }
-  // A control that does not track in a loop of its own receives the drags
-  // and the release now, through the application, before the next step.
-  while (NSEvent* pending = [NSApp nextEventMatchingMask:mouse untilDate:[NSDate distantPast]
-                                                  inMode:NSDefaultRunLoopMode dequeue:YES]) {
-    [NSApp sendEvent:pending];
+  NSEvent* down = [NSEvent mouseEventWithType:NSEventTypeLeftMouseDown location:start modifierFlags:0
+      timestamp:time windowNumber:window.windowNumber context:nil eventNumber:0 clickCount:clickCount pressure:1];
+  if (paced) {
+    // Retrieve this press through the application's real event queue, not
+    // only sendEvent: (which can retain an older AppKit currentEvent).
+    // The driver timer stays paused; subsequent slider motion still comes
+    // from the tracking-mode timer, and no control state is synthesized.
+    [NSApp postEvent:down atStart:YES];
+    NSEvent* queued = [NSApp nextEventMatchingMask:NSEventMaskLeftMouseDown untilDate:[NSDate distantPast]
+                                          inMode:NSDefaultRunLoopMode dequeue:YES];
+    // AppKit can copy an event while queueing it. Attribute the press by
+    // its owned window and input metadata, not its object address.
+    // CoreGraphics/CGEventTypes.h defines CGEventTimestamp as uint64_t
+    // nanoseconds since startup. An AppKit seconds-to-CG copy can round by
+    // one such unit; compare timestamps at that representational precision.
+    const auto samePress = [down, window](NSEvent* event) {
+      return event != nil && event.windowNumber == window.windowNumber &&
+          [NSApp windowWithWindowNumber:event.windowNumber] == window &&
+          event.type == down.type && std::abs(event.timestamp - down.timestamp) * 1e9 <= 1 &&
+          NSEqualPoints(event.locationInWindow, down.locationInWindow) &&
+          (down.eventNumber == 0 || event.eventNumber == down.eventNumber);
+    };
+    const NSPoint observed = queued.locationInWindow;
+    const NSPoint expected = down.locationInWindow;
+    const QString fields = QStringLiteral("window=%1/%2 type=%3/%4 timestamp=%5/%6 point=%7,%8/%9,%10 number=%11/%12 marker-available=%13 timestamp-delta-ns=%14")
+        .arg(qlonglong(queued.windowNumber)).arg(qlonglong(down.windowNumber))
+        .arg(int(queued.type)).arg(int(down.type))
+        .arg(queued.timestamp, 0, 'g', 17).arg(down.timestamp, 0, 'g', 17)
+        .arg(observed.x, 0, 'g', 17).arg(observed.y, 0, 'g', 17)
+        .arg(expected.x, 0, 'g', 17).arg(expected.y, 0, 'g', 17)
+        .arg(qlonglong(queued.eventNumber)).arg(qlonglong(down.eventNumber)).arg(down.eventNumber != 0)
+        .arg(std::abs(queued.timestamp - down.timestamp) * 1e9, 0, 'g', 17);
+    if (view.window != window || !samePress(queued)) {
+      [trackingInput invalidate];
+      if (queued != nil) [NSApp postEvent:queued atStart:YES];
+      error = QStringLiteral("native slider press queue mismatch: %1").arg(fields);
+      return false;
+    }
+    qInfo().noquote() << QStringLiteral("Native pointer queue fields: %1").arg(fields);
+    qInfo().noquote() << QStringLiteral("Native pointer queue: %1 semantic-match=1 same-object=%2 current=%3 current-matches-press=%4")
+        .arg(qt(view.accessibilityIdentifier)).arg(queued == down)
+        .arg(int(NSApp.currentEvent.type)).arg(samePress(NSApp.currentEvent));
+    [NSApp sendEvent:queued];
+  } else {
+    // Ordinary presses must pass through the application's event queue,
+    // too. Dispatching directly to NSWindow bypasses local monitors,
+    // including a popover's outside-click dismissal. The drain below
+    // retrieves and sends the press before its queued release.
+    [NSApp postEvent:down atStart:YES];
+  }
+  if (paced)
+    qInfo().noquote() << QStringLiteral("Native pointer tracking returned: %1 follow-up events=%2/%3 value=%4")
+        .arg(qt(view.accessibilityIdentifier)).arg(delivered).arg(steps + 1).arg(((NSSlider*)view).doubleValue);
+  // If tracking returned without consuming the sequence, finish through
+  // ordinary window input before the next driver step. No control values
+  // or responders are changed by this test helper.
+  if (paced && delivered <= steps) {
+    [NSRunLoop.currentRunLoop addTimer:trackingInput forMode:NSDefaultRunLoopMode];
+  }
+  do {
+    while (NSEvent* pending = [NSApp nextEventMatchingMask:mouse untilDate:[NSDate distantPast]
+                                                    inMode:NSDefaultRunLoopMode dequeue:YES]) {
+      [NSApp sendEvent:pending];
+    }
+    if (!paced || delivered > steps || NSProcessInfo.processInfo.systemUptime - time >= 6) break;
+    [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  } while (true);
+  [trackingInput invalidate];
+  if (paced) {
+    qInfo().noquote() << QStringLiteral("Native pointer tracking: %1 follow-up events=%2/%3 focus=%4")
+        .arg(qt(view.accessibilityIdentifier)).arg(delivered).arg(steps + 1).arg(window.firstResponder == view);
+    if (delivered != steps + 1) {
+      postFollowup(steps + 1, NSProcessInfo.processInfo.systemUptime);
+      while (NSEvent* pending = [NSApp nextEventMatchingMask:mouse untilDate:[NSDate distantPast]
+                                                      inMode:NSDefaultRunLoopMode dequeue:YES]) {
+        [NSApp sendEvent:pending];
+      }
+      error = QStringLiteral("native slider pointer input timed out after %1/%2 follow-up events")
+          .arg(delivered).arg(steps + 1);
+      return false;
+    }
   }
   return true;
 }
@@ -3980,6 +4702,375 @@ bool controlBounds(const QString& identifier, double minimumWidth, const QString
   return true;
 }
 
+bool formLayout(const QStringList& entries, QString& error) {
+  NSView* content = targetWindow().contentView;
+  [content layoutSubtreeIfNeeded];
+  std::vector<std::pair<QString, NSRect>> frames;
+  const auto fullyVisible = [content](NSView* view) {
+    if (view == nil || !viewVisible(view)) return false;
+    const NSRect shown = view.visibleRect;
+    return shown.size.width + 0.5 >= view.bounds.size.width &&
+           shown.size.height + 0.5 >= view.bounds.size.height &&
+           NSContainsRect(NSInsetRect(content.bounds, -0.5, -0.5), frameIn(view, content));
+  };
+  for (const QString& entry : entries) {
+    const qsizetype separator = entry.indexOf(QLatin1Char('='));
+    const QString id = separator < 0 ? entry : entry.left(separator);
+    const QString caption = separator < 0 ? QString() : entry.mid(separator + 1);
+    // Unlike findControl/controlBounds, identifying a field here cannot
+    // scroll a different field out of sight and hide an overlap or clip.
+    NSView* view = identifiedView(content, id);
+    const NSRect frame = frameIn(view, content);
+    if (!fullyVisible(view)) {
+      error = QStringLiteral("native form field '%1' is not fully visible at %2")
+                  .arg(id, describeLayoutRect(frame));
+      return false;
+    }
+    for (const auto& previous : frames) {
+      if (NSIntersectsRect(NSInsetRect(previous.second, 0.5, 0.5), frame)) {
+        error = QStringLiteral("native form fields '%1' and '%2' overlap (%3, %4)")
+                    .arg(previous.first, id, describeLayoutRect(previous.second), describeLayoutRect(frame));
+        return false;
+      }
+    }
+    frames.emplace_back(id, frame);
+    if ([view isKindOfClass:NSPopUpButton.class] && view.bounds.size.width + 1 < ((NSPopUpButton*)view).cell.cellSize.width) {
+      error = QStringLiteral("native choice '%1' clips its title at width %2 (needs %3)")
+                  .arg(id).arg(view.bounds.size.width).arg(((NSPopUpButton*)view).cell.cellSize.width);
+      return false;
+    }
+    if (caption.isEmpty()) continue;
+    NSTextField* label = (NSTextField*)findView(content, [&](NSView* candidate) {
+      if (![candidate isKindOfClass:NSTextField.class] || ((NSTextField*)candidate).editable || !fullyVisible(candidate)) return false;
+      const NSRect labelFrame = frameIn(candidate, content);
+      return qt(((NSTextField*)candidate).stringValue) == caption &&
+             NSMaxX(labelFrame) <= NSMinX(frame) + 1 && sameRow(labelFrame, frame);
+    });
+    const NSSize text = [label.stringValue sizeWithAttributes:@{
+        NSFontAttributeName: label.font != nil ? label.font : [NSFont systemFontOfSize:NSFont.systemFontSize]}];
+    if (label == nil || label.maximumNumberOfLines != 1 || label.cell.wraps ||
+        label.bounds.size.width + 1 < text.width || label.bounds.size.height + 1 < text.height) {
+      error = QStringLiteral("native form field '%1' has no readable one-line '%2' label").arg(id, caption);
+      return false;
+    }
+  }
+  qInfo().noquote() << QStringLiteral("Native form layout: %1 simultaneously visible, distinct controls with readable labels")
+                           .arg(frames.size());
+  return true;
+}
+
+bool configurationLayout(QString& detail) {
+  NSView* host = findControl(QStringLiteral("native.configuration"));
+  NSScrollView* scroll = [host isKindOfClass:NSScrollView.class] ? (NSScrollView*)host : nil;
+  QWidget* source = nullptr;
+  for (QWidget* widget : QApplication::allWidgets()) {
+    if (widget->objectName() == QStringLiteral("configurationBar")) { source = widget; break; }
+  }
+  if (!scroll || !source || !viewVisible(scroll)) {
+    detail = QStringLiteral("no visible native configuration card with its shared presenter"); return false;
+  }
+  [scroll layoutSubtreeIfNeeded];
+  const NSRect viewport = NSInsetRect(scroll.contentView.bounds, -1, -1);
+  const auto contained = [&](NSView* view, NSRect rect) {
+    return viewVisible(view) && NSContainsRect(viewport, [view convertRect:rect toView:scroll.contentView]);
+  };
+  const auto reachablePoint = [&](NSView* view, NSPoint point) {
+    NSView* content = view.window.contentView;
+    NSPoint at = [view convertPoint:point toView:content.superview];
+    NSView* hit = [content hitTest:at];
+    return hit == view || [hit isDescendantOf:view];
+  };
+  NSView* model = identifiedView(documentWindow().contentView, QStringLiteral("native.modelTree"));
+  NSOutlineView* tree = [model isKindOfClass:NSOutlineView.class] ? (NSOutlineView*)model : nil;
+  if (tree == nil || tree.numberOfRows == 0) {
+    detail = QStringLiteral("configuration card leaves no Browser row to inspect"); return false;
+  }
+  const NSRect firstRow = [tree rectOfRow:0];
+  NSScrollView* browser = tree.enclosingScrollView;
+  const NSRect rowInClip = [tree convertRect:firstRow toView:browser.contentView];
+  if (!viewVisible(tree) || !NSContainsRect(NSInsetRect(tree.visibleRect, -0.5, -0.5), firstRow) ||
+      !NSContainsRect(NSInsetRect(browser.contentView.bounds, -0.5, -0.5), rowInClip) ||
+      !reachablePoint(tree, NSMakePoint(NSMidX(firstRow), NSMidY(firstRow)))) {
+    detail = QStringLiteral("configuration clips the first Browser row: row %1, visible %2, clip %3")
+                 .arg(qt(NSStringFromRect(firstRow)), qt(NSStringFromRect(tree.visibleRect)),
+                      qt(NSStringFromRect(browser.contentView.bounds)));
+    return false;
+  }
+  int controls = 0;
+  int captions = 0;
+  int sliders = 0;
+  for (QWidget* widget : source->findChildren<QWidget*>()) {
+    if (!widget->isVisibleTo(source)) continue;
+    auto* label = qobject_cast<QLabel*>(widget);
+    const bool input = qobject_cast<QLineEdit*>(widget) || qobject_cast<QComboBox*>(widget) || qobject_cast<QSlider*>(widget);
+    if (!label && !input) continue;
+    if (label && label->text().isEmpty()) continue;
+    NSView* native = widget->objectName().isEmpty() ? nil : identifiedView(scroll.documentView, widget->objectName());
+    if (label) {
+      // QLabel's identifier belongs to its wrapper; inspect the actual
+      // text field's drawn rectangle and wrapping, including unnamed labels.
+      native = findView(native ? native : scroll.documentView, [&](NSView* view) {
+        return [view isKindOfClass:NSTextField.class] && !((NSTextField*)view).editable &&
+            qt(((NSTextField*)view).stringValue) == label->text();
+      });
+    }
+    if (!native || !contained(native, native.bounds)) {
+      detail = QStringLiteral("configuration '%1' is not fully in view: %2")
+                   .arg(widget->objectName().isEmpty() && label ? label->text() : widget->objectName(),
+                        native ? qt(NSStringFromRect([native convertRect:native.bounds toView:scroll.contentView])) : QStringLiteral("missing"));
+      return false;
+    }
+    if ([native isKindOfClass:NSPopUpButton.class]) {
+      NSPopUpButton* popup = (NSPopUpButton*)native;
+      const NSRect title = [popup.cell titleRectForBounds:popup.bounds];
+      const CGFloat width = [popup.titleOfSelectedItem sizeWithAttributes:@{NSFontAttributeName: popup.font}].width;
+      if (width > NSWidth(title) + 1) {
+        detail = QStringLiteral("configuration popup '%1' clips '%2': text %3 in %4")
+                     .arg(widget->objectName(), qt(popup.titleOfSelectedItem)).arg(width).arg(NSWidth(title)); return false;
+      }
+    } else if ([native isKindOfClass:NSTextField.class]) {
+      NSTextField* field = (NSTextField*)native;
+      const NSRect bounds = NSMakeRect(0, 0, label && label->wordWrap() ? NSWidth(field.bounds) : CGFLOAT_MAX, CGFLOAT_MAX);
+      const NSSize needed = [field.cell cellSizeForBounds:bounds];
+      const bool fits = needed.height <= NSHeight(field.bounds) + 1 &&
+                        (label && label->wordWrap() ? field.cell.wraps : needed.width <= NSWidth(field.bounds) + 1);
+      if (!fits) {
+        detail = QStringLiteral("configuration text '%1' is not fully readable: needs %2x%3 in %4")
+                     .arg(qt(field.stringValue)).arg(needed.width).arg(needed.height).arg(qt(NSStringFromRect(field.bounds)));
+        return false;
+      }
+    } else if ([native isKindOfClass:NSSlider.class]) {
+      NSSlider* slider = (NSSlider*)native;
+      [slider displayIfNeeded];
+      NSSliderCell* cell = (NSSliderCell*)slider.cell;
+      const NSRect track = [cell barRectFlipped:slider.flipped];
+      const NSRect knob = [cell knobRectFlipped:slider.flipped];
+      if (NSWidth(track) < 2 * NSWidth(knob) || !contained(slider, track) || !contained(slider, knob) ||
+          !reachablePoint(slider, NSMakePoint(NSMidX(knob), NSMidY(knob))) ||
+          !reachablePoint(slider, NSMakePoint(NSMinX(track) + 1, NSMidY(track))) ||
+          !reachablePoint(slider, NSMakePoint(NSMaxX(track) - 1, NSMidY(track)))) {
+        detail = QStringLiteral("configuration slider '%1' has clipped or unreachable travel/knob: %2, %3")
+                     .arg(widget->objectName(), qt(NSStringFromRect(track)), qt(NSStringFromRect(knob))); return false;
+      }
+      ++sliders;
+    }
+    if (label) ++captions; else ++controls;
+  }
+  detail = QStringLiteral("configuration layout: %1 complete controls, %2 readable captions, %3 exposed sliders in %4; full reachable Browser row %5")
+               .arg(controls).arg(captions).arg(sliders).arg(qt(NSStringFromRect(scroll.contentView.bounds)), qt(NSStringFromRect(firstRow)));
+  if (controls == 0 || captions == 0) return false;
+  qInfo().noquote() << detail;
+  return true;
+}
+
+bool spannedHeading(const QString& identifier, const QRegularExpression& pattern, QString& detail) {
+  QTreeView* source = nullptr;
+  for (QWidget* widget : QApplication::allWidgets()) {
+    if (widget->objectName() == identifier) source = qobject_cast<QTreeView*>(widget);
+    if (source != nullptr) break;
+  }
+  NSView* native = findControl(identifier);
+  NSScrollView* scroll = [native isKindOfClass:NSScrollView.class] ? (NSScrollView*)native : native.enclosingScrollView;
+  NSOutlineView* outline = [scroll.documentView isKindOfClass:NSOutlineView.class] ? (NSOutlineView*)scroll.documentView : nil;
+  if (source == nullptr || source->model() == nullptr || outline == nil) {
+    detail = QStringLiteral("no native outline with a shared tree '%1'").arg(identifier);
+    return false;
+  }
+  const auto shared = [source, &pattern](const QModelIndex& parent, const auto& self) -> QModelIndex {
+    for (int row = 0; row < source->model()->rowCount(parent); ++row) {
+      const QModelIndex index = source->model()->index(row, 0, parent);
+      if (source->isFirstColumnSpanned(row, parent) && pattern.match(index.data().toString()).hasMatch()) return index;
+      if (const QModelIndex child = self(index, self); child.isValid()) return child;
+    }
+    return {};
+  };
+  const QModelIndex index = shared(source->rootIndex(), shared);
+  if (!index.isValid()) { detail = QStringLiteral("the shared tree has no matching spanned heading"); return false; }
+  const QString expected = index.data().toString();
+  [outline layoutSubtreeIfNeeded];
+  __block NSTableRowView* rowView = nil;
+  __block NSTextField* caption = nil;
+  __block NSInteger row = -1;
+  [outline enumerateAvailableRowViewsUsingBlock:^(NSTableRowView* candidate, NSInteger number) {
+    if (caption != nil) return;
+    NSView* field = findView(candidate, [&](NSView* view) {
+      return [view isKindOfClass:NSTextField.class] && viewVisible(view) &&
+          qt(((NSTextField*)view).stringValue) == expected;
+    });
+    if (field != nil) { rowView = candidate; caption = (NSTextField*)field; row = number; }
+  }];
+  if (caption == nil) { detail = QStringLiteral("heading '%1' is not in the visible native rows").arg(expected); return false; }
+  NSTableCellView* cell = nil;
+  for (NSView* parent = caption.superview; parent != nil && parent != rowView; parent = parent.superview) {
+    if ([parent isKindOfClass:NSTableCellView.class]) { cell = (NSTableCellView*)parent; break; }
+  }
+  const NSRect frame = cell != nil ? frameIn(cell, outline) : NSZeroRect;
+  const NSRect first = [outline rectOfColumn:0];
+  const NSRect rowFrame = [outline rectOfRow:row];
+  const NSSize text = [caption.stringValue sizeWithAttributes:@{
+      NSFontAttributeName: caption.font != nil ? caption.font : [NSFont systemFontOfSize:NSFont.systemFontSize]}];
+  const bool whole = NSWidth(caption.bounds) + 1 >= text.width && NSHeight(caption.bounds) + 1 >= text.height &&
+      NSContainsRect(NSInsetRect(caption.visibleRect, -1, -1), caption.bounds);
+  const bool spans = rowView.groupRowStyle && cell != nil && NSMaxX(frame) + 1 >= NSMaxX(rowFrame);
+  // NSLayoutAnchors constrain alignment rects, not control frames. A
+  // borderless NSTextField's frame includes AppKit's alignment insets;
+  // checking its raw frame would reject the existing four-point anchors.
+  // Read both alignment rects in the same coordinate system. The separate
+  // whole-caption check above still checks the real visible view bounds.
+  const auto alignmentIn = [](NSView* view, NSView* reference) {
+    return view != nil && view.superview != nil
+        ? [view.superview convertRect:[view alignmentRectForFrame:view.frame] toView:reference] : NSZeroRect;
+  };
+  const NSRect inner = alignmentIn(caption, cell);
+  const NSRect outer = alignmentIn(cell, cell);
+  const CGFloat leading = NSMinX(inner) - NSMinX(outer);
+  const CGFloat trailing = NSMaxX(outer) - NSMaxX(inner);
+  const bool padded = cell != nil && leading >= 3 && trailing >= 3 &&
+      NSMinY(inner) >= NSMinY(outer) - 1 && NSMaxY(inner) <= NSMaxY(outer) + 1;
+  const QVariant font = index.data(Qt::FontRole);
+  const bool sameWeight = !font.isValid() || boldFont(caption.font) == font.value<QFont>().bold();
+  const bool selectable = source->isEnabled() && source->selectionMode() != QAbstractItemView::NoSelection &&
+      index.flags().testFlag(Qt::ItemIsEnabled) && index.flags().testFlag(Qt::ItemIsSelectable);
+  id<NSOutlineViewDelegate> delegate = outline.delegate;
+  const bool nativeSelectable = [delegate respondsToSelector:@selector(outlineView:shouldSelectItem:)] &&
+      [delegate outlineView:outline shouldSelectItem:[outline itemAtRow:row]];
+  const Qt::Alignment alignment = Qt::Alignment(index.data(Qt::TextAlignmentRole).toInt());
+  const NSTextAlignment expectedAlignment = alignment.testFlag(Qt::AlignRight) ? NSTextAlignmentRight
+      : alignment.testFlag(Qt::AlignHCenter) ? NSTextAlignmentCenter : NSTextAlignmentNatural;
+  detail = QStringLiteral("heading '%1': whole=%2 span=%3 width=%4 first-column=%5 selectable=%6 shared=%7 alignment=%8 padding=%9 font=%10")
+      .arg(expected).arg(whole).arg(spans).arg(NSWidth(frame)).arg(NSWidth(first))
+      .arg(nativeSelectable).arg(selectable).arg(caption.alignment == expectedAlignment).arg(padded).arg(sameWeight);
+  detail += QStringLiteral(" frame=[%1] aligned=[%2] cell-aligned=[%3] margins=%4/%5")
+      .arg(describeLayoutRect(frameIn(caption, cell)), describeLayoutRect(inner), describeLayoutRect(outer))
+      .arg(leading).arg(trailing);
+  detail += QStringLiteral(" group-row=%1 row=[%2] cell=[%3]")
+      .arg(bool(rowView.groupRowStyle)).arg(describeLayoutRect(rowFrame), describeLayoutRect(frame));
+  if (!whole || !spans || nativeSelectable != selectable || caption.alignment != expectedAlignment ||
+      !padded || !sameWeight || caption.editable || caption.selectable || outline.floatsGroupRows) return false;
+  qInfo().noquote() << QStringLiteral("Native spanned heading: %1").arg(detail);
+  return true;
+}
+
+bool colorField(const QString& identifier, const QString& color, const QString& words, bool placeholder,
+                const QString& accessibilityLabel, QString& error) {
+  NSView* view = findControl(identifier);
+  if (![view isKindOfClass:MitcadNativeColorField.class] || !viewVisible(view)) {
+    error = QStringLiteral("'%1' is not a visible native colour field").arg(identifier); return false;
+  }
+  auto* field = (MitcadNativeColorField*)view;
+  if (!accessibilityLabel.isEmpty() && qt(field.accessibilityLabel) != accessibilityLabel) {
+    error = QStringLiteral("native colour field '%1' has accessibility label '%2', expected '%3'")
+        .arg(identifier, qt(field.accessibilityLabel), accessibilityLabel);
+    return false;
+  }
+  const NSRect visible = field.visibleRect;
+  if (NSWidth(visible) + 0.5 < NSWidth(field.bounds) || NSHeight(visible) + 0.5 < NSHeight(field.bounds) ||
+      qt(field.words) != words || field.placeholder != placeholder) {
+    error = QStringLiteral("native colour field '%1' is clipped or has different placeholder text/state").arg(identifier);
+    return false;
+  }
+  // Inspect the composed pixels users see. Replaying an isolated NSButton
+  // through cacheDisplay can differ from its visible backing layer; the
+  // own-window capture already used by screenshot-screen preserves it.
+  QTemporaryDir capture;
+  const QString path = capture.filePath(QStringLiteral("color-field.png"));
+  QRectF capturedBounds;
+  if (!capture.isValid() || !captureOwnWindows(path, &capturedBounds)) {
+    error = QStringLiteral("native colour field's own-window capture failed"); return false;
+  }
+  const QImage pixels(path);
+  if (pixels.isNull() || capturedBounds.isEmpty()) {
+    error = QStringLiteral("native colour field's own-window image is empty"); return false;
+  }
+  const CGFloat scaleX = pixels.width() / capturedBounds.width();
+  const CGFloat scaleY = pixels.height() / capturedBounds.height();
+  const CGFloat screenTop = NSMaxY(NSScreen.screens.firstObject.frame);
+  const auto screenPoint = [field, screenTop](CGFloat x, CGFloat y) {
+    const NSPoint point = [field.window convertPointToScreen:[field convertPoint:NSMakePoint(x, y) toView:nil]];
+    return QPointF(point.x, screenTop - point.y);
+  };
+  const auto pixel = [&pixels, capturedBounds, scaleX, scaleY, screenPoint](CGFloat x, CGFloat y) {
+    const QPointF point = screenPoint(x, y) - capturedBounds.topLeft();
+    const QPoint at(qFloor(point.x() * scaleX), qFloor(point.y() * scaleY));
+    return pixels.rect().contains(at) ? pixels.pixelColor(at) : QColor();
+  };
+  const NSRect swatch = NSInsetRect(field.swatchRect, 2, 2);
+  const QColor expected = color == QLatin1String("none") ? QColor() : QColor(color);
+  if (color != QLatin1String("none") && !expected.isValid()) {
+    error = QStringLiteral("bad expected colour '%1'").arg(color); return false;
+  }
+  if (expected.isValid()) {
+    const QColor actual = pixel(NSMidX(swatch), NSMidY(swatch));
+    if (!actual.isValid() || std::abs(actual.redF() - expected.redF()) > 0.08 ||
+        std::abs(actual.greenF() - expected.greenF()) > 0.08 ||
+        std::abs(actual.blueF() - expected.blueF()) > 0.08) {
+      error = QStringLiteral("native colour field '%1' did not paint %2: pixel %3, source %4, "
+                             "swatch %5, bounds %6, image %7x%8, capture %9, screen sample %10")
+          .arg(identifier, color, actual.isValid() ? actual.name(QColor::HexArgb) : QStringLiteral("outside image"),
+               qt(field.swatchColor.description),
+               qt(NSStringFromRect(swatch)), qt(NSStringFromRect(field.bounds)))
+          .arg(pixels.width()).arg(pixels.height())
+          .arg(QStringLiteral("%1,%2 %3x%4").arg(capturedBounds.x()).arg(capturedBounds.y())
+                   .arg(capturedBounds.width()).arg(capturedBounds.height()))
+          .arg(QStringLiteral("%1,%2").arg(screenPoint(NSMidX(swatch), NSMidY(swatch)).x())
+                   .arg(screenPoint(NSMidX(swatch), NSMidY(swatch)).y()));
+      return false;
+    }
+  } else {
+    CGFloat darkest = 1;
+    CGFloat lightest = 0;
+    for (CGFloat x = NSMinX(swatch); x < NSMaxX(swatch); x += 1) {
+      const QColor actual = pixel(x, NSMidY(swatch));
+      if (!actual.isValid()) {
+        error = QStringLiteral("native colour checker '%1' falls outside the captured windows").arg(identifier);
+        return false;
+      }
+      const CGFloat shade = (actual.redF() + actual.greenF() + actual.blueF()) / 3;
+      darkest = std::min(darkest, shade);
+      lightest = std::max(lightest, shade);
+    }
+    if (lightest - darkest < 0.04) {
+      error = QStringLiteral("native unset colour field '%1' has no visible checker: contrast %2, shades %3..%4")
+          .arg(identifier).arg(lightest - darkest).arg(darkest).arg(lightest);
+      return false;
+    }
+  }
+  if (!words.isEmpty()) {
+    const NSRect text = field.wordsRect;
+    const CGFloat width = [field.words sizeWithAttributes:@{NSFontAttributeName: field.font}].width;
+    if (NSWidth(text) < width + 3) {
+      error = QStringLiteral("native colour placeholder '%1' is not fully readable: width %2, needs %3")
+          .arg(words).arg(NSWidth(text)).arg(width + 3);
+      return false;
+    }
+    // Compare each text row with its empty trailing background. This checks
+    // actual glyph ink, independently of the semantic string/state above.
+    int ink = 0;
+    for (CGFloat y = NSMinY(text); y < NSMaxY(text); y += 1) {
+      const QColor background = pixel(NSMaxX(text) - 1, y);
+      for (CGFloat x = NSMinX(text); x < NSMinX(text) + width; x += 1) {
+        const QColor actual = pixel(x, y);
+        if (!actual.isValid() || !background.isValid()) {
+          error = QStringLiteral("native colour placeholder '%1' falls outside the captured windows").arg(words);
+          return false;
+        }
+        const CGFloat difference = std::abs(actual.redF() - background.redF()) +
+            std::abs(actual.greenF() - background.greenF()) +
+            std::abs(actual.blueF() - background.blueF());
+        if (difference > 0.06) ++ink;
+      }
+    }
+    if (ink < 8) {
+      error = QStringLiteral("native colour placeholder '%1' has no visible glyphs: %2 ink samples in %3x%4 image")
+          .arg(words).arg(ink).arg(pixels.width()).arg(pixels.height());
+      return false;
+    }
+  }
+  qInfo().noquote() << QStringLiteral("Native colour field: %1 paints %2, words '%3', %4")
+      .arg(identifier, color, words, placeholder ? QStringLiteral("placeholder") : QStringLiteral("explicit"));
+  return true;
+}
+
 bool buttonOrder(const QStringList& patterns, QString& error) {
   NSWindow* window = targetWindow();
   return buttonOrderIn(window.contentView, patterns, error);
@@ -3997,15 +5088,144 @@ bool focused(const QString& identifier) {
   return [responder isKindOfClass:NSView.class] && [(NSView*)responder isDescendantOf:view];
 }
 
-bool pointerClick(const QString& identifier, QString& error) {
-  NSView* view = findControl(identifier);
-  if (view == nil) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
+bool pointerClick(const QString& identifier, QString& error, double x, double y) {
+  if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) {
+    error = QStringLiteral("native pointer coordinates must be fractions from 0 to 1");
+    return false;
+  }
+  // Keep the same real hit/visibility checks for a cell addressed by its
+  // table/row/column, rather than clicking the scroll view's empty area.
+  NSView* view = tableCell(identifier, &error);
+  if (view == nil) return false;
   if ([view isKindOfClass:NSControl.class] && !((NSControl*)view).enabled) {
     error = QStringLiteral("native control '%1' is disabled").arg(identifier);
     return false;
   }
-  const NSPoint centre = NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds));
-  return pointerEvents(view, centre, centre, error);
+  const NSPoint point = NSMakePoint(NSMinX(view.bounds) + NSWidth(view.bounds) * x,
+                                    NSMinY(view.bounds) + NSHeight(view.bounds) * y);
+  return pointerEvents(view, point, point, error);
+}
+
+bool pointerDoubleClick(const QString& identifier, QString& error) {
+  if (!active() || qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
+    error = QStringLiteral("native pointer double click requires the native UI test driver"); return false;
+  }
+  NSWindow* window = nil;
+  for (int count = 1; count <= 2; ++count) {
+    // A single click can refresh the model's row views. Resolve the exact
+    // identifier (then its positional cell locator) anew for each press.
+    NSView* view = tableCell(identifier, &error);
+    NSTableView* table = mac::owningTable(view);
+    if (!viewVisible(view) || ([view isKindOfClass:NSControl.class] && !((NSControl*)view).enabled) ||
+        (table != nil && !table.enabled) || (window != nil && view.window != window)) {
+      error = QStringLiteral("native double-click target '%1' is not a live, visible, enabled control in the same window")
+          .arg(identifier); return false;
+    }
+    window = view.window;
+    const NSPoint point = NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds));
+    qInfo().noquote() << QStringLiteral("Native pointer double click: %1 click-count=%2")
+        .arg(identifier).arg(count);
+    // The window hit-tests both genuine down/up pairs. No selector,
+    // table selection or double-action is invoked by this helper.
+    if (!pointerEvents(view, point, point, error, count)) return false;
+  }
+  return true;
+}
+
+bool pointerChoice(const QString& identifier, const QString& expected, const QStringList& keys, QString& error) {
+  if (!active() || qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
+    error = QStringLiteral("native pointer choice requires the native UI test driver"); return false;
+  }
+  NSView* view = findControl(identifier);
+  if (![view isKindOfClass:NSPopUpButton.class] || !viewVisible(view) || !((NSPopUpButton*)view).enabled) {
+    error = QStringLiteral("no visible enabled native popup '%1'").arg(identifier); return false;
+  }
+  NSPopUpButton* popup = (NSPopUpButton*)view;
+  NSMenuItem* wanted = [popup itemWithTitle:expected.toNSString()];
+  if (popup.pullsDown || wanted == nil || !wanted.enabled || keys.size() < 2 || keys.size() > 32 ||
+      keys.last() != QStringLiteral("Return")) {
+    error = QStringLiteral("native-pointer-choice needs an enabled popup item and Up/Down keys followed by Return");
+    return false;
+  }
+  for (qsizetype index = 0; index + 1 < keys.size(); ++index) {
+    if (keys[index] != QStringLiteral("Up") && keys[index] != QStringLiteral("Down")) {
+      error = QStringLiteral("native pointer choice navigation accepts only Up/Down before Return"); return false;
+    }
+  }
+  const QString before = qt(popup.titleOfSelectedItem);
+  NSWindow* window = popup.window;
+  QElapsedTimer deadline;
+  deadline.start();
+  __block NSTimer* response = nil;
+  __block bool began = false;
+  __block bool ended = false;
+  __block bool timedOut = false;
+  __block qsizetype delivered = 0;
+  NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+  id beginObserver = [center addObserverForName:NSMenuDidBeginTrackingNotification object:popup.menu queue:nil
+      usingBlock:^(NSNotification* notice) {
+    (void)notice;
+    if (began) return;
+    began = true;
+    // QTimer does not reliably run inside AppKit's nested menu tracking.
+    // Deliver actual key down/up there after the pointer opened this menu.
+    response = [NSTimer timerWithTimeInterval:0.05 repeats:YES block:^(NSTimer* timer) {
+      (void)timer;
+      if (ended) return;
+      if (deadline.elapsed() >= 6000 || !NSApp.active || !window.visible) {
+        timedOut = true;
+        [popup.menu cancelTracking];
+        return;
+      }
+      if (delivered >= keys.size()) return;
+      const QString text = keys[delivered++];
+      const int key = text == QStringLiteral("Up") ? Qt::Key_Up
+                      : text == QStringLiteral("Down") ? Qt::Key_Down : Qt::Key_Return;
+      NSString* chars = characters(key, QString());
+      for (NSEventType type : {NSEventTypeKeyDown, NSEventTypeKeyUp}) {
+        [NSApp postEvent:[NSEvent keyEventWithType:type location:NSZeroPoint modifierFlags:0
+            timestamp:NSProcessInfo.processInfo.systemUptime windowNumber:window.windowNumber context:nil
+            characters:chars charactersIgnoringModifiers:chars isARepeat:NO keyCode:virtualKey(key)] atStart:NO];
+      }
+    }];
+    [NSRunLoop.currentRunLoop addTimer:response forMode:NSEventTrackingRunLoopMode];
+    [NSRunLoop.currentRunLoop addTimer:response forMode:NSRunLoopCommonModes];
+  }];
+  id endObserver = [center addObserverForName:NSMenuDidEndTrackingNotification object:popup.menu queue:nil
+      usingBlock:^(NSNotification* notice) { (void)notice; ended = true; }];
+  // Install the watchdog before mouseDown can enter a nested tracking loop.
+  // The begin notification and response timer are evidence, not prerequisites
+  // for bounded failure cleanup; never cancel another control's menu.
+  NSTimer* watchdog = [NSTimer timerWithTimeInterval:0.05 repeats:YES block:^(NSTimer* timer) {
+    (void)timer;
+    if (!ended && (deadline.elapsed() >= 6000 || !NSApp.active || !window.visible)) {
+      timedOut = true;
+      [popup.menu cancelTracking];
+    }
+  }];
+  [NSRunLoop.currentRunLoop addTimer:watchdog forMode:NSEventTrackingRunLoopMode];
+  [NSRunLoop.currentRunLoop addTimer:watchdog forMode:NSRunLoopCommonModes];
+  const bool clicked = pointerClick(identifier, error);
+  while (clicked && !ended && deadline.elapsed() < 6000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode
+                          beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  }
+  if (began && !ended) { timedOut = true; [popup.menu cancelTracking]; }
+  [watchdog invalidate];
+  [response invalidate];
+  [center removeObserver:beginObserver];
+  [center removeObserver:endObserver];
+  if (!clicked) return false;
+  const QString after = qt(popup.titleOfSelectedItem);
+  if (!began || !ended || timedOut || delivered != keys.size() || after != expected) {
+    error = QStringLiteral("native popup '%1': began=%2 ended=%3 timeout=%4 keys=%5/%6, displayed '%7', expected '%8'")
+        .arg(identifier).arg(began).arg(ended).arg(timedOut).arg(delivered).arg(keys.size()).arg(after, expected);
+    return false;
+  }
+  qInfo().noquote() << QStringLiteral("Native pointer choice: %1 '%2' -> '%3', keys %4, menu tracked")
+      .arg(identifier, before, after, keys.join(QLatin1Char(' ')));
+  return true;
 }
 
 bool pointerButton(const QRegularExpression& expression, QString& error) {
@@ -4019,13 +5239,255 @@ bool pointerButton(const QRegularExpression& expression, QString& error) {
   return pointerEvents(button, centre, centre, error);
 }
 
-bool pointerDrag(const QString& identifier, double from, double to, QString& error) {
+namespace {
+
+bool sliderPointerTarget(NSSlider* slider, NSWindow* window, CGPoint point, bool hitKnob,
+                         bool& checkedWindowList, QString& error) {
+  NSRunningApplication* front = NSWorkspace.sharedWorkspace.frontmostApplication;
+  if (qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT") || !active() || !NSApp.active ||
+      front == nil || front.processIdentifier != getpid() || window == nil || !window.visible ||
+      NSApp.keyWindow != window || slider.window != window || !viewVisible(slider) || !slider.enabled ||
+      [NSApp windowWithWindowNumber:window.windowNumber] != window ||
+      findControl(qt(slider.accessibilityIdentifier)) != slider) {
+    error = QStringLiteral("WindowServer slider target changed: active=%1 front=%2 self=%3 key=%4 expected=%5 visible=%6 enabled=%7")
+        .arg(bool(NSApp.active)).arg(front ? qlonglong(front.processIdentifier) : -1).arg(qlonglong(getpid()))
+        .arg(qlonglong(NSApp.keyWindow.windowNumber)).arg(qlonglong(window.windowNumber))
+        .arg(bool(window.visible)).arg(bool(slider.enabled)); return false;
+  }
+  if (!CGPreflightPostEventAccess()) {
+    error = QStringLiteral("WindowServer slider input requires already granted event-posting access"); return false;
+  }
+  if ((NSEvent.pressedMouseButtons & ~NSUInteger(1)) != 0) {
+    error = QStringLiteral("another mouse button is pressed during the slider gesture"); return false;
+  }
+  const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+  const NSPoint screen = NSMakePoint(point.x, top - point.y);
+  if (!NSPointInRect(screen, window.frame)) {
+    error = QStringLiteral("WindowServer slider pointer would leave its owned window"); return false;
+  }
+  const NSInteger recipient = [NSWindow windowNumberAtPoint:screen belowWindowWithWindowNumber:0];
+  if (recipient != window.windowNumber) {
+    error = QStringLiteral("WindowServer slider requires own mouse recipient %1, found %2")
+        .arg(qlonglong(window.windowNumber)).arg(qlonglong(recipient)); return false;
+  }
+  NSView* content = window.contentView;
+  const NSRect bounds = [slider convertRect:slider.bounds toView:content];
+  if (!NSContainsRect(NSInsetRect(content.bounds, -0.5, -0.5), bounds) ||
+      NSWidth(slider.visibleRect) + 0.5 < NSWidth(slider.bounds) ||
+      NSHeight(slider.visibleRect) + 0.5 < NSHeight(slider.bounds)) {
+    error = QStringLiteral("WindowServer slider input requires its fully visible control"); return false;
+  }
+  if (hitKnob) {
+    const NSPoint local = [slider convertPoint:[window convertPointFromScreen:screen] fromView:nil];
+    const NSRect knob = [(NSSliderCell*)slider.cell knobRectFlipped:slider.flipped];
+    NSView* hit = [content hitTest:[content.superview convertPoint:[window convertPointFromScreen:screen] fromView:nil]];
+    if (!NSPointInRect(local, knob) || (hit != slider && ![hit isDescendantOf:slider])) {
+      error = QStringLiteral("WindowServer slider press does not hit its actual exposed knob"); return false;
+    }
+  }
+  NSArray* infos = CFBridgingRelease(CGWindowListCopyWindowInfo(
+      kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements, kCGNullWindowID));
+  if (infos == nil || infos.count == 0) return true; // metadata unavailable; never request another permission
+  checkedWindowList = true;
+  for (NSDictionary* info in infos) {
+    const NSInteger number = [info[(id)kCGWindowNumber] integerValue];
+    if (number == window.windowNumber) {
+      CGRect rect;
+      if (!CGRectMakeWithDictionaryRepresentation((__bridge CFDictionaryRef)info[(id)kCGWindowBounds], &rect) ||
+          !CGRectContainsPoint(rect, point)) {
+        error = QStringLiteral("slider screen coordinates leave the actual WindowServer window bounds"); return false;
+      }
+      return true;
+    }
+  }
+  error = QStringLiteral("the owned slider window is absent from the on-screen window metadata"); return false;
+}
+
+bool systemSliderDrag(NSSlider* slider, NSPoint from, NSPoint to, QString& error) {
+  NSWindow* window = slider.window;
+  [window layoutIfNeeded];
+  [window.contentView layoutSubtreeIfNeeded];
+  const CGFloat top = NSMaxY(NSScreen.screens.firstObject.frame);
+  const auto screenPoint = [slider, window, top](NSPoint point) {
+    const NSPoint screen = [window convertPointToScreen:[slider convertPoint:point toView:nil]];
+    return CGPointMake(screen.x, top - screen.y);
+  };
+  const CGPoint start = screenPoint(from);
+  const CGPoint end = screenPoint(to);
+  bool checkedWindowList = false;
+  if (!sliderPointerTarget(slider, window, start, true, checkedWindowList, error) ||
+      !sliderPointerTarget(slider, window, end, false, checkedWindowList, error)) return false;
+  if (NSEvent.pressedMouseButtons != 0 ||
+      CGEventSourceButtonState(kCGEventSourceStateCombinedSessionState, kCGMouseButtonLeft)) {
+    error = QStringLiteral("WindowServer slider input will not replace an existing mouse press"); return false;
+  }
+  struct State {
+    CGEventSourceRef source = nullptr;
+    CGEventRef release = nullptr;
+    QElapsedTimer clock;
+    CGPoint last{};
+    int postedDrags = 0;
+    int receivedDrags = 0;
+    bool downPosted = false;
+    bool downSeen = false;
+    bool trackingSeen = false;
+    bool upPosted = false;
+    bool upSeen = false;
+    bool checkedWindows = false;
+    qint64 marker = 0;
+    QString failure;
+    ~State() { if (release) CFRelease(release); if (source) CFRelease(source); }
+  };
+  auto state = std::make_shared<State>();
+  static quint32 serial = 0;
+  state->marker = (qint64(getpid()) << 32) | ++serial;
+  state->last = start;
+  state->checkedWindows = checkedWindowList;
+  state->source = CGEventSourceCreate(kCGEventSourceStateHIDSystemState);
+  state->release = state->source ? CGEventCreateMouseEvent(state->source, kCGEventLeftMouseUp, start, kCGMouseButtonLeft) : nullptr;
+  CGEventRef down = state->source ? CGEventCreateMouseEvent(state->source, kCGEventLeftMouseDown, start, kCGMouseButtonLeft) : nullptr;
+  if (!state->release || !down) {
+    if (down) CFRelease(down);
+    error = QStringLiteral("could not prepare both owned slider press and balancing release"); return false;
+  }
+  const auto tag = [state](CGEventRef event) {
+    CGEventSetFlags(event, 0);
+    CGEventSetIntegerValueField(event, kCGEventSourceUserData, state->marker);
+    CGEventSetIntegerValueField(event, kCGMouseEventClickState, 1);
+  };
+  tag(down);
+  tag(state->release);
+  // The balancing release is allocated before Down, and remains available
+  // even if the app/window changes or a later event allocation fails.
+  const auto release = [state](bool force = false) {
+    if (state->downPosted && (!state->upPosted || force)) {
+      CGEventSetLocation(state->release, state->last);
+      CGEventPost(kCGHIDEventTap, state->release);
+      state->upPosted = true;
+    }
+  };
+  const auto tracking = [slider] {
+    return [slider respondsToSelector:@selector(pointerTracking)] &&
+        [(id<MITCADNativeSliderTrackingTest>)slider pointerTracking];
+  };
+  const auto finished = [state, tracking] {
+    return state->downSeen && state->trackingSeen && state->upPosted && !tracking() &&
+        (NSEvent.pressedMouseButtons & NSUInteger(1)) == 0;
+  };
+  const NSEventMask mask = NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskLeftMouseUp;
+  id monitor = [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* event) {
+    if (!state->downPosted || event.windowNumber != window.windowNumber) return event;
+    CGEventRef raw = event.CGEvent;
+    const int64_t marker = raw ? CGEventGetIntegerValueField(raw, kCGEventSourceUserData) : 0;
+    if (marker != 0 && marker != state->marker) return event;
+    if (event.type == NSEventTypeLeftMouseDown) {
+      state->downSeen = true;
+      qInfo().noquote() << QStringLiteral("Native slider WindowServer received: down window=%1 pressed=%2 marker=%3")
+          .arg(qlonglong(window.windowNumber)).arg(qulonglong(NSEvent.pressedMouseButtons)).arg(qlonglong(marker));
+    } else if (event.type == NSEventTypeLeftMouseDragged) { ++state->receivedDrags; }
+    else if (event.type == NSEventTypeLeftMouseUp) { state->upSeen = true; }
+    return event;
+  }];
+  if (monitor == nil) {
+    CFRelease(down);
+    error = QStringLiteral("could not observe the owned slider's application input"); return false;
+  }
+  state->clock.start();
+  NSTimer* timer = [NSTimer timerWithTimeInterval:0.04 repeats:YES block:^(NSTimer* tick) {
+    state->trackingSeen = state->trackingSeen || tracking();
+    if (finished()) { [tick invalidate]; return; }
+    if (!state->failure.isEmpty()) { release(); return; }
+    if (!state->downSeen) return;
+    const CGFloat fraction = CGFloat(state->postedDrags + 1) / 6;
+    const CGPoint point = state->postedDrags < 6
+        ? CGPointMake(start.x + (end.x - start.x) * fraction, start.y + (end.y - start.y) * fraction) : end;
+    if (!sliderPointerTarget(slider, window, point, false, state->checkedWindows, state->failure)) {
+      release(); return;
+    }
+    if (state->postedDrags < 6) {
+      CGEventRef drag = CGEventCreateMouseEvent(state->source, kCGEventLeftMouseDragged, point, kCGMouseButtonLeft);
+      if (!drag) { state->failure = QStringLiteral("could not create an owned slider drag event"); release(); return; }
+      tag(drag);
+      CGEventPost(kCGHIDEventTap, drag);
+      CFRelease(drag);
+      state->last = point;
+      ++state->postedDrags;
+    } else { release(); }
+  }];
+  NSTimer* watchdog = [NSTimer timerWithTimeInterval:0.05 repeats:YES block:^(NSTimer* tick) {
+    if (finished()) { [tick invalidate]; return; }
+    if (state->clock.elapsed() >= 5800) {
+      state->failure = QStringLiteral("WindowServer slider gesture exceeded its six-second input budget");
+      release(true); [tick invalidate];
+    }
+  }];
+  [NSRunLoop.currentRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
+  [NSRunLoop.currentRunLoop addTimer:timer forMode:NSEventTrackingRunLoopMode];
+  [NSRunLoop.currentRunLoop addTimer:watchdog forMode:NSRunLoopCommonModes];
+  [NSRunLoop.currentRunLoop addTimer:watchdog forMode:NSEventTrackingRunLoopMode];
+  qInfo().noquote() << QStringLiteral("Native slider WindowServer begin: %1 window=%2 start=%3,%4 end=%5,%6 occlusion-metadata=%7")
+      .arg(qt(slider.accessibilityIdentifier)).arg(qlonglong(window.windowNumber))
+      .arg(start.x).arg(start.y).arg(end.x).arg(end.y).arg(state->checkedWindows);
+  if (sliderPointerTarget(slider, window, start, true, state->checkedWindows, state->failure)) {
+    CGEventPost(kCGHIDEventTap, down);
+    state->downPosted = true;
+  }
+  CFRelease(down);
+  while (state->downPosted && !finished() && state->failure.isEmpty() && state->clock.elapsed() < 6000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  }
+  [timer invalidate];
+  [watchdog invalidate];
+  if (state->downPosted && (!state->upPosted || tracking() || (NSEvent.pressedMouseButtons & NSUInteger(1)) != 0)) release(true);
+  while (state->downPosted && (tracking() || (NSEvent.pressedMouseButtons & NSUInteger(1)) != 0) && state->clock.elapsed() < 6000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 10);
+    [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  }
+  [NSEvent removeMonitor:monitor];
+  // NSEvent.h explicitly excludes nested control-tracking events from
+  // local monitors. Their counts are diagnostic; actual tracking must have
+  // started, ended after our release, and left the OS button released.
+  qInfo().noquote() << QStringLiteral("Native slider WindowServer end: down=%1 drags=%2/6 received=%3 up=%4/%5 pressed=%6 tracking-seen=%7 tracking-now=%8")
+      .arg(state->downSeen).arg(state->postedDrags).arg(state->receivedDrags)
+      .arg(state->upPosted).arg(state->upSeen).arg(qulonglong(NSEvent.pressedMouseButtons))
+      .arg(state->trackingSeen).arg(tracking());
+  if (!state->failure.isEmpty() || state->postedDrags != 6 || !finished()) {
+    error = !state->failure.isEmpty() ? state->failure : QStringLiteral("WindowServer slider input did not finish its actual owned press/drag/release");
+    return false;
+  }
+  return true;
+}
+
+} // namespace
+
+bool pointerDrag(const QString& identifier, double from, double to, QString& error, bool fromKnob) {
   NSView* view = findControl(identifier);
   if (view == nil) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
   const NSRect bounds = view.bounds;
   const CGFloat y = NSMidY(bounds);
-  if (!pointerEvents(view, NSMakePoint(NSMinX(bounds) + bounds.size.width * from, y),
-                     NSMakePoint(NSMinX(bounds) + bounds.size.width * to, y), error)) {
+  NSPoint start = NSMakePoint(NSMinX(bounds) + bounds.size.width * from, y);
+  if (fromKnob) {
+    if (![view isKindOfClass:NSSlider.class] || ![((NSSlider*)view).cell isKindOfClass:NSSliderCell.class]) {
+      error = QStringLiteral("native knob drag requires an NSSlider '%1'").arg(identifier); return false;
+    }
+    NSSlider* slider = (NSSlider*)view;
+    [slider layoutSubtreeIfNeeded];
+    const NSRect knob = [(NSSliderCell*)slider.cell knobRectFlipped:slider.flipped];
+    start = NSMakePoint(NSMidX(knob), NSMidY(knob));
+    if (NSIsEmptyRect(knob) || !NSPointInRect(start, bounds) || !NSPointInRect(start, view.visibleRect)) {
+      error = QStringLiteral("native slider '%1' has no exposed actual knob centre: %2")
+          .arg(identifier, describeLayoutRect(knob)); return false;
+    }
+    qInfo().noquote() << QStringLiteral("Native slider knob grab: %1 knob=%2 value=%3 continuous=%4")
+        .arg(identifier, describeLayoutRect(knob)).arg(slider.doubleValue).arg(slider.continuous);
+  }
+  const NSPoint end = NSMakePoint(NSMinX(bounds) + bounds.size.width * to, y);
+  const bool isSlider = [view isKindOfClass:NSSlider.class];
+  if (isSlider && !fromKnob) {
+    error = QStringLiteral("held native slider input requires the actual 'knob' start"); return false;
+  }
+  if (!(isSlider ? systemSliderDrag((NSSlider*)view, start, end, error) : pointerEvents(view, start, end, error))) {
     return false;
   }
   const NSRect frame = [view convertRect:view.bounds toView:nil];
@@ -4064,6 +5526,65 @@ namespace {
 // Synthetic presenters with the three audited shapes: a search field after
 // a check box, two equal fields in one form row, and slider rows in two
 // forms side by side; plus a spanning row over stretched grid columns.
+bool columnSizingContract(QString& error) {
+  QWidget presenter;
+  presenter.setAttribute(Qt::WA_DontShowOnScreen);
+  auto* layout = new QVBoxLayout(&presenter);
+  auto* table = new QTableView;
+  table->setObjectName(QStringLiteral("contract.columns"));
+  layout->addWidget(table);
+  QStandardItemModel model(1, 1);
+  model.setHeaderData(0, Qt::Horizontal, QStringLiteral("Native header content"));
+  model.setData(model.index(0, 0), QStringLiteral("Value"));
+  table->setModel(&model);
+  QHeaderView* header = table->horizontalHeader();
+  header->setStretchLastSection(false);
+  header->setSectionResizeMode(QHeaderView::Interactive);
+  header->setMinimumSectionSize(1);
+  header->resizeSection(0, 1);
+  requestNativeColumnContents(header);
+  auto view = createNativeWidgetView(&presenter);
+  view->refresh();
+  NSView* root = (__bridge NSView*)view->nativeView();
+  NSView* found = identifiedView(root, table->objectName());
+  NSScrollView* scroll = [found isKindOfClass:NSScrollView.class] ? (NSScrollView*)found : nil;
+  NSTableView* native = [scroll.documentView isKindOfClass:NSTableView.class] ? (NSTableView*)scroll.documentView : nil;
+  if (native.tableColumns.count != 1) { error = QStringLiteral("content-size fixture has no native column"); return false; }
+  NSTableColumn* column = native.tableColumns.firstObject;
+  const int content = static_cast<int>(std::ceil(column.width));
+  const auto check = [&error](bool passed, const QString& message) {
+    if (!passed) error = message;
+    return passed;
+  };
+  if (!check(content > header->sectionSize(0) && header->sectionResizeMode(0) == QHeaderView::Interactive &&
+                 column.resizingMask == NSTableColumnUserResizingMask,
+             QStringLiteral("one-time content sizing lost its native content width or interactive resize policy"))) return false;
+  // A native header drag changes this same public column width. Ordinary
+  // presenter refreshes must retain it; a fresh request restores contents.
+  column.width = content + 40;
+  for (int pass = 0; pass < 3; ++pass) view->refresh();
+  if (!check(std::abs(column.width - content - 40) <= 0.5,
+             QStringLiteral("ordinary refresh discarded a native interactive column width"))) return false;
+  requestNativeColumnContents(header);
+  view->refresh();
+  if (!check(std::abs(column.width - content) <= 0.5,
+             QStringLiteral("a repeated content request did not restore native contents width"))) return false;
+  // The new shared width equals the old automatic native width, while the
+  // actual native width is different: comparing only cached preferences
+  // must not swallow this explicit resize.
+  column.width = content + 40;
+  header->resizeSection(0, content);
+  view->refresh();
+  if (!check(std::abs(column.width - content) <= 0.5,
+             QStringLiteral("explicit shared resize to the prior native preference left the user width unchanged"))) return false;
+  header->resizeSection(0, content + 20);
+  view->refresh();
+  if (!check(std::abs(column.width - content - 20) <= 0.5,
+             QStringLiteral("an ended content request overrode a later explicit shared column resize"))) return false;
+  qInfo() << "Native column contents: native header width, retained user resize, repeated request and explicit shared resize verified";
+  return true;
+}
+
 bool layoutWidthContract(QString& error) {
   QWidget presenter;
   presenter.setAttribute(Qt::WA_DontShowOnScreen);
@@ -4092,6 +5613,36 @@ bool layoutWidthContract(QString& error) {
   form->addRow(QStringLiteral("Display name:"), display);
   form->addRow(QStringLiteral("Author:"), author);
   column->addLayout(form);
+  // As SettingField's colour input: an expanding button in a fixed-width
+  // editor, followed by addStretch(0). The empty-caption native button's
+  // intrinsic width must not divert the editor's spare width to that spacer.
+  auto* fixedEditor = new QWidget;
+  fixedEditor->setObjectName(QStringLiteral("contract.fixed-editor"));
+  fixedEditor->setFixedWidth(240);
+  auto* editorRow = new QHBoxLayout(fixedEditor);
+  editorRow->setContentsMargins(0, 0, 0, 0);
+  auto* color = new QPushButton;
+  color->setObjectName(QStringLiteral("contract.stretched-color"));
+  color->setAutoDefault(false);
+  color->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+  color->setProperty(NativeColorFieldProperty, QColor(QStringLiteral("#2a70b8")));
+  color->setProperty(NativeColorFieldTextProperty, QStringLiteral("Inherited colour"));
+  color->setProperty(NativeColorFieldPlaceholderProperty, true);
+  editorRow->addWidget(color, 1);
+  editorRow->addStretch(0);
+  column->addWidget(fixedEditor);
+  // The allocation rule is generic: a text input with a preferred width
+  // must also grow past that hint before the zero-stretch spacer grows.
+  auto* textEditor = new QWidget;
+  textEditor->setObjectName(QStringLiteral("contract.fixed-text-editor"));
+  textEditor->setFixedWidth(240);
+  auto* textRow = new QHBoxLayout(textEditor);
+  textRow->setContentsMargins(0, 0, 0, 0);
+  auto* stretchedText = new QLineEdit;
+  stretchedText->setObjectName(QStringLiteral("contract.stretched-text"));
+  textRow->addWidget(stretchedText, 1);
+  textRow->addStretch(0);
+  column->addWidget(textEditor);
   auto* speeds = new QHBoxLayout;
   for (const QString& side : {QStringLiteral("left"), QStringLiteral("right")}) {
     auto* speedForm = new QFormLayout;
@@ -4124,6 +5675,15 @@ bool layoutWidthContract(QString& error) {
   grid->setColumnStretch(0, 1);
   grid->setColumnStretch(1, 2);
   column->addLayout(grid);
+  // Like SettingsForm: filtering hides a category wrapper, while its
+  // child's own hidden flag remains false.
+  auto* category = new QWidget;
+  category->setObjectName(QStringLiteral("contract.category"));
+  auto* categoryLayout = new QVBoxLayout(category);
+  auto* categoryField = new QLineEdit;
+  categoryField->setObjectName(QStringLiteral("contract.category.field"));
+  categoryLayout->addWidget(categoryField);
+  column->addWidget(category);
 
   auto view = createNativeWidgetView(&presenter);
   view->refresh();
@@ -4179,6 +5739,20 @@ bool layoutWidthContract(QString& error) {
     const NSRect displayCaption = caption(QStringLiteral("Display name:"));
     const NSRect authorCaption = caption(QStringLiteral("Author:"));
     const QString at = QStringLiteral(" at width %1").arg(actual, 0, 'f', 0);
+    const NSRect editorRect = rect(QStringLiteral("contract.fixed-editor"));
+    const NSRect colorRect = rect(QStringLiteral("contract.stretched-color"));
+    check(std::abs(NSWidth(editorRect) - 240) <= 0.5 &&
+              std::abs(NSWidth(colorRect) - NSWidth(editorRect)) <= 0.5 &&
+              std::abs(NSMinX(colorRect) - NSMinX(editorRect)) <= 0.5,
+          QStringLiteral("zero-stretch spacer took the expanding colour input's editor width (%1, %2)%3")
+              .arg(describeLayoutRect(editorRect), describeLayoutRect(colorRect), at));
+    const NSRect textEditorRect = rect(QStringLiteral("contract.fixed-text-editor"));
+    const NSRect textRect = rect(QStringLiteral("contract.stretched-text"));
+    check(std::abs(NSWidth(textEditorRect) - 240) <= 0.5 &&
+              std::abs(NSWidth(textRect) - NSWidth(textEditorRect)) <= 0.5 &&
+              std::abs(NSMinX(textRect) - NSMinX(textEditorRect)) <= 0.5,
+          QStringLiteral("zero-stretch spacer took the expanding text input's editor width (%1, %2)%3")
+              .arg(describeLayoutRect(textEditorRect), describeLayoutRect(textRect), at));
     check(searchRect.size.width >= 179.5 && searchRect.size.width <= 260.5 && sameRow(onlyRect, searchRect) &&
               NSMaxX(onlyRect) <= NSMinX(searchRect) + 0.5 && NSMinX(onlyRect) > actual / 3,
           QStringLiteral("search after the check box lost its shared width or place (%1)%2")
@@ -4228,6 +5802,16 @@ bool layoutWidthContract(QString& error) {
   const NSRect again = rect(QStringLiteral("contract.email"));
   check(std::abs(again.size.width - wideEmail.size.width) <= 1,
         QStringLiteral("a shown field did not regain its share (%1)").arg(describeLayoutRect(again)));
+  NSView* nativeCategory = identifiedView(root, QStringLiteral("contract.category"));
+  category->hide();
+  settle();
+  check(!categoryField->isHidden() && nativeCategory.constraints.count == 0,
+        QStringLiteral("a hidden ancestor retained its descendant layout constraints"));
+  category->show();
+  settle();
+  check(nativeCategory.constraints.count > 0 && rect(QStringLiteral("contract.category.field")).size.width >= 80,
+        QStringLiteral("a restored ancestor did not rebuild its descendant layout constraints"));
+  if (failure.isEmpty()) qInfo() << "Native layout suspension: hidden ancestor removed and restored descendant constraints";
   fixture.contentView = nil;
   [fixture close];
   if (!failure.isEmpty()) {
@@ -4354,7 +5938,7 @@ bool buttonOrderContract(QString& error) {
 } // namespace
 
 bool layoutContract(QString& error) {
-  if (!layoutWidthContract(error)) return false;
+  if (!layoutWidthContract(error) || !columnSizingContract(error)) return false;
   qInfo().noquote() << QStringLiteral("Native layout contract: widths, stretch, spans, alignment and hiding verified");
   return buttonOrderContract(error);
 }

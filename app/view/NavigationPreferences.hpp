@@ -59,8 +59,90 @@ inline QString navigationInputText(const NavigationBinding& binding) {
   return keys.join(QStringLiteral(" + "));
 }
 
-// Drawn with the current palette and device scale, including the direction
-// arrows: no bitmap or platform-specific artwork is needed.
+// Pure artwork shared by the Qt guide and its native AppKit image view.
+// The caller supplies font, palette and logical size; no QWidget is drawn.
+inline void paintNavigationGuide(QPainter& p, const QSizeF& size, const NavigationSettings& settings,
+                                 const QPalette& colors, const QFont& font) {
+  p.save();
+  p.setFont(font);
+  p.setRenderHint(QPainter::Antialiasing);
+  p.setPen(QPen(colors.color(QPalette::Text), 1.5));
+  const double half = size.width() / 2.0;
+  p.drawRoundedRect(QRectF(8, 9, 55, 76), 23, 23);
+  p.drawLine(QPointF(35, 10), QPointF(35, 41));
+  p.drawLine(QPointF(9, 42), QPointF(62, 42));
+  p.drawRoundedRect(QRectF(31, 19, 8, 18), 3, 3);
+  const auto bindings = settings.scheme == NavigationScheme::Custom
+                            ? settings.customBindings : navigationBindings(settings.scheme);
+  QStringList mouse, scroll;
+  // A primary mapping for each physical input fits the drawing at every
+  // scale. The scrollable table below always lists every modifier binding.
+  for (const auto input : {NavigationInput::LeftButton, NavigationInput::MiddleButton,
+                           NavigationInput::RightButton, NavigationInput::TrackpadScroll}) {
+    const NavigationBinding* primary = nullptr;
+    for (const auto& binding : bindings) {
+      if (binding.input != input || binding.action == NavigationAction::None || !navigationBindingAllowed(binding)) continue;
+      if (primary == nullptr || (binding.modifiers == Qt::NoModifier && !binding.f4)) primary = &binding;
+      if (binding.modifiers == Qt::NoModifier && !binding.f4) break;
+    }
+    if (primary != nullptr) {
+      const QString text = navigationInputText(*primary) + QStringLiteral(": ") + navigationActionText(primary->action);
+      (input == NavigationInput::TrackpadScroll ? scroll : mouse) << text;
+    }
+  }
+  scroll << QObject::tr("Pinch: Zoom") << QObject::tr("Modifiers: see bindings below");
+  QFont smaller = p.font();
+  smaller.setPointSizeF(std::max(8.0, smaller.pointSizeF() - 1.0));
+  p.setFont(smaller);
+  const auto drawBindings = [&p](double x, double width, const QStringList& labels) {
+    const int available = std::max(1, int(width));
+    for (int row = 0; row < labels.size(); ++row) {
+      p.drawText(QRectF(x, 8 + row * 24, available, 24), Qt::AlignLeft | Qt::AlignVCenter,
+                 p.fontMetrics().elidedText(labels[row], Qt::ElideMiddle, available));
+    }
+  };
+  drawBindings(74, half - 78, mouse.isEmpty() ? QStringList{QObject::tr("Mouse wheel: Zoom")} : mouse);
+  p.drawRoundedRect(QRectF(half + 5, 15, 62, 58), 7, 7);
+  p.drawLine(QPointF(half + 29, 30), QPointF(half + 29, 53));
+  p.drawLine(QPointF(half + 43, 30), QPointF(half + 43, 53));
+  drawBindings(half + 78, half - 82, scroll);
+  // Orbit: an arc around the model; Pan: parallel arrows; Zoom: toward it.
+  const double step = size.width() / 3.0;
+  const QColor accent = colors.color(QPalette::Highlight);
+  for (int i = 0; i != 3; ++i) {
+    const double x = i * step + 18;
+    p.setPen(QPen(accent, 1.8));
+    p.drawRect(QRectF(x + 11, 108, 17, 17));
+    if (i == 0) {
+      p.drawArc(QRectF(x, 98, 39, 36), 20 * 16, 285 * 16);
+      p.drawLine(QPointF(x + 36, 105), QPointF(x + 37, 99));
+      p.drawLine(QPointF(x + 37, 99), QPointF(x + 31, 101));
+      if (settings.constrainedOrbit) {
+        p.drawLine(QPointF(x + 20, 119), QPointF(x + 20, 98));
+        p.drawLine(QPointF(x + 20, 98), QPointF(x + 17, 103));
+        p.drawLine(QPointF(x + 20, 98), QPointF(x + 23, 103));
+        p.drawText(QPointF(x + 25, 104), QStringLiteral("Z"));
+      }
+    } else if (i == 1) {
+      p.drawLine(QPointF(x, 102), QPointF(x + 38, 102));
+      p.drawLine(QPointF(x + 38, 102), QPointF(x + 33, 98));
+      p.drawLine(QPointF(x + 38, 102), QPointF(x + 33, 106));
+    } else {
+      p.drawLine(QPointF(x, 101), QPointF(x + 10, 109));
+      p.drawLine(QPointF(x + 10, 109), QPointF(x + 4, 108));
+      p.drawLine(QPointF(x + 10, 109), QPointF(x + 8, 103));
+    }
+    p.setPen(colors.color(QPalette::Text));
+    const QString text = i == 0 ? (settings.constrainedOrbit ? QObject::tr("Orbit: turn with Z upright")
+                                                                  : QObject::tr("Orbit: turn around the design"))
+                         : i == 1 ? QObject::tr("Pan: slide the view")
+                                  : QObject::tr("Zoom: closer or farther");
+    p.drawText(QRectF(x + 47, 96, step - 66, 42), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap, text);
+  }
+  p.restore();
+}
+
+// The Qt presenter paints the shared vector artwork at its device scale.
 class NavigationGuide : public QWidget {
 public:
   explicit NavigationGuide(QWidget* parent = nullptr) : QWidget(parent) {
@@ -69,8 +151,11 @@ public:
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
   }
   QSize sizeHint() const override { return {560, 142}; }
+  const NavigationSettings& navigation() const { return m_settings; }
+  quint64 artworkRevision() const { return m_artworkRevision; }
   void setNavigation(const NavigationSettings& settings) {
     m_settings = settings;
+    ++m_artworkRevision;
     QStringList labels;
     const auto bindings = settings.scheme == NavigationScheme::Custom
                               ? settings.customBindings : navigationBindings(settings.scheme);
@@ -86,83 +171,11 @@ public:
 protected:
   void paintEvent(QPaintEvent*) override {
     QPainter p(this);
-    p.setRenderHint(QPainter::Antialiasing);
-    p.setPen(QPen(palette().color(QPalette::Text), 1.5));
-    const double half = width() / 2.0;
-    p.drawRoundedRect(QRectF(8, 9, 55, 76), 23, 23);
-    p.drawLine(QPointF(35, 10), QPointF(35, 41));
-    p.drawLine(QPointF(9, 42), QPointF(62, 42));
-    p.drawRoundedRect(QRectF(31, 19, 8, 18), 3, 3);
-    const auto bindings = m_settings.scheme == NavigationScheme::Custom
-                              ? m_settings.customBindings : navigationBindings(m_settings.scheme);
-    QStringList mouse, scroll;
-    // A primary mapping for each physical input fits the drawing at every
-    // scale. The scrollable table below always lists every modifier binding.
-    for (const auto input : {NavigationInput::LeftButton, NavigationInput::MiddleButton,
-                             NavigationInput::RightButton, NavigationInput::TrackpadScroll}) {
-      const NavigationBinding* primary = nullptr;
-      for (const auto& binding : bindings) {
-        if (binding.input != input || binding.action == NavigationAction::None || !navigationBindingAllowed(binding)) continue;
-        if (primary == nullptr || (binding.modifiers == Qt::NoModifier && !binding.f4)) primary = &binding;
-        if (binding.modifiers == Qt::NoModifier && !binding.f4) break;
-      }
-      if (primary != nullptr) {
-        const QString text = navigationInputText(*primary) + QStringLiteral(": ") + navigationActionText(primary->action);
-        (input == NavigationInput::TrackpadScroll ? scroll : mouse) << text;
-      }
-    }
-    scroll << QObject::tr("Pinch: Zoom") << QObject::tr("Modifiers: see bindings below");
-    QFont smaller = p.font();
-    smaller.setPointSizeF(std::max(8.0, smaller.pointSizeF() - 1.0));
-    p.setFont(smaller);
-    const auto drawBindings = [&p](double x, double width, const QStringList& labels) {
-      const int available = std::max(1, int(width));
-      for (int row = 0; row < labels.size(); ++row) {
-        p.drawText(QRectF(x, 8 + row * 24, available, 24), Qt::AlignLeft | Qt::AlignVCenter,
-                   p.fontMetrics().elidedText(labels[row], Qt::ElideMiddle, available));
-      }
-    };
-    drawBindings(74, half - 78, mouse.isEmpty() ? QStringList{QObject::tr("Mouse wheel: Zoom")} : mouse);
-    p.drawRoundedRect(QRectF(half + 5, 15, 62, 58), 7, 7);
-    p.drawLine(QPointF(half + 29, 30), QPointF(half + 29, 53));
-    p.drawLine(QPointF(half + 43, 30), QPointF(half + 43, 53));
-    drawBindings(half + 78, half - 82, scroll);
-    // Orbit: an arc around the model; Pan: parallel arrows; Zoom: toward it.
-    const double step = width() / 3.0;
-    const QColor accent = palette().color(QPalette::Highlight);
-    for (int i = 0; i != 3; ++i) {
-      const double x = i * step + 18;
-      p.setPen(QPen(accent, 1.8));
-      p.drawRect(QRectF(x + 11, 108, 17, 17));
-      if (i == 0) {
-        p.drawArc(QRectF(x, 98, 39, 36), 20 * 16, 285 * 16);
-        p.drawLine(QPointF(x + 36, 105), QPointF(x + 37, 99));
-        p.drawLine(QPointF(x + 37, 99), QPointF(x + 31, 101));
-        if (m_settings.constrainedOrbit) {
-          p.drawLine(QPointF(x + 20, 119), QPointF(x + 20, 98));
-          p.drawLine(QPointF(x + 20, 98), QPointF(x + 17, 103));
-          p.drawLine(QPointF(x + 20, 98), QPointF(x + 23, 103));
-          p.drawText(QPointF(x + 25, 104), QStringLiteral("Z"));
-        }
-      } else if (i == 1) {
-        p.drawLine(QPointF(x, 102), QPointF(x + 38, 102));
-        p.drawLine(QPointF(x + 38, 102), QPointF(x + 33, 98));
-        p.drawLine(QPointF(x + 38, 102), QPointF(x + 33, 106));
-      } else {
-        p.drawLine(QPointF(x, 101), QPointF(x + 10, 109));
-        p.drawLine(QPointF(x + 10, 109), QPointF(x + 4, 108));
-        p.drawLine(QPointF(x + 10, 109), QPointF(x + 8, 103));
-      }
-      p.setPen(palette().color(QPalette::Text));
-      const QString text = i == 0 ? (m_settings.constrainedOrbit ? QObject::tr("Orbit: turn with Z upright")
-                                                                    : QObject::tr("Orbit: turn around the design"))
-                           : i == 1 ? QObject::tr("Pan: slide the view")
-                                    : QObject::tr("Zoom: closer or farther");
-      p.drawText(QRectF(x + 47, 96, step - 66, 42), Qt::AlignLeft | Qt::AlignVCenter | Qt::TextWordWrap, text);
-    }
+    paintNavigationGuide(p, size(), m_settings, palette(), font());
   }
 private:
   NavigationSettings m_settings;
+  quint64 m_artworkRevision = 0;
 };
 
 class NavigationPreferences : public QWidget {

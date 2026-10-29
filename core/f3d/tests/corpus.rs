@@ -193,7 +193,7 @@ fn corpus_histories() {
         for doc in &docs {
             for blob in doc.body_blobs().into_iter().filter(|b| b.history) {
                 let data = doc
-                    .read(&blob.entry)
+                    .read_large(&blob.entry)
                     .unwrap_or_else(|e| panic!("{}: {e}", blob.entry));
                 let file = AsmFile::parse(&data).unwrap_or_else(|e| panic!("{}: {e}", blob.entry));
                 let history = match History::parse(&file) {

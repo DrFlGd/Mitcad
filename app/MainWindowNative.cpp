@@ -30,6 +30,7 @@
 #include <QtLogging>
 
 #include "browser/BrowserController.hpp"
+#include "browser/ConfigurationBar.hpp"
 #include "browser/TimelineWidget.hpp"
 #include "files/ProjectIndicator.hpp"
 #include "files/LockController.hpp"
@@ -203,6 +204,19 @@ void MainWindow::createNativeWindow() {
     if (node.isValid()) {
       emit m_controller->browser()->renamed(node, name);
     }
+  };
+  callbacks.treeBindings = [this](const QString& key, const QRect& anchor, bool pinned) {
+    const BrowserNode node = m_nativeNodes.value(key);
+    if (node.isValid()) {
+      QTimer::singleShot(0, this, [this, node, anchor, pinned] {
+        emit m_controller->browser()->bindingsRequested(node, anchor, pinned);
+      });
+    }
+  };
+  callbacks.historyBindings = [this](const QString& uid, const QRect& anchor, bool pinned) {
+    QTimer::singleShot(0, this, [this, uid, anchor, pinned] {
+      emit m_controller->timeline()->bindingsRequested(uid, anchor, pinned);
+    });
   };
   callbacks.treeVisibility = [this](const QString& key) {
     const BrowserNode node = m_nativeNodes.value(key);
@@ -698,6 +712,19 @@ void MainWindow::refreshNativeWindow() {
   const auto* warned = m_controller->warnings();
   m_nativeWindow->setBrowserIssues(failed->isHidden() ? QString() : failed->text(), failed->toolTip(),
                                   warned->isHidden() ? QString() : warned->text(), warned->toolTip());
+  ConfigurationBar* configuration = m_controller->configurationBar();
+  if (configuration != nullptr && !configuration->isHidden()) {
+    // The bounded browser can be narrower than the shared grid's reading
+    // hint. Only this card opts in to placing its row cells on extra lines.
+    if (!configuration->property("nativeResponsiveLayout").toBool()) {
+      configuration->setProperty("nativeResponsiveLayout", true);
+    }
+    if (!m_nativeConfigurationForm) m_nativeConfigurationForm = createNativeWidgetView(configuration);
+    else m_nativeConfigurationForm->refresh();
+    m_nativeWindow->setConfigurationView(m_nativeConfigurationForm ? m_nativeConfigurationForm->nativeView() : nullptr);
+  } else {
+    m_nativeWindow->setConfigurationView(nullptr);
+  }
   refreshNativeActions();
   m_nativeWindow->setDocument(documentName(), m_filePath, isModified());
   m_nativeWindow->setSketchMode(m_sketch->isActive());
@@ -734,6 +761,7 @@ void MainWindow::refreshNativeWindow() {
           row.node.hasEye && (canToggleVisibility || BrowserController::visibilityInEveryMode(row.node));
       item.visible = row.node.visible;
       item.checked = row.node.visible;
+      item.bindings = row.bindings;
       rows.append(item);
       m_nativeNodes.insert(row.key, row.node);
     }
@@ -759,6 +787,7 @@ void MainWindow::refreshNativeWindow() {
       item.noted = !feature.importNote.isEmpty();
       item.suppressed = feature.suppressed;
       item.filtered = filtered.contains(feature.uid);
+      item.bindings = feature.suppressedWhen.isEmpty() ? 0 : 1;
       history.append(item);
     }
     m_nativeWindow->setHistory(history, m_snapshot.marker);

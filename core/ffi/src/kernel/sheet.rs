@@ -138,6 +138,7 @@ pub mod ffi {
     }
     unsafe extern "C++" {
         include!("bridge/sheet.hpp");
+        include!("bridge/trycatch.hpp");
         #[namespace = "mitcad::geometry"]
         type Shape = crate::kernel::shape::ffi::Shape;
         type Segment = crate::kernel::profile::ffi::Segment;

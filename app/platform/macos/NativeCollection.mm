@@ -1486,8 +1486,14 @@ public:
     QMetaObject::invokeMethod(edit.data(), "textEdited", Qt::DirectConnection, Q_ARG(QString, text));
   }
 
-  // Up and Down in the search move through the tiles (PartGrid).
+  // Up and Down in the search move through the tiles (PartGrid). Escape
+  // in the modeless picker closes its panel, as in the shared QDialog;
+  // ordinary catalogue searches retain NSSearchField's clear action.
   bool searchCommand(SEL command) {
+    if (command == @selector(cancelOperation:) && [m_search.window isKindOfClass:MitcadNativeUtilityPanel.class]) {
+      [m_search.window cancelOperation:m_search];
+      return true;
+    }
     if (command == @selector(moveUp:)) {
       m_grid->stepLinear(-1);
       return true;

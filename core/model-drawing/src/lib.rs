@@ -253,6 +253,8 @@ impl<K: Kernel> DrawingCache for Document<K> {
 /// a drawing works out, and lays out hole callouts and sketch dimensions
 /// with these helpers (mitcad#811).
 pub mod internal {
-    pub use crate::compose::{HoleText, hole_text, sketch_dimension};
+    pub use crate::compose::{
+        CalloutStyle, HoleInput, HoleText, hole_callout, hole_text, sketch_dimension,
+    };
     pub use crate::{BodyInView, ProjectionCache, Shading};
 }

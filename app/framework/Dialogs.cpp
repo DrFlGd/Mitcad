@@ -213,6 +213,11 @@ void prepareProgressDialog(QProgressDialog* dialog) {
 QAction* execMenu(QMenu* menu, const QPoint& position) {
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (nativeDialogsActive()) {
+    for (QWidget* parent = menu->parentWidget(); parent != nullptr; parent = parent->parentWidget()) {
+      const QVariant anchor = parent->property("nativeMenuPosition");
+      if (anchor.isValid()) return execNativeMenu(menu, anchor.toPoint());
+      if (parent->isWindow()) break;
+    }
     return execNativeMenu(menu, position);
   }
 #endif

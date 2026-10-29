@@ -656,6 +656,8 @@ public:
     TestSync::watch(&m_renameTimer); // UI tests wait for the rename to start
   }
 
+  QSize minimumSizeHint() const override { return dockedTreeMinimumSize(this, QTreeWidget::minimumSizeHint()); }
+
   // Forgets a slow second click that has not yet started a rename.
   void cancelSlowClick() {
     m_renameTimer.stop();
@@ -1232,7 +1234,8 @@ QVector<BrowserPanel::PresentationRow> BrowserPanel::presentationRows() const {
     // draw the fx badge after the name).
     const QIcon icon = item->data(kName, kBindingsRole).toInt() > 0 ? boundIcon(item->icon(0)) : item->icon(0);
     rows.append({key, parent, node, item->toolTip(0), icon, item->isExpanded(),
-                 item->data(kName, kRadioRole).isValid(), item->data(kName, kRadioRole).toBool()});
+                 item->data(kName, kRadioRole).isValid(), item->data(kName, kRadioRole).toBool(),
+                 item->data(kName, kBindingsRole).toInt()});
     for (int index = 0; index < item->childCount(); ++index) {
       self(self, item->child(index), key);
     }

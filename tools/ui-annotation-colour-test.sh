@@ -10,12 +10,14 @@
 # stored in the old default orange #d9480f, which the model reads as Auto
 # (mitcad#894: the six rotating defaults were the program's choice).
 #   - Measure closed (the Annotations window from the command search):
-#     Offset1 made Blue (two rows down from Auto) and Offset2 #5c940d
-#     through Other… (the colour dialog); the model's annotations, the view
-#     and the window show the new colours at once; Undo and Redo take
-#     Offset2's back and again.
-#   - Measure open (its panel's Annotations…): Offset1 made Green and
-#     Offset2 #862e9c through Other…; shown at once; kept when the panel
+#     Offset1 made Dark Grey (two rows down from Auto: Auto, Black, Dark
+#     Grey and Custom… are all the menu offers, mitcad#902) and Offset2
+#     #5c940d through Custom… (the colour dialog); the model's annotations,
+#     the view and the window show the new colours at once; Offset2's own
+#     colour offered as it is by Colour…; Undo and Redo take Offset2's back
+#     and again.
+#   - Measure open (its panel's Annotations…): Offset1 made Black and
+#     Offset2 #862e9c through Custom…; shown at once; kept when the panel
 #     closes; Undo and Redo after it; saved, the design file has them.
 #   - The Annotations window's Text Height… (mitcad#894): Auto (2.5 mm for
 #     these small blocks) offered, 5 mm chosen; saved, the design file has
@@ -85,13 +87,14 @@ shown_in() {
   ui_expect_new "Annotations row $1: offset, $3, -, -, $2, shown" "$4: listed in $2"
 }
 
-# edit_named name colour-steps-down colour value what: the editor opened
-# from the window's row, a named colour chosen that many rows down, OK.
+# edit_named name keys colour value what: the editor opened from the
+# window's row, a named colour chosen with these keys ("Down Down"), OK.
 edit_named() {
   ui_double_click_expect "Annotations row $1" "Edit Annotation dialog opened: $1 offset" "$5: $1's editor opened"
   ui_mark
   ui_focus_dialog '^Edit Annotation$'
-  ui_step "Colour (Alt+C, Down x$2)"       ui_key alt+c $(printf 'Down %.0s' $(seq 1 "$2"))
+  # shellcheck disable=SC2086 # the keys, one word each
+  ui_step "Colour (Alt+C, $2)"              ui_key alt+c $2
   ui_step "OK (Enter)"                     ui_key Return
   ui_expect_new "Edit Annotation dialog: {\"color\":\"$3\"}" "$5: the colour asked for"
   shown_in "$1" "$3" "$4" "$5"
@@ -99,13 +102,13 @@ edit_named() {
 }
 
 # edit_other name colour value what: the editor opened from the window's
-# row, Other… (the last row) and the colour typed into the colour dialog's
+# row, Custom… (the last row) and the colour typed into the colour dialog's
 # HTML field, OK in both.
 edit_other() {
   ui_double_click_expect "Annotations row $1" "Edit Annotation dialog opened: $1 offset" "$4: $1's editor opened"
   ui_mark
   ui_focus_dialog '^Edit Annotation$'
-  ui_step "Colour: Other… (Alt+C, End)"    ui_key alt+c End
+  ui_step "Colour: Custom… (Alt+C, End)"   ui_key alt+c End
   ui_focus_dialog '^Annotation Colour$'
   ui_step "HTML (Alt+H)"                   ui_key alt+h
   ui_step "$2"                             ui_type_text "$2"
@@ -130,16 +133,32 @@ ui_mark
 ui_step "Annotations (search)"             ui_command "Annotations"
 ui_expect_new "Annotations window opened: 2 annotation(s)" "the window opened"
 ui_expect_new "Annotations row Offset2 at" "its rows laid out"
-edit_named Offset1 2 "#1864ab" 10 "Offset1 (in O1), Measure closed"
+edit_named Offset1 "Down Down" "#495057" 10 "Offset1 (in O1), Measure closed"
 edit_other Offset2 "#5c940d" 15 "Offset2 (root), Measure closed"
+# Its own colour (no longer a preset) is kept and offered as it is. Its row
+# is still selected from the double-click that opened its editor.
+grep "^Annotations selected: " "$UI_LOG" | tail -1 | grep -qx "Annotations selected: Offset2" ||
+  ui_fail "Offset2 is not the row selected: $(grep "^Annotations selected: " "$UI_LOG" | tail -1)"
+ui_mark
+ui_focus_dialog '^Annotations$'
+ui_step "Colour… (Alt+C)"                 ui_key alt+c
+ui_expect_new "Annotation Colour dialog opened: Offset2 #5c940d (Auto | Black | Dark Grey | #5c940d | Custom…)" \
+  "Auto, Black, Dark Grey, its own and Custom… offered"
+ui_focus_dialog '^Annotation Colour$'
+ui_step "cancel (Escape)"                 ui_key Escape
+ui_sync
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Annotation Colour dialog: " && ui_fail "the cancelled dialog chose a colour"
+echo "ok   the stored colour kept"
+ui_focus_dialog '^Annotations$'
+
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
 ui_mark
 ui_step "undo (Ctrl+Z)"                    ui_key ctrl+z
-ui_expect_new "Annotations drawn: Offset1 = 10 (#1864ab) | Offset2 = 15 (auto)" "Undo takes Offset2's colour back"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#495057) | Offset2 = 15 (auto)" "Undo takes Offset2's colour back"
 ui_mark
 ui_step "redo (Ctrl+Y)"                    ui_key ctrl+y
-ui_expect_new "Annotations drawn: Offset1 = 10 (#1864ab) | Offset2 = 15 (#5c940d)" "Redo gives it again"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#495057) | Offset2 = 15 (#5c940d)" "Redo gives it again"
 
 echo "--- Measure open"
 ui_mark
@@ -150,8 +169,8 @@ ui_step "Annotations…"                     ui_click_logged "Measure Annotation
 ui_expect_new "Annotations window opened: 2 annotation(s)" "the window opened from the panel"
 # Its rows where they were laid out before (logged when they move).
 ui_sync
-# Blue is the second row: Green one down from it.
-edit_named Offset1 1 "#2b8a3e" 10 "Offset1 (in O1), Measure open"
+# Dark Grey is the third row: Black one up from it.
+edit_named Offset1 "Up" "#212529" 10 "Offset1 (in O1), Measure open"
 edit_other Offset2 "#862e9c" 15 "Offset2 (root), Measure open"
 ui_step "close the window (Escape)"        ui_key Escape
 ui_focus_main
@@ -159,27 +178,27 @@ ui_mark
 ui_step "close Measure (Enter)"            ui_key Return
 ui_expect_new "Closed Measure" "measure closed"
 ui_sync
-tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Annotations drawn: " | grep -vqF "Offset1 = 10 (#2b8a3e) | Offset2 = 15 (#862e9c)" &&
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Annotations drawn: " | grep -vqF "Offset1 = 10 (#212529) | Offset2 = 15 (#862e9c)" &&
   ui_fail "closing Measure changed the colours: $(grep "^Annotations drawn: " "$UI_LOG" | tail -1)"
 echo "ok   the colours kept as Measure closed"
 ui_mark
 ui_step "undo (Ctrl+Z)"                    ui_key ctrl+z
 ui_expect_new "Undo: Edit Offset2" "its own undo step"
-ui_expect_new "Annotations drawn: Offset1 = 10 (#2b8a3e) | Offset2 = 15 (#5c940d)" "Undo takes Offset2's colour back"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#212529) | Offset2 = 15 (#5c940d)" "Undo takes Offset2's colour back"
 ui_mark
 ui_step "undo (Ctrl+Z)"                    ui_key ctrl+z
 ui_expect_new "Undo: Edit Offset1" "Offset1's edit its own undo step too"
-ui_expect_new "Annotations drawn: Offset1 = 10 (#1864ab) | Offset2 = 15 (#5c940d)" "and Offset1's"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#495057) | Offset2 = 15 (#5c940d)" "and Offset1's"
 ui_mark
 ui_step "redo (Ctrl+Y)"                    ui_key ctrl+y
 ui_step "redo (Ctrl+Y)"                    ui_key ctrl+y
-ui_expect_new "Annotations drawn: Offset1 = 10 (#2b8a3e) | Offset2 = 15 (#862e9c)" "Redo gives both again"
+ui_expect_new "Annotations drawn: Offset1 = 10 (#212529) | Offset2 = 15 (#862e9c)" "Redo gives both again"
 
 echo "--- Saved"
 ui_mark
 ui_step "save (Ctrl+S)"                    ui_key ctrl+s
 ui_expect_new "Saved $FILE" "saved"
-[ "$(saved_colour Offset1)" = "#2b8a3e" ] || ui_fail "the file has Offset1 in $(saved_colour Offset1), not #2b8a3e"
+[ "$(saved_colour Offset1)" = "#212529" ] || ui_fail "the file has Offset1 in $(saved_colour Offset1), not #212529"
 [ "$(saved_colour Offset2)" = "#862e9c" ] || ui_fail "the file has Offset2 in $(saved_colour Offset2), not #862e9c"
 echo "ok   the design file has both new colours"
 

@@ -20,6 +20,61 @@ use crate::document::DocState;
 use crate::file::{BlobStore, Sha256};
 use crate::library::{LibraryRef, LibrarySource};
 
+/// Largest design text of a library source, read from a project's store
+/// or taken from a library (mitcad#928): a library component's design with
+/// its B-rep data inside, far below this.
+pub const MAX_DESIGN_TEXT: u64 = 512 << 20;
+
+/// Most design text all library sources of one design may decode from a
+/// project's store together (mitcad#928).
+pub const MAX_DESIGN_TEXTS: u64 = 2 << 30;
+
+/// Why a store file's design text is not read.
+#[derive(Debug, PartialEq)]
+enum Inflated {
+    /// It decodes to more than the limit.
+    TooLarge,
+    /// It is not complete zlib data of UTF-8 text.
+    Damaged,
+}
+
+/// The text in a store file, decoded to at most `limit` bytes: the
+/// inflating stops at the limit and the text's buffer never grows past it,
+/// so a zlib bomb allocates no more.
+fn inflate_design(mut stored: &[u8], limit: u64) -> Result<String, Inflated> {
+    use miniz_oxide::{DataFormat, MZFlush, MZStatus, inflate::stream};
+    let limit = usize::try_from(limit).unwrap_or(usize::MAX);
+    let mut state = stream::InflateState::new_boxed(DataFormat::Zlib);
+    let mut chunk = [0u8; 64 * 1024];
+    let mut out: Vec<u8> = Vec::new();
+    loop {
+        let result = stream::inflate(&mut state, stored, &mut chunk, MZFlush::None);
+        stored = &stored[result.bytes_consumed..];
+        let written = &chunk[..result.bytes_written];
+        if written.len() > limit - out.len() {
+            return Err(Inflated::TooLarge);
+        }
+        if out.capacity() - out.len() < written.len() {
+            let wanted = out
+                .capacity()
+                .saturating_mul(2)
+                .max(out.len() + written.len())
+                .min(limit);
+            out.reserve_exact(wanted - out.len());
+        }
+        out.extend_from_slice(written);
+        match result.status {
+            Ok(MZStatus::StreamEnd) => break,
+            Ok(MZStatus::Ok) if result.bytes_consumed > 0 || result.bytes_written > 0 => {}
+            _ => return Err(Inflated::Damaged),
+        }
+    }
+    if !stored.is_empty() {
+        return Err(Inflated::Damaged);
+    }
+    String::from_utf8(out).map_err(|_| Inflated::Damaged)
+}
+
 /// A source's design: its text (none while a project's reference is not
 /// resolved) and the definition state read from it once.
 #[derive(Clone)]
@@ -136,6 +191,15 @@ impl LibrarySourceDef {
             }
             crate::file::single_file(&state)
         };
+        // A larger text would not be read back from a project's store.
+        if text.len() as u64 > MAX_DESIGN_TEXT {
+            return Err(format!(
+                "{} in {}: its design is {} bytes, more than {MAX_DESIGN_TEXT}",
+                source.path,
+                source.library,
+                text.len()
+            ));
+        }
         Ok(Self {
             id,
             library: LibraryRef {
@@ -225,25 +289,48 @@ impl LibrarySources {
     /// Gives references their text from a project's store; a text the store
     /// lacks, or one that is not the design it is named after, leaves the
     /// reference (its derived parts fail) and adds a warning.
+    ///
+    /// A text is inflated within limits (mitcad#928): at most
+    /// [`MAX_DESIGN_TEXT`] bytes, at most [`max_inflated`] of its store
+    /// file, and all the sources' texts together at most
+    /// [`MAX_DESIGN_TEXTS`]; a store file that decodes to more is damaged.
+    ///
+    /// [`max_inflated`]: crate::features::base::max_inflated
     pub(crate) fn resolve(&mut self, store: &dyn BlobStore, warnings: &mut Vec<String>) {
+        let mut left = MAX_DESIGN_TEXTS;
         for (i, source) in self.0.iter_mut().enumerate() {
             if !source.design.is_reference() {
                 continue;
             }
             let sha256 = source.design.sha256;
+            let path = crate::file::brep_path(&sha256);
             let problem = match store.get(&sha256) {
-                Ok(Some(stored)) => match miniz_oxide::inflate::decompress_to_vec_zlib(&stored)
-                    .ok()
-                    .and_then(|bytes| String::from_utf8(bytes).ok())
-                {
-                    Some(text) if Sha256::of(text.as_bytes()) == sha256 => {
-                        source.design = SourceDesign::new(text);
-                        continue;
+                Ok(Some(stored)) => {
+                    let limit =
+                        MAX_DESIGN_TEXT.min(crate::features::base::max_inflated(stored.len()));
+                    match inflate_design(&stored, limit.min(left)) {
+                        Ok(text) if Sha256::of(text.as_bytes()) == sha256 => {
+                            left -= text.len() as u64;
+                            source.design = SourceDesign::new(text);
+                            continue;
+                        }
+                        Ok(_) => {
+                            format!("the file {path} is damaged: its text has another SHA-256")
+                        }
+                        Err(Inflated::TooLarge) if left < limit => format!(
+                            "its design {sha256} is not read: the library sources' designs \
+                             exceed {MAX_DESIGN_TEXTS} bytes in all"
+                        ),
+                        Err(Inflated::TooLarge) => format!(
+                            "the file {path} is damaged: it decodes to more than {limit} bytes"
+                        ),
+                        Err(Inflated::Damaged) => format!(
+                            "the file {path} is damaged: it is not zlib-compressed UTF-8 text"
+                        ),
                     }
-                    _ => format!("the file {} is damaged", crate::file::brep_path(&sha256)),
-                },
+                }
                 Ok(None) => format!("its design {sha256} is missing from the project store"),
-                Err(e) => format!("cannot read {}: {e}", crate::file::brep_path(&sha256)),
+                Err(e) => format!("cannot read {path}: {e}"),
             };
             warnings.push(format!("library_sources[{i}] ({}): {problem}", source.id));
         }

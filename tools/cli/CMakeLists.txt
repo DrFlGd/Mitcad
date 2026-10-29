@@ -961,6 +961,14 @@ if(BUILD_TESTING)
     set_tests_properties(cli.library-previews PROPERTIES TIMEOUT 600
       SKIP_REGULAR_EXPRESSION "library previews: skipped")
   endif()
+  # The fastener generator's dimension tables (mitcad#900): sizes, pitches,
+  # length series, each standard's rows and the earlier versions' rows;
+  # needs only Python.
+  if(Python3_Interpreter_FOUND)
+    add_test(NAME cli.fastener-tables
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/fastener-tables-test.py"
+              --libraries "${PROJECT_SOURCE_DIR}/tools/libraries")
+  endif()
   # BUILD on the generated profile library (mitcad#376, mitcad#377): one
   # profile of each system and slot width with its frames and mass per
   # metre, and the linear parts on a small frame with their joints driven;

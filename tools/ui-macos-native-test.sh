@@ -33,7 +33,14 @@ case "$scenario" in
       "$UI_OUT/files/CancelledProject" "$UI_OUT/files/native-cloud.git"
     git init -q --bare "$UI_OUT/files/native-cloud.git" || exit 1
     ;;
-  sketch) script=native-macos-sketch.mitcad-ui ;;
+  sketch)
+    script=native-macos-sketch.mitcad-ui
+    export MITCAD_TEST_COLOR_SCHEME=${MITCAD_TEST_COLOR_SCHEME:-light}
+    case "$MITCAD_TEST_COLOR_SCHEME" in
+      light|dark) ;;
+      *) echo "native sketch color scheme must be light or dark" >&2; exit 2 ;;
+    esac
+    ;;
   autoselect) script=native-macos-autoselect.mitcad-ui ;;
   point-pattern) script=native-macos-point-pattern.mitcad-ui ;;
   panels) script=native-macos-panels.mitcad-ui ;;

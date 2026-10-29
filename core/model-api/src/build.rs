@@ -23,6 +23,7 @@ use mitcad_model::internal::build::value_in;
 use mitcad_model::internal::features::{Evaluated, evaluate_source};
 use mitcad_model::kernel::Kernel;
 use mitcad_model::parameters::ParamId;
+use mitcad_model::part_options::PartValue;
 use mitcad_model::transform::Transform;
 use mitcad_model_build::internal::{LengthPlan, Plan, SourceUse, Spot};
 use mitcad_model_build::prelude::*;
@@ -37,7 +38,7 @@ type RayHit = (Vec<OccurrenceUid>, GeomRef, f64);
 
 /// A preview's source evaluations by their values (mitcad#487): one
 /// request's parts share one source.
-type Evaluations<S> = Vec<(Vec<(String, f64)>, Evaluated<S>)>;
+type Evaluations<S> = Vec<(Vec<(String, PartValue)>, Evaluated<S>)>;
 
 /// What a preview cuts and moves of a source's bodies: `touch` the end
 /// that touches the target (end B when flipped), kept where the plan put
@@ -49,6 +50,7 @@ struct PreviewCuts<'a> {
     touch: Option<(&'a str, [f64; 3])>,
     ends: Option<(&'a Ends<ValueInput>, f64)>,
     rip: Option<&'a PartCut<ValueInput>>,
+    bound_length: bool,
 }
 
 named_enum! {
@@ -296,7 +298,10 @@ impl<K: Kernel> BuildCrateOps<K> for Document<K> {
         Ok(match self.preview_input(fields)? {
             PreviewInput::Place(input) => match self.preview_place(&input) {
                 Ok(plan) => {
-                    let mut value = self.place_preview_json(&input, &plan);
+                    let mut value = match self.place_preview_json(&input, &plan) {
+                        Ok(value) => value,
+                        Err(error) => return Ok(json!({"problems": [error.to_string()]})),
+                    };
                     // A spacing set (mitcad#478): its members' frames.
                     if let Some(spacing) = &input.spacing {
                         match self.plan_set(&input, spacing) {
@@ -903,10 +908,10 @@ trait BuildLocal<K: Kernel> {
         &self,
         input: &PlaceInput,
         plan: &Plan,
-    ) -> (Option<RayHit>, Option<f64>);
+    ) -> Result<(Option<RayHit>, Option<f64>), ApiError>;
 
     /// A placing's preview.
-    fn place_preview_json(&self, input: &PlaceInput, plan: &Plan) -> Value;
+    fn place_preview_json(&self, input: &PlaceInput, plan: &Plan) -> Result<Value, ApiError>;
 
     /// A placing's bodies in the design's coordinates, as the preview shows
     /// them: a bound length (or none given) is the ray's, as the query
@@ -988,7 +993,7 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
         &self,
         input: &PlaceInput,
         plan: &Plan,
-    ) -> (Option<RayHit>, Option<f64>) {
+    ) -> Result<(Option<RayHit>, Option<f64>), ApiError> {
         let world = self.host_placement().after(&plan.placement);
         let flip = input.flip;
         let touch = plan
@@ -1018,17 +1023,48 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
             input.length,
             Some(mitcad_model_build::LengthInput::Value(_))
         ) || (input.to.is_some() && input.length.is_none());
-        let length_value = match (&plan.length, &hit) {
+        let mut length_value = match (&plan.length, &hit) {
             (LengthPlan::None, _) => None,
+            (LengthPlan::Bound { first, .. }, _) => Some(*first),
             (LengthPlan::Value(_, v), _) if given => Some(*v),
             (_, Some(hit)) => Some(hit.2),
             (LengthPlan::Value(_, v), None) => Some(*v),
-            (LengthPlan::Bound { first, .. }, None) => Some(*first),
         };
-        (hit, length_value)
+        if let (Some(meta), Some(length)) = (&plan.source.meta.length, length_value) {
+            let mut values = plan.values.clone();
+            values.insert(meta.parameter.clone(), ValueInput::Number(length));
+            let mut chosen = mitcad_model_build::internal::source_option_values(
+                self,
+                &plan.source.def,
+                &values,
+            )?;
+            if matches!(plan.length, LengthPlan::Bound { .. }) {
+                chosen.pinned.insert(meta.parameter.clone());
+            }
+            let configured = mitcad_model_build::internal::source_state_with_options(
+                &plan.source.def,
+                plan.source.config.as_deref(),
+                &chosen,
+            )
+            .map_err(ApiError)?;
+            let parameter = configured
+                .state
+                .parameters
+                .find(&meta.parameter)
+                .ok_or_else(|| ApiError("the length parameter is missing".into()))?;
+            length_value = Some(
+                configured
+                    .state
+                    .parameters
+                    .value(parameter)
+                    .filter(|v| v.is_finite())
+                    .ok_or_else(|| ApiError("the configured length is not finite".into()))?,
+            );
+        }
+        Ok((hit, length_value))
     }
 
-    fn place_preview_json(&self, input: &PlaceInput, plan: &Plan) -> Value {
+    fn place_preview_json(&self, input: &PlaceInput, plan: &Plan) -> Result<Value, ApiError> {
         let active = self.host_placement();
         let world = active.after(&plan.placement);
         let end_a = plan.mounts.get("end_a").map_or([0.0; 3], |t| t.translation);
@@ -1057,7 +1093,7 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
             LengthPlan::Bound { to, .. } => Some((**to).clone()),
             _ => None,
         };
-        let (hit, length_value) = self.place_preview_length(input, plan);
+        let (hit, length_value) = self.place_preview_length(input, plan)?;
         let mode = match &plan.length {
             LengthPlan::Bound { mode, .. } => *mode,
             _ => BoundMode::Face,
@@ -1068,7 +1104,7 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
         );
         let default = match &plan.length {
             LengthPlan::Value(_, v) if !given => Some(*v),
-            LengthPlan::Bound { first, .. } => Some(*first),
+            LengthPlan::Bound { source_default, .. } => Some(*source_default),
             _ => None,
         };
         let target = match (bound_to, &hit) {
@@ -1165,7 +1201,7 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
             }
             None => Value::Null,
         };
-        json!({
+        Ok(json!({
             "frame": frame_json(&frame),
             "place": plan.place,
             "closing": closing,
@@ -1187,7 +1223,7 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
             "warnings": plan.warnings,
             "body": "see analysis_shape",
             "problems": [],
-        })
+        }))
     }
 
     fn placing_preview_bodies(
@@ -1200,11 +1236,12 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
         let mut values = plan.values.clone();
         let mut cuts = PreviewCuts {
             rip,
+            bound_length: matches!(plan.length, LengthPlan::Bound { .. }),
             ..PreviewCuts::default()
         };
         if let (Some(meta), (_, Some(length))) = (
             &plan.source.meta.length,
-            self.place_preview_length(input, plan),
+            self.place_preview_length(input, plan)?,
         ) {
             values.insert(meta.parameter.clone(), ValueInput::Number(length));
             let end = if input.flip { "end_b" } else { "end_a" };
@@ -1224,23 +1261,33 @@ impl<K: Kernel> BuildLocal<K> for Document<K> {
         cuts: PreviewCuts<'_>,
         evaluations: &mut Evaluations<K::Shape>,
     ) -> Result<Vec<K::Shape>, ApiError> {
-        let PreviewCuts { touch, ends, rip } = cuts;
-        let mut numbers = Vec::new();
-        for (name, value) in values {
-            numbers.push((name.clone(), value_in(self, value, Unit::MM)?));
+        let PreviewCuts {
+            touch,
+            ends,
+            rip,
+            bound_length,
+        } = cuts;
+        let mut chosen =
+            mitcad_model_build::internal::source_option_values(self, &source.def, values)?;
+        if bound_length && let Some(meta) = &source.meta.length {
+            chosen.pinned.insert(meta.parameter.clone());
         }
-        let known = evaluations.iter().position(|(n, _)| *n == numbers);
+        let configured = mitcad_model_build::internal::source_state_with_options(
+            &source.def,
+            source.config.as_deref(),
+            &chosen,
+        )
+        .map_err(ApiError)?;
+        let normalized = chosen.normalized(&configured).map_err(ApiError)?;
+        let known = evaluations
+            .iter()
+            .position(|(options, _)| *options == normalized);
         let index = match known {
             Some(i) => i,
             None => {
-                let state = mitcad_model_build::internal::source_state(
-                    &source.def,
-                    source.config.as_deref(),
-                    &numbers,
-                )
-                .map_err(ApiError)?;
-                let evaluated = evaluate_source(self.kernel(), &state).map_err(ApiError)?;
-                evaluations.push((numbers, evaluated));
+                let evaluated =
+                    evaluate_source(self.kernel(), &configured.state).map_err(ApiError)?;
+                evaluations.push((normalized, evaluated));
                 evaluations.len() - 1
             }
         };

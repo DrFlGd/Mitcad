@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Sketch selection filters (mitcad#217): the three-state rows, the
 // sketch's and Project's defaults, Shift's wider clicks, windows, body
-// edges in sight and behind faces, and other sketches' geometry.
+// edges in sight and behind faces, and other sketches' geometry (only
+// Project's sources, mitcad#904).
 #include "framework/SelectionScope.hpp"
 
 #include <cstdio>
@@ -107,7 +108,9 @@ void cycleTests() {
 
 void defaultTests() {
   const SelectionScope sketch = SelectionScope::sketch();
-  CHECK(sketch.rows().size() == kFilterRowCount);
+  // Every row but other sketches' geometry, which only Project has.
+  CHECK(sketch.rows().size() == kFilterRowCount - 1);
+  CHECK(!sketch.has(FilterRow::OtherSketchGeometry));
   CHECK(sketch.describe() ==
         QStringLiteral("sketch-geometry=cross, construction-geometry=cross, projected-geometry=cross, "
                        "annotations=square, profiles=square, visible-edges=square, occluded-edges=empty, "
@@ -115,7 +118,8 @@ void defaultTests() {
                        "reference-geometry=empty"));
   const SelectionScope project = SelectionScope::project();
   CHECK(project.describe() ==
-        QStringLiteral("visible-edges=cross, occluded-edges=empty, faces=square, vertices=square"));
+        QStringLiteral("visible-edges=cross, occluded-edges=empty, faces=square, vertices=square, "
+                       "other-sketch-geometry=cross"));
   // What the view makes pickable.
   CHECK(sketch.kinds(false) ==
         (SelectKind::SketchCurve | SelectKind::SketchPoint | SelectKind::Profile | SelectKind::Edge));
@@ -123,7 +127,8 @@ void defaultTests() {
   CHECK(sketch.kinds(true).testFlag(SelectKind::Vertex));
   CHECK(sketch.kinds(true).testFlag(SelectKind::Plane));
   CHECK(!sketch.kinds(true).testFlag(SelectKind::Body)); // faces win over bodies
-  CHECK(project.kinds(false) == (SelectKind::Edge | SelectKind::Face | SelectKind::Vertex));
+  CHECK(project.kinds(false) == (SelectKind::Edge | SelectKind::Face | SelectKind::Vertex |
+                                 SelectKind::SketchCurve | SelectKind::SketchPoint));
   CHECK(project.kinds(true) == project.kinds(false));
 }
 
@@ -188,6 +193,13 @@ void clickTests() {
   }
   CHECK(!takes(scope, item(SelectKind::Sketch, kSketch), click(true)));
   CHECK(!takes(scope, item(SelectKind::Feature, QStringLiteral("F3")), click(true)));
+  // Their row is one the sketch's scope does not have (mitcad#904), so
+  // neither a click, Shift nor a window reaches them.
+  const SelectionItem other = item(SelectKind::SketchCurve, QStringLiteral("F2"), QStringLiteral("c1"));
+  CHECK(filterRowOf(other, kSketch, sketchRow) == FilterRow::OtherSketchGeometry);
+  CHECK(!takes(scope, other, click()));
+  CHECK(!takes(scope, other, window()));
+  CHECK(!scope.allows(FilterRow::OtherSketchGeometry, false, true));
 }
 
 void independentRowTests() {
@@ -253,6 +265,28 @@ void projectTests() {
   }
   CHECK(!takes(scope, item(SelectKind::SketchCurve, kSketch, QStringLiteral("c1")), click(true)));
   CHECK(!takes(scope, item(SelectKind::Profile, kSketch, QStringLiteral("r1")), click(true)));
+  // Another sketch's curves and points are Project's sources (mitcad#904):
+  // a click and a window take them; its profiles, dimensions and
+  // constraints never. The edited sketch's own stay out (above).
+  const SelectionItem otherCurve = item(SelectKind::SketchCurve, QStringLiteral("F2"), QStringLiteral("c1"));
+  const SelectionItem otherPoint = item(SelectKind::SketchPoint, QStringLiteral("F2"), QStringLiteral("p3"));
+  CHECK(filterRowOf(otherCurve, kSketch, sketchRow) == FilterRow::OtherSketchGeometry);
+  CHECK(filterRowOf(otherPoint, kSketch, sketchRow) == FilterRow::OtherSketchGeometry);
+  CHECK(takes(scope, otherCurve, click()));
+  CHECK(takes(scope, otherCurve, window()));
+  CHECK(takes(scope, otherPoint, click()));
+  CHECK(takes(scope, otherPoint, window()));
+  for (const SelectKind kind : {SelectKind::Profile, SelectKind::SketchDimension, SelectKind::SketchConstraint}) {
+    CHECK(!takes(scope, item(kind, QStringLiteral("F2"), QStringLiteral("k1")), click(true)));
+  }
+  // The row cycles like the others: empty, they are not taken (Shift
+  // still takes them on a click, as for any empty row).
+  SelectionScope off = SelectionScope::project();
+  off.setState(FilterRow::OtherSketchGeometry, FilterState::Off);
+  CHECK(!takes(off, otherCurve, click()));
+  CHECK(!takes(off, otherCurve, window()));
+  CHECK(takes(off, otherCurve, click(true)));
+  CHECK(filterRowFromId(QStringLiteral("other-sketch-geometry")) == FilterRow::OtherSketchGeometry);
   // Project's scope is the one command that has one.
   CHECK(commandSelectionScope(QStringLiteral("sketch.project")).has_value());
   CHECK(commandSelectionScope(QStringLiteral("sketch.project"))->name() == QStringLiteral("project"));

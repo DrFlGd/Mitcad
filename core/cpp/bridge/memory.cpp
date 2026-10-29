@@ -19,6 +19,8 @@
 #include <sys/resource.h>
 #include <unistd.h>
 
+#include <algorithm>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #if defined(__GLIBC__)
@@ -97,6 +99,72 @@ std::uint64_t allocator_free() {
 #endif
 }
 
+// A cgroup v2 memory limit the process runs under (mitcad#885): the
+// tightest of its cgroup's and those above it (memory.max), with what the
+// cgroup uses (memory.current) less the page cache, which the kernel
+// reclaims under the limit (as the test runner counts it, mitcad#872).
+// Beyond it the kernel kills a process of the cgroup rather than refuse
+// memory: a job's or a service's scope (systemd's MemoryMax, a container's
+// memory limit) did so to an import that measured only the memory the
+// system had left.
+struct CgroupLimit {
+  std::uint64_t used = 0;
+  std::uint64_t limit = 0;
+};
+
+// The page cache of a cgroup (memory.stat's active_file and inactive_file).
+std::uint64_t cgroup_page_cache(const std::string& dir) {
+  std::ifstream stat(dir + "/memory.stat");
+  std::string key;
+  std::uint64_t value = 0;
+  std::uint64_t cache = 0;
+  while (stat >> key >> value) {
+    if (key == "active_file" || key == "inactive_file") {
+      cache += value;
+    }
+  }
+  return cache;
+}
+
+CgroupLimit cgroup_limit() {
+  CgroupLimit out;
+  std::ifstream groups("/proc/self/cgroup");
+  std::string line;
+  while (std::getline(groups, line)) {
+    if (line.rfind("0::", 0) != 0) {
+      continue;
+    }
+    std::string group = line.substr(3);
+    for (;;) {
+      const std::string dir = "/sys/fs/cgroup" + group;
+      std::string max;
+      std::ifstream(dir + "/memory.max") >> max;
+      if (!max.empty() && max != "max") {
+        std::uint64_t current = 0;
+        std::ifstream(dir + "/memory.current") >> current;
+        const std::uint64_t limit = std::strtoull(max.c_str(), nullptr, 10);
+        const std::uint64_t cache = cgroup_page_cache(dir);
+        const std::uint64_t used = current > cache ? current - cache : 0;
+        // The one with the least left.
+        const auto left = [](std::uint64_t u, std::uint64_t l) { return l - std::min(u, l); };
+        if (limit > 0 && (out.limit == 0 || left(used, limit) < left(out.used, out.limit))) {
+          out.used = used;
+          out.limit = limit;
+        }
+      }
+      const std::size_t slash = group.find_last_of('/');
+      if (slash == std::string::npos || group.size() <= 1) {
+        break;
+      }
+      group.resize(slash == 0 ? 1 : slash);
+      if (group == "/") {
+        break;
+      }
+    }
+  }
+  return out;
+}
+
 // The share of a limit beyond which allocator_free is asked.
 constexpr double kNearLimit = 0.6;
 
@@ -113,6 +181,14 @@ std::uint64_t in_use(std::uint64_t used, std::uint64_t limit, std::uint64_t& spa
 #endif
 
 } // namespace
+
+void release_free_memory() {
+#if defined(__GLIBC__)
+  // Returns the free pages of every arena, not only the top of the main
+  // one as free() does by itself.
+  malloc_trim(0);
+#endif
+}
 
 MemoryUse memory_use() {
   Tightest tightest;
@@ -170,11 +246,17 @@ MemoryUse memory_use() {
   tightest.consider(in_use(proc_field("/proc/self/status", "VmData:"), data_limit, spare), data_limit,
                     "data limit");
   // The memory the system has left: Linux overcommits, so beyond it a
-  // process is killed rather than refused memory.
+  // process is killed rather than refused memory. Against it and a cgroup's
+  // limit the resident memory counts as it is: the allocator's free memory
+  // that is resident counts too (a thread's arena does not lend it to the
+  // others, so the process grew past it, mitcad#885), and the memory guard
+  // gives it back to the system (release_free_memory).
   const std::uint64_t left = proc_field("/proc/meminfo", "MemAvailable:") + proc_field("/proc/meminfo", "SwapFree:");
   if (left > 0) {
-    tightest.consider(in_use(resident, resident + left, spare), resident + left, "memory the system has left");
+    tightest.consider(resident, resident + left, "memory the system has left");
   }
+  const CgroupLimit group = cgroup_limit();
+  tightest.consider(group.used, group.limit, "cgroup memory limit");
 #endif
   tightest.out.failed_allocations = static_cast<std::uint64_t>(geometry::failed_allocations());
   return tightest.out;

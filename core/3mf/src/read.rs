@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use mitcad_zip::Archive;
+use mitcad_zip::{Archive, DEFAULT_ENTRY_LIMIT, LARGE_ENTRY_LIMIT};
 use roxmltree::{Document, Node};
 
 use crate::{
@@ -32,15 +32,17 @@ fn error(message: impl Into<String>) -> Error {
 pub fn read(data: &[u8]) -> Result<Model, Error> {
     let archive =
         Archive::new(data.to_vec()).map_err(|e| error(format!("not a zip package: {e}")))?;
-    let text = |name: &str| -> Result<String, Error> {
+    // The model part may be a large mesh: the explicit opt-in to the zip
+    // reader's large entry limit (mitcad#923); the others take its default.
+    let text = |name: &str, limit: u64| -> Result<String, Error> {
         let bytes = archive
-            .read_by_name(name)
+            .read_by_name_with_limit(name, limit)
             .map_err(|e| error(format!("{name}: {e}")))?;
         String::from_utf8(bytes).map_err(|_| error(format!("{name} is not UTF-8")))
     };
-    let types = text("[Content_Types].xml")?;
+    let types = text("[Content_Types].xml", DEFAULT_ENTRY_LIMIT)?;
     let types = Document::parse(&types).map_err(|e| error(format!("[Content_Types].xml: {e}")))?;
-    let relationships = text("_rels/.rels")?;
+    let relationships = text("_rels/.rels", DEFAULT_ENTRY_LIMIT)?;
     let relationships =
         Document::parse(&relationships).map_err(|e| error(format!("_rels/.rels: {e}")))?;
     let target = relationships
@@ -58,7 +60,7 @@ pub fn read(data: &[u8]) -> Result<Model, Error> {
             content_type.as_deref().unwrap_or("(none)")
         )));
     }
-    let xml = text(part)?;
+    let xml = text(part, LARGE_ENTRY_LIMIT)?;
     let document = Document::parse(&xml).map_err(|e| error(format!("{part}: {e}")))?;
     read_model(document.root_element())
 }

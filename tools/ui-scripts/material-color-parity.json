@@ -1,0 +1,8 @@
+[
+  {"cmd":"add_feature","def":{"type":"box","plane":"xy","corner":[0,0],"length":10,"width":10,"height":10,"operation":"new_body"}},
+  {"cmd":"create_appearance","id":"swatch-source","name":"Swatch source","base_color":[0.8,0.5333333333333333,0.26666666666666666]},
+  {"cmd":"create_material","id":"explicit-color","name":"Audit Explicit","class":"plastic","density":1.2,"filament":{"filament_colour":"#2A70B8"}},
+  {"cmd":"create_material","id":"inherited-color","name":"Audit Inherited","class":"plastic","density":1.2,"appearance":"swatch-source"},
+  {"cmd":"create_material","id":"unset-color","name":"Audit Slicer Default","class":"plastic","density":1.2},
+  {"expect":{"bodies":1}}
+]

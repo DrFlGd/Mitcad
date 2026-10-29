@@ -98,6 +98,7 @@ use mcp::{mcp_command_document, mcp_entry_failed, mcp_recomputed, mcp_snapshot_q
 mod ffi {
     unsafe extern "C++" {
         include!("mitcad/geometry/shape.hpp");
+        include!("bridge/trycatch.hpp");
 
         #[namespace = "mitcad::geometry"]
         type Shape = crate::kernel::shape::ffi::Shape;

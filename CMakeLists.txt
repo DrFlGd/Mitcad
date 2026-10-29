@@ -26,7 +26,7 @@ else()
 endif()
 
 project(Mitcad
-  VERSION 0.35.0
+  VERSION 0.36.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 

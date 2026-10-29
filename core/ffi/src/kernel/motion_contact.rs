@@ -16,6 +16,7 @@ pub mod ffi {
 
     unsafe extern "C++" {
         include!("bridge/motion_contact.hpp");
+        include!("bridge/trycatch.hpp");
 
         type ShapeList = crate::kernel::shape::ffi::ShapeList;
 

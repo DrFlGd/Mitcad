@@ -238,8 +238,10 @@ impl IfcFile {
                 }
                 [first, ..] => *first,
             };
+            // An IFC model may be large: the explicit opt-in to the zip
+            // reader's large entry limit (mitcad#923).
             let data = archive
-                .read(entry)
+                .read_with_limit(entry, mitcad_zip::LARGE_ENTRY_LIMIT)
                 .map_err(|e| IfcError::Zip(e.to_string()))?;
             let mut file = Self::read(std::io::Cursor::new(data), options)?;
             if entries.len() > 1 {

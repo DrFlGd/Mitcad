@@ -952,7 +952,9 @@ struct CommandDef {
   // are picked and checked as a feature's are (`build` gives an empty
   // definition, or the failure the panel shows), nothing is previewed, and
   // OK calls `accept`, which does the work outside the model's history;
-  // false keeps the panel open.
+  // false keeps the panel open. Cancelling this application panel keeps
+  // model changes independently committed by its choices or companion
+  // editors; there is no provisional model preview to take back.
   std::function<bool(const CommandState&, const CommandContext&)> accept;
   // The OK button's text when it is not "OK" (3D Print: Send).
   QString okLabel;

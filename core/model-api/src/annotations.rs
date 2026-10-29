@@ -44,27 +44,37 @@ const Z: Vec3 = [0.0, 0.0, 1.0];
 /// A length's dimension line from its ends when the offset is not set:
 /// this share of the length, at least 1 mm.
 const LINE_SHARE: f64 = 0.25;
-/// An angle's arc radius (mm) when neither it nor the picks' size is known.
-const ARC_MM: f64 = 10.0;
-/// A note's text from its arrow's point (mm, along and across) when not
-/// set.
-const NOTE_MM: f64 = 10.0;
+/// The default places in text heights (mitcad#902: none in a view's pixels
+/// frozen when an annotation is added, so they keep their proportion to
+/// the texts): an angle's arc radius when neither it nor the picks' reach
+/// is known; a note's text from its arrow's point, along and across; a
+/// circle's text beyond its rim at least (and 1.5 radii from its centre);
+/// a length's dimension line from its ends when no body is there to keep
+/// clear of and a view chose its side.
+const ARC_SHARE: f64 = 5.0;
+const NOTE_SHARE: [f64; 2] = [4.0, 3.0];
+const CIRCLE_SHARE: f64 = 3.0;
+const BARE_LINE_SHARE: f64 = 2.5;
+/// A leader's horizontal landing under its text's start, and how far past
+/// the bodies' extent its text stands when placed automatically: text
+/// heights (mitcad#902).
+const LANDING_SHARE: f64 = 1.5;
+const LEADER_CLEAR: f64 = 2.0;
+/// A datum label's stem from its surface to its letter's square: text
+/// heights.
+const DATUM_STEM: f64 = 3.0;
+/// The direction towards the eye of the default isometric view: a round
+/// face's circle is drawn at its end on that side, where its rim shows.
+const ISO_EYE: Vec3 = [1.0, -1.0, 1.0];
 /// A circle's text from its centre when not moved: radii.
 const CIRCLE_TEXT: f64 = 1.5;
-/// The places a view suggests when an annotation is added, in the view's
-/// pixels: a length's dimension line from its ends, an angle's arc radius,
-/// a circle's text beyond its rim, a note's text from its point.
-const LINE_PIXELS: f64 = 22.0;
-const ARC_PIXELS: f64 = 42.0;
-const TEXT_PIXELS: f64 = 30.0;
-const NOTE_PIXELS: [f64; 2] = [40.0, 30.0];
 /// Deviations without set decimals show up to this many.
 const DEVIATION_DECIMALS: usize = 4;
-/// A length's dimension line placed automatically (mitcad#894): this many
-/// text heights clear of its bodies' outline, and a parallel one stacked
-/// this many further out.
-const CLEAR_SHARE: f64 = 1.5;
-const STACK_SHARE: f64 = 1.2;
+/// A length's dimension line placed automatically (mitcad#894; mitcad#902:
+/// as far off as a drawing's first line): this many text heights clear of
+/// its bodies' outline, and a parallel one stacked this many further out.
+const CLEAR_SHARE: f64 = 6.0;
+const STACK_SHARE: f64 = 2.5;
 /// Directions closer than this (the sine of the angle) are parallel, and a
 /// face's normal this square to a length holds it.
 const SQUARE: f64 = 1e-6;
@@ -78,17 +88,18 @@ pub(super) fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
 }
 
 /// What the view looked like when an annotation is added: the direction it
-/// looks along (from the eye), its up direction and the size of a pixel
-/// (mm) near the picks. It suggests the plane (square to the view) and the
-/// places of the line and the text, which are then kept.
+/// looks along (from the eye) and its up direction. It suggests the plane
+/// (square to the view) and the side of a length's line, which are then
+/// kept. The size of a pixel (mm) near the picks is still taken but no
+/// longer used: the places are in text heights (mitcad#902).
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ViewHint {
     direction: Vec3,
     #[serde(default)]
     up: Option<Vec3>,
-    #[serde(default)]
-    pixel: Option<f64>,
+    #[serde(default, rename = "pixel")]
+    _pixel: Option<f64>,
 }
 
 /// `add_annotation`: the fields of [`Annotation`], each optional but the
@@ -257,6 +268,10 @@ enum Shape {
     Note {
         anchor: Vec3,
         normal: Option<Vec3>,
+        /// The picked surface's outward normal at the point (a planar
+        /// face's, a round face's radius): a datum label's stem stands on
+        /// it (mitcad#902).
+        surface: Option<Vec3>,
     },
 }
 
@@ -331,6 +346,8 @@ struct Drawing {
     text: [Vec3; 3],
     /// The height of its text, mm (mitcad#894): the design's.
     text_height: f64,
+    /// A leader's text's place, for those laid out after it.
+    text_box: Option<TextBox>,
 }
 
 impl Drawing {
@@ -368,16 +385,37 @@ impl Drawing {
 /// bodies' boxes, the normals of the planar faces at its picks, whether
 /// each pick is a plane (its extension line then leaves the body at its
 /// outline), the dimension lines laid out before it (a parallel one stacks
-/// outside them) and the side a view prefers (its up) when both sides are
-/// as clear.
+/// outside them) and the direction towards the eye of the view an
+/// annotation is added in (a length's line goes to that side, mitcad#902).
 #[derive(Debug, Clone, Copy)]
 struct Around<'a> {
     height: f64,
     extent: &'a [Vec3],
     faces: &'a [Vec3],
     planes: [bool; 2],
+    /// Each pick's own outline (the corners of a face's box): a plane's
+    /// extension line leaves the face there (mitcad#902).
+    outlines: [&'a [Vec3]; 2],
     taken: &'a [Taken],
     prefer: Option<Vec3>,
+    /// The leaders' texts laid out before it: a leader's text placed
+    /// automatically moves up past them (mitcad#902).
+    boxes: &'a [TextBox],
+    /// The size of a leader's text, mm (width, height), as estimated from
+    /// its words.
+    text_size: Option<[f64; 2]>,
+}
+
+/// Where a leader's text lies (mitcad#902): its plane's normal and `x`, and
+/// the rectangle it takes there, in coordinates along `x` and up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct TextBox {
+    normal: Vec3,
+    x: Vec3,
+    low: [f64; 2],
+    high: [f64; 2],
+    /// Its leader, from the point to the knee.
+    leader: [[f64; 2]; 2],
 }
 
 impl Around<'_> {
@@ -390,8 +428,11 @@ impl Around<'_> {
             extent: &[],
             faces: &[],
             planes: [false; 2],
+            outlines: [&[], &[]],
             taken: &[],
             prefer: None,
+            boxes: &[],
+            text_size: None,
         }
     }
 
@@ -403,8 +444,11 @@ impl Around<'_> {
             extent: &picks.extent,
             faces: &picks.faces,
             planes: [plane(picks.elements[0]), plane(picks.elements[1])],
+            outlines: [&picks.outlines[0], &picks.outlines[1]],
             taken,
             prefer: None,
+            boxes: &[],
+            text_size: None,
         }
     }
 }
@@ -427,6 +471,12 @@ struct Laid {
     height: f64,
     taken: Vec<Taken>,
     texts: std::collections::BTreeMap<String, [Vec3; 3]>,
+    /// Each leader's lines (a hole callout's; 0 for others) and which end
+    /// of its text the leader comes to (`start`, `end`), by name: a frame
+    /// under a hole callout stands below its lines (mitcad#902).
+    leaders: std::collections::BTreeMap<String, (usize, &'static str)>,
+    /// The leaders' texts laid out (mitcad#902).
+    boxes: Vec<TextBox>,
 }
 
 /// The document's length unit for values in words.
@@ -448,6 +498,19 @@ impl Units {
         Self {
             symbol,
             millimetres,
+        }
+    }
+
+    /// The same unit as the drawings write lengths in (a hole callout's,
+    /// mitcad#902).
+    pub(super) fn drawing(self) -> mitcad_model_drawing::Units {
+        mitcad_model_drawing::Units {
+            symbol: self.symbol,
+            mm: if self.millimetres > 0.0 {
+                self.millimetres
+            } else {
+                1.0
+            },
         }
     }
 }
@@ -637,8 +700,15 @@ impl<K: Kernel> AnnotationsOps<K> for Document<K> {
         // on a point (under a dimension the pick is only an anchor); a
         // frame under a dimension needs that dimension.
         if kind.is_leader() && annotation.on.is_none() {
-            self.shape_of(&annotation, &picks).map_err(ApiError)?;
             feature_pick(kind, &annotation.a, &picks).map_err(ApiError)?;
+            self.shape_of(&annotation, &picks).map_err(ApiError)?;
+        }
+        // A hole callout needs a hole (or a round face or edge) to write.
+        if kind == MeasureKind::HoleCallout {
+            let unit = self.parameters().context().default_length_unit;
+            let units = Units::new(unit.symbol(), unit.millimetres());
+            self.hole_callout_lines(&annotation.a, &picks, units.drawing())
+                .map_err(ApiError)?;
         }
         if let Some(on) = &annotation.on {
             self.dimension_to_stand_under(on.trim()).map_err(ApiError)?;
@@ -873,8 +943,8 @@ trait AnnotationsLocal<K: Kernel> {
     /// square to the view's up; mitcad#894); both kept in the first pick's
     /// own coordinates; a length's dimension line outside its bodies'
     /// extent in that plane, on the side away from them (the view's upper
-    /// side when both are as clear), stacked outside parallel ones; other
-    /// sizes of so many pixels.
+    /// side when both are as clear), stacked outside parallel ones; the
+    /// other places are left to the defaults in text heights (mitcad#902).
     fn place_for_view(
         &self,
         annotation: &mut Annotation,
@@ -903,9 +973,10 @@ trait AnnotationsLocal<K: Kernel> {
     /// it, the frames under dimensions last.
     fn laid_out(&self, units: Units, measure_hidden: bool) -> (Vec<Value>, Vec<Taken>);
 
-    /// The size of what is annotated (mitcad#894): the diagonal of the box
-    /// of the bodies the shown annotations' picks are on, with `extra`'s
-    /// (an annotation being added); none when no body is known.
+    /// The size of the design (mitcad#894, mitcad#902): the diagonal of the
+    /// box of the bodies the shown annotations' picks are on, with
+    /// `extra`'s (an annotation being added), and of the root's bodies;
+    /// none when no body is known.
     fn annotated_size(&self, extra: Option<&MeasuredPicks>) -> Option<f64>;
 
     /// The height of the annotations' texts in use (mm): the design's, else
@@ -939,7 +1010,6 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
         let direction = unit(view.direction)
             .ok_or_else(|| ApiError("a view's direction is not zero".to_owned()))?;
         let up = view.up.and_then(unit);
-        let pixel = view.pixel.filter(|p| p.is_finite() && *p > 0.0);
         let kind = annotation.kind;
         let planar = matches!(
             kind,
@@ -950,6 +1020,8 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
                 | MeasureKind::Note
                 | MeasureKind::Datum
                 | MeasureKind::Frame
+                | MeasureKind::HoleCallout
+                | MeasureKind::Diameter
         );
         let transform = self.pick_transform(&annotation.a)?;
         let shape = self.shape_of(annotation, picks).ok();
@@ -961,7 +1033,9 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
                     .unwrap_or(toward),
                 _ => toward,
             };
-            let x = if kind.is_leader() {
+            // A leader's text (a diameter's too, mitcad#902) reads along the
+            // view's horizontal.
+            let x = if kind.is_leader() || kind == MeasureKind::Diameter {
                 up.and_then(|up| unit(cross(direction, up)))
             } else {
                 None
@@ -985,44 +1059,29 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
             Shape::Ends(_) => self.laid_out(units, false).1,
             _ => Vec::new(),
         };
-        let mut around = Around::of(self.text_height_in_use(Some(picks)), picks, &taken);
-        around.prefer = up;
+        let height = self.text_height_in_use(Some(picks));
+        let mut around = Around::of(height, picks, &taken);
+        // The side of a length's line towards the eye (mitcad#902).
+        around.prefer = Some(scale(direction, -1.0));
         let drawing = layout(annotation, &shape, normal, x, &around);
-        match shape {
-            Shape::Ends(_) if annotation.line_offset.is_none() => {
-                // No body to keep clear of (datums): so many pixels off,
-                // on the view's upper side.
-                let size = match pixel {
-                    Some(p) if picks.extent.is_empty() => {
-                        let side = match up {
-                            Some(up) if dot(drawing.y, up) < 0.0 => -1.0,
-                            _ => 1.0,
-                        };
-                        side * LINE_PIXELS * p
-                    }
-                    _ => drawing.line_offset,
+        // A length's line is kept on the side the view chose; the other
+        // places stay the defaults, in text heights, which follow the
+        // design's text height (mitcad#902: no pixels frozen here).
+        if let Shape::Ends(_) = shape
+            && annotation.line_offset.is_none()
+        {
+            // No body to keep clear of (datums): a few text heights off, on
+            // the view's upper side.
+            let size = if picks.extent.is_empty() {
+                let side = match up {
+                    Some(up) if dot(drawing.y, up) < 0.0 => -1.0,
+                    _ => 1.0,
                 };
-                annotation.line_offset = Some(size);
-            }
-            Shape::Arc { .. } if annotation.line_offset.is_none() => {
-                if let Some(p) = pixel {
-                    annotation.line_offset = Some(ARC_PIXELS * p);
-                }
-            }
-            Shape::Circle { radius, .. } if annotation.text_offset.is_none() => {
-                if let Some(p) = pixel {
-                    let extra = TEXT_PIXELS * p - (CIRCLE_TEXT - 1.0) * radius;
-                    if extra > 0.0 {
-                        annotation.text_offset = Some([extra, 0.0]);
-                    }
-                }
-            }
-            Shape::Note { .. } if annotation.text_offset.is_none() => {
-                if let Some(p) = pixel {
-                    annotation.text_offset = Some([NOTE_PIXELS[0] * p, NOTE_PIXELS[1] * p]);
-                }
-            }
-            _ => {}
+                side * BARE_LINE_SHARE * height
+            } else {
+                drawing.line_offset
+            };
+            annotation.line_offset = Some(size);
         }
         Ok(())
     }
@@ -1037,6 +1096,18 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
                 ),
                 None => None,
             };
+            // A hole callout's arrow on the hole's edge at its opening, on
+            // the side it is seen from (mitcad#902).
+            if annotation.kind == MeasureKind::HoleCallout {
+                let toward = self.plane_hint(annotation).ok().and_then(|(n, _)| n);
+                if let Some(anchor) = self.hole_callout_anchor(&annotation.a, at, toward) {
+                    return Ok(Shape::Note {
+                        anchor,
+                        normal: None,
+                        surface: None,
+                    });
+                }
+            }
             return note_shape(picks, at);
         }
         values_of(picks)
@@ -1101,6 +1172,26 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
             value["error"] = json!(error);
             return value;
         }
+        // A hole callout's lines from its hole's feature as it is now
+        // (mitcad#902): they follow its size, depth and thread.
+        let mut callout_lines = 0;
+        if annotation.kind == MeasureKind::HoleCallout {
+            match self.hole_callout_lines(&annotation.a, &picks, units.drawing()) {
+                Ok(lines) => {
+                    callout_lines = lines.len();
+                    value["label"] = Label {
+                        text: lines.join(" / "),
+                        lines,
+                        ..Label::default()
+                    }
+                    .to_json();
+                }
+                Err(error) => {
+                    value["error"] = json!(error);
+                    return value;
+                }
+            }
+        }
         let mut measured = None;
         if !annotation.kind.is_leader() {
             let found = values_of(&picks);
@@ -1141,13 +1232,30 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
                 }
             },
         };
-        let laid_out = layout(
-            annotation,
-            &shape,
-            normal,
-            x,
-            &Around::of(laid.height, &picks, &laid.taken),
-        );
+        // A leader's text's size, for its place among the others' (a
+        // diameter on a leader: its value's words).
+        let leader = drawn_as_leader(annotation, normal);
+        let text_size = leader.then(|| {
+            let under = self
+                .annotations()
+                .iter()
+                .filter(|a| a.visible && a.on.as_deref() == Some(annotation.name.as_str()))
+                .count();
+            let words = match measured {
+                Some(found) if !annotation.kind.is_leader() => {
+                    json!({"lines": [dimension_label(annotation, found.value, units).text]})
+                }
+                _ => value["label"].clone(),
+            };
+            leader_text_size(&words, laid.height, under)
+        });
+        let mut around = Around::of(laid.height, &picks, &laid.taken);
+        around.boxes = &laid.boxes;
+        around.text_size = text_size;
+        let laid_out = layout(annotation, &shape, normal, x, &around);
+        if let Some(text_box) = laid_out.text_box {
+            laid.boxes.push(text_box);
+        }
         // What those after it stack outside and stand under (mitcad#894).
         if let (Shape::Ends(_), Some([from, to])) = (shape, laid_out.dimension_lines.first()) {
             laid.taken.push(Taken {
@@ -1160,9 +1268,32 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
         laid.texts.insert(annotation.name.clone(), laid_out.text);
         let mut drawing = laid_out.to_json();
         // A datum label's leader ends in a filled triangle on its feature
-        // (ISO 5459), not an arrow.
-        if annotation.kind == MeasureKind::Datum {
-            drawing["terminator"] = json!("datum");
+        // (ISO 5459), not an arrow; a note's or a frame's in a dot on a
+        // face, an arrow on an edge or an outline (ISO 128-22, mitcad#902);
+        // a hole callout's in an arrow on the hole's edge.
+        match annotation.kind {
+            MeasureKind::Datum => drawing["terminator"] = json!("datum"),
+            MeasureKind::Note | MeasureKind::Frame if annotation.a.face.is_some() => {
+                drawing["terminator"] = json!("dot");
+            }
+            _ => {}
+        }
+        // A leader's text runs from the leader's end away from its arrow:
+        // it starts there, or ends there when it lies on the arrow's other
+        // side along the text (mitcad#902; a frame under a hole callout
+        // takes the callout's).
+        if leader && let (Some([tip, _]), [at, x, _]) = (laid_out.arrows.first(), laid_out.text) {
+            // A datum's square centred on its stem's end (mitcad#902).
+            let align = if annotation.kind == MeasureKind::Datum {
+                "middle"
+            } else if dot(sub(*tip, at), x) > 0.0 {
+                "end"
+            } else {
+                "start"
+            };
+            drawing["align"] = json!(align);
+            laid.leaders
+                .insert(annotation.name.clone(), (callout_lines, align));
         }
         value["drawing"] = drawing;
         if let Some(found) = measured {
@@ -1178,7 +1309,10 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
     fn dimension_to_stand_under(&self, on: &str) -> Result<(), String> {
         match self.annotation(on) {
             Err(_) => Err(format!("there is no dimension {on} to stand under")),
-            Ok(dimension) if dimension.kind.is_leader() => Err(format!("{on} is no dimension")),
+            // A hole callout takes one too (mitcad#902).
+            Ok(dimension) if !dimension.kind.takes_frame() => {
+                Err(format!("{on} is no dimension or hole callout"))
+            }
             Ok(_) => Ok(()),
         }
     }
@@ -1226,6 +1360,22 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
         if let Some(picks) = extra {
             grow(picks);
         }
+        // The design's own bodies too (mitcad#902: the texts' height by the
+        // design's size, not only by what is annotated).
+        let kernel = self.kernel();
+        for body in self.bodies() {
+            if self.body_component(body.uid) != Some(mitcad_model::ids::ComponentUid::ROOT) {
+                continue;
+            }
+            if let Ok(Some(bounds)) = kernel.bounding_box(body.shape) {
+                for corner in bounds.corners() {
+                    for ((l, h), c) in low.iter_mut().zip(high.iter_mut()).zip(corner) {
+                        *l = l.min(c);
+                        *h = h.max(c);
+                    }
+                }
+            }
+        }
         let size = distance(low, high);
         (size.is_finite() && size > 0.0).then_some(size)
     }
@@ -1239,11 +1389,16 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
         let dimension = self
             .annotation(on)
             .map_err(|_| format!("the dimension {on} is not there"))?;
-        if dimension.kind.is_leader() {
+        if !dimension.kind.takes_frame() {
             return Err(format!("{on} is no dimension"));
         }
         if !dimension.visible {
             return Ok(None);
+        }
+        // A hole callout laid out before (frames come last) unless broken,
+        // its text too (its hole gone): a frame under it is broken with it.
+        if dimension.kind == MeasureKind::HoleCallout && !laid.leaders.contains_key(on) {
+            return Err(format!("{on} is broken"));
         }
         let picks = self
             .measure_picks(&dimension.a, dimension.b.as_ref())
@@ -1269,7 +1424,7 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
             }
         };
         let v = |v: Vec3| v.map(|x| x + 0.0);
-        Ok(Some(json!({
+        let mut drawing = json!({
             "plane": {"origin": v(at), "x": v(direction), "y": v(up),
                       "normal": v(cross(direction, up))},
             "line_offset": 0.0,
@@ -1281,7 +1436,15 @@ impl<K: Kernel> AnnotationsLocal<K> for Document<K> {
             "text": {"at": v(at), "direction": v(direction), "up": v(up)},
             "text_height": laid.height,
             "attached": on,
-        })))
+        });
+        // Under a hole callout or a diameter on a leader (mitcad#902): below
+        // its lines, on the same leader, its side of the text the leader's.
+        if dimension.kind == MeasureKind::HoleCallout || laid.leaders.contains_key(on) {
+            let (lines, align) = laid.leaders.get(on).copied().unwrap_or((1, "start"));
+            drawing["under_lines"] = json!(lines.max(1));
+            drawing["align"] = json!(align);
+        }
+        Ok(Some(drawing))
     }
 
     fn plane_hint(&self, annotation: &Annotation) -> Result<(Option<Vec3>, Option<Vec3>), String> {
@@ -1315,7 +1478,8 @@ fn back(transform: &Transform, v: Vec3) -> Vec3 {
 
 /// Why a datum label or a feature control frame cannot stand on this pick:
 /// they mark a feature (a face, an edge, an axis, a plane), not a vertex
-/// or a datum point. A note may point anywhere.
+/// or a datum point; a hole callout a hole, a body's round face or edge
+/// (mitcad#902). A note may point anywhere.
 fn feature_pick(
     kind: MeasureKind,
     pick: &MeasurePick,
@@ -1324,6 +1488,13 @@ fn feature_pick(
     let what = match kind {
         MeasureKind::Datum => "a datum label",
         MeasureKind::Frame => "a feature control frame",
+        // A hole callout points at a hole: a body's face or edge.
+        MeasureKind::HoleCallout => {
+            if pick.body.is_some() && (pick.face.is_some() || pick.edge.is_some()) {
+                return Ok(());
+            }
+            return Err("a hole callout points at a hole: its round face or edge".to_owned());
+        }
         _ => return Ok(()),
     };
     let point = pick.vertex.is_some()
@@ -1347,24 +1518,24 @@ fn note_shape(picks: &MeasuredPicks, at: Option<Vec3>) -> Result<Shape, String> 
         Some(Element::Plane { normal, .. }) => unit(normal),
         _ => None,
     };
+    let mut surface = normal;
     let anchor = if let Some(point) = single.and_then(|m| m.point) {
         point
     } else if let Some(circle) = single.and_then(|m| m.circle).filter(|c| c.radius > 0.0) {
         let center = circle.center;
-        match unit(circle.axis) {
+        let radial = match unit(circle.axis) {
             Some(n) => {
                 let foot = at.map_or(center, |p| add_scaled(center, n, dot(sub(p, center), n)));
                 let radial = at
                     .and_then(|p| unit(sub(p, foot)))
                     .unwrap_or_else(|| across(n));
-                add_scaled(foot, radial, circle.radius)
+                (foot, radial)
             }
             // A sphere.
-            None => {
-                let radial = at.and_then(|p| unit(sub(p, center))).unwrap_or(Z);
-                add_scaled(center, radial, circle.radius)
-            }
-        }
+            None => (center, at.and_then(|p| unit(sub(p, center))).unwrap_or(Z)),
+        };
+        surface = Some(radial.1);
+        add_scaled(radial.0, radial.1, circle.radius)
     } else {
         match element {
             Some(Element::Plane { origin, normal: n }) => match (at, unit(n)) {
@@ -1394,7 +1565,11 @@ fn note_shape(picks: &MeasuredPicks, at: Option<Vec3>) -> Result<Shape, String> 
             })?,
         }
     };
-    Ok(Shape::Note { anchor, normal })
+    Ok(Shape::Note {
+        anchor,
+        normal,
+        surface,
+    })
 }
 
 /// `v` without its part along the unit `along`, as a unit vector; none
@@ -1429,23 +1604,30 @@ fn layout(
     x: Option<Vec3>,
     around: &Around<'_>,
 ) -> Drawing {
+    let h = around.height;
     let mut drawing = match *shape {
         Shape::Ends(ends) => layout_length(annotation, ends, normal, around),
         Shape::Circle {
             center,
             axis,
             radius,
-        } => layout_circle(annotation, center, axis, radius),
+        } => match normal {
+            Some(normal) if drawn_as_leader(annotation, Some(normal)) => {
+                layout_diameter_leader(annotation, center, axis, radius, normal, x, around)
+            }
+            _ => layout_circle(annotation, center, axis, radius, around),
+        },
         Shape::Arc {
             center,
             from,
             to,
             reach,
-        } => layout_angle(annotation, center, from, to, reach),
+        } => layout_angle(annotation, center, from, to, reach, h),
         Shape::Note {
             anchor,
             normal: own,
-        } => layout_note(annotation, anchor, normal.or(own), x),
+            surface,
+        } => layout_note(annotation, anchor, normal.or(own), x, surface, around),
     };
     drawing.text_height = around.height;
     drawing
@@ -1458,8 +1640,8 @@ fn layout(
 /// `line_offset` across (when not set, outside the bodies' extent in the
 /// plane on the side away from them and stacked outside parallel lines,
 /// [`automatic_offset`]; a quarter of the length, at least 1 mm, without a
-/// body), extension lines to it from the ends (from the bodies' outline
-/// where a pick is a plane), an arrow at each end pointing out, the text at
+/// body), extension lines to it from the ends (from the picked face's own
+/// outline where a pick is a plane), an arrow at each end pointing out, the text at
 /// its middle; text moved past an end has the line run on under it.
 fn layout_length(
     annotation: &Annotation,
@@ -1477,20 +1659,44 @@ fn layout_length(
     };
     let x = along.unwrap_or_else(|| across(normal));
     let y = cross(normal, x);
-    let (above, below) = extent_across(around.extent, p, y);
+    // The line's side: the one set, else the one a view's eye is on, else
+    // where the bodies reach less far.
+    let side = match annotation.line_offset {
+        Some(offset) if offset < 0.0 => -1.0,
+        Some(_) => 1.0,
+        None => preferred_side(p, y, around),
+    };
+    // An offset of two planes picked: its ends slide within both faces to
+    // their edge on the line's side and to their far edge along the
+    // plane's normal (away from the eye), so that the dimension stands
+    // outside the part with its extension lines from the faces' edges
+    // (mitcad#902).
+    let [p, q] = slid_ends([p, q], normal, y, side, around);
     let offset = annotation
         .line_offset
-        .unwrap_or_else(|| automatic_offset(normal, [p, q], x, y, around));
+        .unwrap_or_else(|| automatic_offset(normal, [p, q], x, y, side, around));
     let a = add_scaled(p, y, offset);
     let b = add_scaled(q, y, offset);
-    // A plane picked: its extension line leaves the body at its outline on
-    // the line's side, not across it.
-    let start = |point: Vec3, plane: bool| {
-        if !plane || around.extent.is_empty() {
+    // A plane picked: its extension line leaves the face picked at that
+    // face's own outline on the line's side, not across the face, and
+    // never from the edge of the bodies' box in mid-air (mitcad#902); an
+    // edge or a vertex from its point. The application leaves a small gap
+    // there.
+    let start = |point: Vec3, plane: bool, outline: &[Vec3]| {
+        if !plane || outline.is_empty() {
             return point;
         }
-        let edge = if offset >= 0.0 { above } else { -below };
-        add_scaled(point, y, edge.clamp(offset.min(0.0), offset.max(0.0)))
+        let reach = outline
+            .iter()
+            .map(|corner| dot(sub(*corner, point), y))
+            .fold(0.0f64, |far, s| {
+                if offset >= 0.0 {
+                    far.max(s)
+                } else {
+                    far.min(s)
+                }
+            });
+        add_scaled(point, y, reach.clamp(offset.min(0.0), offset.max(0.0)))
     };
     let middle = scale(add(a, b), 0.5);
     let [u, v] = annotation.text_offset.unwrap_or([0.0, 0.0]);
@@ -1507,8 +1713,8 @@ fn layout_length(
         line_offset: offset,
         text_offset: [u, v],
         extension_lines: vec![
-            [start(p, around.planes[0]), a],
-            [start(q, around.planes[1]), b],
+            [start(p, around.planes[0], around.outlines[0]), a],
+            [start(q, around.planes[1], around.outlines[1]), b],
         ],
         dimension_lines,
         arcs: Vec::new(),
@@ -1516,38 +1722,63 @@ fn layout_length(
         center: None,
         text: [add_scaled(foot, y, v), x, y],
         text_height: 0.0,
+        text_box: None,
     }
 }
 
 /// A radius or a diameter in its circle's plane: the line from the centre
 /// (a radius) or across the circle (a diameter) towards the text, which
-/// stands one and a half radii out unless moved, with an arrow on the rim
+/// stands one and a half radii out, and at least [`CIRCLE_SHARE`] text
+/// heights `h` past the rim, unless moved, with an arrow on the rim
 /// pointing out (both rims for a diameter) and the line run on to the text
 /// outside the circle.
-fn layout_circle(annotation: &Annotation, center: Vec3, axis: Vec3, radius: f64) -> Drawing {
+fn layout_circle(
+    annotation: &Annotation,
+    center: Vec3,
+    axis: Vec3,
+    radius: f64,
+    around: &Around<'_>,
+) -> Drawing {
+    let h = around.height;
     let normal = unit(axis).unwrap_or(Z);
+    let center = shown_centre(center, normal, around);
     let u0 = across(normal);
     let w = cross(normal, u0);
     let [u, v] = annotation.text_offset.unwrap_or([0.0, 0.0]);
-    let text_at = add_scaled(
-        add_scaled(add_scaled(center, u0, CIRCLE_TEXT * radius), u0, u),
-        w,
-        v,
-    );
+    // Its text away from the bodies' middle, out of the part (mitcad#902):
+    // a diameter's past their extent, on a leader from outside.
+    let outward = extent_centre(around.extent)
+        .and_then(|c| square_to(sub(center, c), normal))
+        .unwrap_or(u0);
+    let diameter = annotation.kind == MeasureKind::Diameter;
+    let past = around
+        .extent
+        .iter()
+        .map(|c| dot(sub(*c, center), outward))
+        .fold(0.0f64, f64::max)
+        + LEADER_CLEAR * h;
+    let out = if diameter {
+        past.max(radius + CIRCLE_SHARE * h)
+    } else {
+        (CIRCLE_TEXT * radius).max(radius + CIRCLE_SHARE * h)
+    };
+    let text_at = add_scaled(add_scaled(add_scaled(center, outward, out), u0, u), w, v);
     let toward = sub(text_at, center);
     let x = square_to(toward, normal).unwrap_or(u0);
     let rim = add_scaled(center, x, radius);
     let mut dimension_lines = Vec::new();
-    let mut arrows = vec![[rim, x]];
-    if annotation.kind == MeasureKind::Diameter {
-        let opposite = add_scaled(center, x, -radius);
-        dimension_lines.push([opposite, rim]);
-        arrows.push([opposite, scale(x, -1.0)]);
+    let arrows;
+    if diameter {
+        // ISO 129-1's leader to a circle: an arrow on the rim pointing at
+        // the centre, nothing across the face.
+        arrows = vec![[rim, scale(x, -1.0)]];
+        dimension_lines.push([text_at, rim]);
     } else {
+        arrows = vec![[rim, x]];
         dimension_lines.push([center, rim]);
-    }
-    if norm(toward) > radius {
-        dimension_lines.push([rim, text_at]);
+        if norm(toward) > radius {
+            dimension_lines.push([rim, text_at]);
+        }
     }
     let y = cross(normal, x);
     Drawing {
@@ -1561,10 +1792,68 @@ fn layout_circle(annotation: &Annotation, center: Vec3, axis: Vec3, radius: f64)
         dimension_lines,
         arcs: Vec::new(),
         arrows,
-        center: Some(center),
+        // A radius' centre mark; a diameter's leader has none.
+        center: (!diameter).then_some(center),
         text: [text_at, x, y],
         text_height: 0.0,
+        text_box: None,
     }
+}
+
+/// A round face picked: its circle's centre at the face's end towards the
+/// default view's eye, where its rim shows (mitcad#902).
+fn shown_centre(center: Vec3, normal: Vec3, around: &Around<'_>) -> Vec3 {
+    if around.outlines[0].is_empty() {
+        return center;
+    }
+    let along = around.outlines[0].iter().map(|c| dot(*c, normal));
+    let end = if dot(normal, ISO_EYE) >= 0.0 {
+        along.fold(f64::NEG_INFINITY, f64::max)
+    } else {
+        along.fold(f64::INFINITY, f64::min)
+    };
+    add_scaled(center, normal, end - dot(center, normal))
+}
+
+/// Whether an annotation is drawn as a leader with its text on a landing:
+/// a note, a datum label, a frame, a hole callout, and a diameter given a
+/// plane of its own (one added in a view, mitcad#902: ISO 129-1's leader
+/// to a circle, its text level in that plane).
+fn drawn_as_leader(annotation: &Annotation, plane: Option<Vec3>) -> bool {
+    annotation.kind.is_leader() || (annotation.kind == MeasureKind::Diameter && plane.is_some())
+}
+
+/// A diameter in a plane of its own (mitcad#902): a leader from outside to
+/// its circle's rim, at the rim's point that lies out from the bodies'
+/// middle as seen in that plane, its arrow on the rim, its text on a
+/// landing as a note's ([`layout_note`]); no centre mark.
+fn layout_diameter_leader(
+    annotation: &Annotation,
+    center: Vec3,
+    axis: Vec3,
+    radius: f64,
+    plane: Vec3,
+    x: Option<Vec3>,
+    around: &Around<'_>,
+) -> Drawing {
+    let axis = unit(axis).unwrap_or(Z);
+    let center = shown_centre(center, axis, around);
+    let x = x
+        .and_then(|x| square_to(x, plane))
+        .or_else(|| square_to(X, plane))
+        .unwrap_or(Y);
+    let y = cross(plane, x);
+    let out = extent_centre(around.extent)
+        .map(|c| sub(center, c))
+        .unwrap_or(y);
+    let seen = add(scale(x, dot(out, x)), scale(y, dot(out, y)));
+    let radial = square_to(seen, axis)
+        .or_else(|| square_to(y, axis))
+        .unwrap_or_else(|| across(axis));
+    let rim = add_scaled(center, radial, radius);
+    let mut drawing = layout_note(annotation, rim, Some(plane), Some(x), Some(radial), around);
+    drawing.line_offset = radius;
+    drawing
 }
 
 /// The normal of a length's plane when none is given (mitcad#894): the
@@ -1621,9 +1910,13 @@ fn viewed_normal(along: Vec3, faces: &[Vec3], toward: Vec3, up: Option<Vec3>) ->
         }
         best
     };
-    let facing = pick(&|n: Vec3| dot(n, toward).abs());
+    // As facing (an isometric view sees a box's faces alike): the one most
+    // along the view's up, a horizontal plane under a view with Z up, as a
+    // drawing lays its lengths (mitcad#902).
+    let facing =
+        pick(&|n: Vec3| dot(n, toward).abs() + 1e-3 * up.map_or(0.0, |up| dot(n, up).abs()));
     let chosen = match facing {
-        Some((value, normal)) if value >= SQUARE => normal,
+        Some((_, normal)) if dot(normal, toward).abs() >= SQUARE => normal,
         _ => match up.and_then(|up| pick(&|n: Vec3| dot(n, up).abs())) {
             Some((_, normal)) => normal,
             None => return square_to(toward, along).unwrap_or(toward),
@@ -1638,6 +1931,23 @@ fn viewed_normal(along: Vec3, faces: &[Vec3], toward: Vec3, up: Option<Vec3>) ->
     if flip { scale(chosen, -1.0) } else { chosen }
 }
 
+/// The middle of the bodies' extent (the corners of their boxes); none
+/// without a body.
+fn extent_centre(extent: &[Vec3]) -> Option<Vec3> {
+    if extent.is_empty() {
+        return None;
+    }
+    let mut low = [f64::INFINITY; 3];
+    let mut high = [f64::NEG_INFINITY; 3];
+    for corner in extent {
+        for ((l, h), c) in low.iter_mut().zip(high.iter_mut()).zip(corner) {
+            *l = l.min(*c);
+            *h = h.max(*c);
+        }
+    }
+    Some(scale(add(low, high), 0.5))
+}
+
 /// How far the bodies' extent reaches from `p` along `y` either way (both
 /// at least 0): the farthest corner on each side.
 fn extent_across(extent: &[Vec3], p: Vec3, y: Vec3) -> (f64, f64) {
@@ -1649,28 +1959,84 @@ fn extent_across(extent: &[Vec3], p: Vec3, y: Vec3) -> (f64, f64) {
         })
 }
 
-/// A length's dimension line placed automatically (mitcad#894), signed
-/// along `y` from its ends: on the side its bodies reach less far past the
-/// ends (the side `prefer`red, else `y`'s, when as far), [`CLEAR_SHARE`]
-/// text heights past their extent; without a body a quarter of the length,
-/// at least 1 mm; then [`stacked`] outside parallel lines there.
-fn automatic_offset(normal: Vec3, [p, q]: [Vec3; 2], x: Vec3, y: Vec3, around: &Around<'_>) -> f64 {
-    let prefer = match around.prefer {
-        Some(up) if dot(y, up) < -1e-9 => -1.0,
-        _ => 1.0,
+/// The side of a length's automatic dimension line along `y` (+1 or -1):
+/// the one towards the eye of the view it was added in (`prefer`; a line
+/// in front of the part stands outside it on the picture, mitcad#902), else
+/// the side its bodies reach less far past its ends, else `y`'s.
+fn preferred_side(p: Vec3, y: Vec3, around: &Around<'_>) -> f64 {
+    if let Some(toward) = around.prefer {
+        let s = dot(y, toward);
+        if s.abs() > 1e-6 {
+            return if s < 0.0 { -1.0 } else { 1.0 };
+        }
+    }
+    let (above, below) = extent_across(around.extent, p, y);
+    if around.extent.is_empty() || (above - below).abs() <= 1e-9 || above < below {
+        1.0
+    } else {
+        -1.0
+    }
+}
+
+/// The ends of a length between two planes picked, slid together within
+/// both faces' outlines (the corners of their boxes): along `y` to their
+/// common edge on `side`, along the plane's `normal` to their common far
+/// edge (the plane faces the eye: away from it). Unchanged for other picks,
+/// or where the faces share no edge that way.
+fn slid_ends(
+    [p, q]: [Vec3; 2],
+    normal: Vec3,
+    y: Vec3,
+    side: f64,
+    around: &Around<'_>,
+) -> [Vec3; 2] {
+    let [a, b] = around.outlines;
+    if !(around.planes[0] && around.planes[1]) || a.is_empty() || b.is_empty() {
+        return [p, q];
+    }
+    let range = |outline: &[Vec3], d: Vec3| {
+        outline
+            .iter()
+            .map(|c| dot(*c, d))
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), t| {
+                (lo.min(t), hi.max(t))
+            })
     };
+    // Where both faces are, along a direction: none when they do not
+    // overlap.
+    let common = |d: Vec3| {
+        let ((alo, ahi), (blo, bhi)) = (range(a, d), range(b, d));
+        let (lo, hi) = (alo.max(blo), ahi.min(bhi));
+        (lo <= hi + 1e-9).then_some((lo, hi))
+    };
+    let mut shift = [0.0; 3];
+    if let Some((lo, hi)) = common(y) {
+        let level = if side > 0.0 { hi } else { lo };
+        shift = add_scaled(shift, y, level - dot(p, y));
+    }
+    if let Some((lo, _)) = common(normal) {
+        shift = add_scaled(shift, normal, lo - dot(p, normal));
+    }
+    [add(p, shift), add(q, shift)]
+}
+
+/// A length's dimension line placed automatically (mitcad#894), signed
+/// along `y` from its ends: on `side`, [`CLEAR_SHARE`] text heights past
+/// its bodies' extent; without a body a quarter of the length, at least 1
+/// mm; then [`stacked`] outside parallel lines there.
+fn automatic_offset(
+    normal: Vec3,
+    [p, q]: [Vec3; 2],
+    x: Vec3,
+    y: Vec3,
+    side: f64,
+    around: &Around<'_>,
+) -> f64 {
     let base = if around.extent.is_empty() {
-        prefer * (LINE_SHARE * distance(p, q)).max(1.0)
+        side * (LINE_SHARE * distance(p, q)).max(1.0)
     } else {
         let (above, below) = extent_across(around.extent, p, y);
         let clear = CLEAR_SHARE * around.height;
-        let side = if (above - below).abs() <= 1e-9 {
-            prefer
-        } else if above < below {
-            1.0
-        } else {
-            -1.0
-        };
         if side > 0.0 {
             above + clear
         } else {
@@ -1719,18 +2085,21 @@ fn stacked(
 
 /// An angle in the plane of its rays: an arc about the corner from the
 /// first ray to the second, `line_offset` out (half the distance to the
-/// nearer pick, else 10 mm, when not set), the rays from the corner to it
-/// as extension lines, an arrow at each end of the arc pointing out along
-/// it, the text on the arc's middle running along it. Parallel picks have
-/// no sector: the text at the corner.
+/// nearer pick, else [`ARC_SHARE`] text heights `h`, when not set), the
+/// rays from the corner to it as extension lines, an arrow at each end of
+/// the arc pointing out along it, the text on the arc's middle running
+/// along it. Parallel picks have no sector: the text at the corner.
 fn layout_angle(
     annotation: &Annotation,
     center: Vec3,
     from: Vec3,
     to: Vec3,
     reach: Option<f64>,
+    h: f64,
 ) -> Drawing {
-    let radius = annotation.line_offset.unwrap_or(reach.unwrap_or(ARC_MM));
+    let radius = annotation
+        .line_offset
+        .unwrap_or_else(|| reach.unwrap_or(ARC_SHARE * h));
     let [u, v] = annotation.text_offset.unwrap_or([0.0, 0.0]);
     let sector = unit(from).zip(unit(to)).and_then(|(f, t)| {
         let angle = dot(f, t).clamp(-1.0, 1.0).acos();
@@ -1757,6 +2126,7 @@ fn layout_angle(
             center: None,
             text: [add_scaled(add_scaled(center, x, u), y, v), x, y],
             text_height: 0.0,
+            text_box: None,
         };
     };
     let normal = cross(f, w);
@@ -1795,20 +2165,25 @@ fn layout_angle(
         center: None,
         text: [text_at, along, middle],
         text_height: 0.0,
+        text_box: None,
     }
 }
 
-/// A note: the leader from the text to its point with an arrow there, in
-/// the plane square to the normal (the plane picked or kept, else its
-/// pick's face, else XY), the text `text_offset` from the point along and
-/// across (10 mm each when not set), running along `x` (the direction
-/// kept, else X or Y in the plane).
+/// A note (a datum label, a frame, a hole callout): the leader from the
+/// text to its point with an arrow there, in the plane square to the
+/// normal (the plane picked or kept, else its pick's face, else XY), the
+/// text `text_offset` from the point along and across ([`NOTE_SHARE`] text
+/// heights `h` when not set), running along `x` (the direction kept, else
+/// X or Y in the plane).
 fn layout_note(
     annotation: &Annotation,
-    anchor: Vec3,
+    mut anchor: Vec3,
     normal: Option<Vec3>,
     x: Option<Vec3>,
+    surface: Option<Vec3>,
+    around: &Around<'_>,
 ) -> Drawing {
+    let h = around.height;
     let normal = normal.unwrap_or(Z);
     let x = x
         .and_then(|x| square_to(x, normal))
@@ -1816,24 +2191,404 @@ fn layout_note(
         .or_else(|| square_to(Y, normal))
         .unwrap_or(X);
     let y = cross(normal, x);
-    let [u, v] = annotation.text_offset.unwrap_or([NOTE_MM, NOTE_MM]);
-    let text_at = add_scaled(add_scaled(anchor, x, u), y, v);
-    let pointing = unit(sub(anchor, text_at)).unwrap_or_else(|| scale(y, -1.0));
+    let landing = LANDING_SHARE * h;
+    let in_plane = |p: Vec3| [dot(p, x), dot(p, y)];
+    // A datum label (ISO 5459) stands on a short stem square to its surface,
+    // its letter's square centred past the stem's end (mitcad#902); on a
+    // planar face, its triangle on the face's outline where the stem
+    // leaves it, the stem square to that outline in the label's plane.
+    let stem = (annotation.kind == MeasureKind::Datum && annotation.text_offset.is_none())
+        .then(|| surface.and_then(|s| square_to(s, normal)))
+        .flatten()
+        .map(|s| {
+            match surface.and_then(|face| outline_exit(anchor, s, face, around.outlines[0], x, y)) {
+                Some((foot, out)) => {
+                    anchor = foot;
+                    out
+                }
+                None => s,
+            }
+        });
+    let (mut text_at, mut knee) = match (annotation.text_offset, extent_centre(around.extent)) {
+        (Some([u, v]), _) => {
+            let text_at = add_scaled(add_scaled(anchor, x, u), y, v);
+            let side = if u < 0.0 { -1.0 } else { 1.0 };
+            let knee = if annotation.kind == MeasureKind::Datum {
+                text_at
+            } else {
+                add_scaled(text_at, x, -side * landing)
+            };
+            (text_at, knee)
+        }
+        (None, _) if stem.is_some() => {
+            let s = stem.unwrap_or(y);
+            let knee = add_scaled(anchor, s, DATUM_STEM * h);
+            // The square's middle where its side (half of it h away) meets
+            // the stem's end.
+            let reach = h / dot(s, x).abs().max(dot(s, y).abs()).max(0.5);
+            (add_scaled(knee, s, reach), knee)
+        }
+        (None, Some(middle)) => {
+            // The shortest way out of the part (mitcad#902): of the
+            // directions up and out to either side (and down and out, the
+            // lengths' side, less wanted), the one that leaves the bodies' extent soonest
+            // without crossing a leader or a text laid out before it; its
+            // own side first.
+            let own = if dot(sub(anchor, middle), x) < 0.0 {
+                -1.0
+            } else {
+                1.0
+            };
+            // Oblique only, as a drawing's leaders (mitcad#902): never along
+            // the text, which would read as a dimension line, nor straight
+            // up.
+            let mut best: Option<(f64, Vec3)> = None;
+            for (sx, sy, cost) in [
+                (own, 1.0, 0.0),
+                (0.5 * own, 1.0, 0.3),
+                (-own, 1.0, 1.0),
+                (-0.5 * own, 1.0, 1.3),
+                (own, -1.0, 3.0),
+                (-own, -1.0, 4.0),
+            ] {
+                let Some(out) = unit(add(scale(x, sx), scale(y, sy))) else {
+                    continue;
+                };
+                let reach = around
+                    .extent
+                    .iter()
+                    .map(|c| dot(sub(*c, anchor), out))
+                    .fold(0.0f64, f64::max)
+                    + LEADER_CLEAR * h;
+                let knee = add_scaled(anchor, out, reach);
+                let leader = [in_plane(anchor), in_plane(knee)];
+                let crossings = around
+                    .boxes
+                    .iter()
+                    .filter(|b| parallel_boxes(b, normal, x))
+                    .filter(|b| crosses(leader, b.leader) || crosses_rect(leader, b.low, b.high))
+                    .count();
+                let score = reach + (cost + 20.0 * crossings as f64) * h;
+                if best.is_none_or(|(b, _)| score < b - 1e-9) {
+                    best = Some((score, out));
+                }
+            }
+            let out = best.map_or(y, |(_, out)| out);
+            let reach = around
+                .extent
+                .iter()
+                .map(|c| dot(sub(*c, anchor), out))
+                .fold(0.0f64, f64::max)
+                + LEADER_CLEAR * h;
+            let knee = add_scaled(anchor, out, reach);
+            let side = if dot(out, x) < 0.0 { -1.0 } else { 1.0 };
+            (add_scaled(knee, x, side * landing), knee)
+        }
+        (None, None) => {
+            let text_at = add_scaled(
+                add_scaled(anchor, x, NOTE_SHARE[0] * h),
+                y,
+                NOTE_SHARE[1] * h,
+            );
+            (text_at, add_scaled(text_at, x, -landing))
+        }
+    };
+    // Its text's place: the text runs away from the knee (a datum's square
+    // centred). Placed automatically, it moves on past the leaders' texts
+    // laid out before it in a parallel plane that it would overlap.
+    let centred = stem.is_some();
+    let side = if dot(sub(text_at, knee), x) < 0.0 {
+        -1.0
+    } else {
+        1.0
+    };
+    let text_box = around.text_size.map(|[width, height]| {
+        // A note's first line level with the landing, the rest below it;
+        // a datum's square centred.
+        let hang = if centred { height / 2.0 } else { 0.8 * h };
+        let rect = |at: Vec3, knee: Vec3| {
+            let mut placed = text_rect(
+                at,
+                x,
+                y,
+                if centred { 0.0 } else { side },
+                [width, height, hang],
+                normal,
+            );
+            placed.leader = [in_plane(anchor), in_plane(knee)];
+            placed
+        };
+        let mut placed = rect(text_at, knee);
+        if annotation.text_offset.is_none() && !around.extent.is_empty() {
+            let margin = 0.5 * h;
+            // Up, or along a datum's stem.
+            let away = stem.unwrap_or(y);
+            for _ in 0..around.boxes.len() + 1 {
+                let Some(push) =
+                    around
+                        .boxes
+                        .iter()
+                        .filter(|b| overlap(b, &placed, margin))
+                        .map(|b| {
+                            // How far along `away` it moves to clear that box.
+                            let a = in_plane(away);
+                            let need = |lo: f64, hi: f64, own_lo: f64, own_hi: f64, d: f64| {
+                                if d > 1e-9 {
+                                    (hi + margin - own_lo) / d
+                                } else if d < -1e-9 {
+                                    (lo - margin - own_hi) / d
+                                } else {
+                                    f64::INFINITY
+                                }
+                            };
+                            need(b.low[0], b.high[0], placed.low[0], placed.high[0], a[0]).min(
+                                need(b.low[1], b.high[1], placed.low[1], placed.high[1], a[1]),
+                            )
+                        })
+                        .filter(|d| d.is_finite())
+                        .reduce(f64::max)
+                else {
+                    break;
+                };
+                text_at = add_scaled(text_at, away, push);
+                knee = add_scaled(knee, away, push);
+                placed = rect(text_at, knee);
+            }
+            // Nor on a length's dimension line laid out before it, as seen
+            // in its plane: on past it, half a text height at a time.
+            let low = |b: &TextBox| [b.low[0] - margin, b.low[1] - margin];
+            let high = |b: &TextBox| [b.high[0] + margin, b.high[1] + margin];
+            for _ in 0..40 {
+                let on_line = around.taken.iter().any(|t| {
+                    crosses_rect(
+                        [in_plane(t.from), in_plane(t.to)],
+                        low(&placed),
+                        high(&placed),
+                    )
+                });
+                if !on_line {
+                    break;
+                }
+                text_at = add_scaled(text_at, away, 0.5 * h);
+                knee = add_scaled(knee, away, 0.5 * h);
+                placed = rect(text_at, knee);
+            }
+        }
+        placed
+    });
+    let pointing = unit(sub(anchor, knee))
+        .or_else(|| unit(sub(anchor, text_at)))
+        .unwrap_or_else(|| scale(y, -1.0));
+    let offset = sub(text_at, anchor);
+    // A datum's stem alone (its square stands at the stem's end).
+    let dimension_lines = if knee == text_at || centred {
+        vec![[knee, anchor]]
+    } else {
+        // The leader to the point first, then the landing.
+        vec![[knee, anchor], [text_at, knee]]
+    };
     Drawing {
         origin: anchor,
         x,
         y,
         normal,
         line_offset: 0.0,
-        text_offset: [u, v],
+        text_offset: [dot(offset, x) + 0.0, dot(offset, y) + 0.0],
         extension_lines: Vec::new(),
-        dimension_lines: vec![[text_at, anchor]],
+        dimension_lines,
         arcs: Vec::new(),
         arrows: vec![[anchor, pointing]],
         center: None,
         text: [text_at, x, y],
         text_height: 0.0,
+        text_box,
     }
+}
+
+/// Where a datum label's stem leaves a planar face (mitcad#902): from
+/// `anchor` along `s` (in the label's plane of axes `x`, `y`), the point on
+/// the face's outline (the convex outline of its box's corners seen in that
+/// plane) where it goes out, and the stem's direction there, square to that
+/// outline in the plane and outward; none when the face (of normal `face`)
+/// is not planar or not seen.
+fn outline_exit(
+    anchor: Vec3,
+    s: Vec3,
+    face: Vec3,
+    outline: &[Vec3],
+    x: Vec3,
+    y: Vec3,
+) -> Option<(Vec3, Vec3)> {
+    let face = unit(face)?;
+    let size = outline
+        .iter()
+        .map(|c| distance(*c, anchor))
+        .fold(0.0f64, f64::max);
+    // Planar: every corner in the face's plane through the anchor.
+    if outline.len() < 3
+        || size <= 0.0
+        || outline
+            .iter()
+            .any(|c| dot(sub(*c, anchor), face).abs() > 1e-6 * size.max(1.0))
+    {
+        return None;
+    }
+    let flat = |p: Vec3| [dot(sub(p, anchor), x), dot(sub(p, anchor), y)];
+    let mut points: Vec<([f64; 2], usize)> = outline
+        .iter()
+        .enumerate()
+        .map(|(i, c)| (flat(*c), i))
+        .collect();
+    points.sort_by(|a, b| a.0[0].total_cmp(&b.0[0]).then(a.0[1].total_cmp(&b.0[1])));
+    let turn = |o: [f64; 2], a: [f64; 2], b: [f64; 2]| {
+        (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    };
+    // The convex outline (Andrew's monotone chain).
+    let mut hull: Vec<([f64; 2], usize)> = Vec::new();
+    for pass in 0..2 {
+        let start = hull.len();
+        let ordered: Vec<_> = if pass == 0 {
+            points.clone()
+        } else {
+            points.iter().rev().copied().collect()
+        };
+        for p in ordered {
+            while hull.len() >= start + 2
+                && turn(hull[hull.len() - 2].0, hull[hull.len() - 1].0, p.0) <= 1e-12 * size * size
+            {
+                hull.pop();
+            }
+            hull.push(p);
+        }
+        hull.pop();
+    }
+    if hull.len() < 3 {
+        return None;
+    }
+    let d = [dot(s, x), dot(s, y)];
+    let mut best: Option<(f64, usize, f64)> = None;
+    for i in 0..hull.len() {
+        let (a, b) = (hull[i].0, hull[(i + 1) % hull.len()].0);
+        let e = [b[0] - a[0], b[1] - a[1]];
+        let det = e[0] * d[1] - d[0] * e[1];
+        if det.abs() < 1e-12 {
+            continue;
+        }
+        let t = (e[0] * a[1] - a[0] * e[1]) / det;
+        let u = (d[0] * a[1] - d[1] * a[0]) / det;
+        if t > -1e-9 && (-1e-9..=1.0 + 1e-9).contains(&u) && best.is_none_or(|(bt, _, _)| t > bt) {
+            best = Some((t, i, u.clamp(0.0, 1.0)));
+        }
+    }
+    let (_, i, u) = best?;
+    let (a, b) = (hull[i], hull[(i + 1) % hull.len()]);
+    let e = [b.0[0] - a.0[0], b.0[1] - a.0[1]];
+    let length = e[0].hypot(e[1]);
+    if length <= 0.0 {
+        return None;
+    }
+    let mut n = [-e[1] / length, e[0] / length];
+    if n[0] * d[0] + n[1] * d[1] < 0.0 {
+        n = [-n[0], -n[1]];
+    }
+    let on = add_scaled(outline[a.1], sub(outline[b.1], outline[a.1]), u);
+    let foot = add_scaled(on, face, -dot(sub(on, anchor), face));
+    Some((foot, add(scale(x, n[0]), scale(y, n[1]))))
+}
+
+/// Whether a text box lies in a plane parallel to one of this normal and
+/// `x`.
+fn parallel_boxes(b: &TextBox, normal: Vec3, x: Vec3) -> bool {
+    dot(b.normal, normal).abs() > 1.0 - SQUARE && dot(b.x, x) > 1.0 - SQUARE
+}
+
+/// Whether two segments (in a plane's coordinates) cross, not only touch.
+fn crosses(a: [[f64; 2]; 2], b: [[f64; 2]; 2]) -> bool {
+    let side = |p: [f64; 2], q: [f64; 2], r: [f64; 2]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    let (d1, d2) = (side(a[0], a[1], b[0]), side(a[0], a[1], b[1]));
+    let (d3, d4) = (side(b[0], b[1], a[0]), side(b[0], b[1], a[1]));
+    d1 * d2 < -1e-12 && d3 * d4 < -1e-12
+}
+
+/// Whether a segment runs through a rectangle.
+fn crosses_rect(a: [[f64; 2]; 2], low: [f64; 2], high: [f64; 2]) -> bool {
+    let inside = |p: [f64; 2]| p[0] > low[0] && p[0] < high[0] && p[1] > low[1] && p[1] < high[1];
+    let corners = [
+        [low[0], low[1]],
+        [high[0], low[1]],
+        [high[0], high[1]],
+        [low[0], high[1]],
+    ];
+    inside(a[0]) || inside(a[1]) || (0..4).any(|i| crosses(a, [corners[i], corners[(i + 1) % 4]]))
+}
+
+/// The rectangle a leader's text takes in its plane: `width` along `x`
+/// from `at` (back from it for `side` -1, centred on it for 0), `height`
+/// down from `hang` above it.
+fn text_rect(
+    at: Vec3,
+    x: Vec3,
+    y: Vec3,
+    side: f64,
+    [width, height, hang]: [f64; 3],
+    normal: Vec3,
+) -> TextBox {
+    let (u, v) = (dot(at, x), dot(at, y));
+    let (left, right) = if side < 0.0 {
+        (u - width, u)
+    } else if side > 0.0 {
+        (u, u + width)
+    } else {
+        (u - width / 2.0, u + width / 2.0)
+    };
+    TextBox {
+        normal,
+        x,
+        low: [left, v + hang - height],
+        high: [right, v + hang],
+        leader: [[u, v], [u, v]],
+    }
+}
+
+/// Whether two leaders' texts in parallel planes overlap, `margin` apart at
+/// least.
+fn overlap(a: &TextBox, b: &TextBox, margin: f64) -> bool {
+    let parallel = parallel_boxes(a, b.normal, b.x);
+    parallel
+        && a.low[0] < b.high[0] + margin
+        && b.low[0] < a.high[0] + margin
+        && a.low[1] < b.high[1] + margin
+        && b.low[1] < a.high[1] + margin
+}
+
+/// The size (mm: width, height) of a leader's text by its label's words in
+/// text heights `h` (ISO 3098 type B's narrow letters, a frame's cells two
+/// heights high), with the frames under it (`under`).
+fn leader_text_size(label: &Value, h: f64, under: usize) -> [f64; 2] {
+    let chars = |t: &str| t.chars().count() as f64;
+    let (width, height) = if let Some(lines) = label["lines"].as_array() {
+        let widest = lines
+            .iter()
+            .map(|l| chars(l.as_str().unwrap_or("")))
+            .fold(0.0f64, f64::max);
+        (widest * 0.75 * h, lines.len().max(1) as f64 * 1.6 * h)
+    } else if let Some(cells) = label["frame"].as_array() {
+        let width = cells
+            .iter()
+            .map(|c| (chars(c.as_str().unwrap_or("")) * 0.75 * h + h).max(2.0 * h))
+            .sum::<f64>();
+        (width, 2.0 * h)
+    } else {
+        (2.0 * h, 2.0 * h)
+    };
+    // Frames hang below the lines.
+    let frames = under as f64;
+    [
+        width.max(if under > 0 { 12.0 * h } else { 0.0 }),
+        height + frames * 2.25 * h,
+    ]
 }
 
 /// A number with `decimals` decimals, or up to `most` without trailing
@@ -2395,8 +3150,9 @@ mod tests {
 
     #[test]
     fn circles_angles_and_notes_are_laid_out_in_their_planes() {
-        // A diameter of 10 about Z through (5, 5, 0): across the circle
-        // along X (`across` of Z), the text one and a half radii out.
+        // A diameter of 10 about Z through (5, 5, 0): along X (`across` of
+        // Z), its text at least three text heights past the rim (mitcad#902:
+        // 5 + 10.5), on a leader from outside.
         let d = dimension(MeasureKind::Diameter);
         let circle = Shape::Circle {
             center: [5.0, 5.0, 0.0],
@@ -2406,17 +3162,33 @@ mod tests {
         let drawing = layout(&d, &circle, None, None, &Around::bare(3.5));
         let x = across(Z);
         near_point(drawing.x, x);
-        near_point(drawing.text[0], add_scaled([5.0, 5.0, 0.0], x, 7.5));
+        near_point(drawing.text[0], add_scaled([5.0, 5.0, 0.0], x, 15.5));
+        // A large circle: three text heights past its rim too.
+        let large = Shape::Circle {
+            center: [0.0, 0.0, 0.0],
+            axis: Z,
+            radius: 40.0,
+        };
         near_point(
-            drawing.dimension_lines[0][0],
-            add_scaled([5.0, 5.0, 0.0], x, -5.0),
+            layout(&d, &large, None, None, &Around::bare(3.5)).text[0],
+            add_scaled([0.0; 3], x, 50.5),
         );
-        assert_eq!(drawing.arrows.len(), 2);
-        assert_eq!(drawing.center, Some([5.0, 5.0, 0.0]));
-        assert_eq!(drawing.dimension_lines.len(), 2, "run on to the text");
+        // ISO 129-1's leader to a circle: from the text to the rim, its
+        // arrow there pointing at the centre; nothing across the face, no
+        // centre mark.
+        assert_eq!(
+            drawing.dimension_lines,
+            vec![[
+                add_scaled([5.0, 5.0, 0.0], x, 15.5),
+                add_scaled([5.0, 5.0, 0.0], x, 5.0)
+            ]]
+        );
+        assert_eq!(drawing.arrows.len(), 1);
+        near_point(drawing.arrows[0][1], scale(x, -1.0));
+        assert_eq!(drawing.center, None);
         // A radius with its text dragged inside: one arrow, no run-on.
         let mut r = dimension(MeasureKind::Radius);
-        r.text_offset = Some([-5.0, 0.0]);
+        r.text_offset = Some([-12.0, 0.0]);
         let drawing = layout(&r, &circle, None, None, &Around::bare(3.5));
         assert_eq!(drawing.arrows.len(), 1);
         assert_eq!(drawing.dimension_lines.len(), 1);
@@ -2452,6 +3224,7 @@ mod tests {
         let shape = Shape::Note {
             anchor: [1.0, 2.0, 3.0],
             normal: Some(Z),
+            surface: Some(Z),
         };
         let drawing = layout(
             &note,
@@ -2462,10 +3235,28 @@ mod tests {
         );
         near_point(drawing.x, X);
         near_point(drawing.y, Z);
-        near_point(drawing.text[0], [11.0, 2.0, 13.0]);
+        // Four text heights along, three across (mitcad#902).
+        near_point(drawing.text[0], [15.0, 2.0, 13.5]);
         near_point(drawing.arrows[0][0], [1.0, 2.0, 3.0]);
-        let s = std::f64::consts::FRAC_1_SQRT_2;
-        near_point(drawing.arrows[0][1], [-s, 0.0, -s]);
+        // The leader to the point from the knee of its landing, a text
+        // height and a half before the text (mitcad#902).
+        near_point(drawing.dimension_lines[1][1], [9.75, 2.0, 13.5]);
+        near_point(drawing.dimension_lines[0][1], [1.0, 2.0, 3.0]);
+        near_point(drawing.arrows[0][1], unit([-8.75, 0.0, -10.5]).unwrap());
+        // Without a reach of its picks an angle's arc is five text heights
+        // out.
+        let mut free = dimension(MeasureKind::Angle);
+        free.line_offset = None;
+        let open = Shape::Arc {
+            center: [0.0, 0.0, 0.0],
+            from: X,
+            to: Y,
+            reach: None,
+        };
+        near(
+            layout(&free, &open, None, None, &Around::bare(2.0)).arcs[0].radius,
+            10.0,
+        );
         // Without a plane of its own: its face's.
         let drawing = layout(&note, &shape, None, None, &Around::bare(3.5));
         near_point(drawing.normal, Z);
@@ -2503,7 +3294,7 @@ mod tests {
     fn a_length_is_placed_outside_its_body_and_stacks_outside_parallel_ones() {
         // mitcad#894: the top front edge of the box, along X, in the box's
         // top plane (square to Z): the body lies on +Y of it, so the line
-        // goes to -Y, 1.5 text heights past the box's front.
+        // goes to -Y, 6 text heights past the box's front (mitcad#902).
         let d = dimension(MeasureKind::Distance);
         let corners = box_corners();
         let faces = [Z, [0.0, -1.0, 0.0]];
@@ -2513,20 +3304,23 @@ mod tests {
             extent: &corners,
             faces: &faces,
             planes: [false; 2],
+            outlines: [&[], &[]],
             taken: &[],
             prefer: None,
+            boxes: &[],
+            text_size: None,
         };
         let first = layout(&d, &Shape::Ends(ends), None, None, &around);
         near_point(first.normal, Z);
         near_point(first.y, Y);
-        near(first.line_offset, -3.75);
-        near_point(first.dimension_lines[0][0], [0.0, -3.75, 5.0]);
+        near(first.line_offset, -15.0);
+        near_point(first.dimension_lines[0][0], [0.0, -15.0, 5.0]);
         // Outside the box's extent in the plane, on the side away from it.
         for [from, to] in &first.dimension_lines {
             assert!(from[1] < 0.0 && to[1] < 0.0, "{first:?}");
         }
         near(first.text_height, 2.5);
-        // A second one along the same edge stacks 1.2 text heights further
+        // A second one along the same edge stacks 2.5 text heights further
         // out; one elsewhere along X does not.
         let taken = [Taken {
             normal: first.normal,
@@ -2540,11 +3334,11 @@ mod tests {
         };
         let half = [[0.0, 0.0, 5.0], [10.0, 0.0, 5.0]];
         let second = layout(&d, &Shape::Ends(half), None, None, &stacked_around);
-        near(second.line_offset, -6.75);
-        near_point(second.dimension_lines[0][1], [10.0, -6.75, 5.0]);
+        near(second.line_offset, -21.25);
+        near_point(second.dimension_lines[0][1], [10.0, -21.25, 5.0]);
         let apart = [[40.0, 0.0, 5.0], [50.0, 0.0, 5.0]];
         let elsewhere = layout(&d, &Shape::Ends(apart), None, None, &stacked_around);
-        near(elsewhere.line_offset, -3.75);
+        near(elsewhere.line_offset, -15.0);
         // A line set by hand keeps its place.
         let mut set = dimension(MeasureKind::Distance);
         set.line_offset = Some(4.0);
@@ -2557,28 +3351,144 @@ mod tests {
     #[test]
     fn an_offset_of_planes_leaves_the_body_at_its_outline() {
         // From the top to the bottom of the box through its middle: in the
-        // plane square to Y, the line 1.5 text heights past the box's side
+        // plane square to Y, the line 6 text heights past the box's side
         // (both sides as clear: +y, here -X), the extension lines from the
         // box's outline there.
         let d = dimension(MeasureKind::Offset);
         let corners = box_corners();
         let faces = [Z, [0.0, -1.0, 0.0], X];
         let ends = [[10.0, 5.0, 5.0], [10.0, 5.0, 0.0]];
+        // The top and bottom faces' own outlines: the box's top and bottom.
+        let top: Vec<Vec3> = corners.iter().copied().filter(|c| c[2] == 5.0).collect();
+        let bottom: Vec<Vec3> = corners.iter().copied().filter(|c| c[2] == 0.0).collect();
         let around = Around {
             height: 2.5,
             extent: &corners,
             faces: &faces,
             planes: [true, true],
+            outlines: [&top, &bottom],
             taken: &[],
             prefer: None,
+            boxes: &[],
+            text_size: None,
         };
         let drawing = layout(&d, &Shape::Ends(ends), None, None, &around);
         near_point(drawing.normal, Y);
         near_point(drawing.y, [-1.0, 0.0, 0.0]);
-        near(drawing.line_offset, 13.75);
-        near_point(drawing.extension_lines[0][0], [0.0, 5.0, 5.0]);
-        near_point(drawing.extension_lines[0][1], [-3.75, 5.0, 5.0]);
-        near_point(drawing.extension_lines[1][0], [0.0, 5.0, 0.0]);
+        // The ends slid within both faces to their edge on the line's side
+        // (x 0) and their far edge along the plane's normal (y 0,
+        // mitcad#902): the line 6 text heights past the box there, the
+        // extension lines from the faces' corners.
+        near(drawing.line_offset, 15.0);
+        near_point(drawing.extension_lines[0][0], [0.0, 0.0, 5.0]);
+        near_point(drawing.extension_lines[0][1], [-15.0, 0.0, 5.0]);
+        near_point(drawing.extension_lines[1][0], [0.0, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn extension_lines_start_at_the_picked_geometry_not_at_a_box() {
+        // mitcad#902: a boss's top face (x from 8 to 12) on the 20 x 10 x 5
+        // box, offset from the box's bottom: the boss's extension line
+        // leaves the boss's own outline (x = 8), not the box's edge in
+        // mid-air (x = 0); the bottom's leaves the bottom's outline.
+        let d = dimension(MeasureKind::Offset);
+        let corners = box_corners();
+        // The planes at the picks, as an offset of planes through the box's
+        // middle has them: the length's plane square to Y (the front's).
+        let faces = [Z, [0.0, -1.0, 0.0], X];
+        let boss: Vec<Vec3> = vec![[8.0, 4.0, 5.0], [12.0, 6.0, 5.0]];
+        let bottom: Vec<Vec3> = corners.iter().copied().filter(|c| c[2] == 0.0).collect();
+        let ends = [[10.0, 5.0, 5.0], [10.0, 5.0, 0.0]];
+        let around = Around {
+            height: 2.5,
+            extent: &corners,
+            faces: &faces,
+            planes: [true, true],
+            outlines: [&boss, &bottom],
+            taken: &[],
+            prefer: None,
+            boxes: &[],
+            text_size: None,
+        };
+        let drawing = layout(&d, &Shape::Ends(ends), None, None, &around);
+        near_point(drawing.y, [-1.0, 0.0, 0.0]);
+        // The ends slid to where both faces are (the boss's edge, y 4).
+        near_point(drawing.extension_lines[0][0], [8.0, 4.0, 5.0]);
+        near_point(drawing.extension_lines[1][0], [0.0, 4.0, 0.0]);
+        // An edge or a vertex (not a plane): from its point itself.
+        let edges = Around {
+            planes: [false, false],
+            ..around
+        };
+        let drawing = layout(&d, &Shape::Ends(ends), None, None, &edges);
+        near_point(drawing.extension_lines[0][0], ends[0]);
+        near_point(drawing.extension_lines[1][0], ends[1]);
+        // A plane whose outline is not known: from its point, never from
+        // the bodies' box.
+        let unknown = Around {
+            outlines: [&[], &[]],
+            ..around
+        };
+        let drawing = layout(&d, &Shape::Ends(ends), None, None, &unknown);
+        near_point(drawing.extension_lines[0][0], ends[0]);
+    }
+
+    #[test]
+    fn a_datum_stands_on_its_faces_outline_and_a_diameter_on_a_leader() {
+        // mitcad#902, the 20 x 10 x 5 box seen from the isometric view: the
+        // labels in the plane facing the eye, along the view's horizontal.
+        let corners = box_corners();
+        let front: Vec<Vec3> = corners.iter().copied().filter(|c| c[1] == 0.0).collect();
+        let eye = unit(ISO_EYE).unwrap();
+        let right = unit([1.0, 1.0, 0.0]).unwrap();
+        let around = Around {
+            height: 2.5,
+            extent: &corners,
+            faces: &[],
+            planes: [true, false],
+            outlines: [&front, &[]],
+            taken: &[],
+            prefer: None,
+            boxes: &[],
+            text_size: Some([5.0, 5.0]),
+        };
+        // A datum on the front face: its triangle on the face's outline
+        // where its stem leaves the face (the bottom edge), the stem square
+        // to that edge as seen, out of the face.
+        let datum = dimension(MeasureKind::Datum);
+        let on_front = Shape::Note {
+            anchor: [10.0, 0.0, 2.5],
+            normal: Some([0.0, -1.0, 0.0]),
+            surface: Some([0.0, -1.0, 0.0]),
+        };
+        let drawing = layout(&datum, &on_front, Some(eye), Some(right), &around);
+        let [tip, pointing] = drawing.arrows[0];
+        near(tip[1], 0.0);
+        near(tip[2], 0.0);
+        assert!(tip[0] > 0.0 && tip[0] < 20.0, "{tip:?}");
+        let seen_x = square_to(X, eye).unwrap();
+        near(dot(pointing, seen_x), 0.0);
+        let [knee, foot] = drawing.dimension_lines[0];
+        near_point(foot, tip);
+        assert!(dot(sub(knee, tip), [0.0, -1.0, 0.0]) > 0.0, "{knee:?}");
+        // A diameter with a plane of its own: a leader from outside to its
+        // rim with a landing, the arrow on the rim, no centre mark.
+        let dia = dimension(MeasureKind::Diameter);
+        let circle = Shape::Circle {
+            center: [15.0, 5.0, 5.0],
+            axis: Z,
+            radius: 2.0,
+        };
+        let drawing = layout(&dia, &circle, Some(eye), Some(right), &around);
+        assert!(drawing.center.is_none());
+        assert_eq!(drawing.dimension_lines.len(), 2);
+        let [rim, _] = drawing.arrows[0];
+        near(rim[2], 5.0);
+        near(distance(rim, [15.0, 5.0, 5.0]), 2.0);
+        near_point(drawing.normal, eye);
+        // Without a plane: in its circle's, as before.
+        let drawing = layout(&dia, &circle, None, None, &around);
+        near_point(drawing.normal, Z);
     }
 
     #[test]

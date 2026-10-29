@@ -688,6 +688,16 @@ std::map<QString, QRectF> SketchOverlay::constraintGlyphRects() const {
   return rects;
 }
 
+std::vector<QRectF> SketchOverlay::constraintGlyphBounds() const {
+  std::vector<QRectF> bounds;
+  if (m_c.showConstraints()) {
+    for (const Glyph& g : glyphs()) {
+      bounds.push_back(g.rect);
+    }
+  }
+  return bounds;
+}
+
 void SketchOverlay::logInactive() {
   if (!m_c.isActive()) {
     return;
@@ -792,6 +802,34 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
     }
   }
 
+  std::vector<QRectF> dimensionRects;
+  if (m_c.showDimensions()) {
+    for (const DimensionLayout& d : dimensions()) {
+      dimensionRects.push_back(d.textRect.adjusted(-3, -3, 3, 3));
+    }
+  }
+  const auto distanceToClear = [&dimensionRects](const QRectF& row, const QPointF& direction) {
+    double distance = 0;
+    // Along a fixed direction, each move leaves at least one text box
+    // behind. At most one move per box is needed, even in a dense sketch.
+    for (std::size_t pass = 0; pass <= dimensionRects.size(); ++pass) {
+      const QRectF at = row.translated(direction * distance);
+      double move = 0;
+      for (const QRectF& text : dimensionRects) {
+        if (!at.intersects(text)) continue;
+        double exit = std::numeric_limits<double>::infinity();
+        if (direction.x() > 1e-9) exit = std::min(exit, (text.right() - at.left()) / direction.x());
+        if (direction.x() < -1e-9) exit = std::min(exit, (text.left() - at.right()) / direction.x());
+        if (direction.y() > 1e-9) exit = std::min(exit, (text.bottom() - at.top()) / direction.y());
+        if (direction.y() < -1e-9) exit = std::min(exit, (text.top() - at.bottom()) / direction.y());
+        move = std::max(move, exit + 1.0);
+      }
+      if (move == 0) break;
+      distance += move;
+    }
+    return distance;
+  };
+  std::map<QString, QPointF> rowOffsets;
   std::map<QString, int> counts;
   for (const Glyph& g : all) {
     ++counts[g.entity];
@@ -802,6 +840,8 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
     const int index = placed[g.entity]++;
     const int count = counts[g.entity];
     QPointF center;
+    QPointF along(1.0, 0.0);
+    QPointF normal(0.0, -1.0);
     if (const auto p = model.pointAt(g.entity)) {
       center = m_c.toScreen(*p) + QPointF(12.0 + index * kGlyphStep, -12.0);
     } else if (const CurveData* c = model.curve(g.entity)) {
@@ -814,11 +854,11 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
       const V2 anchor =
           c->axis.isEmpty() ? c->curve.at(t) : unit(c->curve.b - c->curve.a) * (60.0 * m_c.pixel());
       const QPointF a = m_c.toScreen(anchor);
-      QPointF along = unitOf(m_c.toScreen(anchor + unit(c->curve.tangent(t))) - a);
+      along = unitOf(m_c.toScreen(anchor + unit(c->curve.tangent(t))) - a);
       if (along.x() < 0) {
         along = -along;
       }
-      QPointF normal(along.y(), -along.x());
+      normal = QPointF(along.y(), -along.x());
       if (normal.y() > 0) {
         normal = -normal;
       }
@@ -826,6 +866,23 @@ std::vector<SketchOverlay::Glyph> SketchOverlay::glyphs() const {
     } else {
       continue;
     }
+    // Keep an entity's glyph row together. Only a collision moves it,
+    // to the nearer side of its original normal; dimension positions and
+    // model constraints stay intact. Painting and picking use this layout.
+    auto [offset, inserted] = rowOffsets.try_emplace(g.entity);
+    if (inserted) {
+      const QPointF first = center - along * (index * kGlyphStep);
+      const QPointF last = first + along * ((count - 1) * kGlyphStep);
+      const auto box = [](const QPointF& at) {
+        return QRectF(at.x() - kGlyphSize / 2, at.y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
+      };
+      const QRectF row = box(first).united(box(last));
+      if (normal.isNull()) normal = QPointF(0.0, -1.0);
+      const double forward = distanceToClear(row, normal);
+      const double backward = distanceToClear(row, -normal);
+      offset->second = normal * (forward <= backward ? forward : -backward);
+    }
+    center += offset->second;
     g.rect = QRectF(center.x() - kGlyphSize / 2, center.y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
     result.push_back(g);
   }

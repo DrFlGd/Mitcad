@@ -58,6 +58,7 @@ pub mod exchange {
 
 /// Features' helpers: derived parts, regions, found faces, mesh bodies.
 pub mod features {
+    pub use crate::features::bound_length::measure_to as measure_bound_length;
     pub use crate::features::construction::plane::tangent;
     pub use crate::features::derived_part::{
         Evaluated, configured, end_plane, end_tool, evaluate_source,

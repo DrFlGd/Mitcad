@@ -70,11 +70,18 @@ struct Grid {
   Place content = Place::Leading;  // the columns' place when none grows
   bool alwaysGrows = false;        // QFormLayout's unbounded maximum
   bool equalColumns = false;
+  CGFloat wrapWidth = 0; // opt-in: stack row cells below the shared layout hint
 };
 
 // Renders a shared Qt layout. `render` makes the native view of a widget or
 // nested layout item; spacer items become empty views here.
-NSView* build(QLayout* layout, const std::function<NSView*(QLayoutItem*)>& render, bool equalColumns);
+NSView* build(QLayout* layout, const std::function<NSView*(QLayoutItem*)>& render, bool equalColumns,
+              bool responsive = false);
+
+// Suspend constraints below hidden ancestors as one batch, and invalidate
+// restored layouts. Call after a presenter's visibility updates and before
+// measuring or solving the full native subtree.
+void updateVisibility(NSView* root);
 
 // Button boxes keep the macOS visual role order (mitcad#817): help, reset,
 // apply and other helper actions on the left; destructive, alternate,

@@ -111,7 +111,9 @@ pub mod internal {
     pub use crate::connect::{ConnectPlan, Hole, PanelBound, PanelPlan, Piece};
     pub use crate::frames::Framed;
     pub use crate::joinery::CutPlan;
-    pub use crate::parts::source_state;
+    pub use crate::parts::{
+        SourceOptionValues, source_option_values, source_state, source_state_with_options,
+    };
     pub use crate::place::{
         Closing, EndPlan, JointPlan, LengthPlan, Plan, SidePlan, SourceUse, Spot, Target,
         bounds_of, corner_shift,

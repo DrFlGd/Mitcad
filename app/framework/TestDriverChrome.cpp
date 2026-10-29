@@ -7,6 +7,8 @@
 #include <QLayout>
 #include <QMenu>
 #include <QRegion>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QToolButton>
 #include <QTabBar>
 
@@ -36,10 +38,55 @@ void TestDriver::testRibbonLabels(const QStringList& expected) {
         m_waitDetail = QStringLiteral("all-caps group caption: %1").arg(text);
         return false;
       }
+      if (!button->isVisible()) continue;
+      if (button->width() < button->sizeHint().width() || button->menu() == nullptr || button->menu()->isEmpty()) {
+        m_waitDetail = QStringLiteral("clipped caption or missing group menu: %1 (%2 < %3)")
+                           .arg(text).arg(button->width()).arg(button->sizeHint().width());
+        return false;
+      }
+      // Overflow may put a group outside the current viewport, but ordinary
+      // horizontal scrolling must be able to expose its entire menu button.
+      for (QWidget* parent = button->parentWidget(); parent != nullptr && parent != ribbon; parent = parent->parentWidget()) {
+        auto* scroll = qobject_cast<QScrollArea*>(parent);
+        if (scroll == nullptr || scroll->objectName() != QLatin1String("ribbonPageScroll")) continue;
+        const QRect caption(button->mapTo(scroll->widget(), QPoint()), button->size());
+        const int viewport = scroll->viewport()->width();
+        QScrollBar* bar = scroll->horizontalScrollBar();
+        const QRect reachable(0, 0, viewport + bar->maximum(), scroll->viewport()->height());
+        QWidget* wrapper = scroll->parentWidget();
+        auto* back = wrapper->findChild<QToolButton*>(QStringLiteral("ribbonScrollLeft"));
+        auto* next = wrapper->findChild<QToolButton*>(QStringLiteral("ribbonScrollRight"));
+        const auto exposed = [ribbon, wrapper](QToolButton* arrow) {
+          if (arrow == nullptr || !arrow->isVisible() || arrow->width() <= 0 || arrow->height() <= 0 ||
+              arrow->width() < arrow->sizeHint().width() || arrow->height() < arrow->sizeHint().height()) return false;
+          return wrapper->rect().contains(QRect(arrow->mapTo(wrapper, QPoint()), arrow->size())) &&
+                 ribbon->rect().contains(QRect(arrow->mapTo(ribbon, QPoint()), arrow->size())) &&
+                 QRegion(arrow->rect()).subtracted(arrow->visibleRegion()).isEmpty();
+        };
+        if (caption.width() > viewport || !reachable.contains(caption) || back == nullptr || next == nullptr ||
+            (bar->maximum() > 0 && (!exposed(back) || !exposed(next))) ||
+            back->isEnabled() != (bar->value() > bar->minimum()) || next->isEnabled() != (bar->value() < bar->maximum())) {
+          const auto metrics = [](const QWidget* widget) {
+            if (widget == nullptr) return QStringLiteral("missing");
+            QString detail;
+            QDebug(&detail).nospace() << widget->objectName() << " rect=" << widget->geometry()
+                << " hint=" << widget->sizeHint() << " minimumHint=" << widget->minimumSizeHint()
+                << " minimum=" << widget->minimumSize() << " visible=" << widget->isVisible()
+                << " enabled=" << widget->isEnabled() << " exposed=" << widget->visibleRegion().boundingRect();
+            return detail;
+          };
+          m_waitDetail = QStringLiteral("ribbon overflow cannot expose %1: caption=%2x%3; wrapper={%4}; "
+                                       "scroll={%5}; viewport={%6}; content={%7}; left={%8}; right={%9}; range=%10..%11 value=%12")
+              .arg(text).arg(caption.width()).arg(caption.height()).arg(metrics(wrapper), metrics(scroll),
+                  metrics(scroll->viewport()), metrics(scroll->widget()), metrics(back), metrics(next))
+              .arg(bar->minimum()).arg(bar->maximum()).arg(bar->value());
+          return false;
+        }
+      }
     }
     qInfo() << "Ribbon labels: passed" << expected;
     return true;
-  }, 6, QStringLiteral("workspace text/accessibility or group captions violate UI naming"));
+  }, 6, QStringLiteral("workspace labels/accessibility, complete captions or reachable group menus differ"));
 }
 
 void TestDriver::testSketchFinishLayout() {

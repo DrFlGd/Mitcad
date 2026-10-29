@@ -6,6 +6,7 @@
 expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 expect-ever 'View area'
 sleep 800
+native-appearance '${MITCAD_TEST_COLOR_SCHEME}'
 
 mark
 native-action sketch.create
@@ -20,7 +21,163 @@ expect-native-visible native.ribbon.sketch.rectangle true
 expect-native-visible native.ribbon.sketch.constraint.horizontal_vertical true
 expect-native-visible palette_sketch.constraint.horizontal_vertical true
 expect-native-layout
+expect-native-style paletteFinish caption
 screenshot '${MITCAD_TEST_WORK}/native-macos-sketch-palette.png'
+
+# Native inline fx uses the same parameter source and shared editors as a
+# command field. Its independent user parameter is undone before the
+# original numeric/geometry workflow below, and no sketch is drawn here.
+capture-undo-depth inlineFxBaseline
+expect-model-parameter ui_inline_width absent
+mark
+native-pointer-click native.ribbon.sketch.rectangle
+sketch-click 0 0
+expect-native-visible sketchField_widthFx true
+expect-native-text sketchField_widthFx '^fx$'
+expect-native-style sketchField_widthFx caption
+native-pointer-click sketchField_width
+native-key-event Ctrl+a
+type '15 mm'
+expect-native-text sketchField_width '^15 mm$'
+native-pointer-popup sketchField_widthFx 'Create User Parameter…' '${MITCAD_TEST_WORK}/native-inline-fx-menu.png'
+expect-log '^Parameter browser opened for sketch width$'
+focus-dialog '^Create User Parameter$'
+native-pointer-click createParameterName
+native-key-event Ctrl+a
+type ui_cancelled_inline
+native-pointer-click createParameterExpression
+native-key-event Ctrl+a
+type 8
+native-key-event Escape
+expect-native-dialog-gone '^Create User Parameter$'
+expect-model-parameter ui_cancelled_inline absent
+expect-native-text sketchField_width '^15 mm$'
+expect-native-control-focus sketchField_width
+expect-undo-depth ${inlineFxBaseline} 0
+
+# Create through the real tracked fx menu, then return to the same live
+# field. The shared parameter is a separate undo step, not drawing input.
+mark
+native-key-event Ctrl+a
+native-pointer-popup sketchField_widthFx 'Create User Parameter…'
+expect-log '^Create User Parameter opened for sketch width'
+focus-dialog '^Create User Parameter$'
+native-pointer-click createParameterName
+native-key-event Ctrl+a
+type ui_inline_width
+native-pointer-click createParameterExpression
+native-key-event Ctrl+a
+type 15
+expect-native-text createParameterExpression '^15$'
+screenshot-screen '${MITCAD_TEST_WORK}/native-inline-fx-create.png'
+native-pointer-button '^Create$'
+expect-log '^Created user parameter ui_inline_width = 15 mm [(]mm[)] for sketch width$'
+expect-log '^Parameter created inserted ui_inline_width into sketch width: ui_inline_width$'
+expect-native-dialog-gone '^Create User Parameter$'
+expect-native-text sketchField_width '^ui_inline_width$'
+expect-native-control-focus sketchField_width
+expect-model-parameter ui_inline_width 15
+expect-undo-depth ${inlineFxBaseline} 1
+
+# A parameter reference replaces the actual middle selection, rather
+# than replacing the whole expression or using the hidden Qt caret.
+native-key-event Ctrl+a
+type '5 mm + 999 mm'
+native-key-event Shift+Left Shift+Left Shift+Left Shift+Left Shift+Left Shift+Left
+mark
+native-pointer-popup sketchField_widthFx ui_inline_width
+expect-log '^Parameter browser inserted ui_inline_width into sketch width: 5 mm [+] ui_inline_width$'
+expect-native-text sketchField_width '^5 mm [+] ui_inline_width$'
+expect-native-control-focus sketchField_width
+expect-sketch-field-dimension width length 20
+screenshot-screen '${MITCAD_TEST_WORK}/native-inline-fx-reference.png'
+
+# Cancel preserves the current expression; accepting the shared Formula
+# Editor writes it back into the same native field without drawing yet.
+native-key-event Ctrl+a
+type ui_inline_width
+native-pointer-popup sketchField_widthFx 'Edit Formula…'
+focus-dialog '^Formula Editor$'
+expect-native-text formulaText '^ui_inline_width$'
+native-pointer-click formulaText
+native-key-event Ctrl+a
+type 'ui_inline_width + 2 mm'
+native-key-event Escape
+expect-native-dialog-gone '^Formula Editor$'
+expect-native-text sketchField_width '^ui_inline_width$'
+expect-native-control-focus sketchField_width
+native-pointer-popup sketchField_widthFx 'Edit Formula…'
+focus-dialog '^Formula Editor$'
+native-pointer-click formulaText
+native-key-event Ctrl+a
+type 'ui_inline_width + 5 mm'
+screenshot-screen '${MITCAD_TEST_WORK}/native-inline-fx-formula.png'
+native-key-event Ctrl+Return
+expect-log '^Formula editor applied: ui_inline_width [+] 5 mm$'
+expect-native-dialog-gone '^Formula Editor$'
+expect-native-text sketchField_width '^ui_inline_width [+] 5 mm$'
+expect-native-control-focus sketchField_width
+expect-sketch-field-dimension width length 20
+expect-no-log 'Added rectangle'
+expect-undo-depth ${inlineFxBaseline} 1
+
+# F5 and Option-Escape request AppKit's own completion provider. The unique
+# reference keeps the live caret; Tab/Shift+Tab retain field traversal.
+native-key-event Ctrl+a
+type ui_inline_w
+native-key-event Alt+Escape
+expect-native-text sketchField_width '^ui_inline_width$'
+expect-native-control-focus sketchField_width
+expect-no-qt-popup
+native-key-event Right
+type ' + 5 mm'
+expect-native-text sketchField_width '^ui_inline_width [+] 5 mm$'
+expect-sketch-field-dimension width length 20
+native-key-event Ctrl+a
+type ui_inline_w
+native-key-event F5
+expect-native-text sketchField_width '^ui_inline_width$'
+expect-native-control-focus sketchField_width
+expect-no-qt-popup
+screenshot-screen '${MITCAD_TEST_WORK}/native-inline-fx-completion.png'
+native-key-event Tab
+expect-native-control-focus sketchField_height
+native-key-event Ctrl+a
+type '9 mm'
+native-key-event Shift+Tab
+expect-native-control-focus sketchField_width
+expect-native-text sketchField_width '^ui_inline_width$'
+expect-no-qt-popup
+native-key-event Escape
+expect-native-visible sketchField_width false
+expect-native-visible sketchField_widthFx false
+expect-native-focus native.viewportHost
+expect-no-log 'Added rectangle'
+expect-model-bodies 0 0
+expect-profiles 0
+expect-model-parameter ui_inline_width 15
+expect-undo-depth ${inlineFxBaseline} 1
+
+# Reopening creates fresh native fields/tools. Cancel still removes the
+# drawing, then ordinary Undo removes only the independent user parameter.
+native-pointer-click native.ribbon.sketch.rectangle
+sketch-click 0 0
+expect-native-visible sketchField_widthFx true
+native-pointer-click sketchField_width
+native-key-event Ctrl+a
+type '7 mm'
+expect-native-text sketchField_width '^7 mm$'
+expect-no-qt-popup
+screenshot-screen '${MITCAD_TEST_WORK}/native-inline-fx-reopened.png'
+native-key-event Escape
+expect-native-visible sketchField_width false
+expect-native-visible sketchField_widthFx false
+expect-native-focus native.viewportHost
+command edit.undo
+expect-model-parameter ui_inline_width absent
+expect-undo-depth ${inlineFxBaseline} 0
+expect-profiles 0
+expect-model-bodies 0 0
 
 # Escape from a real AppKit field cancels the unfinished drawing safely.
 mark
@@ -50,7 +207,7 @@ type '40.5 mm'
 expect-native-text sketchField_width '^40\.5 mm$'
 key Tab
 screenshot '${MITCAD_TEST_WORK}/native-macos-sketch-fields.png'
-key Return
+native-key-event Return
 expect-log 'Added rectangle 40\.5 x 25 mm at \(0, 0\)' 30
 expect-log 'Sketch Sketch1: 0 DOF' 30
 
@@ -63,6 +220,15 @@ native-action sketch.dimension
 sketch-click 20 0
 sketch-click 20 8
 expect-log 'Sketch value editor at'
+# Unlike a tool's width/height, this dimension editor offers naming. Its
+# native helper must preserve that action without committing the dimension.
+expect-native-visible sketchValueEditorFx true
+expect-native-style sketchValueEditorFx caption
+native-pointer-popup sketchValueEditorFx 'Name This Value (name = value)'
+expect-log '^Parameter naming for sketch dimension: name = '
+expect-native-text sketchValueEditor '^name = '
+expect-native-control-focus sketchValueEditor
+screenshot-screen '${MITCAD_TEST_WORK}/native-inline-fx-naming.png'
 native-click native.ribbon.sketch.offset
 expect-log 'Command Offset started'
 expect-log 'Sketch value editor closed'

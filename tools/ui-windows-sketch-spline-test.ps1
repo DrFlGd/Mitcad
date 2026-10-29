@@ -77,7 +77,8 @@ Ui-Step 'select its middle fit point'    { Ui-SketchClick -10 -20 }
 Ui-ExpectNew 'Selected: 1 sketch point' 'the fit point selected'
 Ui-ExpectNew 'Sketch highlights: 0 curves, 1 point' "its ball in the points' layer, over the marker"
 Ui-Mark
-Ui-Step 'click where nothing is'         { Ui-SketchClick 45 0 }
+# Off the x axis, which a click selects (mitcad#899).
+Ui-Step 'click where nothing is'         { Ui-SketchClick 45 15 }
 Ui-ExpectNew 'Selected: nothing' 'the selection cleared'
 
 Write-Host '--- Tangent at each end of the spline'

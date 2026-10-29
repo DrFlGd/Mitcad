@@ -42,6 +42,7 @@
 #include "../framework/ParameterField.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "ConfigurationsData.hpp"
 #include "DocumentHost.hpp"
 
@@ -68,13 +69,16 @@ public:
       old->deleteLater();
     }
     m_editors = editors;
+    QVariantList nativeEditors;
     int height = 0;
     for (QWidget* editor : editors) {
       editor->setParent(viewport());
       editor->show();
+      nativeEditors << QVariant::fromValue(static_cast<QObject*>(editor));
       height = std::max(height, editor->sizeHint().height());
     }
     setMinimumHeight(editors.isEmpty() ? 0 : height + 4);
+    setProperty(NativeColumnEditorsProperty, nativeEditors);
     place();
   }
 
@@ -661,6 +665,7 @@ TablesPage::TablesPage(DocumentHost& host, QWidget* parent) : QWidget(parent), m
   editor->addLayout(structure);
   m_grid = new QTableWidget;
   m_grid->setObjectName(QStringLiteral("tablesGrid"));
+  m_comment->setProperty(NativeReturnTargetProperty, QVariant::fromValue(static_cast<QObject*>(m_grid)));
   m_header = new ColumnHeader(m_grid);
   m_grid->setHorizontalHeader(m_header);
   m_grid->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed |
@@ -796,7 +801,8 @@ void TablesPage::buildHeader(const QJsonArray& columns) {
     stack->setContentsMargins(0, 0, 0, 0);
     stack->setSpacing(2);
     auto* nameEdit = new QLineEdit(name);
-    nameEdit->setObjectName(QStringLiteral("tablesColumnName"));
+    nameEdit->setObjectName(QStringLiteral("tablesColumnName_%1").arg(i + 1));
+    nameEdit->setProperty(NativeReturnTargetProperty, QVariant::fromValue(static_cast<QObject*>(m_grid)));
     nameEdit->setAccessibleName(tr("Column %1 name").arg(i + 1));
     nameEdit->setToolTip(tr("Formulas use the column as %1.%2").arg(m_current, name));
     const auto refused = m_refused.constFind(nameKey(m_current, i));
@@ -806,7 +812,7 @@ void TablesPage::buildHeader(const QJsonArray& columns) {
       nameEdit->setToolTip(refused.value().second);
     }
     auto* unitBox = new UnitBox;
-    unitBox->setObjectName(QStringLiteral("tablesColumnUnit"));
+    unitBox->setObjectName(QStringLiteral("tablesColumnUnit_%1").arg(i + 1));
     unitBox->setAccessibleName(tr("Column %1 unit").arg(i + 1));
     unitBox->setToolTip(tr("Lengths, angles, numbers without a unit, or Text; a new unit converts the numbers"));
     bool found = false;
@@ -871,6 +877,7 @@ void TablesPage::showTable() {
     for (int c = 0; c < static_cast<int>(cols.size()); ++c) {
       const QString unit = cols.at(c).toObject().value(QStringLiteral("unit")).toString();
       auto* item = new QTableWidgetItem(cellText(c < cells.size() ? cells.at(c) : QJsonValue()));
+      item->setData(NativeControlIdentifierRole, QStringLiteral("table.%1.%2.%3").arg(m_current).arg(r).arg(c));
       item->setTextAlignment(isText(unit) ? Qt::AlignLeft | Qt::AlignVCenter : Qt::AlignRight | Qt::AlignVCenter);
       const auto refused = m_refused.constFind(cellKey(m_current, r, c));
       if (refused != m_refused.cend()) {
@@ -879,6 +886,7 @@ void TablesPage::showTable() {
         item->setForeground(kRefusedText);
         item->setBackground(kRefusedFill);
         item->setToolTip(refused.value().second);
+        item->setData(NativeRefusedRole, true);
         refusedCells << QStringLiteral("row %1 %2: %3 (%4)")
                             .arg(r + 1)
                             .arg(cols.at(c).toObject().value(QStringLiteral("name")).toString(),
@@ -1519,7 +1527,7 @@ bool TablesPage::eventFilter(QObject* watched, QEvent* event) {
   // keyboard (editingFinished).
   auto* field = qobject_cast<QLineEdit*>(watched);
   if (enter && field != nullptr &&
-      (field == m_comment || field->objectName() == QStringLiteral("tablesColumnName"))) {
+      (field == m_comment || field->property(NativeReturnTargetProperty).isValid())) {
     m_grid->setFocus(Qt::OtherFocusReason);
     return true;
   }
@@ -1600,8 +1608,8 @@ void TablesPage::logLayout() {
   if (m_grid->isVisible()) {
     for (int c = 0; c < m_grid->columnCount(); ++c) {
       if (QWidget* editor = m_header->editor(c)) {
-        auto* name = editor->findChild<QLineEdit*>(QStringLiteral("tablesColumnName"));
-        auto* unit = editor->findChild<QComboBox*>(QStringLiteral("tablesColumnUnit"));
+        auto* name = editor->findChild<QLineEdit*>();
+        auto* unit = editor->findChild<QComboBox*>();
         if (name != nullptr && name->isVisible()) {
           lines << QStringLiteral("Tables column %1 name at %2")
                        .arg(c + 1)

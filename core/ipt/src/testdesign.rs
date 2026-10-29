@@ -1185,7 +1185,16 @@ pub fn square_sheet() -> Vec<u8> {
 
 /// The square sheet of [`square_sheet`] at the height `z` (cm).
 pub fn square_sheet_at(z: f64) -> Vec<u8> {
+    square_sheet_with_next(z, "", -1)
+}
+
+/// The square sheet of [`square_sheet`] whose `kind` record (`lump`,
+/// `shell`, `face` or `loop`) has `next` as its next pointer (mitcad#933:
+/// its own record makes a chain that never ends; record 2 is the lump, 3
+/// the shell, 4 the face, 5 the loop).
+pub fn square_sheet_with_next(z: f64, kind: &str, next: i32) -> Vec<u8> {
     use mitcad_asm::asm::writer::Writer;
+    let next_of = |k: &str| if k == kind { next } else { -1 };
     let corners = [[0.0, 0.0, z], [1.0, 0.0, z], [1.0, 1.0, z], [0.0, 1.0, z]];
     let mut w = Writer::new(2, 2);
     w.record("asmheader")
@@ -1201,10 +1210,15 @@ pub fn square_sheet_at(z: f64) -> Vec<u8> {
         .ptr(-1)
         .ptr(-1)
         .end();
-    w.record("lump").head().ptr(-1).ptr(3).ptr(1).end();
+    w.record("lump")
+        .head()
+        .ptr(next_of("lump"))
+        .ptr(3)
+        .ptr(1)
+        .end();
     w.record("shell")
         .head()
-        .ptr(-1)
+        .ptr(next_of("shell"))
         .ptr(-1)
         .ptr(4)
         .ptr(-1)
@@ -1212,7 +1226,7 @@ pub fn square_sheet_at(z: f64) -> Vec<u8> {
         .end();
     w.record("face")
         .head()
-        .ptr(-1)
+        .ptr(next_of("face"))
         .ptr(5)
         .ptr(3)
         .ptr(-1)
@@ -1220,7 +1234,12 @@ pub fn square_sheet_at(z: f64) -> Vec<u8> {
         .bool(false)
         .bool(false)
         .end();
-    w.record("loop").head().ptr(-1).ptr(6).ptr(4).end();
+    w.record("loop")
+        .head()
+        .ptr(next_of("loop"))
+        .ptr(6)
+        .ptr(4)
+        .end();
     for k in 0..4 {
         w.record("coedge")
             .head()

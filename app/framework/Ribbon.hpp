@@ -105,7 +105,7 @@ protected:
   void showEvent(QShowEvent* event) override;
 
 private:
-  // A group capsule of the Mac presentation and what collapsing it takes.
+  // A group and the widths needed to collapse its complete pinned row.
   struct GroupInfo {
     QWidget* capsule = nullptr;
     QWidget* buttons = nullptr; // the row of pinned commands
@@ -124,8 +124,8 @@ private:
   int tabOfPage(int page) const;
   // The places logLayout logs: the tabs, the group menus, the split buttons.
   QStringList layoutLines() const;
-  // Mac presentation: when the groups do not fit the width, the ones at the
-  // right show their names only; the names still open their menus.
+  // When groups do not fit, collapse pinned rows from the right. Complete
+  // captions still open the same menus; Classic can scroll those captions.
   void fitGroups();
   // setGroupCards: the mask of the shown page's group cards.
   void updateGroupMask();
@@ -142,6 +142,7 @@ private:
   // The subgroups' split buttons (mitcad#222), by "tab/group/subgroup".
   QHash<QString, QToolButton*> m_splitButtons;
   QHash<QWidget*, QList<GroupInfo>> m_groupsOfPage;
+  QHash<QWidget*, QWidget*> m_classicPages;
   bool m_groupCards = false; // setGroupCards
 };
 

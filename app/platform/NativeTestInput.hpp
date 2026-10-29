@@ -22,13 +22,14 @@ namespace mitcad::mac::test {
 bool active();
 bool nativeFocused();
 bool applicationDelegate(QString& error);
-bool controlExists(const QString& identifier);
+bool controlExists(const QString& identifier, QString* detail = nullptr);
 bool click(const QString& identifier, QString& error);
 bool hover(const QString& identifier, bool enter, QString& error);
 bool clickImmediately(const QString& identifier, QString& error);
 bool replaceText(const QString& identifier, const QString& text, QString& error);
 bool choose(const QString& identifier, const QString& title, QString& error);
 bool duplicateChoices(CommandHost& host, QString& error);
+bool widgetRefreshContract(QString& error);
 bool formControls(CommandHost& host, QString& error);
 bool disclosureLayout(QString& error);
 bool triggerAction(const QString& identifier, QString& error);
@@ -52,7 +53,9 @@ bool floatingLayout(QString& error);
 bool historyLayout(const QJsonObject& timeline, const QSet<QString>& filtered, const QStringList& selected,
                    bool checkSelection, QString& error);
 bool historyMarkerEvent(const QString& phase, int index, QString& error);
-bool trackContextMenu(const QString& choice, const std::function<void()>& open, QString& error);
+bool historyWheel(QString& error);
+bool trackContextMenu(const QString& choice, const std::function<void()>& open, QString& error,
+                      const std::function<void()>& onClosed = {}, const QString& screenshotPath = {});
 bool contextMenu(const QString& identifier, const QString& choice, QString& error);
 bool pinch(QOpenGLWidget* viewport, const QPointF& position, double magnification, QString& error);
 bool buttonExists(const QRegularExpression& expression);
@@ -61,6 +64,7 @@ bool dialogExists(const QRegularExpression& expression);
 bool focusDialog(const QRegularExpression& expression);
 bool replaceFileName(const QString& name, QString& error);
 bool setFileDirectory(const QString& directory, QString& error);
+QString filePanelDiagnostic();
 bool cancelFilePanel(QString& error);
 void focusMain();
 void requestKeyEventFocus();
@@ -69,10 +73,17 @@ QString keyEventFocusDiagnostic();
 bool sendKey(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendKeyEvent(int key, Qt::KeyboardModifiers modifiers, const QString& text);
 bool sendText(const QString& text);
+// WindowServer events for this app's actual active file panel only. These
+// require macOS event-posting permission; no other application is targeted.
+bool sendSystemFileKey(int key, Qt::KeyboardModifiers modifiers, QString& error);
+bool sendSystemFileText(const QString& text, QString& error);
+// Actual cursor movement over one visible, uncovered control owned by this
+// active test app. Uses existing event-posting permission, never requests it.
+bool sendSystemPointer(const QString& identifier, QString& error);
 bool screenshot(const QString& path, QOpenGLWidget* viewport = nullptr);
 // Native tables (mitcad#814): what a cell or label shows (comma-separated
 // states: error, warning, normal, bold, regular, editable, readonly,
-// editing, not-editing, single-line, truncated, in-view; "<table>/<row>/
+// editing, not-editing, selectable, selected, single-line, truncated, in-view; "<table>/<row>/
 // <column>" addresses a cell without an identifier), whether the columns
 // keep the shared header's sizes and stretching (fit, scroll or any), and
 // the focused native dialog's content size.
@@ -114,24 +125,48 @@ bool tileAction(const QStringList& args, QString& error);
 bool tileCheck(const QStringList& args, QString& detail);
 // Shared layout bounds, real pointer input and button order (mitcad#812, #817).
 bool controlBounds(const QString& identifier, double minimumWidth, const QString& labelPattern, QString& error);
+// Simultaneous, read-only geometry: no scrolling individual controls into
+// view. Entries are identifiers, optionally followed by = and a label.
+bool formLayout(const QStringList& entries, QString& error);
+// Read-only configuration-card geometry, complete captions and slider
+// travel/knob exposure, plus one full reachable Browser row below it;
+// never scrolls a clipped control or row into view.
+bool configurationLayout(QString& detail);
+// Read the actual visible group row: full-width caption, no clipping, and
+// the shared tree item's selection policy. Does not scroll or create rows.
+bool spannedHeading(const QString& table, const QRegularExpression& caption, QString& detail);
+// The actual colour-field swatch pixels and drawn placeholder text.
+bool colorField(const QString& identifier, const QString& color, const QString& words, bool placeholder,
+                const QString& accessibilityLabel, QString& error);
 bool buttonOrder(const QStringList& patterns, QString& error);
 bool focused(const QString& identifier);
-bool pointerClick(const QString& identifier, QString& error);
+// Optional normalized point within the control; still requires a real,
+// uncovered hit on that control or one of its descendants.
+bool pointerClick(const QString& identifier, QString& error, double x = 0.5, double y = 0.5);
+// Two real pointer clicks on the same guarded native control, with the
+// second press carrying AppKit's double-click count.
+bool pointerDoubleClick(const QString& identifier, QString& error);
+// Open a real NSPopUpButton by pointer, then navigate/commit in its actual
+// menu tracking loop. Keys are Up/Down followed by Return; never set a value.
+bool pointerChoice(const QString& identifier, const QString& expected, const QStringList& keys, QString& error);
 bool pointerButton(const QRegularExpression& expression, QString& error);
-bool pointerDrag(const QString& identifier, double from, double to, QString& error);
+// Held sliders require their actual knob and guarded WindowServer input
+// with already granted posting access. Other controls use fractional starts.
+bool pointerDrag(const QString& identifier, double from, double to, QString& error, bool fromKnob = false);
 bool resizeDialog(int width, int height, QString& error);
 bool layoutContract(QString& error);
 #else
 inline bool active() { return false; }
 inline bool nativeFocused() { return false; }
 inline bool applicationDelegate(QString&) { return false; }
-inline bool controlExists(const QString&) { return false; }
+inline bool controlExists(const QString&, QString* = nullptr) { return false; }
 inline bool click(const QString&, QString&) { return false; }
 inline bool hover(const QString&, bool, QString&) { return false; }
 inline bool clickImmediately(const QString&, QString&) { return false; }
 inline bool replaceText(const QString&, const QString&, QString&) { return false; }
 inline bool choose(const QString&, const QString&, QString&) { return false; }
 inline bool duplicateChoices(CommandHost&, QString&) { return false; }
+inline bool widgetRefreshContract(QString&) { return false; }
 inline bool formControls(CommandHost&, QString&) { return false; }
 inline bool disclosureLayout(QString&) { return false; }
 inline bool triggerAction(const QString&, QString&) { return false; }
@@ -153,8 +188,10 @@ inline QString documentState() { return {}; }
 inline bool setAppearance(const QString&, QString&) { return false; }
 inline bool floatingLayout(QString&) { return false; }
 inline bool historyLayout(const QJsonObject&, const QSet<QString>&, const QStringList&, bool, QString&) { return false; }
+inline bool historyWheel(QString&) { return false; }
 inline bool historyMarkerEvent(const QString&, int, QString&) { return false; }
-inline bool trackContextMenu(const QString&, const std::function<void()>&, QString&) { return false; }
+inline bool trackContextMenu(const QString&, const std::function<void()>&, QString&,
+                             const std::function<void()>& = {}, const QString& = {}) { return false; }
 inline bool contextMenu(const QString&, const QString&, QString&) { return false; }
 inline bool pinch(QOpenGLWidget*, const QPointF&, double, QString&) { return false; }
 inline bool buttonExists(const QRegularExpression&) { return false; }
@@ -163,6 +200,7 @@ inline bool dialogExists(const QRegularExpression&) { return false; }
 inline bool focusDialog(const QRegularExpression&) { return false; }
 inline bool replaceFileName(const QString&, QString&) { return false; }
 inline bool setFileDirectory(const QString&, QString&) { return false; }
+inline QString filePanelDiagnostic() { return {}; }
 inline bool cancelFilePanel(QString&) { return false; }
 inline void focusMain() {}
 inline void requestKeyEventFocus() {}
@@ -171,6 +209,9 @@ inline QString keyEventFocusDiagnostic() { return {}; }
 inline bool sendKey(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendKeyEvent(int, Qt::KeyboardModifiers, const QString&) { return false; }
 inline bool sendText(const QString&) { return false; }
+inline bool sendSystemFileKey(int, Qt::KeyboardModifiers, QString&) { return false; }
+inline bool sendSystemFileText(const QString&, QString&) { return false; }
+inline bool sendSystemPointer(const QString&, QString&) { return false; }
 inline bool screenshot(const QString&, QOpenGLWidget* = nullptr) { return false; }
 inline bool nativeStyle(const QString&, const QStringList&, QString&) { return false; }
 inline bool nativeColumns(const QString&, const QString&, QString&) { return false; }
@@ -189,11 +230,17 @@ inline bool commandLayout(const QStringList&, QString&) { return false; }
 inline bool tileAction(const QStringList&, QString&) { return false; }
 inline bool tileCheck(const QStringList&, QString&) { return false; }
 inline bool controlBounds(const QString&, double, const QString&, QString&) { return false; }
+inline bool formLayout(const QStringList&, QString&) { return false; }
+inline bool configurationLayout(QString&) { return false; }
+inline bool spannedHeading(const QString&, const QRegularExpression&, QString&) { return false; }
+inline bool colorField(const QString&, const QString&, const QString&, bool, const QString&, QString&) { return false; }
 inline bool buttonOrder(const QStringList&, QString&) { return false; }
 inline bool focused(const QString&) { return false; }
-inline bool pointerClick(const QString&, QString&) { return false; }
+inline bool pointerClick(const QString&, QString&, double = 0.5, double = 0.5) { return false; }
+inline bool pointerDoubleClick(const QString&, QString&) { return false; }
+inline bool pointerChoice(const QString&, const QString&, const QStringList&, QString&) { return false; }
 inline bool pointerButton(const QRegularExpression&, QString&) { return false; }
-inline bool pointerDrag(const QString&, double, double, QString&) { return false; }
+inline bool pointerDrag(const QString&, double, double, QString&, bool = false) { return false; }
 inline bool resizeDialog(int, int, QString&) { return false; }
 inline bool layoutContract(QString&) { return false; }
 #endif

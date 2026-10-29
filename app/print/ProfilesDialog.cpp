@@ -130,6 +130,7 @@ ProfilesPanel::ProfilesPanel(PrintItemsHost& host, const QString& logName, QWidg
   // The header both windows share (mitcad#655): its name to edit,
   // Built-in, Save to.
   editorBox->addLayout(itemHeader(&m_name, &m_usedState, &m_saved, &m_builtIn, &m_headerDuplicate, &m_saveTo));
+  m_name->setObjectName(QStringLiteral("printProfileName"));
   m_emptyState = new QLabel(tr("No printer or process selected"));
   m_emptyState->setAlignment(Qt::AlignCenter);
   m_emptyState->setStyleSheet(QStringLiteral("color: gray;"));

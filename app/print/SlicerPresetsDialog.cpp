@@ -10,6 +10,7 @@
 #include <QFont>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QItemSelectionModel>
 #include <QJsonValue>
 #include <QKeyEvent>
 #include <QLabel>
@@ -25,6 +26,7 @@
 #include <QStyleOptionViewItem>
 #include <QTreeWidget>
 #include <QTreeWidgetItemIterator>
+#include <QVariant>
 #include <QVBoxLayout>
 #include <QVector>
 #include <QWidget>
@@ -34,6 +36,7 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "PrintLibrary.hpp"
 
 namespace mitcad {
@@ -76,6 +79,37 @@ public:
   using QTreeWidget::QTreeWidget;
 
 protected:
+  void keyPressEvent(QKeyEvent* event) override {
+    // Cocoa's item-view style does not move a NoSelection cursor. This
+    // checklist deliberately keeps selection off to preserve warnings,
+    // but still promises a current row for Space and the row's choice.
+    // Keep Qt's own visible-row/expansion navigation, publishing only that
+    // cursor independently of the style's selection policy.
+    if (selectionMode() == QAbstractItemView::NoSelection &&
+        !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier | Qt::MetaModifier))) {
+      CursorAction action;
+      switch (event->key()) {
+      case Qt::Key_Up: action = MoveUp; break;
+      case Qt::Key_Down: action = MoveDown; break;
+      case Qt::Key_Left: action = MoveLeft; break;
+      case Qt::Key_Right: action = MoveRight; break;
+      case Qt::Key_Home: action = MoveHome; break;
+      case Qt::Key_End: action = MoveEnd; break;
+      case Qt::Key_PageUp: action = MovePageUp; break;
+      case Qt::Key_PageDown: action = MovePageDown; break;
+      default: QTreeWidget::keyPressEvent(event); return;
+      }
+      const QModelIndex next = moveCursor(action, event->modifiers());
+      if (next.isValid() && next.flags().testFlag(Qt::ItemIsEnabled)) {
+        selectionModel()->setCurrentIndex(next, QItemSelectionModel::NoUpdate);
+        scrollTo(next);
+      }
+      event->accept();
+      return;
+    }
+    QTreeWidget::keyPressEvent(event);
+  }
+
   // The name column at least as wide as the group titles (mitcad#871
   // review): they span both columns, so the tree's own hint leaves them
   // out and a closed group's long title was cut off.
@@ -122,6 +156,7 @@ protected:
 
 SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, const QString& into, QWidget* parent)
     : QDialog(parent), m_slicers(slicers), m_index(index), m_into(into) {
+  setObjectName(QStringLiteral("slicerPresetsDialog"));
   setWindowTitle(tr("Import Presets"));
   setWindowIcon(themeIcon(QStringLiteral("print-3d")));
   resize(560, 560);
@@ -131,6 +166,7 @@ SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, c
   auto* top = new QHBoxLayout;
   m_slicerLabel = new QLabel;
   m_slicer = new QComboBox;
+  m_slicer->setObjectName(QStringLiteral("slicerPresetsSlicer"));
   m_slicer->setAccessibleName(tr("Slicer"));
   for (const QJsonValue& value : slicers) {
     m_slicer->addItem(slicerTitle(value.toObject()));
@@ -151,6 +187,7 @@ SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, c
   // the rows differ.
   m_sameLabel = new QLabel(tr("All same names:"));
   m_sameAll = new QComboBox;
+  m_sameAll->setObjectName(QStringLiteral("slicerPresetsSameName"));
   m_sameAll->setAccessibleName(tr("All same names"));
   addChoices(m_sameAll);
   m_sameLabel->setBuddy(m_sameAll);
@@ -171,6 +208,8 @@ SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, c
   // The presets by kind, a box each. The name column as wide as its
   // names, so each row's choice sits beside its name.
   m_list = new PresetList;
+  m_list->setObjectName(QStringLiteral("slicerPresetsList"));
+  m_list->setProperty(NativeCurrentRowNavigationProperty, true);
   m_list->setColumnCount(2);
   m_list->setHeaderHidden(true);
   m_list->setUniformRowHeights(true);
@@ -185,10 +224,13 @@ SlicerPresetsDialog::SlicerPresetsDialog(const QJsonArray& slicers, int index, c
 
   auto* buttons = new QDialogButtonBox;
   m_import = new QPushButton(tr("&Import"));
+  m_import->setObjectName(QStringLiteral("slicerPresetsImport"));
   m_cancel = new QPushButton(tr("Cancel"));
+  m_cancel->setObjectName(QStringLiteral("slicerPresetsCancel"));
   buttons->addButton(m_import, QDialogButtonBox::AcceptRole);
   buttons->addButton(m_cancel, QDialogButtonBox::RejectRole);
   m_import->setDefault(true);
+  m_list->setProperty(NativeCurrentRowNextProperty, QVariant::fromValue(static_cast<QObject*>(m_import)));
   layout->addWidget(buttons);
   mac::styleDialogButtons(buttons, m_import);
   mac::styleDialog(this);
@@ -382,6 +424,7 @@ void SlicerPresetsDialog::showSlicer(int index) {
         }
       }
       auto* row = new QTreeWidgetItem(group, {text(preset, "name")});
+      row->setData(0, NativeControlIdentifierRole, QStringLiteral("slicerPreset.") + kind + QLatin1Char('.') + text(preset, "name"));
       row->setFlags(Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
       row->setData(0, kPathRole, text(preset, "path"));
       row->setData(0, kKindRole, kind);
@@ -423,8 +466,10 @@ void SlicerPresetsDialog::showSlicer(int index) {
       auto* cellLayout = new QHBoxLayout(cell);
       cellLayout->setContentsMargins(0, 0, 0, 0);
       auto* sameLabel = new QLabel(tr("Same name:"));
+      sameLabel->setObjectName(QStringLiteral("slicerPresetSameName.") + kind + QLatin1Char('.') + text(preset, "name"));
       sameLabel->setToolTip(tooltip);
       auto* choice = new QComboBox;
+      choice->setObjectName(QStringLiteral("slicerPresetChoice.") + kind + QLatin1Char('.') + text(preset, "name"));
       choice->setAccessibleName(tr("%1: same name").arg(text(preset, "name")));
       choice->setAccessibleDescription(tr("%1. %2").arg(tooltip, choices));
       choice->setToolTip(tooltip);

@@ -418,15 +418,18 @@ pub(crate) fn external_files(
         let Some(file) = found.file else {
             continue;
         };
-        let Ok(designs) = mitcad_f3d_design::documents(&file) else {
+        let Ok(designs) = mitcad_f3d_design::package(&file) else {
             continue;
         };
         let wanted = found.design;
-        let pick = designs.into_iter().find(|(label, _)| match &wanted {
-            Some(w) => label == w || label.ends_with(&format!("!{w}")),
+        let pick = designs.labels().position(|label| match &wanted {
+            Some(w) => label == w.as_str() || label.ends_with(&format!("!{w}")),
             None => true,
         });
-        if let Some((_, f)) = pick {
+        // Only the design picked is inflated (mitcad#923).
+        if let Some(index) = pick
+            && let Ok((_, f)) = designs.into_document(index)
+        {
             out.push((guid, d.key.clone().unwrap_or_default(), f));
         }
     }

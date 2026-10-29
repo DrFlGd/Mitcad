@@ -10,4 +10,5 @@
 mod extrude_scope_tests;
 mod f3_tests;
 mod face_extrude_tests;
+mod hole_size_tests;
 mod profile_feature_tests;

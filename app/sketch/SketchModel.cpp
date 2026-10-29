@@ -123,7 +123,17 @@ bool SketchModel::load(const QJsonObject& sketch) {
                        !p.value(QStringLiteral("stale")).toArray().isEmpty();
     staleProjections = staleProjections || stale;
     ProjectionData projection;
-    projection.source = p.value(QStringLiteral("source")).toString();
+    const QJsonValue source = p.value(QStringLiteral("source"));
+    if (source.isObject()) {
+      // Another sketch's curve or point (mitcad#904): "F5/c3", as the
+      // model's messages name it; no body item matches it.
+      const QJsonObject entity = source.toObject();
+      const QString id = entity.contains(QStringLiteral("point")) ? entity.value(QStringLiteral("point")).toString()
+                                                                  : entity.value(QStringLiteral("curve")).toString();
+      projection.source = entity.value(QStringLiteral("sketch")).toString() + QLatin1Char('/') + id;
+    } else {
+      projection.source = source.toString();
+    }
     projection.body = p.value(QStringLiteral("body")).toString();
     projection.linked = p.value(QStringLiteral("link")).isObject();
     projection.occurrence =

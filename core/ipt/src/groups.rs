@@ -194,7 +194,11 @@ pub fn offsets(
     ids: &HashMap<usize, String>,
     dimensions: &[Value],
 ) -> (Vec<Value>, Vec<String>) {
+    // The work below is kept near linear in the records (mitcad#933: a
+    // crafted sketch can hold very many): pairs found by a map, chains by
+    // union-find with path compression, grouped in one pass.
     let mut pairs: Vec<(usize, usize)> = Vec::new();
+    let mut index: HashMap<(usize, usize), usize> = HashMap::new();
     let mut links: Vec<(usize, usize)> = Vec::new();
     let mut dropped = Vec::new();
     for &r in records {
@@ -210,42 +214,48 @@ pub fn offsets(
             dropped.push(format!("offset {r}: not read"));
             continue;
         }
-        let mut at = |p: (usize, usize)| match pairs.iter().position(|&q| q == p) {
-            Some(k) => k,
-            None => {
+        let mut at = |p: (usize, usize)| {
+            *index.entry(p).or_insert_with(|| {
                 pairs.push(p);
                 pairs.len() - 1
-            }
+            })
         };
         let (a, b) = (at((curves[0], curves[1])), at((curves[2], curves[3])));
         links.push((a, b));
     }
     // Chains: pairs joined by the records.
     let mut chain: Vec<usize> = (0..pairs.len()).collect();
-    fn root(chain: &[usize], k: usize) -> usize {
-        let mut k = k;
-        while chain[k] != k {
-            k = chain[k];
+    fn root(chain: &mut [usize], k: usize) -> usize {
+        let mut r = k;
+        while chain[r] != r {
+            r = chain[r];
         }
-        k
+        let mut k = k;
+        while chain[k] != r {
+            let next = chain[k];
+            chain[k] = r;
+            k = next;
+        }
+        r
     }
     for &(a, b) in &links {
-        let (ra, rb) = (root(&chain, a), root(&chain, b));
+        let (ra, rb) = (root(&mut chain, a), root(&mut chain, b));
         chain[ra] = rb;
     }
-    let mut out = Vec::new();
-    let mut roots: Vec<usize> = Vec::new();
-    for k in 0..pairs.len() {
-        let r = root(&chain, k);
-        if !roots.contains(&r) {
-            roots.push(r);
-        }
+    // Each chain's pairs in their order, the chains in the order of their
+    // first pairs.
+    let mut chains: Vec<Vec<(usize, usize)>> = Vec::new();
+    let mut chain_of: HashMap<usize, usize> = HashMap::new();
+    for (k, &pair) in pairs.iter().enumerate() {
+        let r = root(&mut chain, k);
+        let c = *chain_of.entry(r).or_insert_with(|| {
+            chains.push(Vec::new());
+            chains.len() - 1
+        });
+        chains[c].push(pair);
     }
-    for r in roots {
-        let members: Vec<(usize, usize)> = (0..pairs.len())
-            .filter(|&k| root(&chain, k) == r)
-            .map(|k| pairs[k])
-            .collect();
+    let mut out = Vec::new();
+    for members in chains {
         let result = (|| -> Result<Value, String> {
             let name = |c: usize| ids.get(&c).cloned().ok_or("a curve that was not read");
             let parents: Vec<String> = members
@@ -320,10 +330,13 @@ fn polygon(
     id: &dyn Fn(usize) -> Option<String>,
 ) -> Result<Value, String> {
     // Members relate adjacent sides, or adjacent corners.
+    // Sets and a map of the sides at each corner keep this near linear in
+    // the members (mitcad#933: a crafted sketch can hold very many).
     let mut sides: Vec<usize> = Vec::new();
+    let mut seen: HashSet<usize> = HashSet::new();
     for &(_, a, b) in members {
         for s in [a, b] {
-            if dc.is(s, &LINE) && !sides.contains(&s) {
+            if dc.is(s, &LINE) && seen.insert(s) {
                 sides.push(s);
             }
         }
@@ -337,22 +350,35 @@ fn polygon(
         .collect::<Result<_, _>>()?;
     // Walk around: from the first side's end, the side that starts or ends
     // there.
+    // The sides at each corner, in the order of `sides` (the walk takes the
+    // first one not used yet).
+    let mut at_corner: HashMap<usize, Vec<usize>> = HashMap::new();
+    for (k, &(a, b)) in ends.iter().enumerate() {
+        at_corner.entry(a).or_default().push(k);
+        if b != a {
+            at_corner.entry(b).or_default().push(k);
+        }
+    }
     let (first, mut at) = ends[0];
     let mut corners = vec![first];
-    let mut used = vec![0];
+    let mut used = vec![false; ends.len()];
+    used[0] = true;
+    let mut walked = 1;
     while at != first {
         corners.push(at);
-        let next = (0..ends.len())
-            .find(|k| !used.contains(k) && (ends[*k].0 == at || ends[*k].1 == at))
+        let next = at_corner
+            .get(&at)
+            .and_then(|ks| ks.iter().copied().find(|&k| !used[k]))
             .ok_or("the sides do not close")?;
-        used.push(next);
+        used[next] = true;
+        walked += 1;
         at = if ends[next].0 == at {
             ends[next].1
         } else {
             ends[next].0
         };
     }
-    if used.len() != sides.len() {
+    if walked != sides.len() {
         return Err("the sides do not close".to_owned());
     }
     let mut list: Vec<String> = corners

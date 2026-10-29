@@ -16,6 +16,8 @@
 //! - [`names`], [`notes`], [`sketch`]: free parameter names, the notes'
 //!   sentences, and the sketch definitions' references and inactive
 //!   constraints and dimensions.
+//! - [`free_memory`]: when the memory guard gives the allocator's free
+//!   memory back to the system (mitcad#885).
 
 pub mod body_scope;
 pub mod geom;
@@ -27,6 +29,10 @@ pub mod scaffold;
 pub mod sketch;
 
 pub use progress::{Helper, Progress, Ticking, abandoned, current_progress, tick};
+
+// When the memory guard gives the allocator's free memory back (mitcad#885).
+pub mod free_memory;
+pub use free_memory::FreeMemoryRelease;
 
 /// The default geometric tolerance of the imports (mm, mitcad#224): how far
 /// the replay's geometry may be from the file's where no exact result is

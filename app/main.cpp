@@ -242,6 +242,15 @@ int main(int argc, char* argv[]) {
       QStringLiteral("Open <file> at start-up, like --open (as a file association passes it)."),
       QStringLiteral("[file]"));
   QStringList arguments = QCoreApplication::arguments();
+#ifdef Q_OS_MACOS
+  // NSUserDefaults consumes this AppKit launch argument before our parser.
+  // UI tests disable saved-state restoration without changing user defaults.
+  const qsizetype persistence = arguments.indexOf(QStringLiteral("-ApplePersistenceIgnoreState"));
+  if (persistence >= 0 && persistence + 1 < arguments.size()) {
+    arguments.removeAt(persistence + 1);
+    arguments.removeAt(persistence);
+  }
+#endif
   const mitcad::DebugLogRequest debugLog =
       mitcad::debugLogRequest(arguments, qEnvironmentVariable("MITCAD_DEBUG_LOG"));
   parser.process(arguments);

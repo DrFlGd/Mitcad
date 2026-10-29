@@ -3,7 +3,8 @@
 """Converts a 24/32-bit TrueColor XWD screen dump (xwd -root) to PNG.
 
 Only the standard library is used, so the UI tests need no image tools.
-Usage: xwd2png.py input.xwd output.png
+Usage: xwd2png.py input.xwd output.png [x y width height]
+With a rectangle, only that part of the screen is written (clipped to it).
 """
 
 import struct
@@ -55,7 +56,18 @@ def write_png(path, width, height, rows):
     open(path, "wb").write(png)
 
 
+def crop(width, height, rows, x, y, w, h):
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(width, x + w), min(height, y + h)
+    if x1 <= x0 or y1 <= y0:
+        raise SystemExit("the rectangle is off the screen")
+    return x1 - x0, y1 - y0, [row[x0 * 3:x1 * 3] for row in rows[y0:y1]]
+
+
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    if len(sys.argv) not in (3, 7):
         raise SystemExit(__doc__)
-    write_png(sys.argv[2], *read_xwd(sys.argv[1]))
+    image = read_xwd(sys.argv[1])
+    if len(sys.argv) == 7:
+        image = crop(*image, *(int(v) for v in sys.argv[3:7]))
+    write_png(sys.argv[2], *image)

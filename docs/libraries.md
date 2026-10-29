@@ -57,7 +57,7 @@ A library holds data only:
      "name": "Hexagon socket head cap screw", "standard": "ISO 4762",
      "keywords": ["socket head", "cap screw", "DIN 912"],
      "preview": "previews/iso4762.png", "license": "CC0-1.0", "designation": "ISO 4762 {Size}x{Length}",
-     "description": "36 sizes, M3x5 to M12x120."}
+     "description": "190 sizes, M1.6x2.5 to M24x200."}
   ]
 }
 ```
@@ -848,8 +848,12 @@ mitcad-cli library index-entry my-parts --url https://example.org/you/my-parts.g
 that MitCad offers. It is kept in a repository of its own
 (`https://github.com/mitcad/parts.git`). It holds:
 
-- The metric fasteners: ISO 4762, ISO 4017 and ISO 10642 screws, ISO
-  4032 nuts and ISO 7089 washers, M3 to M12 in their preferred lengths.
+- The metric fasteners: ISO 4762 and ISO 4017 screws, ISO 4032 nuts and
+  ISO 7089 washers M1.6 to M24, and ISO 10642 screws M3 to M20, in their
+  preferred lengths (M1.6 to M2.5 and M14 to M24 since 2.8.0,
+  mitcad#900). The rows of earlier versions stay, also the few shorter
+  than a standard's range (ISO 4762 M6x8, M8x10; ISO 4017 M6x10, M8x12,
+  M10x16, M12x20).
   They are simplified for assemblies: cosmetic threads, the heads' top
   edges rounded or chamfered, and no other chamfers or fillets
   ([Previews](#previews)). Each names CC0-1.0 as its own licence.
@@ -947,7 +951,7 @@ Three generators make the library with `mitcad-cli`:
 
 ```
 tools/libraries/make-parts-library.py --cli <mitcad-cli> --source <folder of the supplier's files>
-    --out <clone of the parts repository> [--groups <folder>] [--version 2.7.0] [--work <folder>]
+    --out <clone of the parts repository> [--groups <folder>] [--version 2.8.0] [--work <folder>]
     [--render-worker <mitcad-render>] [--no-render] [--rerender] [--commit]
 tools/libraries/make-fastener-library.py --cli <mitcad-cli> --out <folder> [--sizes M3,M5]
     [--standards iso4762,iso4032] [--version 1.0.0] [--render-worker <mitcad-render>] [--no-render]
@@ -964,7 +968,7 @@ tools/libraries/library_previews.py   the fasteners' studio and finishes (both g
   `LICENSE`, `README.md` and `SOURCES.md`. Then it checks the folder.
   `--out` is a clone of the components repository, so that its versions
   stay. `--commit` records the result on top of them and tags it. The
-  default tag is `v2.7.0`, the next version to publish.
+  default tag is `v2.8.0`, the next version to publish.
 - `make-fastener-library.py` builds the fasteners from the standards'
   dimension tables. Each fastener has its finish as its appearance and
   a rendered preview ([Previews](#previews)).
@@ -1044,7 +1048,7 @@ chamfered. Each is one feature. Thus assemblies stay light:
 | ISO 10642 | ISO metric coarse, over b = 2d + 12 mm, at most the shank under the head | The top edge rounded, radius 0.03 dk |
 | ISO 4017 | ISO metric coarse, to the head | The hexagon's six top edges chamfered 0.06 s |
 | Wood screws, connector and structural screws | The nearest ISO 1478 forming screw thread (`ST4.8` for a 5 mm screw). It is a stand-in for the wood screw's own thread, which the thread feature has no profile of. It goes over 60 % of the length from the tip (the connector screw's to the head) | The head's outer edge rounded, radius 0.08 of its diameter |
-| The slot systems' screws (made from the supplier's solids) | ISO metric coarse of the size in the name (`M8x20`), on the solid's cylindrical faces of that diameter. A self-forming screw (`S12x30`) gets the metric coarse thread of its diameter as a stand-in | The supplier's |
+| The slot systems' screws (made from the supplier's solids) | ISO metric coarse of the size in the name (`M8x20`), on the solid's cylindrical faces of that diameter. A self-forming screw (`S7x25`) gets the metric coarse thread of its diameter as a stand-in. A part whose solid models its thread itself (`"thread": "source"` in its group file: the `S12x30` self-forming screw's shank is thread rings, no plain cylinder) keeps that thread and gets none of its own | The supplier's |
 
 A design's thread has its default row's size. A configuration row sets
 parameters only. Thus another row's shank follows its size but keeps

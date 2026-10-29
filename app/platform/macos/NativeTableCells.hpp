@@ -18,6 +18,14 @@ class QHeaderView;
 class QModelIndex;
 class QWidget;
 
+// A checklist's cursor keeps warning colours intact by framing the current
+// row without selecting it. Its actual native drawing state is testable.
+@interface MitcadNativeCurrentRowView : NSTableRowView
+@property(nonatomic) BOOL currentFocus;
+// Last draw, for focused rendering assertions; never drives presentation.
+@property(nonatomic, readonly) BOOL paintedCurrentFocus;
+@end
+
 namespace mitcad::mac {
 
 // A cell's font and colours from the shared roles: NativeRefusedRole (the
@@ -51,10 +59,18 @@ QHeaderView* nativeHeader(const QAbstractItemView* view);
 struct NativeColumnState {
   std::size_t signature = 0;
   std::vector<int> sizes;
+  // Explicit one-time content requests cache native sizes independently
+  // of later user resizes. A shared section resize ends its cached request.
+  quint64 contentsRequest = 0;
+  std::vector<int> requestedSizes;
+  std::vector<int> requestedSharedSizes;
 };
 
 // Applies the header to the table's columns when its state changed:
-// titles and header tooltips, hidden sections, the shared section sizes,
+// titles and header tooltips, hidden sections, the shared section sizes
+// (ResizeToContents also fits the native header/font/cell insets),
+// including an outline header's native disclosure indentation when AppKit
+// draws it inside the reported header rectangle,
 // and which columns stretch (QHeaderView::Stretch and a stretched last
 // section). A section's width is set when its shared size changes, so a
 // native user resize stays until then. True when it applied anything.
@@ -65,6 +81,11 @@ bool applyNativeColumns(NSTableView* table, const QAbstractItemView* view, Nativ
 void fitNativeColumns(NSTableView* table);
 // Refits when the visible area or a column's width changes.
 void followNativeColumns(NSTableView* table);
+
+// Editors in logical column order, converted from the shared header's
+// NativeColumnEditorsProperty. They move and resize with their columns and
+// scroll horizontally with the header, above the table's ordinary cells.
+void installNativeColumnEditors(NSTableView* table, const std::vector<NSView*>& editors);
 
 // The table a view is in, and the text field of a table cell that has the
 // field editor now (nil when none).

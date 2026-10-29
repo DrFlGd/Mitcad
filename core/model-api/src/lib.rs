@@ -112,6 +112,11 @@ mod tables;
 mod tables_csv;
 // Cut sheets: flat parts at 1:1 written as DXF and SVG (mitcad#853).
 mod cut_sheets;
+// Clearance holes and head recesses by screw size (mitcad#903).
+mod hole_sizes;
+// Hole callouts on the model, their text from the hole's feature
+// (mitcad#902).
+mod hole_callouts;
 // Section Analysis worked out without the document, off the UI thread
 // (mitcad#438).
 pub use analysis::{PreparedClips, PreparedQuery};
@@ -193,6 +198,8 @@ pub mod prelude {
     pub(crate) use super::tables_csv::TablesCsvOps;
     // Cut sheets (mitcad#853).
     pub(crate) use super::cut_sheets::CutSheetsOps;
+    // Hole callouts on the model (mitcad#902).
+    pub(crate) use super::hole_callouts::HoleCalloutsOps;
 }
 
 use std::fmt;
@@ -915,6 +922,9 @@ named_enum! {
         "cut_sheet" => CutSheet(cut_sheets::CutSheetQuery),
         // The height of the annotations' texts (mitcad#894, `annotations.rs`).
         "annotation_text_height" => AnnotationTextHeight,
+        // Clearance holes and head recesses by screw size (mitcad#903,
+        // `hole_sizes.rs`).
+        "hole_sizes" => HoleSizes(hole_sizes::HoleSizesQuery),
     }
 }
 
@@ -1353,6 +1363,8 @@ impl<K: Kernel> DocumentApi<K> for Document<K> {
             Query::CutSheet(query) => self.cut_sheet_json(&query)?,
             // The height of the annotations' texts (mitcad#894).
             Query::AnnotationTextHeight => self.annotation_text_height_json(),
+            // Clearance holes and head recesses by screw size (mitcad#903).
+            Query::HoleSizes(query) => hole_sizes::hole_sizes_json(&query)?,
         };
         Ok(result.to_string())
     }

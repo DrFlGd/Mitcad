@@ -600,6 +600,7 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     auto* box = new QHBoxLayout(line);
     box->setContentsMargins(0, 0, 0, 0);
     row.select = new QPushButton(swatchIcon(colorOf(key)), QString());
+    row.select->setObjectName(QStringLiteral("select_") + key);
     row.select->setCheckable(true);
     row.select->setFocusPolicy(Qt::NoFocus);
     row.select->setToolTip(input.tooltip.isEmpty() ? tr("Click to pick %1").arg(input.label)

@@ -17,4 +17,8 @@ struct MemoryUse;
 // (Linux: available and free swap; macOS: the physical memory).
 MemoryUse memory_use();
 
+// Gives the memory the C library's allocator holds free back to the system
+// (glibc: the free pages of every arena; elsewhere nothing), mitcad#885.
+void release_free_memory();
+
 } // namespace mitcad::bridge

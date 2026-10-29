@@ -11,6 +11,8 @@
 #include <vector>
 
 #include <QCoreApplication>
+#include <QElapsedTimer>
+#include <QEventLoop>
 #include <QGuiApplication>
 #include <QHash>
 #include <QIconEngine>
@@ -20,7 +22,9 @@
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
+#include <QRectF>
 #include <QSize>
+#include <QStringList>
 #include <QVariant>
 #include <QWidget>
 
@@ -290,7 +294,7 @@ void attachGlassWindow(QWidget* card, QWidget* mainWindow, qreal cornerRadius) {
   }
 }
 
-bool captureOwnWindows(const QString& path) {
+bool captureOwnWindows(const QString& path, QRectF* capturedBounds) {
   // Obsoleted in the macOS 15 SDK (screen capture moved to ScreenCaptureKit,
   // which needs the user's permission), still there and enough for the
   // application's own windows: looked up at run time.
@@ -338,7 +342,75 @@ bool captureOwnWindows(const QString& path) {
     CGContextRelease(context);
   }
   CGImageRelease(image);
-  return context != nullptr && result.save(path);
+  const bool saved = context != nullptr && result.save(path);
+  if (saved && capturedBounds != nullptr) {
+    *capturedBounds = QRectF(bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height);
+  }
+  return saved;
+}
+
+bool chooseTestPopup(const QString& title, const std::function<void()>& open,
+                     const std::function<bool()>& qtPopupVisible, QString& error,
+                     const std::function<void()>& nativeClosed) {
+  if (qEnvironmentVariableIsEmpty("MITCAD_TEST_INPUT")) {
+    error = QStringLiteral("native popup instrumentation requires the in-process UI driver");
+    return false;
+  }
+  __block NSMenu* tracked = nil;
+  __block NSTimer* response = nil;
+  __block bool began = false;
+  __block bool ended = false;
+  __block bool selected = false;
+  __block QStringList available;
+  const auto text = [](NSString* value) { return QString::fromNSString(value).remove(QLatin1Char('&')).trimmed(); };
+  const QString wanted = QString(title).remove(QLatin1Char('&')).trimmed();
+  NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+  id begin = [center addObserverForName:NSMenuDidBeginTrackingNotification object:nil queue:nil
+      usingBlock:^(NSNotification* notification) {
+    if (began || ![notification.object isKindOfClass:NSMenu.class]) return;
+    began = true;
+    tracked = notification.object;
+    response = [NSTimer timerWithTimeInterval:0.05 repeats:NO block:^(NSTimer* timer) {
+      (void)timer;
+      [tracked update];
+      for (NSInteger index = 0; index < tracked.numberOfItems; ++index) {
+        NSMenuItem* item = [tracked itemAtIndex:index];
+        available << QStringLiteral("%1 (enabled=%2)").arg(text(item.title)).arg(bool(item.enabled));
+        if (text(item.title) == wanted && item.enabled && item.action && !item.submenu && !item.separatorItem) {
+          selected = true;
+          [tracked performActionForItemAtIndex:index];
+          break;
+        }
+      }
+      [tracked cancelTracking];
+    }];
+    [NSRunLoop.currentRunLoop addTimer:response forMode:NSEventTrackingRunLoopMode];
+    [NSRunLoop.currentRunLoop addTimer:response forMode:NSRunLoopCommonModes];
+  }];
+  id end = [center addObserverForName:NSMenuDidEndTrackingNotification object:nil queue:nil
+      usingBlock:^(NSNotification* notification) {
+    if (notification.object != tracked || ended) return;
+    ended = true;
+    if (selected && nativeClosed) nativeClosed();
+  }];
+  open();
+  QElapsedTimer deadline;
+  deadline.start();
+  while (!ended && (began || !qtPopupVisible()) && deadline.elapsed() < 6000) {
+    QCoreApplication::processEvents(QEventLoop::AllEvents, 25);
+    [NSRunLoop.currentRunLoop runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.01]];
+  }
+  [response invalidate];
+  [center removeObserver:begin];
+  [center removeObserver:end];
+  if (!began && qtPopupVisible()) return false;
+  if (!began || !ended || !selected) {
+    if (tracked) [tracked cancelTracking];
+    error = QStringLiteral("native Qt choice did not select enabled '%1' after complete tracking: %2")
+        .arg(title, available.join(QStringLiteral(" | ")));
+    return false;
+  }
+  return true;
 }
 
 void showAboutPanel(const QString& credits) {

@@ -41,6 +41,8 @@ public:
     // control frame on a leader to that pick.
     std::function<void()> datum;
     std::function<void()> frame;
+    // Hole Callout clicked (mitcad#902): a hole callout on that pick.
+    std::function<void()> callout;
   };
 
   explicit MeasureHistoryView(const MeasureHistory& history, QWidget* parent = nullptr);
@@ -53,8 +55,8 @@ public:
   void setKeepable(bool keepable, const QString& why = QString());
   // Whether the panel shows one pick of the model's, which a note can
   // point at: Note… is enabled; and whether it is a feature (not a vertex
-  // or a datum point) a datum label or a frame can mark: Datum Label… and
-  // Frame… are enabled.
+  // or a datum point) a datum label or a frame can mark: Datum Label…,
+  // Frame… and Hole Callout are enabled.
   void setNoteable(bool noteable, bool feature);
   // The rows again from the history; logs them, and their places once laid
   // out.
@@ -84,6 +86,7 @@ private:
   QPushButton* m_note = nullptr;    // a note on the pick shown (mitcad#702)
   QPushButton* m_datum = nullptr;   // a datum label on it
   QPushButton* m_frame = nullptr;   // a feature control frame on it
+  QPushButton* m_callout = nullptr; // a hole callout on it (mitcad#902)
   QPushButton* m_annotations = nullptr; // opens the Annotations window
   QStringList m_logged; // the places logged last
 };

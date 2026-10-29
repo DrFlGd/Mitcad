@@ -101,7 +101,14 @@ BindingsCard::BindingsCard(const CommandContext& model, Actions actions, QWidget
   setMaximumWidth(kCardWidth); // its texts are elided to fit
   m_follow.setInterval(150);
   connect(&m_follow, &QTimer::timeout, this, &BindingsCard::followPointer);
+  m_native = createNativeBindingsCardView(this, [this] { hide(); });
+  if (m_native) {
+    setAttribute(Qt::WA_DontShowOnScreen);
+    setProperty("nativeCompactPanel", true);
+  }
 }
+
+BindingsCard::~BindingsCard() = default;
 
 void BindingsCard::showFor(const BindingItem& item, const QRect& anchor, bool pinned) {
   if (isVisible() && item == m_item && m_pinned && !pinned) {
@@ -120,15 +127,21 @@ void BindingsCard::showFor(const BindingItem& item, const QRect& anchor, bool pi
     if (wasVisible) {
       hide();
     }
-    setWindowFlags(pinned ? (Qt::Popup | Qt::FramelessWindowHint) : (Qt::ToolTip | Qt::FramelessWindowHint));
+    setWindowFlags(pinned && !m_native ? (Qt::Popup | Qt::FramelessWindowHint)
+                                      : (Qt::ToolTip | Qt::FramelessWindowHint));
     setAttribute(Qt::WA_ShowWithoutActivating, !pinned);
   }
   place();
   show();
+  if (m_native) {
+    m_native->show(anchor, pinned);
+  }
   if (pinned) {
     m_follow.stop();
-    activateWindow();
-    setFocus(Qt::PopupFocusReason);
+    if (!m_native) {
+      activateWindow();
+      setFocus(Qt::PopupFocusReason);
+    }
   } else {
     m_away = 0;
     m_follow.start();
@@ -147,6 +160,9 @@ void BindingsCard::refresh() {
     return;
   }
   place();
+  if (m_native) {
+    m_native->refresh();
+  }
   QTimer::singleShot(0, this, &BindingsCard::logPlaces);
 }
 
@@ -168,9 +184,11 @@ bool BindingsCard::rebuild() {
   column->setSpacing(4);
   const QString name = entries.first().item;
   m_name = name;
+  setWindowTitle(tr("%1 follows").arg(name));
 
   // The title and the options it uses, with their values now.
   auto* title = textLabel(tr("%1 follows").arg(name));
+  title->setObjectName(QStringLiteral("bindingsCardTitle"));
   QFont bold = title->font();
   bold.setBold(true);
   title->setFont(bold);
@@ -189,6 +207,7 @@ bool BindingsCard::rebuild() {
   }
   if (!now.isEmpty()) {
     auto* values = textLabel(tr("now: %1").arg(now.join(QStringLiteral(", "))));
+    values->setObjectName(QStringLiteral("bindingsCardNow"));
     QPalette faint = values->palette();
     faint.setColor(QPalette::WindowText, faint.color(QPalette::PlaceholderText));
     values->setPalette(faint);
@@ -230,7 +249,7 @@ bool BindingsCard::rebuild() {
     head->addWidget(text);
     head->addStretch(1);
     auto* edit = new QPushButton(tr("Edit…"));
-    edit->setObjectName(QStringLiteral("bindingsCardEdit"));
+    edit->setObjectName(QStringLiteral("bindingsCardEdit_") + entry.key());
     styleAsLink(edit);
     edit->setToolTip(entry.kind == BindingEntry::Kind::Appearance || entry.kind == BindingEntry::Kind::FaceAppearance
                          ? tr("Open the Appearance window for it")
@@ -333,7 +352,8 @@ void BindingsCard::followPointer() {
     return;
   }
   const QPoint pointer = QCursor::pos();
-  if (m_anchor.adjusted(-4, -4, 4, 4).contains(pointer) || frameGeometry().adjusted(-8, -8, 8, 8).contains(pointer)) {
+  if (m_anchor.adjusted(-4, -4, 4, 4).contains(pointer) ||
+      (m_native ? m_native->contains(pointer) : frameGeometry().adjusted(-8, -8, 8, 8).contains(pointer))) {
     m_away = 0;
     return;
   }
@@ -354,6 +374,9 @@ void BindingsCard::keyPressEvent(QKeyEvent* event) {
 void BindingsCard::hideEvent(QHideEvent* event) {
   QFrame::hideEvent(event);
   m_follow.stop();
+  if (m_native) {
+    m_native->hide();
+  }
   // setWindowFlags hides a shown card on its way to the other kind.
   if (!event->spontaneous()) {
     qDebug().noquote() << "Bindings card closed";

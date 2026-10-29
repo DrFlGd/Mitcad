@@ -26,7 +26,9 @@ NSView* nativeScrollingContent(NSView* body, NSView* footer);
 // it will be presented on). A window that is no sheet is moved inside that
 // frame around its current centre. Afterwards the window follows display
 // changes and its moves to another screen: made smaller and moved inside
-// again where needed, never larger.
+// again where needed, never larger. Resizing keeps it at least as tall as
+// the body's minimum (its controls at their minimum heights) and the
+// buttons, within that frame (mitcad#812).
 void fitNativeWindowToScreen(NSWindow* window, NSWindow* sheetHost);
 
 // The frame (in screen coordinates) a window has to fit in: its screen's

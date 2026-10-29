@@ -2618,7 +2618,8 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
       object->SetMaterial(flatMaterial(0.0f));
       const bool whole =
           highlight.item.kind == SelectKind::Body || highlight.item.kind == SelectKind::Component;
-      object->SetTransparency(highlight.light ? kLightTransparency
+      object->SetTransparency(whole && highlight.opaqueWholeBody ? 0.0f
+                              : highlight.light ? kLightTransparency
                               : whole         ? kWholeTransparency
                               : highlight.item.kind == SelectKind::Plane ? kPickedPlaneTransparency
                                                                          : kSelectedTransparency);
@@ -2626,7 +2627,7 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
       object->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f,
                                                                          -4.0f);
       const occ::handle<Prs3d_Drawer>& drawer = object->Attributes();
-      drawer->SetFaceBoundaryDraw(!highlight.light);
+      drawer->SetFaceBoundaryDraw(!highlight.light && (!whole || highlight.wholeBodyBoundaries));
       drawer->SetFaceBoundaryAspect(new Prs3d_LineAspect(color, Aspect_TOL_SOLID, 2.0));
       mode = AIS_Shaded;
       break;
@@ -4965,6 +4966,29 @@ std::vector<SelectionItem> OcctViewer::itemsAt(const QPointF& position) {
   }
   m_context->ClearDetected(false);
   return items;
+}
+
+bool OcctViewer::claimsClick(const QPointF& position) {
+  // Precise targets: what a click there picks before an area (a face, a
+  // plane, a body, a profile) under it.
+  const auto precise = [](const SelectionItem& item) {
+    return item.kind == SelectKind::Edge || item.kind == SelectKind::Vertex || item.kind == SelectKind::SketchCurve ||
+           item.kind == SelectKind::SketchPoint || item.kind == SelectKind::Axis || item.kind == SelectKind::Point;
+  };
+  const std::vector<SelectionItem> picked = itemsAt(position);
+  bool claimed = std::any_of(picked.begin(), picked.end(), precise);
+  if (!claimed) {
+    // A body edge or vertex the finer test refuses: the view's all the
+    // same, so that the filter's rules (behind faces, Shift) decide there.
+    m_untestedPicks = true;
+    const std::vector<SelectionItem> under = itemsAt(position);
+    m_untestedPicks = false;
+    claimed = std::any_of(under.begin(), under.end(), [](const SelectionItem& item) {
+      return item.kind == SelectKind::Edge || item.kind == SelectKind::Vertex;
+    });
+  }
+  ResetPreviousMoveTo(); // the hover picks again as before
+  return claimed;
 }
 
 std::optional<SelectionItem> OcctViewer::takeRefusedClick() {

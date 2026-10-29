@@ -15,6 +15,7 @@
 //! base64-encoded, or to the store of a project (version 3, P12a) and
 //! referred to by its SHA-256 (see [`Brep`]).
 
+use std::cell::Cell;
 use std::fmt;
 use std::marker::PhantomData;
 use std::sync::{Arc, OnceLock};
@@ -505,9 +506,97 @@ struct BrepData {
     fingerprint: OnceLock<u128>,
 }
 
-/// Largest B-rep accepted from a file, so a corrupt size cannot exhaust
-/// memory: 4 GiB.
-const MAX_SIZE: u64 = 1 << 32;
+/// Largest B-rep accepted from a file, so a corrupt or hostile size cannot
+/// exhaust memory: 512 MiB, far above a real body's OCCT data (mitcad#928).
+pub const MAX_SIZE: u64 = 512 << 20;
+
+/// Most B-rep data one design file may decode in all, so that a file of
+/// many bodies cannot ask for many times [`MAX_SIZE`] (mitcad#928).
+pub const MAX_FILE_SIZE: u64 = 2 << 30;
+
+/// The most decoded bytes accepted per zlib-compressed byte, checked
+/// before inflating: real OCCT data compresses a few times, zlib itself
+/// reaches about 1032 (mitcad#928).
+const MAX_RATIO: u64 = 64;
+
+/// What any zlib data may decode to whatever its compressed size, so that
+/// small data is never refused by [`MAX_RATIO`].
+const RATIO_ALLOWANCE: u64 = 1 << 20;
+
+/// The most bytes that `compressed` bytes of zlib data are accepted to
+/// decode to (`MAX_RATIO` times them and an allowance): a larger declared
+/// or decoded size is refused, so a small file cannot fill memory with a
+/// zlib bomb (mitcad#928). The library sources' designs in a project's
+/// store use it too.
+pub fn max_inflated(compressed: usize) -> u64 {
+    MAX_RATIO
+        .saturating_mul(compressed as u64)
+        .saturating_add(RATIO_ALLOWANCE)
+}
+
+std::thread_local! {
+    /// The B-rep budget of the design file being read on this thread:
+    /// the bytes left and the file's limit; None outside a file's reading.
+    static FILE_BUDGET: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
+}
+
+/// While it lives, the B-rep data decoded on this thread counts against
+/// one design file's budget ([`MAX_FILE_SIZE`]); reading another file
+/// inside it starts a budget of its own, and the outer one's is back when
+/// that ends (mitcad#928).
+pub(crate) struct FileBudget {
+    outer: Option<(u64, u64)>,
+}
+
+impl FileBudget {
+    /// A design file's budget of [`MAX_FILE_SIZE`] bytes.
+    pub(crate) fn start() -> Self {
+        Self::with_limit(MAX_FILE_SIZE)
+    }
+
+    /// A budget of `limit` bytes (tests use small ones).
+    pub(crate) fn with_limit(limit: u64) -> Self {
+        Self {
+            outer: FILE_BUDGET.replace(Some((limit, limit))),
+        }
+    }
+}
+
+impl Drop for FileBudget {
+    fn drop(&mut self) {
+        FILE_BUDGET.set(self.outer);
+    }
+}
+
+/// Takes `size` bytes from the budget of the file being read, if one is;
+/// an error when the file's B-rep data would exceed it.
+fn take_from_budget(size: u64) -> Result<(), String> {
+    match FILE_BUDGET.get() {
+        Some((left, limit)) if size > left => Err(format!(
+            "the design's B-rep data exceeds {limit} bytes in all"
+        )),
+        Some((left, limit)) => {
+            FILE_BUDGET.set(Some((left - size, limit)));
+            Ok(())
+        }
+        None => Ok(()),
+    }
+}
+
+/// Why `size` decoded bytes are refused for `compressed` bytes of zlib
+/// data before inflating them, if they are.
+fn check_inflated_size(size: u64, compressed: usize) -> Result<(), String> {
+    if size > MAX_SIZE {
+        return Err(format!("{size} bytes, more than {MAX_SIZE}"));
+    }
+    if size > max_inflated(compressed) {
+        return Err(format!(
+            "{size} bytes from {compressed} compressed bytes, more than {MAX_RATIO} times \
+             them"
+        ));
+    }
+    Ok(())
+}
 
 /// The compression level of the stored forms.
 const LEVEL: u8 = 6;
@@ -588,7 +677,12 @@ impl Brep {
 
     /// The data of this reference from the content of its store file,
     /// checked against the reference's size and SHA-256.
+    ///
+    /// A size above [`MAX_SIZE`] or above [`max_inflated`] of the store
+    /// file is refused before inflating (mitcad#928).
     pub fn resolve(&self, stored: &[u8]) -> Result<Brep, String> {
+        check_inflated_size(self.size(), stored.len())
+            .map_err(|e| format!("its declared size is {e}"))?;
         let size = usize::try_from(self.size()).map_err(|_| "too large".to_owned())?;
         let bytes = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(stored, size)
             .map_err(|e| format!("it does not decompress: {:?}", e.status))?;
@@ -758,6 +852,17 @@ impl<'de> Deserialize<'de> for Brep {
         let decoded = crate::base64::decode(&data)
             .map_err(|e| D::Error::custom(format!("B-rep data: {e}")))?;
         let size = file.size as usize;
+        // Refused before inflating: a size its compressed data cannot
+        // honestly have, or more than the file's budget (mitcad#928).
+        if file.compression == "zlib" && file.size > max_inflated(decoded.len()) {
+            return Err(D::Error::custom(format!(
+                "B-rep size {} is too large for its {} compressed bytes (more than {MAX_RATIO} \
+                 times them)",
+                file.size,
+                decoded.len()
+            )));
+        }
+        take_from_budget(file.size).map_err(D::Error::custom)?;
         let (bytes, encoded) = match file.compression.as_str() {
             "zlib" => {
                 let bytes = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&decoded, size)
@@ -947,6 +1052,80 @@ mod tests {
                 .to_string()
                 .contains("unknown field `file`")
         );
+    }
+
+    #[test]
+    fn sizes_beyond_the_compressed_data_are_refused_before_inflating() {
+        let good = serde_json::to_value(Brep::new(vec![b'x'; 5000])).unwrap();
+        let compressed = crate::base64::decode(good["data"].as_str().unwrap())
+            .unwrap()
+            .len();
+        let limit = max_inflated(compressed);
+        assert_eq!(limit, 64 * compressed as u64 + (1 << 20));
+        let mut large = good.clone();
+        large["size"] = json!(limit + 1);
+        let error = serde_json::from_value::<Brep>(large)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is too large for its"), "{error}");
+        // Up to the limit it is inflated, and then has the wrong size.
+        let mut within = good.clone();
+        within["size"] = json!(limit);
+        let error = serde_json::from_value::<Brep>(within)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("expected"), "{error}");
+        // Above the size limit whatever the data.
+        let mut huge = good;
+        huge["size"] = json!(1u64 << 32);
+        let error = serde_json::from_value::<Brep>(huge)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("B-rep size 4294967296 is too large"),
+            "{error}"
+        );
+
+        // A reference from the store, likewise.
+        let brep = Brep::new(vec![b'x'; 5000]);
+        let stored = brep.stored().unwrap();
+        let declared = Brep::reference(brep.sha256(), max_inflated(stored.len()) + 1);
+        let error = declared.resolve(&stored).unwrap_err();
+        assert!(error.contains("its declared size is"), "{error}");
+        assert!(error.contains("more than 64 times"), "{error}");
+        let error = Brep::reference(brep.sha256(), MAX_SIZE + 1)
+            .resolve(&stored)
+            .unwrap_err();
+        assert!(error.contains(&format!("more than {MAX_SIZE}")), "{error}");
+        assert!(
+            brep.to_reference()
+                .resolve(&stored)
+                .is_ok_and(|resolved| resolved == brep)
+        );
+    }
+
+    #[test]
+    fn a_file_s_budget_bounds_its_b_rep_data_in_all() {
+        let brep = serde_json::to_value(Brep::new(vec![b'y'; 2000])).unwrap();
+        let read = || serde_json::from_value::<Brep>(brep.clone()).map_err(|e| e.to_string());
+        {
+            let _budget = FileBudget::with_limit(5000);
+            assert!(read().is_ok());
+            assert!(read().is_ok());
+            {
+                // Another file read inside has a budget of its own.
+                let _inner = FileBudget::with_limit(3000);
+                assert!(read().is_ok());
+                assert!(read().unwrap_err().contains("exceeds 3000 bytes in all"));
+            }
+            // The outer file's budget is back: 1000 bytes left.
+            let error = read().unwrap_err();
+            assert!(error.contains("exceeds 5000 bytes in all"), "{error}");
+        }
+        // Outside a file's reading, no budget.
+        for _ in 0..4 {
+            assert!(read().is_ok());
+        }
     }
 
     #[test]

@@ -14,6 +14,7 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QStringList>
+#include <QTimer>
 #include <QtLogging>
 
 #include "../OcctViewer.hpp"
@@ -121,8 +122,42 @@ MeasurementOverlay::MeasurementOverlay(OcctViewer* viewer) : QWidget(viewer), m_
       follow();
     }
   });
-  // The background turned dark or light: the halos take its tone.
-  connect(viewer, &OcctViewer::backgroundToneChanged, this, [this] { update(); });
+  // The background turned dark or light: the halos take its tone, and
+  // Auto's ink what lies behind (mitcad#902) once the camera rests.
+  connect(viewer, &OcctViewer::backgroundToneChanged, this, [this] {
+    update();
+    scheduleBackdrop();
+  });
+  connect(viewer, &OcctViewer::cameraRested, this, [this] { scheduleBackdrop(); });
+}
+
+void MeasurementOverlay::scheduleBackdrop() {
+  if (m_backdropQueued) {
+    return;
+  }
+  m_backdropQueued = true;
+  QTimer::singleShot(0, this, [this] {
+    m_backdropQueued = false;
+    grabBackdrop();
+  });
+}
+
+void MeasurementOverlay::grabBackdrop() {
+  if (m_grabbing || !isVisible() || m_viewer->width() <= 0) {
+    return;
+  }
+  // The view's own frame, without this overlay (a child widget of its own).
+  m_grabbing = true;
+  const QImage frame = m_viewer->grabFramebuffer();
+  m_grabbing = false;
+  if (frame.isNull()) {
+    return;
+  }
+  m_backdrop.image = frame.convertToFormat(QImage::Format_RGB32);
+  m_backdrop.pixels = static_cast<double>(frame.width()) / m_viewer->width();
+  m_backdropKey = placesKey();
+  qDebug().noquote() << QStringLiteral("Annotation backdrop: %1 x %2").arg(frame.width()).arg(frame.height());
+  update();
 }
 
 void MeasurementOverlay::refresh() {
@@ -139,6 +174,7 @@ void MeasurementOverlay::refresh() {
   }
   m_drawnKey = placesKey();
   update();
+  scheduleBackdrop();
 }
 
 QString MeasurementOverlay::placesKey() const {
@@ -224,6 +260,7 @@ bool MeasurementOverlay::mouse(QEvent* event) {
       m_hovering = false;
       m_viewer->restoreCursor();
     }
+    setHovered(QString());
     return false;
   }
   switch (event->type()) {
@@ -254,9 +291,11 @@ bool MeasurementOverlay::mouse(QEvent* event) {
   case QEvent::MouseMove: {
     auto* move = static_cast<QMouseEvent*>(event);
     if (m_pressed.isEmpty()) {
-      // Over an annotation: a hand, which says it takes the mouse there.
+      // Over an annotation: a hand, which says it takes the mouse there,
+      // and the annotation in the hover's colour (mitcad#902).
       QString name;
       const bool over = move->buttons() == Qt::NoButton && hitAt(move->position(), &name) != 0;
+      setHovered(over ? name : QString());
       if (over != m_hovering) {
         m_hovering = over;
         if (over) {
@@ -351,10 +390,23 @@ bool MeasurementOverlay::mouse(QEvent* event) {
   }
 }
 
+void MeasurementOverlay::setHovered(const QString& name) {
+  if (name == m_hovered) {
+    return;
+  }
+  m_hovered = name;
+  qDebug().noquote() << QStringLiteral("Annotation hovered: %1").arg(name.isEmpty() ? QStringLiteral("none") : name);
+  update();
+}
+
 bool MeasurementOverlay::eventFilter(QObject* watched, QEvent* event) {
   if (watched == m_viewer) {
     if (event->type() == QEvent::Resize && isVisible()) {
       follow();
+    }
+    // The mouse left the view: nothing hovered.
+    if (event->type() == QEvent::Leave) {
+      setHovered(QString());
     }
     if (isVisible() && mouse(event)) {
       return true;
@@ -372,13 +424,17 @@ void MeasurementOverlay::paintEvent(QPaintEvent* /*event*/) {
   for (const MeasurementDisplay& m : m_viewer->measurements()) {
     MeasurementShape shape = layoutMeasurement(m, project);
     shape.highlighted = highlighted.contains(m.name);
+    shape.hovered = !shape.highlighted && m.name == m_hovered;
     if (m_dragging && m.name == m_pressed) {
       shape = draggedMeasurement(shape, m_part == 2, m_delta);
     }
     shapes.push_back(shape);
   }
   QPainter painter(this);
-  paintMeasurements(painter, shapes, m_viewer->sketchHaloColor(), measurementFont(font()));
+  // What lies behind, while the camera is where it was taken.
+  const bool current = !m_backdrop.image.isNull() && m_backdropKey == m_drawnKey;
+  paintMeasurements(painter, shapes, m_viewer->sketchHaloColor(), measurementFont(font()), 1.0,
+                    current ? &m_backdrop : nullptr);
 }
 
 } // namespace mitcad

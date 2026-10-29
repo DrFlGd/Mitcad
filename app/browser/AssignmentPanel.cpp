@@ -29,6 +29,7 @@
 #include "../framework/ParameterField.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "Bindings.hpp"
 
 namespace mitcad {
@@ -81,6 +82,7 @@ AssignmentPanel::AssignmentPanel(Kind kind, const QString& logName, Host host, Q
   // keep their height).
   auto* header = new QHBoxLayout;
   m_title = new QLabel;
+  m_title->setObjectName(QStringLiteral("assignmentTitle"));
   QFont bold = m_title->font();
   bold.setBold(true);
   m_title->setFont(bold);
@@ -89,8 +91,10 @@ AssignmentPanel::AssignmentPanel(Kind kind, const QString& logName, Host host, Q
   m_nowLabel = new QLabel(tr("Now:"));
   header->addWidget(m_nowLabel);
   m_nowSwatch = new QLabel;
+  m_nowSwatch->setObjectName(QStringLiteral("assignmentNowSwatch"));
   header->addWidget(m_nowSwatch);
   m_now = new QLabel;
+  m_now->setObjectName(QStringLiteral("assignmentNow"));
   m_now->setToolTip(m_kind == Kind::Material ? tr("The material the targets have now")
                                              : tr("The appearance the targets have now"));
   header->addWidget(m_now);
@@ -106,6 +110,7 @@ AssignmentPanel::AssignmentPanel(Kind kind, const QString& logName, Host host, Q
   variesLabel->setBuddy(m_varies);
   header->addWidget(m_varies);
   m_fx = new QLabel(QStringLiteral("fx"));
+  m_fx->setObjectName(QStringLiteral("assignmentFx"));
   QFont fx = m_fx->font();
   fx.setBold(true);
   fx.setItalic(true);
@@ -128,6 +133,7 @@ AssignmentPanel::AssignmentPanel(Kind kind, const QString& logName, Host host, Q
   warning->setAlignment(Qt::AlignTop);
   mixedRow->addWidget(warning);
   m_mixed = new QLabel;
+  m_mixed->setObjectName(QStringLiteral("assignmentMixedText"));
   m_mixed->setWordWrap(true);
   mixedRow->addWidget(m_mixed, 1);
   m_mixedBox = mixedBox;
@@ -154,21 +160,25 @@ AssignmentPanel::AssignmentPanel(Kind kind, const QString& logName, Host host, Q
   // table, and the Formula Editor at the right edge.
   auto* below = new QHBoxLayout;
   m_customText = new QLabel;
+  m_customText->setObjectName(QStringLiteral("assignmentCustom"));
   m_customText->setWordWrap(true);
   m_customText->setTextInteractionFlags(Qt::TextSelectableByMouse);
   below->addWidget(m_customText, 1);
   below->addStretch(0); // the buttons at the right edge while there is no text
   m_replace = new QPushButton(tr("Replace with a table"));
+  m_replace->setObjectName(QStringLiteral("assignmentReplace"));
   m_replace->setAutoDefault(false);
   m_replace->setToolTip(tr("A row per value of an option instead; nothing changes until a row does"));
   below->addWidget(m_replace);
   m_formula = new QPushButton(tr("Formula Editor…"));
+  m_formula->setObjectName(QStringLiteral("assignmentFormula"));
   m_formula->setAutoDefault(false);
   m_formula->setToolTip(tr("Edit the expression as text"));
   below->addWidget(m_formula);
   layout->addLayout(below);
 
   m_message = new QLabel;
+  m_message->setObjectName(QStringLiteral("assignmentMessage"));
   m_message->setWordWrap(true);
   setErrorStyleSheet(m_message);
   layout->addWidget(m_message);
@@ -801,11 +811,13 @@ void AssignmentPanel::showRows() {
     };
     // The design's value now in words: "Black (now)".
     QTableWidgetItem* value = cell(kValueColumn);
+    value->setData(NativeControlIdentifierRole, QStringLiteral("assignment.value.%1").arg(i));
     const bool current = isCurrent(i);
     value->setText(current ? tr("%1 (now)").arg(row.shown) : row.shown);
     const QString what = row.other ? tr("Every other value (the default)") : row.value;
     value->setToolTip(current ? tr("%1: the design's value now").arg(what) : what);
     QTableWidgetItem* result = cell(kResultColumn);
+    result->setData(NativeControlIdentifierRole, QStringLiteral("assignment.result.%1").arg(i));
     const QString text = unquotedText(row.result);
     const Result described = text.isEmpty() ? Result() : m_host.describe(text);
     result->setText(row.result.isEmpty() ? tr("None") : (described.name.isEmpty() ? text : described.name));

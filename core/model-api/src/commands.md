@@ -1146,6 +1146,12 @@ their segments' names); a full turn has no caps.
   diameter and nothing tapers, as it was, and NPT cannot be modelled.
   Patterns and mirrors of a tapering hole (or of one with a modelled
   thread) copy the hole feature, not only its tool.
+- `clearance` (optional, mitcad#903): a clearance hole's screw size and
+  fit, `{"size": "M6", "fit": "normal"}` (`fine`, `normal`, `coarse`;
+  `normal` when left out), a size of the [hole_sizes](#clearance-holes-and-recesses-by-screw-size)
+  query; not with a `thread`. It only names where the hole's values came
+  from: the hole is cut at its own `diameter` and `kind`, plain values
+  as any hole's. Holes saved before have none.
 - `participants`: the bodies to cut, all when left out.
 
 A simple hole (no taper, no thread) into one sheet-metal body, every axis
@@ -4077,7 +4083,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.circular_pattern` | `entities`, `center` (point input; a new point is fixed), `count` (originals included), `angle` (value, default a full turn) | a `patterns` record; result `constraints` [the pattern's id] |
 | `sketch.rectangular_pattern` | `entities`, `direction` (default [1, 0]), `count` [n1, n2], `spacing` [s1, s2] (values, signed: a negative spacing goes against its direction, mitcad#447; not zero), `symmetric` ([bool, bool], default none: per direction the originals are the middle instance, an odd count, and the copies lie on both sides) | as above |
 | `sketch.edit_pattern` | `pattern` (`k5`), and any of `count` (n, or [n1, n2]), `angle`, `spacing`, `direction`, `center`, `entities` (the originals) | the copies follow |
-| `sketch.project` | `source`: an edge, a face (its boundary) or a vertex of the bodies before the sketch (left out only for a section of a whole `body`, mitcad#736), `body` (optional), `linked` (default false), `occurrence` and `context` (optional: geometry of another component, see [Geometry of other components](#geometry-of-other-components)), `section` (default false: a face's or a body's section curves, or an edge's crossing points, instead; see [Section curves in sketches](#section-curves-in-sketches)) | fixed reference entities, a curve or point the same as another of the source once; a planar B-spline seen edge on is the line between its extreme points (mitcad#389), as a conic is; a linked projection follows its source when the model changes, each entity the fresh curve of its kind most like it (`by_geometry` in its record, since 0.4.1); a projection without it (files of earlier versions, imports) follows only a source whose curves come back of the same kinds, in the same order and joined the same way, and otherwise keeps its geometry and warns (mitcad#249); joined to the projected geometry already in the sketch, see [Projected outlines and their offsets](#projected-outlines-and-their-offsets) |
+| `sketch.project` | `source`: an edge, a face (its boundary) or a vertex of the bodies before the sketch (left out only for a section of a whole `body`, mitcad#736), or a curve or point of an earlier sketch, `{"sketch": "F1", "curve": "c4"}` / `{"point": "p3"}`, or `{"sketch": "F1"}` for all its curves (see [Projecting another sketch's curves and points](#projecting-another-sketchs-curves-and-points), mitcad#904), `body` (optional; none for a sketch's geometry), `linked` (default false), `occurrence` and `context` (optional: geometry of another component, see [Geometry of other components](#geometry-of-other-components)), `section` (default false: a face's or a body's section curves, or an edge's crossing points, instead; see [Section curves in sketches](#section-curves-in-sketches)) | fixed reference entities, a curve or point the same as another of the source once; a planar B-spline seen edge on is the line between its extreme points (mitcad#389), as a conic is; a linked projection follows its source when the model changes, each entity the fresh curve of its kind most like it (`by_geometry` in its record, since 0.4.1); a projection without it (files of earlier versions, imports) follows only a source whose curves come back of the same kinds, in the same order and joined the same way, and otherwise keeps its geometry and warns (mitcad#249); joined to the projected geometry already in the sketch, see [Projected outlines and their offsets](#projected-outlines-and-their-offsets) |
 | `sketch.import_dxf` | `path` (.dxf), `unit` (of a drawing that names none: `mm` default, `cm`, `m`, `in`, `ft`), `at` (the sketch point the drawing's origin goes to, default [0, 0]), `layers` (only the entities on these layers; all when left out; a layer with nothing on it is refused) | as other edits, and `curves`, `points` (shared points made), `text_count`, `warnings`; undo step `Insert DXF into Sketch1`; see [DXF](#dxf-into-sketches) |
 | `sketch.import_svg` | `path` (.svg), `scale`, `at`, `stroke_outline` (mitcad#473) | see [SVG](#svg-into-sketches) |
 | `sketch.add_code` | `text` (the content), `at` (the lower left corner, default [0, 0]), `module` (mm, default 1), `angle`, `kind` (`qr`), `ecc` (`L`, `M` default, `Q`, `H`) (mitcad#473) | a text with `code` (see the sketch definition's `texts`), `texts` [its id]; undo step `Add QR Code to Sketch1`; a content no QR code holds (too long for the level) or a module of no size is refused |
@@ -5220,6 +5226,16 @@ centres closer than 1e-6 mm become one sketch point, so joined curves
 stay joined; nothing is constrained or dimensioned. `warnings` lists what
 the reader approximated and entities left out. A drawing with nothing a
 sketch can hold is refused.
+
+Block references are expanded as they are read, never stored per cell
+(mitcad#926): an `INSERT` array reads at most 100 000 cells
+(`mitcad_dxf::MAX_ARRAY_CELLS`, its first whole rows), and one read places
+at most a million entities and block references
+(`mitcad_dxf::READ_BUDGET`), counting a block's contents once per
+reference to it at every level, as the `.dwg` import counts its
+occurrences. A warning names each array cut short and a spent budget;
+`dxf_info` and `sketch.import_dxf` read the same way, so both stay
+bounded in memory and time.
 
 ### SVG into sketches
 
@@ -6665,6 +6681,15 @@ What callers see:
   project store (.mitcad/brep)`) and the `document` query's `warnings`
   say so. Saving a document with an unresolved reference keeps it, so
   even a single-file design is then version 3.
+- Sizes are checked before data is inflated (mitcad#928): a `brep`
+  whose `size` is above 512 MiB, or more than 64 times its zlib data
+  plus 1 MiB, does not load (`B-rep size … is too large …`), nor does a
+  file whose B-rep data adds up to more than 2 GiB; a store file of
+  such a size is damaged (`the file … is damaged: its declared size is
+  …`). A library source's design in the store that decodes to more than
+  its limit leaves the source a reference with the warning
+  `library_sources[0] (S1): the file … is damaged: it decodes to more
+  than … bytes`.
 - The display state is written to `.mitcad/local/display/<path in the
   project>.json` in a project, inside the file otherwise.
 
@@ -7795,7 +7820,10 @@ in memory: versions kept, explicit updates, copies, the parts list),
 (libraries made, tagged and fetched from folders and file:// URLs,
 versions, the resolver, comparisons, checks, an index, parts recorded
 under a library's old id and address; skipped without git), ctest `cli.library` (`tools/cli/library-test.cmake`: the generator,
-fetch, insert, parts list, diff, update; needs git and Python),
+fetch, insert, parts list, diff, update, every fastener size M1.6 to M24
+with the smallest and largest rows inserted; needs git and Python),
+ctest `cli.fastener-tables` (`tools/cli/fastener-tables-test.py`: the
+fastener generator's tables and rows, mitcad#900),
 `core/vcs/src/tests/library_build.rs` (BUILD parts: the manifest's fields,
 the checks, the BUILD search and `library_build_candidates`), ctest
 `cli.profile-library` (`tools/cli/profile-library-test.cmake`: the
@@ -11435,6 +11463,72 @@ where the plane crosses its line in `named_curves`);
 `geometry/tests/test_section_curves.cpp` (an edge through the plane and
 one lying in it).
 
+## Projecting another sketch's curves and points
+
+`sketch.project` takes a curve or a point of an earlier sketch as its
+`source` (mitcad#904), in the form the [references to
+geometry](#references-to-geometry) give sketch entities:
+
+```json
+{"cmd": "sketch.project", "sketch": "F4", "source": {"sketch": "F1", "curve": "c3"}, "linked": true}
+{"cmd": "sketch.project", "sketch": "F4", "source": {"sketch": "F1", "point": "p7"}}
+{"cmd": "sketch.project", "sketch": "F4", "source": {"sketch": "F1"}, "linked": true}
+```
+
+- Any entity of the source sketch: lines, arcs, circles, ellipses and
+  elliptical arcs, splines (by control points and through fit points) and
+  points, construction and projected ones too. `{"sketch": "F1"}` without
+  `curve` or `point` (a whole sketch picked in the browser) takes every
+  curve of it, each as a projection of its own; its loose points are not
+  curves and are left out.
+- The geometry is where the source sketch's last evaluation solved it,
+  in model space, projected along the sketch's normal onto its plane as
+  body edges are: on the same plane an exact copy, on a parallel plane the
+  same shapes, on an oblique plane lines shorter, circles and arcs
+  ellipses and elliptical arcs, splines with their poles projected; a curve
+  seen edge on is a line, a point stays a point. The entities are fixed
+  reference geometry, joined to the projected geometry already there as
+  [projections of model geometry](#projected-outlines-and-their-offsets)
+  are, but only to that of the same source sketch.
+- Linked (`"linked": true`), each entity's projection is recorded in the
+  sketch's `projections` with the entity as its `source`:
+  `{"source": {"sketch": "F1", "curve": "c3"}, "entities": [...],
+  "by_geometry": true}`. Entity ids stay with a sketch's entities across
+  its edits, so the record follows the same curve when the source sketch
+  is edited, solved again or its parameters change: at every evaluation
+  its entities take the fresh geometry, each the fresh curve of its kind
+  most like it. A source entity removed from its sketch makes the
+  projection lost, as a body edge that is gone: its entities keep their
+  last geometry, the `sketch` query marks the record `"lost": true`, and
+  the sketch warns `the projection of F1/c3 does not follow it: it is
+  gone, ...` (messages name the entity `F1/c3`). Unlinked, the entities
+  are fixed copies with no record.
+- Order: only a sketch before the edited one in the timeline. A later
+  sketch is refused (`Sketch3 (F3) comes after Sketch2 (F2) in the
+  timeline; only the curves and points of a sketch before it can be
+  projected`), so no sketch follows one that follows it; a linked
+  projection whose source the timeline later puts after it fails the
+  sketch's check, as a reference to a later feature does. The sketch's
+  own geometry is refused (`a sketch does not project its own geometry`),
+  as is an entity the sketch does not have (`Sketch1 has no c99`), a
+  `body` with a sketch's geometry, and `"section": true` with it.
+- Another component's sketch, and a sketch of a component placed more
+  than once, come through `occurrence` and `context` as its bodies' edges
+  do ([Geometry of other components](#geometry-of-other-components)): the
+  record keeps the link and the geometry is moved by the occurrence's
+  placement. Without the occurrence such a sketch is refused (`Sketch1 is
+  a sketch of A, not of …; pick it where an occurrence of A shows it`).
+- In the design file the source of a projection of model geometry is the
+  name's text, as in every earlier version, so earlier files open
+  unchanged; a sketch entity's source is the object above. A copied
+  sketch's projection of a copied sketch names the copy.
+
+Tests: `core/model-tests/sketch-refs/src/sketch_projection_tests.rs`
+(the same, a parallel and an oblique plane; a dimension change followed;
+an unlinked copy; a removed source curve; a later sketch and the sketch
+itself refused; a whole sketch; save and reopen; another component's
+sketch through its occurrence).
+
 ## Failed features in command results
 
 A feature that fails does not reject a command (mitcad#401): the command
@@ -13514,6 +13608,10 @@ the first time something refers to them:
   makes it) in the mirror's own undo step `Mirror in Sketch1`, and the
   copies are symmetric about it. Its made line's `c` id works as any
   line.
+- **Not redundant** (mitcad#877): a fixed line whose both end points are
+  fixed (an axis line, a projected line) is held in the solve by its
+  points' fixes alone, so the sketch's `redundant` does not list it; the
+  line stays `"fixed": true` in the definition and the `sketch` query.
 
 Code: `core/sketch/src/axes.rs`. Tests:
 `core/model-tests/sketch/src/sketch_axes_tests.rs`, Mirror about an axis
@@ -15230,9 +15328,9 @@ dimension (`kind` one of the measurement kinds) or a leader note (`kind`
 | Field | Meaning |
 |---|---|
 | `group` | a group's name (`Manufacturing`), trimmed; left out for none. The application shows and hides a group at once and snapshots one. |
-| `plane` | the plane it lies in: `{"normal": [x, y, z]}` (a direction in the first pick's own coordinates, so that it turns with the pick's occurrence; a length's plane is turned square to its ends), with `"x"` for a note (the direction its text runs along, likewise), or `{"pick": <pick>}`, a planar face or a datum plane it lies parallel to and follows. Left out: chosen from the picks — a length's plane is square to the coordinate axis least along it (Z, then Y, then X), or, where a planar face at a pick holds the length and is not parallel to that, the face's nearest it (mitcad#894); a note's is its face's plane (else XY). A radius, a diameter and an angle lie in the plane of their circle or rays and take no `plane`. |
-| `line_offset` | a length's dimension line from its ends, mm, signed across the ends in the plane; left out, outside its bodies' extent in the plane (mitcad#894, [Annotations' look](#annotations-look-text-height-auto-colour-and-placement): 1.5 text heights past the bodies, stacked outside parallel lines; without a body, a quarter of the length, at least 1 mm); an angle's arc radius, more than 0 (half the distance from the corner to the nearer pick's point, else 10 mm). None for a radius, a diameter or a note. |
-| `text_offset` | `[along, across]`, mm in the plane: a dimension's text from its default place (the dimension line's middle; a circle's one and a half radii out along `across` of its axis; an angle's arc's middle); a note's text from its arrow's point (`[10, 10]` when left out). |
+| `plane` | the plane it lies in: `{"normal": [x, y, z]}` (a direction in the first pick's own coordinates, so that it turns with the pick's occurrence; a length's plane is turned square to its ends), with `"x"` for a note or a diameter (the direction its text runs along, likewise), or `{"pick": <pick>}`, a planar face or a datum plane it lies parallel to and follows. Left out: chosen from the picks — a length's plane is square to the coordinate axis least along it (Z, then Y, then X), or, where a planar face at a pick holds the length and is not parallel to that, the face's nearest it (mitcad#894); a note's is its face's plane (else XY). A radius and an angle lie in the plane of their circle or rays and take no `plane`; a diameter does too unless it has one, which is its leader's (one added in a view takes the view's, mitcad#902: a leader from outside with its text level in that plane). |
+| `line_offset` | a length's dimension line from its ends, mm, signed across the ends in the plane; left out, outside its bodies' extent in the plane (mitcad#894, [Annotations' look](#annotations-look-text-height-auto-colour-and-placement): 6 text heights past the bodies, stacked outside parallel lines; without a body, a quarter of the length, at least 1 mm); an angle's arc radius, more than 0 (half the distance from the corner to the nearer pick's point, else five text heights, mitcad#902). None for a radius, a diameter or a note. |
+| `text_offset` | `[along, across]`, mm in the plane: a dimension's text from its default place (the dimension line's middle; a circle's one and a half radii out along `across` of its axis, at least three text heights past its rim; an angle's arc's middle); a note's (a datum's, a frame's, a hole callout's) text from its arrow's point (four and three text heights when left out, mitcad#902). |
 | `format` | a dimension's `{"decimals"` (0 to 6; up to three without trailing zeros when left out), `"prefix"` (in place of the kind's: `Ø` for a diameter, `R` for a radius; `""` for none), `"before"`, `"after"` (own text, e.g. `4 x`, `THRU`), `"replace"` (a text in place of the value and its tolerance)`}`; left out when all are defaults. |
 | `tolerance` | a dimension's `{"type": "symmetric", "value"}` (±), `{"type": "deviations", "upper", "lower"}` (signed, upper more than lower), `{"type": "limits", "upper", "lower"}` (the same deviations written as the largest and smallest size), or `{"type": "fit", "code", "deviations"}` (an ISO 286 code on a length, `H7` a hole's, `g6` a shaft's, of the size as written (its range by the value rounded as shown) — a radius' of its diameter's size, with half its deviations; `deviations: true` writes them in brackets); millimetres for lengths, degrees for angles. |
 | `text` | a note's text, lines split at `\n`. |
@@ -15248,7 +15346,8 @@ dimension (`kind` one of the measurement kinds) or a leader note (`kind`
 
 - **A view's suggestion.** `add_annotation`'s `view` is `{"direction"`
   (the way the view looks, from the eye), `"up"`, `"pixel"` (mm a pixel
-  near the picks)`}`: what it leaves out is placed as it was seen — a
+  near the picks; still taken, no longer used since mitcad#902)`}`: what
+  it leaves out is placed as it was seen — a
   note's plane square to the view (its text along the view's right); a
   length's plane a plane of its part (mitcad#894): of the planar faces at
   its picks that hold it (a face picked and the faces it meets, the faces
@@ -15257,10 +15356,11 @@ dimension (`kind` one of the measurement kinds) or a leader note (`kind`
   one most square to the view's up), its normal towards the eye; both kept
   in the first pick's own coordinates; a length's dimension line outside
   its bodies' extent as when left out (the view's upper side when both
-  sides are as clear; without a body 22 pixels off on the view's upper
-  side), stacked outside the parallel lines there; an angle's arc 42
-  pixels out, a circle's text 30 pixels past its rim, a note's text 40 and
-  30 pixels off — and kept as `plane`, `line_offset` and `text_offset`.
+  sides are as clear; without a body 2.5 text heights off on the view's
+  upper side), stacked outside the parallel lines there — and kept as
+  `plane` and `line_offset`. The other places are left to the defaults,
+  in text heights, which follow the design's text height (mitcad#902: none
+  in the view's pixels frozen when an annotation is added).
 - **Checked.** A note points at one pick, which gives it a point (a body
   picked without `at` gives none), and needs a text; it has no format or
   tolerance, a dimension no `text`; a note stays a note and a dimension a
@@ -17727,12 +17827,13 @@ without a view, or set back to the default with `null`, the editor's
 Automatic), a length's dimension line lies outside its bodies' extent in
 its plane: of the corners of the boxes of the bodies its picks are on,
 projected across the ends in the plane, on the side they reach less far
-past the ends (`y`'s, or the view's upper side when added in a view, when
-both are as clear), 1.5 text heights past the farthest corner there; a
-parallel line laid out before it (by the order of the annotations, a
-shown length in a parallel plane, along the same direction, overlapping
-it along the length) that it would come within 1.2 text heights of moves
-it 1.2 text heights past that line, on its side. A line set (by a view
+past the ends (`y`'s when as far; when added in a view, the side towards
+the view's eye, mitcad#902), 6 text heights past the farthest corner
+there (1.5 before mitcad#902); a parallel line laid out before it (by the
+order of the annotations, a shown length in a parallel plane, along the
+same direction, overlapping it along the length) that it would come
+within 2.5 text heights of moves it 2.5 text heights past that line, on
+its side. A line set (by a view
 when added, or dragged) keeps its place. The places are worked out from
 what `measure_picks` keeps for the picks (`MeasuredPicks::extent`,
 `MeasuredPicks::faces`: the bodies' boxes placed by their occurrences, the
@@ -17748,3 +17849,152 @@ as Auto, the ISO 3098 series by size, heights refused),
 (`lengths_are_placed_outside_the_body_and_stack_outside_each_other`,
 `old_default_colours_are_read_as_auto`,
 `the_text_height_is_automatic_or_set_for_the_design`).
+
+## Clearance holes and recesses by screw size
+
+mitcad#903 (`core/model/src/features/hole_sizes.rs`,
+`core/model/data/hole_sizes.json`, `core/model-api/src/hole_sizes.rs`):
+the clearance holes and the screw head recesses of the ISO metric screw
+sizes M1.6 to M24 (the sizes of MitCad's fastener tables), which the Hole
+panel's Hole Tap Type Clearance fills its fields from. The data file has
+one section per standard, each naming it:
+
+- ISO 273 (ISO 20273): the clearance hole of the fine, medium and coarse
+  series; the panel's Fit Normal is the medium series.
+- DIN 974-1, series 1: the counterbore for an ISO 4762 socket head
+  without a washer; its depth is ISO 4762's head height k plus an
+  allowance (0.2 mm for M1.6 to M2.5, 0.4 mm for M3 to M6, 0.6 mm for M8
+  to M20, 0.8 mm for M24). A counterdrill takes the counterbore's
+  diameter and depth, its cone 90°.
+- ISO 10642: the theoretical head diameter dk of the 90° countersunk
+  socket head (M3 to M20), and ISO 15065: the countersink diameter for
+  the heads of ISO 7721 (M1.6 to M10). A size's countersink is the larger
+  of the two, so that either head is at or just below the face; M24 has
+  none.
+- A tapped hole's countersink: 1.1 times the thread's major diameter,
+  rounded to 0.1 mm and at least 0.1 mm over it, at 90°.
+
+| Query | Fields | Result |
+|---|---|---|
+| `hole_sizes` | `size` (`M6`, case and spaces ignored; every size when left out), `major` (a thread's major diameter, mm) | `sizes` (smallest first): `size`, `diameter` (the thread's nominal d), `clearance` (`fine`, `normal`, `coarse`), `counterbore` (`diameter`, `depth`), `counterdrill` (`diameter`, `depth`, `angle` 90), `countersink` (`diameter`, `angle` 90; left out for M24), `iso_10642_head` and `iso_15065` (the two diameters the countersink is the larger of, where the standard has the size); `fits` (`fit`, `title`: `fine` Fine, `normal` Normal, `coarse` Coarse), `default_fit` (`normal`), `default_size` (`M6`), `standards` (the sections' titles: `clearance`, `counterbore`, `countersink_head`, `countersink`); with `major` also `tapped_countersink` (`diameter`, `angle` 90). A size the table lacks is refused (`no clearance hole for the screw size M7: the sizes are M1.6, …`), and so is a `major` not greater than zero |
+
+Lengths are millimetres, angles degrees. A hole stores the values the
+panel filled in as plain values, and names its size and fit in
+`clearance` ([hole](#hole)); the table does not change a hole later.
+
+Tests: `features::hole_sizes::tests` and
+`features::hole::tests::clearance_holes_keep_their_size_and_fit`
+(`core.model`), `core/model-tests/features-profile/src/hole_size_tests.rs`
+(the query for M2, M6 and M24; a clearance hole with a counterbore, a
+typed value kept, the refusals), `tools/cli/tests/f1_hole.json` (the
+volumes of M6 clearance holes counterbored, Normal and Fine, and
+countersunk, through a 60 x 40 x 20 block).
+
+## Hole callouts and the reference look
+
+mitcad#902 (`core/model-api/src/hole_callouts.rs`,
+`core/model-api/src/annotations.rs`, `core/model-drawing/src/compose.rs`):
+hole callouts on the model, and what the [annotations](#annotations) give
+the application for the look of a technical drawing's dimensions.
+
+**Hole callouts.** An annotation of the `kind` `hole_callout` points at a
+hole: its `a` is a body's round face or edge (a hole's wall, its
+counterbore's or countersink's face, or a rim between them), with `at`,
+where the hole was clicked. It is a leader as a note is (no value, format,
+tolerance or text of its own; `name` `HoleCallout1`, …), stored and
+listed as the other annotations, edited and deleted by the same commands.
+`add_annotation` needs `kind: "hole_callout"`; it is refused for a pick
+that is no face or edge (`a hole callout points at a hole: its round face
+or edge`) and for a face that gives no hole or circle. Its `label` is
+`{"text": "4x Ø6.6 THRU / ⌴ Ø11 ↧ 6.8", "lines": ["4x Ø6.6 THRU", "⌴ Ø11 ↧
+6.8"]}`, worked out whenever the annotations are asked for, so it follows
+the hole's size, depth and thread:
+
+- A hole of a hole feature (its face named `F5:hole2.wall`,
+  `F5:hole2.cbore_wall`, … or named after one): the exported drawing's
+  callout engine (`mitcad_model_drawing::compose::hole_callout`, there in
+  words, here in ISO 129-1's symbols) — the count of the feature's holes
+  (`4x`, none for one), the thread of a tapped hole (`M6x1 - 6H`, `LH` for
+  a left-handed one, a custom thread's size and starts, `10x1.5 2
+  STARTS`) or `Ø` and the drill's diameter (a tapped hole's bore, its
+  thread's minor diameter), then `THRU` or `↧` and the depth (a hole to an
+  object: its wall's length); a thread along part of the wall has its
+  depth on the first line and the drill's size and depth on the second;
+  then the counterbore (`⌴ Ø11 ↧ 6.8`; a counterdrill's too) or the
+  countersink (`⌵ Ø12 × 90°`). Lengths in the document's unit as the
+  drawings write them (two decimals in millimetres at most).
+- A round face of a thread feature: its thread (`M10x1.5 - 6g`) and `↧`
+  its length when it has one.
+- Any other round face or edge: its diameter (`Ø20`).
+
+Its `drawing` is a note's: the leader from the text to the arrow on the
+hole's edge, at the end of the round face picked towards the side its
+plane faces (the view's when added), at the point of the rim nearest
+`at`. A broken pick or a hole feature that does not build breaks it with
+the reason, as other annotations. A feature control frame can stand under
+it (`on`, as under a dimension: its position frame on the same leader).
+
+**What the drawing gives the look.** Each leader's `drawing` has `align`,
+`start` or `end`: its text starts at the leader's end, or ends there when
+it lies on the arrow's side along the text; a frame under a hole callout
+has the callout's `align` and `under_lines` (the callout's lines it stands
+below). A note's and a frame's leader on a face ends in a dot
+(`"terminator": "dot"`), on an edge or outline in an arrow; a datum
+label's in its triangle (`"datum"`). A length's extension line from a
+planar face picked starts at that face's own outline (the corners of its
+box, `MeasuredPicks::outlines`), on the line's side, never at the edge of
+the bodies' box in mid-air; from an edge or a vertex at its point. The
+places left to the defaults are in text heights, which follow the design's
+text height, and keep the annotations out of the part as a drawing does:
+a length's line 6 text heights past its bodies (2.5 more for each
+parallel one), on the side towards the eye of the view it was added in; a length
+between two planes picked has its ends slid within both faces to their
+common edge on that side and to their far edge along its plane's normal
+(the plane faces the eye: away from it), so that its extension lines run
+from the faces' corners to a line outside the part; a view's ties between
+planes facing it alike go to the one most along its up (a horizontal
+plane). A leader's text (a note's, a frame's, a callout's) goes the
+shortest way out of the part in its plane on an oblique leader, never
+along the text nor straight up: of the directions up and out to its own
+side (45 degrees, then steeper), up and out to the other side, and down
+and out (in that order of preference), the one that leaves the bodies'
+extent soonest without crossing a leader or a text laid out before it
+in a parallel plane, 2 text heights past the extent, after a landing of
+1.5 text heights level with the text's first line (the leader's
+`dimension_lines`: the leader to the point, then the landing; the other
+lines hang below), and moves on up past the leaders' texts laid out
+before it (their size estimated from their words) and on past the
+lengths' dimension lines laid out before it as seen in its plane;
+without a body four along and three across from its point. A datum
+label on a face stands on a stem 3 text heights long square to that
+face (its normal in the label's plane), its square centred past the
+stem's end (`"align": "middle"`, no landing); on a planar face its
+triangle stands on the face's outline where the stem leaves the face
+(the convex outline of the face's box corners seen in the label's
+plane), its base along that outline and the stem square to it in the
+plane. A round face's circle (a radius, a diameter) is drawn at the
+face's end towards the default isometric view's eye. A radius, and a
+diameter without a plane, lie in the circle's plane, the text out from
+the bodies' middle, one and a half radii and at least three text heights
+past its rim, a diameter on a leader from outside with its one arrow on
+the rim and no centre mark. A diameter added in a view takes the view's
+plane as a note does (its `plane`, the view's horizontal its `x`):
+there it is a leader from outside to the rim's point that lies out from
+the bodies' middle, its arrow on the rim, its text level on a landing
+(`align` as a note's), laid out as a note's; a frame under it stands
+below its text as under a hole callout; an
+angle's arc is five out without its picks' reach. A view no longer
+freezes pixel sizes when an annotation is added. The automatic text
+height takes the size of the design (its root's bodies with the annotated
+ones).
+
+Tests: `api::hole_callouts::tests` (a hole found in its faces' names),
+`api::annotations::tests`
+(`extension_lines_start_at_the_picked_geometry_not_at_a_box`,
+`a_datum_stands_on_its_faces_outline_and_a_diameter_on_a_leader`, the
+defaults in text heights), `compose::tests`
+(`hole_callouts_in_words_and_in_symbols`), `document::annotations::tests`
+(the kind), `core/model-tests/analysis/src/annotation_tests.rs`
+(`hole_callouts_write_their_holes_from_the_feature`: a simple, a through
+counterbored, a countersunk, a tapped, a partly tapped and a custom-thread
+hole, the drill's size changed; `a_hole_callout_takes_a_frame_and_breaks_with_its_hole`).

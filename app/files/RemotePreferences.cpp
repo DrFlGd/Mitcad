@@ -8,6 +8,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QHeaderView>
 #include <QHBoxLayout>
 #include <QJsonObject>
 #include <QLabel>
@@ -26,6 +27,7 @@
 
 #include "../framework/DialogFolders.hpp"
 #include "../framework/Dialogs.hpp"
+#include "../platform/NativeDialogs.hpp"
 
 namespace mitcad {
 
@@ -87,6 +89,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   gitLabel->setBuddy(m_git);
   form->addRow(gitLabel, gitRow);
   m_found = new GitStatusLabel;
+  m_found->setObjectName(QStringLiteral("cloudGitStatus"));
   form->addRow(QString(), m_found);
   // Who versions are recorded by when neither the project nor git names
   // anyone.
@@ -102,6 +105,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   form->addRow(authorLabel, authorRow);
   auto* authorNote = new QLabel(tr("When git has none. The name and email address go into every version of a "
                                    "project; anyone who gets its history sees them."));
+  authorNote->setObjectName(QStringLiteral("cloudAuthorNote"));
   authorNote->setWordWrap(true);
   form->addRow(QString(), authorNote);
   m_push = new QCheckBox(tr("Send each saved version at &once (default for projects)"));
@@ -135,6 +139,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   // The brokers answered for (mitcad#89): the trust question's answer and
   // the user signed in as; the buttons act at once.
   m_brokers = new QTreeWidget;
+  m_brokers->setObjectName(QStringLiteral("cloudKnownBrokers"));
   m_brokers->setColumnCount(3);
   m_brokers->setHeaderLabels({tr("Broker"), tr("User"), tr("Answer")});
   m_brokers->setRootIsDecorated(false);
@@ -236,6 +241,7 @@ void RemotePreferencesBox::listBrokers() {
   for (int column = 0; column < m_brokers->columnCount(); ++column) {
     m_brokers->resizeColumnToContents(column);
   }
+  requestNativeColumnContents(m_brokers->header());
   if (m_brokers->topLevelItemCount() > 0) {
     m_brokers->setCurrentItem(m_brokers->topLevelItem(0));
   }

@@ -1,0 +1,14 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT"},
+  {"comment": "Synthetic 100 x 60 x 3 plate and diameter-40 x 3 disk; no drawing exists initially."},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 100, "height": 60},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 3}, "operation": "new_body"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F3", "center": [150, 30], "diameter": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F3", "region": "r{c1}"}],
+    "extent": {"type": "distance", "distance": 3}, "operation": "new_body"}}
+]

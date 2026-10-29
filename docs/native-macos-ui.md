@@ -148,6 +148,10 @@ row, opening its sketch or feature editor; Return in a row's text editor
 finishes renaming.
 Command+F opens native timeline search, sharing the query, component/status
 filters, result navigation and selection restoration with the Qt timeline.
+The wheel over the native timeline scrolls towards older or newer features,
+using its larger axis for diagonal motion. Precise trackpad deltas retain
+their point values; the strip consumes scrolling at both ends so it cannot
+zoom the canvas.
 Command+W in command or timeline search dismisses that search and keeps the
 document open. Removing Project through toolbar customisation remains in
 effect after saves and other project-status changes.
@@ -188,8 +192,10 @@ in Qt.
 The modeless Part Picker opens through the shared `showDialog` in a
 floating AppKit utility panel (`nativeUtilityWindow`, mitcad#819). It does
 not take the keyboard from the document: a click on a tile chooses the part
-while keys still reach the running command; the panel becomes key only for
-its search. A pinned picker stays when its command ends and the next
+while keys still reach the running command; search and editable option
+controls take the panel's keyboard focus. Pinning leaves that focus as it
+was: select the document before using Escape to cancel its command.
+A pinned picker stays when its command ends and the next
 command takes the same panel over; reopening brings it forward without
 activation. Close, Escape in the panel, Command+W and its close button hide
 the presenter and return the keyboard to the document. The panel keeps its
@@ -215,6 +221,25 @@ are AppKit windows, not a harness's Qt window.
 
 ### Converted layouts and dialog buttons
 
+The shared Appearance and Materials assignment panel and Configurations'
+fourth Bindings tab (mitcad#864) use the ordinary popup, model-table and
+button bindings. A library double-click reaches the presenter's original
+assignment action; the selected value rows and the next active row follow
+its shared selection model. Small QLabel swatches and warning icons keep
+their device-independent image height, including after an image changes.
+`app.ui-macos-bindings-parity` and `app.ui-macos-native-bindings-parity`
+exercise option choice without a write, double-click fills and row advance,
+back to None, Mixed targets with multiple selected rows, the Bindings tab's
+filters, warnings, editor/selection actions and remove/undo. They retain
+the saved model and both content and own-window captures in each theme.
+One additional light-mode run starts without options, opens Add Option
+through the assignment panel's actual action entry, makes a numeric option
+and fills its Other row through New. It then picks a visible OCCT face and
+binds that face independently; saved face keys must match the exact face
+selected by the viewport input. Texture-source input has separate file and
+appearance coverage; this assignment test does not repeat a texture-source
+fill or accept its readiness from the New case.
+
 Dialogs, Settings and other secondary windows convert their shared Qt
 layouts into one constraint-based AppKit container
 (`app/platform/macos/NativeLayout.mm`); pages shown in the document's cards
@@ -234,6 +259,14 @@ priority; minimum sizes hold against resizing, so a window cannot become
 narrower than its fields' usable widths. Qt size hints of widgets are read
 when a presenter is converted; a nested layout's natural size comes from its
 native items, and a line edit keeps at least Qt's 17-character width.
+Non-wrapping form captions keep their complete single-line AppKit text
+metrics, including trailing punctuation. Embedded table controls use cell
+padding rather than the margins of an independent dialog.
+Filtered categories retain their controls, but suspend the native layout
+constraints of the entire hidden subtree in one batch. Hidden rows and
+cells leave no guides in the active graph. Showing the category restores
+its constraints even when its children's individual hidden flags did not
+change; category switching, Search and Advanced keep every field available.
 
 Converted button boxes use the macOS role order: help, reset, apply and
 other helper actions on the left; destructive actions set apart; then
@@ -242,6 +275,19 @@ rightmost. Added, removed or hidden buttons and changed roles rearrange the
 row. Return belongs to the presenter's default button and does nothing while
 that button is unavailable; Escape belongs to the rejecting buttons, and the
 window's cancel action rejects a dialog without one.
+
+The Parameters dialog's Tables page keeps its column-name fields and unit
+choices in the native table header. A presenter supplies those widgets
+through `NativeColumnEditorsProperty` on its shared header; the adapter
+converts their controls and follows column resizing, reordering and
+horizontal scrolling. Renaming a column and choosing a unit use the shared
+model commands, including number conversion and undo. Refused table cells
+retain their typed text and show the native error colour and reason.
+Return in a column-name or comment field commits that field and returns
+focus to the table; it does not activate the dialog's OK. The paired
+`ui-macos-table-parity-test.sh` workflow exercises the column editors,
+unit conversion, refused and corrected numeric cells, the dependent
+extrusion and one-step undo in both frontends and both appearances.
 
 `app.ui-macos-native-dialog-layout` first checks these rules with synthetic
 presenters: field widths, label and field columns, side-by-side slider
@@ -254,8 +300,18 @@ at each dialog's narrowest size. It asserts the visible, unclipped and
 unobstructed bounds of the search field, the author's name and email and the
 speed sliders beside their labels; left-to-right button bounds with the
 primary action rightmost; real AppKit pointer clicks and slider drags; Tab
-from name to email; Return while Create is unavailable; and Escape without
-creating, inserting or rendering anything.
+from name to email at both sizes; repeated pointer/search edits after the
+narrow resize; all four narrow slider bounds; Return while Create is
+unavailable; and Escape without creating, inserting or rendering anything.
+Normal Zoom and narrow Trackpad sliders additionally require a real
+Tab/Shift+Tab focus round trip, Home and Right/Left changes using the shared
+single step, and restoration through their Reset buttons. The read-only
+`expect-native-text` slider probe reads the actual AppKit integer value,
+beside the independent shared-widget assertion. A real slider click takes
+keyboard focus before standard AppKit mouse tracking; focus stays on it
+during its own keyboard action. Other accepting actions still commit the
+previous text field before dispatch. These acceptance interactions must be
+run in both appearances before recording a pass.
 
 The #187 keyboard changes were initially integrated without executing builds
 or tests at the owner's request. On 2026-10-23, the physical M1 Max native
@@ -291,6 +347,24 @@ column keeps its shared width, which includes the tree's indentation, rather
 than widening for deeper rows. Rows are flat, without AppKit's inset table
 padding.
 
+A shared tree's `setFirstColumnSpanned` rows use AppKit's full-width group
+cell, rather than truncating the heading to the first column. Their shared
+font, fill, alignment and text padding remain in effect; group rows scroll
+normally and retain the item's enabled/selectable flags. This also keeps
+selectable spanned roots distinct from nonselectable category headings.
+The native print-history regression checks the actual visible full captions,
+span width, padding, font and selection policy of both kinds without
+scrolling individual rows into view. Padding is measured between the actual
+AppKit alignment rectangles used by the anchors, while caption completeness
+and clipping are checked against the visible view bounds.
+
+When a shared `SelectItems` view restores a selected cell after rebuilding
+its model, the native row containing that cell regains its highlight. This
+native presentation update does not expand the Qt selection to the other
+cells of the row. `SelectRows` keeps its existing whole-row policy. The
+paired Tables regression checks the actual native row selection and the
+shared single selected current cell after header, refusal and value edits.
+
 In a cell editor, Return commits the value, refused or not, without
 pressing the dialog's default button; Escape discards the edit without
 closing the dialog; Tab and Shift+Tab commit and edit the next or previous
@@ -303,6 +377,16 @@ its rows (Parameters does after each change) the edited row is found again
 by its stable identifier. Only a row that disappeared closes its editor
 without committing. Ending an edit that changed nothing sets nothing.
 Document cards keep leaving keys to the document window.
+
+Property Sets' print cells mount the shared profile chooser and distinct
+Edit/reset controls as native AppKit controls. The delegate's glyph painting
+and mouse hit tests are not used by a native table: these controls call its
+same actions directly. Printer/Process pencils open the selected profile,
+Own settings opens that level's settings, and Material opens Materials;
+reset removes only that level's profile choice in one undo step. Read-only
+summary values remain labels. `app.ui-macos-native-print-history` checks
+these controls with real pointer input in both appearances, alongside the
+long timeline's wheel behavior, undo and unchanged model/viewport checks.
 
 `app.ui-macos-native-tables` exercises these in light and dark appearance
 with the `--demo` block: an invalid `30 deg` length committed with Return
@@ -335,18 +419,30 @@ compact marks keep theirs), also for an outline made inside a card that
 opens at a remembered width.
 
 Secondary windows scroll their whole body above the dialog's buttons,
-which stay visible at the bottom. A window opens at the size its presenter
-requests, or taller when its content needs it, always within the visible
-frame of its screen (without the menu bar and the Dock), title bar
-included; a sheet fits below its host's title bar and toolbar. Required
-Auto Layout sizes of the controls enlarge the scrolled body instead of the
-window; a body wider than the window scrolls horizontally. Display changes
-and moves to another screen make a window smaller and move it inside the
-visible frame again, never larger. The shared Qt Appearances dialog has
-the same arrangement: its body is a `FittingScrollArea` within the
-screen's available area. That scroll area is marked `nativeWindowBody`, so
-the AppKit conversion lays it out inline in the window's own scrolling
-body rather than as a nested scroll view.
+which stay visible at the bottom: the presenter's trailing button box, or
+the trailing row that holds it beside a stretch or other controls. A window
+opens at the size its presenter requests, or taller when its content needs
+it, always within the visible frame of its screen (without the menu bar and
+the Dock), title bar included; a sheet fits below its host's title bar and
+toolbar. Resizing keeps it at least as tall as its converted layout's
+minimum with its buttons: each control at its own minimum height, a table
+at its least rows and a tab view at its page's minimum (mitcad#812). Only
+where the visible frame is lower do required Auto Layout sizes of the
+controls enlarge the scrolled body instead of the window; a body wider than
+the window scrolls horizontally. Display changes and moves to another
+screen make a window smaller and move it inside the visible frame again,
+never larger. The shared Qt Appearances dialog has the same arrangement:
+its body is a `FittingScrollArea` within the screen's available area. That
+scroll area is marked `nativeWindowBody`, so the AppKit conversion lays it
+out inline in the window's own scrolling body rather than as a nested
+scroll view.
+
+The Browser card also hosts the shared Configuration bar when the design
+has options or rows. Its row presets, list choices, value fields, range
+sliders, driven values and refusal notices use the same presenter as Qt.
+The options scroll within the card while leaving Browser rows reachable.
+A range slider commits on release, so a drag changes the model in one
+undo step; ordinary Navigation sliders retain their continuous updates.
 
 `app.ui-macos-native-card-widths` drags each edge with AppKit mouse events,
 checking pointer routing and the resize cursor, with a project and a body
@@ -427,6 +523,15 @@ write goes into the AppKit field. A dialog chosen in the menu opens on the
 event loop's next turn after the menu has closed, never inside its
 tracking. F5 or Option-Esc completes a parameter name.
 
+Multiline AppKit editors publish text and the UTF-16 selection together,
+so shared formula assistance and function/template insertion use the
+visible caret. The Formula Editor opts into `NativeTextEditorCommands`:
+its existing key handler owns completion, Escape and Command+Return,
+while AppKit retains ordinary text editing, composition, clipboard and
+undo. A native popover presents the same completion items and current row;
+clicks call the shared completion action. Other multiline editors do not
+opt into these formula commands.
+
 `app.ui-macos-native-forms` opens a synthetic box in light and dark
 appearance. At 1280 × 820 and 900 × 640 points it checks that a face's
 selection card shows Extrude, Create Sketch and Hole whole, inside the
@@ -439,6 +544,14 @@ edits a parameter through the `fx` menu and the shared dialogs. For 3D
 Print it checks Send and Cancel whole under the scrolling inputs.
 
 ## Qt cards on macOS
+
+Docked Projects and Browser trees can shrink to one complete row while
+their existing scrollbars reach the remaining rows. Their stacked docks
+keep the toolbar and title rows visible on a short workspace. The Projects
+regression includes a process-local 394-point available frame, using the
+actual titlebar margins, with 0, 1 and 24 projects at Qt scale factors 1
+and 2. It checks the actual frame, dock containment, a complete tree row
+and unclipped toolbar; it does not change the display configuration.
 
 Every Qt tool button owned by the main window uses the shared
 `MacToolButtonStyle`, in Floating and Docked chrome, including controls
@@ -806,6 +919,23 @@ the final marker, body set and single undo step after the queued jobs finish.
 The secondary-window test edits parameters and previews a local feedback
 report through native controls. The sketch test checks invalid expressions,
 decimal commas, Tab/Shift+Tab, Return/Escape and a 20,250 mm³ extrusion.
+
+`app.ui-macos-sketch-new-main-parity` and its native counterpart cover five
+bounded current-main workflows in both appearances. Real canvas picks and
+typed precision fields create two-point and centre rounded rectangles;
+a four-line selection fillets all four corners with one radius. Symmetry
+takes two selected circles and an actual sketch-axis pick. A first 100 mm
+dimension scales a drawn 10 × 5 mm rectangle and an unrelated circle about
+the origin. Query snapshots check geometry, constraints and dimensions,
+exact undo/redo and the actual GUI save; the unrelated body stays unchanged.
+Measure picks body vertices over a shown middle-plane sketch, then the
+sketch's points and a whole body through real filter choices. Its Keep
+availability must follow those picks without changing the saved model or
+undo history. Scene captures settle the camera before interaction; own-window
+captures retain fields and results for separate visual review. These cases
+require a runtime result and image review before acceptance. Stored operation
+behaviour on edit is covered separately by `app.ui-macos-edit-auto-operation`.
+
 The panel test configures and cancels native open/save panels and nested
 report export, including the real format popup. Actual file acceptance is
 a manual check: Apple's separate-process Save panels reject programmatic
@@ -1019,3 +1149,197 @@ reported display refresh, actual observed swaps, hardware presentation and
 physical trackpad latency remain different quantities. No 120 Hz success
 is inferred from the panel specification or from input cadence alone.
 Log failures and link their follow-up tickets alongside the result cells.
+
+### Configuration rule blocks
+
+The Configurations window's Rules page uses a dedicated AppKit adapter for
+its palette and block canvas. The shared `RuleCanvas` supplies the rule's
+scene artwork, geometry, editing, validation and undo operations. A native
+scroll view presents that artwork at the window's backing scale; no Qt
+widget is embedded or drawn. Native hit controls retain each piece's name,
+and a native text field commits the shared inline editor with Return or Tab
+and cancels it with Escape. The field follows the edited piece's scene
+rectangle directly, including while the retained Qt viewport resizes or
+scrolls. New hit controls stay below the field without disturbing its
+active AppKit field editor. The palette has native buttons, arrow/Return
+selection, Home/End, case-insensitive type-ahead within the shared keyboard
+input interval, and drag sources. Selection scrolls into view; Return
+inserts it, while Tab keeps ordinary focus traversal. The canvas accepts
+palette drops, block moves,
+context menus and Delete. Both panes scroll independently.
+The pointer regression selects a block's exposed word when its centre is
+covered by a child field. The in-process driver's optional normalized click
+point retains the same AppKit hit test and coverage checks as centre clicks.
+
+The native Part Picker also presents an open configuration table's option
+choosers below its pictured catalogue. Its list choices, number fields,
+allowed ranges, cascade notices and changes to the command's current part
+use `OptionChooser`, shared with Qt and Insert from Library. The production
+native picker regression includes a list choice that narrows a numeric
+range and then commits an ordinary numeric edit through real popup input
+and Tab traversal. Its Grade combo has no explicit minimum width: the
+populated Qt size hints and the form's effective field growth policy define
+its width. `expect-native-bounds <identifier> shared [label regex]` reads
+`QWidgetItem::minimumSize()` and `sizeHint()` from that presenter and honors
+forms that keep nonexpanding fields at their hint. It logs the minimum,
+hint, explicit minimum, size policy and form growth policy, then applies
+the usual actual AppKit visibility, clipping, hit-test and label checks.
+The number editor's inner native text field is checked separately against
+its adapter's 80-point minimum; a compound editor's full Qt width also
+includes its stepper. The shared probe reads sizes without resizing or
+focusing either frontend.
+
+Noneditable combo popups take keyboard focus on a real mouse press before
+AppKit tracks their menu. Their shared accepting action preserves that
+focus, so Tab after a Grade choice reaches Offset. The regression checks
+both the popup's retained focus and the next numeric editor. Held slider
+tests post actual WindowServer pointer input. Tracking/common-mode timers
+deliver six drags and a release even inside AppKit's nested tracking loop;
+only the test driver's step timer is paused. Their exact endpoint, native
+value and presenter value checks remain in force; the helper never sets
+the value or first responder.
+`native-pointer-drag <identifier> knob <endpoint fraction>` starts at the
+centre of the actual `NSSliderCell` knob rectangle, read without changing
+the value. Navigation sliders use this gesture to reach the same exact
+maximum/minimum endpoints: clicking the geometric midpoint of a track is a
+different AppKit action from grabbing its current knob. Test-only logs
+record the knob, tracking begin/end, action values, mismatched refresh
+values and follow-up event counts.
+This held-slider path requires already granted event-posting access and
+never requests it automatically. Before Down and throughout the gesture it
+requires the explicit test driver, this app's frontmost PID, active key
+window, live visible control and points inside that owned window. The press
+must hit its actual knob. Available WindowServer metadata also checks for
+covering windows and verifies the target's screen bounds. No preexisting
+mouse press is replaced. A balancing Up is allocated and the tracking-mode
+timers/watchdog are installed before Down; failure posts that release at
+the last owned point. The six-second path records received input and actual
+pressed-button state. It has no local-event fallback for held sliders;
+ordinary controls retain their local AppKit event path.
+
+Actual Tab/Shift+Tab in a noneditable popup follows its shared Qt focus
+chain to the next mapped native control, skipping hidden, disabled and
+non-Tab-focus fields. Focus proxies and a spin box's inner line editor map
+to their owning field. Visibility is relative to the shared root and the
+actual native view, so a hidden Qt host does not exclude its live AppKit
+control. The route retains native forward/reverse key-view links and normal
+field-editor commit; dedicated adapters keep their own key handling. The
+Part Picker regression requires Grade to Offset, back to Grade and then
+Offset again through real keys before committing its numeric edit.
+An ordinary native text field's `insertTab:` and `insertBacktab:` delegate
+commands use that same route, including the numeric field editor; responder
+transfer first runs normal pending-edit validation and commit. A field's
+focus proxy maps to its owner and cannot become a second stop on itself.
+Slider diagnostics record the delivered event, AppKit current event and
+actual pressed-button state alongside the unchanged endpoint assertions.
+
+
+### Print settings and slicer imports
+
+Standalone category bars such as the print settings form use a native popup
+with the shared tab labels, icons, tooltips, order, enabled/visible state and
+current category. Choosing one changes the same shared category and fields
+as Qt. Converted popup buttons anchor their menus at the actual AppKit
+control while the presenter action runs. Nested dialogs keep their own
+anchors. The native popup regression driver resumes its script when menu
+tracking ends, including when the chosen action enters a modal dialog.
+
+`tools/ui-macos-slicer-parity-test.sh` exercises the New printer/process
+choices, profile category and field edits, file import with Details, and
+installed-preset imports into the design and My Library. Its local synthetic
+folders are supplied through the existing `slicer_presets` query's `folders`
+argument; `MITCAD_TEST_SLICER_FOLDERS` is honored only while an explicit
+`MITCAD_TEST_INPUT` script is running. It never substitutes the user's home
+folder. Run the harness serially in both frontends and appearances and
+inspect the resulting captures before recording visual acceptance.
+
+Import Presets opts its `NoSelection` tree into current-row navigation.
+The AppKit outline frames the keyboard's current row without selecting it,
+so same-name presets retain their warning colour. Arrows and Space reach
+the shared model cursor and event filter, respectively. Arrow navigation
+uses enabled visible native rows; it does not depend on the hidden Qt
+tree's viewport layout. Tab reaches the actual row choice,
+Shift+Tab returns to the list, and a further Tab reaches Import.
+The shared Qt checklist also publishes its navigation cursor explicitly:
+Cocoa's item-view style otherwise suppresses cursor movement when the
+selection mode is `NoSelection`. It keeps Qt's `moveCursor` visibility and
+expansion rules and leaves all selection flags unchanged. The paired Qt
+regression asserts that the list retains focus before and after Space,
+then exercises the same Down/Down, Fine-row Space and row-choice Tab path.
+Native checkbox titles use the model's existing semantic colour and font roles.
+The paired slicer regression checks the native frame's completed drawing,
+checkbox state and focus, plus real Copy/Override choices, mixed All same
+names, cancellation, imported item selection and filament classification
+as a material. Each case clears only its own synthetic library before
+launch, so reruns cannot inherit earlier imports. Captures remain subject
+to visual review; these checks do not establish VoiceOver acceptance.
+
+`app.ui-macos-move-proxy-parity` and its native counterpart exercise the
+same public cylinder, block-component and 8×8 curved-peg fixture as the
+existing Move/Copy UI test. Real browser selection, motion choices, datum
+axis and circular-edge picks precede 64-event held arrow/ring gestures in
+both appearances. Rigid Move/Copy deliberately uses
+`MITCAD_TEST_DRAG_WAIT_PREVIEW=0`: its exact result follows release. The
+tests require bounded meaningful proxy counters, unchanged volume,
+unchanged display meshes, placement reuse and at most 0.000001 mm between
+the last proxy and the exact result. Observed timings are evidence only,
+without a throughput assertion.
+
+Move Face rotates a block's top about its actual front edge, using exact
+held previews because its neighbouring faces change shape. The read-only
+`capture-shown-body` driver step saves actual displayed volume and world
+bounds into numeric variables. Existing `expect-shown-body` compares these
+with the committed result and redo, and the original with undo. The saved
+motion must equal the actual dragged value; the tilted block's volume is
+also checked analytically. Each case retains its preview image and numeric
+evidence, without claiming visual acceptance from execution alone.
+
+The focused Materials colour-field probe samples the composed pixels of this
+application's own windows through the same API as `screenshot-screen`. It maps
+the native field's points through its window to screen coordinates, then uses
+the capture's logical bounds and actual pixel scale. An isolated button's
+`cacheDisplay` replay can differ from its visible backing layer. The probe
+retains its RGB tolerance, unset checker contrast, placeholder glyph and
+readability requirements, clipping checks and accessibility-label assertions;
+it does not accept semantic colour properties as proof of visible pixels.
+These checks do not establish VoiceOver or maintainer acceptance.
+
+
+### Navigation guide artwork
+
+Settings > Navigation presents its mouse, trackpad and direction diagrams
+through a dedicated native image view. Qt and AppKit use the same pure
+painting function, supplied with the current bindings, constrained-orbit
+setting, font, logical width and palette. The AppKit image is cached at the
+window's actual backing scale and rebuilt when those inputs, appearance or
+size change; no QWidget is captured, drawn or embedded. Its image
+accessibility description names the current bindings. The normal and narrow
+native layout regression checks the image's actual painted pixels and
+backing size, then changes the scheme and reads the updated binding label.
+
+## Binding cards
+
+The native browser exports the shared row's binding count as an `fx N`
+button. Features with a suppression expression have a corresponding
+timeline badge. Their hover and click callbacks carry the exact shared
+browser key or feature identifier into the existing controller: no native
+code interprets binding expressions or chooses replacement targets.
+
+The card presents the shared `BindingsCard` labels, cases, swatches,
+warnings, Edit actions and All bindings link through `NativeWidgetView`
+in an AppKit popover. Its Qt source is never displayed. Hover starts after
+450 ms and follows the real pointer; clicking pins the card, and Escape or
+an outside click closes it. Long content scrolls within the screen.
+Both editor actions and the Configurations Bindings page retain the shared
+controller's behavior.
+
+`tools/ui-macos-binding-card-parity-test.sh` prepares only synthetic local
+geometry and exercises both themes in Qt and AppKit. Its AppKit hover
+path uses `native-system-pointer`, which requires already granted macOS
+event-posting access and checks the actual active application, native hit
+and WindowServer target. It never invokes `mouseEntered` directly. The
+Qt path checks pinned card data and actual widget clicks; it does not
+claim physical Qt hover from the driver's synthetic mouse events.
+Saved model and undo assertions preserve the complete document while
+opening and cancelling editors. This describes the test scope, not a
+completed runtime or manual accessibility acceptance.

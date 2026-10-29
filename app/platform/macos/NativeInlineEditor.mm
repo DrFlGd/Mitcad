@@ -4,6 +4,7 @@
 #import <AppKit/AppKit.h>
 
 #include <algorithm>
+#include <memory>
 #include <vector>
 
 #include <QAction>
@@ -20,6 +21,7 @@
 #include <QtLogging>
 
 #include "platform/NativeDialogs.hpp"
+#include "NativeControls.hpp"
 
 namespace mitcad { class NativeInlineController; }
 
@@ -87,6 +89,28 @@ public:
     NSView* content = [[NSView alloc] initWithFrame:NSZeroRect];
     m_panel.contentView = content;
     [content addSubview:m_field];
+    NSLayoutXAxisAnchor* trailing = content.trailingAnchor;
+    if (ParameterField* tools = ParameterField::of(source)) {
+      m_tools = tools;
+      m_popupWasEnabled = tools->popupEnabled();
+      if (QWidget* host = nativeExpressionHost(source->window())) {
+        tools->setPopupEnabled(false);
+        const QPointer<ParameterField> guarded(tools);
+        const QPointer<NativeInlineController> alive(this);
+        m_expression = std::make_unique<NativeExpressionField>(host, m_field, [guarded] {
+          return guarded ? guarded->options() : ParameterFieldOptions();
+        }, [alive] {
+          if (alive) alive->restoreToolFocus();
+        });
+        NSButton* fx = m_expression->button();
+        fx.accessibilityIdentifier = (source->objectName() + QStringLiteral("Fx")).toNSString();
+        fx.identifier = fx.accessibilityIdentifier;
+        [content addSubview:fx];
+        [fx.trailingAnchor constraintEqualToAnchor:content.trailingAnchor].active = YES;
+        [fx.centerYAnchor constraintEqualToAnchor:content.centerYAnchor].active = YES;
+        trailing = fx.leadingAnchor;
+      }
+    }
     // A dimension's parameter name before the field, not part of its text
     // ("d3 =", mitcad#231 and #250): the Qt label beside the presenter is
     // hidden with it, so the panel shows its own.
@@ -112,7 +136,7 @@ public:
     }
     [NSLayoutConstraint activateConstraints:@[
       [m_field.leadingAnchor constraintEqualToAnchor:leading constant:gap],
-      [m_field.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
+      [m_field.trailingAnchor constraintEqualToAnchor:trailing],
       [m_field.topAnchor constraintEqualToAnchor:content.topAnchor],
       [m_field.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
     ]];
@@ -171,6 +195,9 @@ public:
     editorOrder.erase(std::remove(editorOrder.begin(), editorOrder.end(), this), editorOrder.end());
     m_target->owner = nullptr;
     m_field.delegate = nil;
+    m_expression.reset();
+    if (m_tools) m_tools->setPopupEnabled(m_popupWasEnabled);
+    m_tools.clear();
     if (m_source) {
       m_source->removeEventFilter(this);
       disconnect(m_source, nullptr, this, nullptr);
@@ -200,6 +227,21 @@ public:
     m_source->selectAll();
   }
 
+  void restoreToolFocus() {
+    if (m_retired || !m_source || !m_host.visible) return;
+    // Unlike explicit field navigation, a menu/dialog must not select all
+    // and replace the caret/selection that its helper just restored.
+    NSText* previous = m_field.currentEditor;
+    const NSRange selection = previous != nil ? previous.selectedRange : NSMakeRange(0, 0);
+    [m_panel makeKeyAndOrderFront:nil];
+    [m_panel makeFirstResponder:m_field];
+    if (previous != nil && m_field.currentEditor != nil) {
+      NSText* current = m_field.currentEditor;
+      const NSUInteger start = std::min(selection.location, current.string.length);
+      current.selectedRange = NSMakeRange(start, std::min(selection.length, current.string.length - start));
+    }
+  }
+
   void edited() {
     if (!m_source || m_refreshing) return;
     QPointer<NativeInlineController> guard(this);
@@ -216,6 +258,11 @@ public:
 
   void committed() {
     if (m_source && !m_refreshing) emit m_source->editingFinished();
+  }
+
+  NSArray<NSString*>* completions(NSTextView* text, NSRange range) {
+    return m_expression ? m_expression->completions(QString::fromNSString(text.string),
+                                                    static_cast<int>(NSMaxRange(range))) : nil;
   }
 
   bool key(int key, Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
@@ -296,6 +343,10 @@ private:
     }
     if (QString::fromNSString(m_field.toolTip) != m_source->toolTip()) { m_field.toolTip = m_source->toolTip().toNSString(); }
     if (bool(m_field.enabled) != m_source->isEnabled()) { m_field.enabled = m_source->isEnabled(); }
+    if (m_expression) {
+      NSButton* fx = m_expression->button();
+      fx.enabled = m_source->isEnabled();
+    }
     NSColor* color = m_source->property("nativeInlineInvalid").toBool() ? NSColor.systemRedColor : NSColor.labelColor;
     if (![m_field.textColor isEqual:color]) { m_field.textColor = color; }
     const QPoint at = m_source->mapToGlobal(QPoint());
@@ -316,6 +367,9 @@ private:
   }
 
   QPointer<QLineEdit> m_source;
+  QPointer<ParameterField> m_tools;
+  bool m_popupWasEnabled = true;
+  std::unique_ptr<NativeExpressionField> m_expression;
   const QLineEdit* m_key;
   QPointer<QWidget> m_viewport;
   std::vector<QPointer<QWidget>> m_geometrySources;
@@ -361,6 +415,17 @@ void hideNativeInlineEditor(QLineEdit* presenter) {
 @implementation MITCADInlineEditorTarget
 - (void)controlTextDidChange:(NSNotification*)notification { (void)notification; if (owner) owner->edited(); }
 - (void)controlTextDidEndEditing:(NSNotification*)notification { (void)notification; if (owner) owner->committed(); }
+- (NSArray<NSString*>*)control:(NSControl*)control
+                      textView:(NSTextView*)textView
+                   completions:(NSArray<NSString*>*)words
+           forPartialWordRange:(NSRange)charRange
+           indexOfSelectedItem:(NSInteger*)index {
+  (void)control;
+  NSArray<NSString*>* names = owner != nullptr ? owner->completions(textView, charRange) : nil;
+  if (names == nil) return words;
+  if (index != nullptr) *index = names.count > 0 ? 0 : -1;
+  return names;
+}
 - (BOOL)control:(NSControl*)control textView:(NSTextView*)view doCommandBySelector:(SEL)command {
   (void)control; (void)view;
   if (!owner) return NO;

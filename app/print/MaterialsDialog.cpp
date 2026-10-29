@@ -52,6 +52,7 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacDialogs.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "SettingsForm.hpp"
 
 namespace mitcad {
@@ -143,6 +144,7 @@ MaterialsPanel::MaterialsPanel(PrintItemsHost& host, const QString& logName, QWi
   // The list, grouped by class (mitcad#655): one search in the window, the
   // settings', so the list has none and no group filter.
   m_list = new QTreeWidget;
+  m_list->setObjectName(QStringLiteral("materialsList"));
   m_list->setColumnCount(2);
   m_list->setHeaderHidden(true);
   m_list->setIconSize(QSize(18, 18));
@@ -667,6 +669,7 @@ void MaterialsPanel::rebuildList() {
     auto* row = new QTreeWidgetItem(under, {item.name, QString()});
     row->setIcon(0, swatch(item.displayColor));
     row->setData(0, kKeyRole, item.key());
+    row->setData(0, NativeControlIdentifierRole, QStringLiteral("material.") + item.key());
     markInDesign(row, !item.designId().isEmpty() && used.contains(item.designId()), tr("Used in this design"));
     if (item.key() == m_currentKey) {
       selected = row;

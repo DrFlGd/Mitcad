@@ -62,6 +62,7 @@ class RulePalette : public QTreeWidget {
 public:
   explicit RulePalette(QWidget* parent = nullptr);
   void setCanvas(RuleCanvas* canvas);
+  RuleCanvas* canvas() const;
   // The palette entry's item, for tests.
   QTreeWidgetItem* entry(const QString& id) const;
   void logPlaces();
@@ -128,6 +129,9 @@ public:
   bool insertAtFocus(const QString& paletteId);
   void dragOver(const QPoint& global, const QString& paletteId);
   bool dropAt(const QPoint& global, const QString& paletteId);
+  // A native scroll view already hit-tests its document in scene coordinates.
+  void dragOverScene(const QPointF& scene, const QString& paletteId);
+  bool dropAtScene(const QPointF& scene, const QString& paletteId);
   void endDrag();
 
   // The focus, by its piece's name ("then.0 block").
@@ -138,8 +142,15 @@ public:
   // The pieces as laid out, for tests; the centre of one in the viewport.
   const std::vector<Piece>& pieces() const { return m_pieces; }
   std::optional<QPoint> pieceCenter(const QString& name) const;
-  // The open in-place editor, if any (tests type into it).
+  // The same deepest-piece hit test as mouse input: native drag adapters
+  // may delete a block on a palette drop only when the press began on one.
+  bool isBlockAtScene(const QPointF& scene) const;
+  // The open in-place editor and its scene piece, if any. Native adapters
+  // use the piece geometry independently of the hidden viewport's offsets.
   QLineEdit* editor() const { return m_editor; }
+  QString editingPieceName() const { return m_editing; }
+  // Discard the active edit, keeping a newly inserted block's initial value.
+  void cancelEditor();
   // A new block waits for its value in its editor before it is saved; this
   // says it is edited (`edited`) as it is now, if one waits.
   void flushPending();
@@ -167,6 +178,7 @@ protected:
 
 private:
   void rebuild();
+  bool takeHighlightedDrop(const QString& paletteId);
   void apply(Rule changed, const QString& what, const std::optional<BlockPath>& focus = std::nullopt,
              bool editNew = false);
   int pieceAt(const QPointF& scene) const;

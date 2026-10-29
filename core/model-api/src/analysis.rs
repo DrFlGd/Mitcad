@@ -385,6 +385,11 @@ pub(super) struct MeasuredPicks {
     /// the two faces an edge lies between, the faces at a vertex).
     pub(super) extent: Vec<Vec3>,
     pub(super) faces: Vec<Vec3>,
+    /// Each pick's own outline (mitcad#902): the corners of a picked
+    /// face's box in the design's coordinates, where a plane's extension
+    /// line leaves it; empty for other picks or where the kernel cannot
+    /// say.
+    pub(super) outlines: [Vec<Vec3>; 2],
 }
 
 /// How many measured picks [`MeasureCache`] keeps at least.
@@ -1121,6 +1126,10 @@ trait AnalysisLocal<K: Kernel> {
     /// out.
     fn pick_surroundings(&self, picks: &[&MeasurePick]) -> (Vec<Vec3>, Vec<Vec3>);
 
+    /// A pick's own outline (mitcad#902, [`MeasuredPicks::outlines`]): the
+    /// corners of the picked face's box, placed; empty for other picks.
+    fn pick_outline(&self, pick: &MeasurePick) -> Vec<Vec3>;
+
     fn plane_of(&self, input: &GeomRef) -> Result<DatumPlane, ApiError>;
 
     /// An occurrence-aware display request receives a design-space plane
@@ -1429,6 +1438,7 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
                 elements: [ra.element, None],
                 extent,
                 faces,
+                outlines: [self.pick_outline(a), Vec::new()],
             });
         };
         let rb = self.resolve_selection(&selection_arg(b))?;
@@ -1443,6 +1453,7 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
             elements: [ra.element, rb.element],
             extent,
             faces,
+            outlines: [self.pick_outline(a), self.pick_outline(b)],
         })
     }
 
@@ -1504,6 +1515,48 @@ impl<K: Kernel> AnalysisLocal<K> for Document<K> {
             }
         }
         (extent, normals)
+    }
+
+    fn pick_outline(&self, pick: &MeasurePick) -> Vec<Vec3> {
+        let (Some(body), Some(face)) = (pick.body, &pick.face) else {
+            return Vec::new();
+        };
+        let Some(local) = self.body_shape(body) else {
+            return Vec::new();
+        };
+        let Ok(transform) = self.selection_transform(
+            self.body_component(body),
+            pick.occurrence.as_ref(),
+            &format!("body {body}"),
+        ) else {
+            return Vec::new();
+        };
+        let kernel = self.kernel();
+        // The face and its pieces after splits, by the shape's face order.
+        let indices: Vec<usize> = kernel
+            .faces(local)
+            .unwrap_or_default()
+            .iter()
+            .enumerate()
+            .filter(|(_, info)| {
+                info.names.iter().any(|name| {
+                    name.parse::<FaceName>()
+                        .is_ok_and(|named| named.matches(face))
+                })
+            })
+            .map(|(i, _)| i)
+            .collect();
+        if indices.is_empty() {
+            return Vec::new();
+        }
+        kernel
+            .face_bounding_boxes(local, &indices)
+            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .flat_map(|bounds| bounds.corners().collect::<Vec<_>>())
+            .map(|corner| transform.apply_point(corner))
+            .collect()
     }
 
     fn plane_of(&self, input: &GeomRef) -> Result<DatumPlane, ApiError> {

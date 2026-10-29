@@ -21,6 +21,7 @@
 
 #include "../framework/GlassCard.hpp"
 #include "../framework/TestSync.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "MeasureHistory.hpp"
 
 namespace mitcad {
@@ -71,35 +72,47 @@ MeasureHistoryView::MeasureHistoryView(const MeasureHistory& history, QWidget* p
   // of the design.
   auto* keepRow = new QHBoxLayout;
   m_keep = new QPushButton(tr("Keep"), this);
+  m_keep->setObjectName(QStringLiteral("measureKeep"));
   m_keepTip = tr("Keep this measurement in the design as a dimension, drawn in the view");
   m_keep->setToolTip(m_keepTip);
   m_keep->setEnabled(false);
   // Keep Row: the history row clicked last (beside Keep, so that the row
   // of Copy, Copy All and Clear keeps the panel's width).
   m_keepRow = new QPushButton(tr("Keep Row"), this);
+  m_keepRow->setObjectName(QStringLiteral("measureKeepRow"));
   m_keepRow->setToolTip(tr("Keep the history row clicked last in the design as a dimension"));
   m_keepRow->setEnabled(false);
   // A leader note on the one pick shown, and the Annotations window
   // (mitcad#702).
   m_note = new QPushButton(tr("Note…"), this);
+  m_note->setObjectName(QStringLiteral("measureNote"));
   m_note->setToolTip(tr("A note with an arrow to the face, edge or vertex picked"));
   m_note->setEnabled(false);
   // A datum label and a feature control frame on it (phase 2).
   m_datum = new QPushButton(tr("Datum Label…"), this);
+  m_datum->setObjectName(QStringLiteral("measureDatum"));
   m_datum->setToolTip(tr("A datum label on the face, edge or datum picked"));
   m_datum->setEnabled(false);
   m_frame = new QPushButton(tr("Frame…"), this);
+  m_frame->setObjectName(QStringLiteral("measureFrame"));
   m_frame->setToolTip(tr("A feature control frame with an arrow to the face or edge picked"));
   m_frame->setEnabled(false);
+  // A hole callout on a hole picked (mitcad#902): its text from the hole's
+  // feature, no dialog.
+  m_callout = new QPushButton(tr("Hole Callout"), this);
+  m_callout->setToolTip(tr("A hole callout on the hole picked (its round face or edge), written from the hole"));
+  m_callout->setEnabled(false);
   m_annotations = new QPushButton(tr("Annotations…"), this);
+  m_annotations->setObjectName(QStringLiteral("measureAnnotations"));
   m_annotations->setToolTip(tr("The dimensions, notes, datum labels and frames kept in the design"));
-  // Note…, Datum Label… and Frame… on a row of their own, so that the panel
-  // keeps its width; Annotations… beside Keep.
+  // Note…, Datum Label…, Frame… and Hole Callout on a row of their own, so
+  // that the panel keeps its width; Annotations… beside Keep.
   auto* annotationRow = new QHBoxLayout;
-  for (QPushButton* button : {m_keep, m_keepRow, m_annotations, m_note, m_datum, m_frame}) {
+  for (QPushButton* button : {m_keep, m_keepRow, m_annotations, m_note, m_datum, m_frame, m_callout}) {
     button->setFocusPolicy(Qt::NoFocus);
     button->setAutoDefault(false);
-    (button == m_note || button == m_datum || button == m_frame ? annotationRow : keepRow)->addWidget(button);
+    const bool leader = button == m_note || button == m_datum || button == m_frame || button == m_callout;
+    (leader ? annotationRow : keepRow)->addWidget(button);
   }
   keepRow->addStretch();
   layout->addLayout(keepRow);
@@ -109,6 +122,7 @@ MeasureHistoryView::MeasureHistoryView(const MeasureHistory& history, QWidget* p
   layout->addWidget(m_title);
   m_list = new QListWidget(this);
   m_list->setObjectName(QStringLiteral("measureHistoryRows"));
+  m_list->setProperty(NativeListRowLimitProperty, kShownRows);
   m_list->setSelectionMode(QAbstractItemView::SingleSelection);
   // Two lines a row (the picks, the values), cut at the panel's width; the
   // tooltip has all of it.
@@ -121,10 +135,13 @@ MeasureHistoryView::MeasureHistoryView(const MeasureHistory& history, QWidget* p
   layout->addWidget(m_list);
   auto* buttons = new QHBoxLayout;
   m_copy = new QPushButton(tr("Copy"), this);
+  m_copy->setObjectName(QStringLiteral("measureCopy"));
   m_copy->setToolTip(tr("Copy the row clicked last as tab-separated text"));
   m_copyAll = new QPushButton(tr("Copy All"), this);
+  m_copyAll->setObjectName(QStringLiteral("measureCopyAll"));
   m_copyAll->setToolTip(tr("Copy every row as tab-separated text"));
   m_clear = new QPushButton(tr("Clear"), this);
+  m_clear->setObjectName(QStringLiteral("measureClear"));
   m_clear->setToolTip(tr("Empty the history"));
   for (QPushButton* button : {m_copy, m_copyAll, m_clear}) {
     button->setFocusPolicy(Qt::NoFocus);
@@ -178,6 +195,12 @@ MeasureHistoryView::MeasureHistoryView(const MeasureHistory& history, QWidget* p
       m_actions.frame();
     }
   });
+  connect(m_callout, &QPushButton::clicked, this, [this] {
+    qDebug().noquote() << QStringLiteral("Measure Hole Callout clicked");
+    if (m_actions.callout) {
+      m_actions.callout();
+    }
+  });
   connect(m_annotations, &QPushButton::clicked, this, [this] {
     qDebug().noquote() << QStringLiteral("Measure Annotations clicked");
     if (m_actions.annotations) {
@@ -207,6 +230,7 @@ void MeasureHistoryView::refresh() {
   for (const MeasureHistory::Row& row : rows) {
     auto* item = new QListWidgetItem(rowText(row), m_list);
     item->setData(kNumberRole, row.number);
+    item->setData(NativeControlIdentifierRole, QStringLiteral("measureHistory.row.%1").arg(row.number));
     item->setToolTip(MeasureHistory::tabSeparated(row).replace(QLatin1Char('\t'), QLatin1Char('\n')));
     if (row.gone) {
       item->setForeground(grey);
@@ -252,6 +276,7 @@ void MeasureHistoryView::setNoteable(bool noteable, bool feature) {
   }
   m_datum->setEnabled(featured);
   m_frame->setEnabled(featured);
+  m_callout->setEnabled(featured);
   // The places again either way (Datum Label… and Frame… with them).
   TestSync::singleShot(0, this, [this] { logPlaces(); });
   if (m_note->isEnabled() == noteable) {
@@ -316,6 +341,9 @@ QStringList MeasureHistoryView::places() const {
                .arg(at(m_datum, m_datum->rect().center()), m_datum->isEnabled() ? QString() : QStringLiteral(" (disabled)"));
   lines << QStringLiteral("Measure Frame at %1%2")
                .arg(at(m_frame, m_frame->rect().center()), m_frame->isEnabled() ? QString() : QStringLiteral(" (disabled)"));
+  lines << QStringLiteral("Measure Hole Callout at %1%2")
+               .arg(at(m_callout, m_callout->rect().center()),
+                    m_callout->isEnabled() ? QString() : QStringLiteral(" (disabled)"));
   lines << QStringLiteral("Measure Annotations at %1").arg(at(m_annotations, m_annotations->rect().center()));
   return lines;
 }

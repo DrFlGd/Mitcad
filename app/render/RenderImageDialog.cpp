@@ -710,8 +710,14 @@ void RenderImageDialog::save() {
         shapes.push_back(layoutMeasurement(m, project, scale));
       }
       {
+        // In the tone of the render's own background, not the view's
+        // (mitcad#902): a light render over a dark view takes near-black.
+        const QColor tone = measurementPictureTone(image);
+        // Auto's ink against the render itself.
+        const MeasurementBackdrop backdrop{image.convertToFormat(QImage::Format_ARGB32), 1.0};
         QPainter painter(&image);
-        paintMeasurements(painter, shapes, m_viewer.sketchHaloColor(), measurementFont(font(), scale), scale);
+        paintMeasurements(painter, shapes, tone.isValid() ? tone : m_viewer.sketchHaloColor(),
+                          measurementFont(font(), scale), scale, &backdrop);
       }
       const int quality = m_imageFormat == QLatin1String("jpeg") ? value(QStringLiteral("quality")).toInt(90) : -1;
       if (!image.save(path, nullptr, quality)) {

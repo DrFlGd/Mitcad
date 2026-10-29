@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <atomic>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -159,6 +160,9 @@ private:
   friend class TestDriver;
   // Armed only by the in-process UI driver, consumed on the worker once.
   QString m_testFailCommand;
+  // The UI driver can hold an asynchronous preview before model work starts,
+  // so input races depend on the worker's state rather than the host's speed.
+  std::shared_ptr<std::atomic<bool>> m_testHoldPreview = std::make_shared<std::atomic<bool>>(false);
   struct IdleCall {
     QPointer<QObject> context;
     std::function<void()> call;

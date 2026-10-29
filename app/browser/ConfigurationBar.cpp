@@ -31,6 +31,8 @@ constexpr int kMaxSteps = 10000; // a slider's positions at the most
 
 ConfigurationBar::ConfigurationBar(DocumentHost& host, QWidget* parent) : QWidget(parent), m_host(host) {
   setObjectName(QStringLiteral("configurationBar"));
+  setProperty("nativeCompactPanel", true);
+  setProperty("nativeLayoutContract", true);
   m_grid = new QGridLayout(this);
   m_grid->setContentsMargins(6, 4, 6, 6);
   m_grid->setColumnStretch(1, 1);
@@ -171,6 +173,7 @@ void ConfigurationBar::rebuild() {
         chooser.steps = static_cast<int>(std::clamp(steps, 1.0, static_cast<double>(kMaxSteps)));
         auto* slider = new QSlider(Qt::Horizontal, holder);
         slider->setObjectName(QStringLiteral("configurationSlider_%1").arg(name));
+        slider->setProperty("nativeSliderOnRelease", true);
         slider->setRange(0, chooser.steps);
         slider->setFocusPolicy(Qt::StrongFocus);
         field->setMaximumWidth(96);

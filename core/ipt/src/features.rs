@@ -1466,6 +1466,13 @@ fn skipped_elements(cx: &Context, record: usize, one: u64, two: u64) -> Option<V
         return Some(Vec::new());
     }
     r.skip(8).ok()?;
+    // Each element takes 8 bytes: a count the record has no room for is
+    // refused before anything is reserved for it (mitcad#933; a raw u32
+    // count could ask for 32 GiB). Such a record ran out of bytes in the
+    // loop before, so nothing that read is turned away.
+    if n > r.left() / 8 {
+        return None;
+    }
     let mut ids = Vec::with_capacity(n);
     for _ in 0..n {
         let (second, first) = (u64::from(r.u32().ok()?), u64::from(r.u32().ok()?));
@@ -1974,4 +1981,49 @@ pub fn coil(
     }
     t.detail = d;
     Ok(t)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A skipped-elements record (`PATTERN_SKIPPED`) with the count
+    /// `count`, then `data` (the 8 bytes after the count, then the
+    /// elements), and the elements read from it for a 3 × 2 pattern.
+    fn skipped(count: u32, data: &[u8]) -> Option<Vec<u64>> {
+        let mut w = crate::testdesign::DesignWriter::new(24);
+        let mut b = w.header(None);
+        b.extend_from_slice(&w.prefix());
+        b.extend_from_slice(&0x3000_0004u32.to_le_bytes());
+        b.extend_from_slice(&count.to_le_bytes());
+        b.extend_from_slice(data);
+        let record = w.push(PATTERN_SKIPPED, b);
+        let dc = Definitions::from_records(24, &w.records);
+        let (params, sketches, sketch_ids) =
+            (Parameters::default(), HashMap::new(), HashMap::new());
+        let profiles = std::cell::RefCell::new(crate::profile::Profiles::default());
+        let bodies = Producers::default();
+        let cx = Context {
+            dc: &dc,
+            params: &params,
+            sketches: &sketches,
+            profiles: &profiles,
+            sketch_ids: &sketch_ids,
+            bodies: &bodies,
+        };
+        skipped_elements(&cx, record, 3, 2)
+    }
+
+    /// mitcad#933: a count the record has no room for is refused before
+    /// anything is reserved for it; a sound record still reads.
+    #[test]
+    fn a_skipped_elements_count_beyond_the_record_is_refused() {
+        assert_eq!(skipped(0xFFFF_FFFF, &[0; 16]), None);
+        assert_eq!(skipped(2, &[0; 16]), None);
+        assert_eq!(skipped(0, &[]), Some(Vec::new()));
+        let mut one = vec![0; 8];
+        one.extend_from_slice(&2u32.to_le_bytes());
+        one.extend_from_slice(&3u32.to_le_bytes());
+        assert_eq!(skipped(1, &one), Some(vec![5]));
+    }
 }

@@ -190,10 +190,12 @@ void MainWindow::keepLeader(const QHash<QString, Selection>& inputs, const QStri
     return;
   }
   // A datum label or a frame marks a feature, not a point (the model
-  // refuses that too).
+  // refuses that too); a hole callout a hole.
   if (kind != QLatin1String("note") && !markablePick(inputs)) {
-    showHint(tr("A datum label or a feature control frame marks a face, an edge, an axis or a plane, not a "
-                "point."));
+    showHint(kind == QLatin1String("hole_callout")
+                 ? tr("A hole callout points at a hole: pick its round face or edge.")
+                 : tr("A datum label or a feature control frame marks a face, an edge, an axis or a plane, not a "
+                      "point."));
     return;
   }
   const SelectionItem* item = firstOf(inputs, {"a", "body_a", "sketch_a"});
@@ -224,6 +226,10 @@ void MainWindow::keepLeader(const QHash<QString, Selection>& inputs, const QStri
     }
     command.insert(QStringLiteral("frame"), *frame);
     label = tr("Add Feature Control Frame");
+  } else if (kind == QLatin1String("hole_callout")) {
+    // Its text is the hole's (mitcad#902): no dialog; the model refuses a
+    // pick that is no hole, with the reason.
+    label = tr("Add Hole Callout");
   } else {
     const std::optional<QString> text = askNoteText(this, what);
     if (!text) {

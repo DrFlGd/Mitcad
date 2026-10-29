@@ -468,9 +468,10 @@ named_enum! {
         },
         "sketch.project" => Project {
             sketch: FeatureUid,
-            /// Left out for the section of a whole `body` (mitcad#736).
+            /// Left out for the section of a whole `body` (mitcad#736);
+            /// another sketch's curve, point or curves (mitcad#904).
             #[serde(default)]
-            source: Option<TopoName>,
+            source: Option<ProjectSource>,
             #[serde(default)]
             body: Option<BodyUid>,
             #[serde(default)]
@@ -706,7 +707,7 @@ pub(super) fn dxf_info_json(path: &str) -> Result<Value, ApiError> {
         .into_iter()
         .map(|(name, entities)| {
             let layer = drawing.layer(&name);
-            let bounds = bounds_json(drawing.on_layers(std::slice::from_ref(&name)).bounds());
+            let bounds = bounds_json(drawing.layer_bounds(&name));
             json!({"name": name, "entities": entities,
                    "visible": layer.is_none_or(|l| l.visible && !l.frozen),
                    "bounds": bounds})
@@ -754,6 +755,48 @@ fn dxf_unit(unit: Option<&str>) -> Result<mitcad_dxf::Units, ApiError> {
             )));
         }
     })
+}
+
+/// `sketch.project`'s `source`: model geometry by its topological name,
+/// or another sketch's geometry (mitcad#904): `{"sketch": "F5", "curve":
+/// "c3"}`, `{"sketch": "F5", "point": "p2"}`, or `{"sketch": "F5"}` for
+/// every curve of the sketch.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum ProjectSource {
+    Topo(TopoName),
+    Sketch {
+        sketch: FeatureUid,
+        entity: Option<Ref>,
+    },
+}
+
+impl<'de> Deserialize<'de> for ProjectSource {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        match Value::deserialize(d)? {
+            Value::String(text) => text
+                .parse::<TopoName>()
+                .map(Self::Topo)
+                .map_err(D::Error::custom),
+            Value::Object(map) if map.len() == 1 && map.contains_key("sketch") => {
+                let sketch: FeatureUid = map["sketch"]
+                    .as_str()
+                    .ok_or_else(|| D::Error::custom("\"sketch\" is a sketch's uid like \"F5\""))?
+                    .parse()
+                    .map_err(D::Error::custom)?;
+                Ok(Self::Sketch {
+                    sketch,
+                    entity: None,
+                })
+            }
+            other => mitcad_model::sketch::SketchEntityRef::from_json(&other)
+                .map(|e| Self::Sketch {
+                    sketch: e.sketch,
+                    entity: Some(e.entity),
+                })
+                .map_err(D::Error::custom),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1049,16 +1092,45 @@ impl<K: Kernel> SketchOps<K> for Document<K> {
             } => {
                 let occurrence = occurrence.as_ref().map(|o| &o.0[..]);
                 let context = context.as_ref().map(|c| &c.0[..]);
+                let topo = match &source {
+                    Some(ProjectSource::Topo(name)) => Some(name),
+                    _ => None,
+                };
                 let report = match (&source, section) {
-                    (_, true) => self.section_from(
-                        sketch,
-                        source.as_ref(),
-                        body,
-                        linked,
-                        occurrence,
-                        context,
-                    )?,
-                    (Some(source), false) => {
+                    // Another sketch's geometry (mitcad#904).
+                    (Some(ProjectSource::Sketch { .. }), true) => {
+                        return Err(ApiError(
+                            "a section's source is a face, an edge or a body, not a sketch's \
+                             geometry"
+                                .to_owned(),
+                        ));
+                    }
+                    (
+                        Some(ProjectSource::Sketch {
+                            sketch: from,
+                            entity,
+                        }),
+                        false,
+                    ) => {
+                        if body.is_some() {
+                            return Err(ApiError(
+                                "sketch.project of a sketch's geometry takes no body".to_owned(),
+                            ));
+                        }
+                        let entities = entity.map(|e| vec![e]);
+                        self.project_sketch_geometry(
+                            sketch,
+                            *from,
+                            entities.as_deref(),
+                            linked,
+                            occurrence,
+                            context,
+                        )?
+                    }
+                    (_, true) => {
+                        self.section_from(sketch, topo, body, linked, occurrence, context)?
+                    }
+                    (Some(ProjectSource::Topo(source)), false) => {
                         self.project_from(sketch, source, body, linked, occurrence, context)?
                     }
                     (None, false) => {

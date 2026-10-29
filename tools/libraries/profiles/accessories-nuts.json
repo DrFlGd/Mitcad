@@ -289,6 +289,7 @@
     "part_number": "S10BCS12x30",
     "supplier_url": "https://www.motedis.com/en/Self-Forming-Screw-S12x30-T50-P45-B-type-slot-10",
     "designation": "Self-forming screw S12x30 T50 for 45 B-type slot 10",
+    "thread": "source",
     "rows": [],
     "build": {
       "role": "fastener",

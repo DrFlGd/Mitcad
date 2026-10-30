@@ -15,12 +15,19 @@
 //! of the curves, so the order is not used.
 //!
 //! The linked curve gets the source as its `referencedEntity` (a
-//! `sketch_entity` reference, as the API gives it). Records whose input
-//! names a face, an edge or a point are left alone.
+//! `sketch_entity` reference, as the API gives it). A record whose input
+//! names a face or an edge ([`FACE_REF`]) keeps that face's boundary or
+//! that edge's curve, in the source's component's coordinates: each
+//! stored curve is matched the same way, and the linked curve gets the face
+//! or the edge with that one curve. A source in a component that an item
+//! of the timeline has moved (a captured position: the latching box's
+//! latch, projected into the box's sketches) is matched where that item
+//! put it. Records whose input names a point are left alone.
 
 use super::super::classes::*;
 use super::super::ir::*;
 use super::super::sketch::SketchInfo;
+use super::super::stream::Segment;
 use super::Builder;
 
 /// How far (cm) a projected source point may lie from the linked curve's
@@ -293,6 +300,51 @@ fn projects_onto(frame: &Frame, source: &Shape, curve: &Shape) -> bool {
     false
 }
 
+/// `p` (cm) placed by the rigid placement `m`.
+fn place(m: &Mat4, p: [f64; 3]) -> [f64; 3] {
+    add(turn(m, p), [m[0][3], m[1][3], m[2][3]])
+}
+
+/// The direction `d` turned by the rigid placement `m`.
+fn turn(m: &Mat4, d: [f64; 3]) -> [f64; 3] {
+    [0, 1, 2].map(|r| dot([m[r][0], m[r][1], m[r][2]], d))
+}
+
+/// A stored line or arc placed by `m`.
+fn placed(g: &Geometry, m: &Mat4) -> Geometry {
+    let mut g = g.clone();
+    for p in [&mut g.start_point, &mut g.end_point, &mut g.center] {
+        *p = p.map(|p| place(m, p));
+    }
+    for d in [&mut g.normal, &mut g.reference_vector] {
+        *d = d.map(|d| turn(m, d));
+    }
+    g
+}
+
+/// The placements the timeline's items put occurrences at, other than
+/// where the file has them (the identity): a face's or an edge's stored
+/// curves are in its component's coordinates, and a sketch of another
+/// component projects them from where an item (a captured position) has
+/// put that component.
+fn placement_moves(seg: &Segment) -> Vec<Mat4> {
+    let mut out: Vec<Mat4> = Vec::new();
+    for o in seg.objects_of(OCCURRENCE_PLACEMENTS) {
+        for (_, m) in super::placements::history(seg, o.id).map_or_else(Vec::new, |h| h.steps) {
+            let same = |a: &Mat4, b: &Mat4| {
+                a.iter()
+                    .flatten()
+                    .zip(b.iter().flatten())
+                    .all(|(x, y)| (x - y).abs() <= SAME)
+            };
+            if !same(&m, &IDENTITY) && !out.iter().any(|o| same(o, &m)) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
 impl Builder<'_> {
     /// The sketch curve object a projection record's entity input names.
     fn projection_source(&self, record: u64) -> Option<u64> {
@@ -342,6 +394,7 @@ impl Builder<'_> {
     /// (`_f3d.curves`).
     pub(super) fn projection_sources(&self, sketches: &mut [SketchInfo]) {
         let seg = self.seg;
+        let moves = placement_moves(seg);
         let mut found: Vec<(usize, usize, Reference)> = Vec::new();
         for (si, s) in sketches.iter().enumerate() {
             let linked: Vec<usize> = s
@@ -368,14 +421,20 @@ impl Builder<'_> {
             for record in records {
                 if let Some((r, stored)) = self.projection_geometry(record) {
                     for g in stored {
-                        let Some(source) = stored_shape(&g) else {
-                            continue;
-                        };
-                        let hit = linked.iter().copied().find(|&i| {
-                            !taken[i]
-                                && shape(&frame, &curves[i])
-                                    .is_some_and(|c| projects_onto(&frame, &source, &c))
-                        });
+                        // Where the file has the source's component, or
+                        // where an item of the timeline puts it.
+                        let hit = std::iter::once(None)
+                            .chain(moves.iter().map(Some))
+                            .filter_map(|m| {
+                                stored_shape(&m.map_or_else(|| g.clone(), |m| placed(&g, m)))
+                            })
+                            .find_map(|source| {
+                                linked.iter().copied().find(|&i| {
+                                    !taken[i]
+                                        && shape(&frame, &curves[i])
+                                            .is_some_and(|c| projects_onto(&frame, &source, &c))
+                                })
+                            });
                         let Some(i) = hit else {
                             continue;
                         };
@@ -548,5 +607,31 @@ mod tests {
         assert!(on([0.0, 5.0, 0.0], [1.0, 5.0, 0.0]));
         assert!(on([1.0, 5.0, 0.0], [0.0, 5.0, 0.0]));
         assert!(!on([-1.0, 5.0, 0.0], [1.0, 5.0, 0.0]));
+    }
+
+    /// A latch's socket edge, stored in the latch's coordinates, projects
+    /// onto a box's sketch where a captured position puts the latch
+    /// (13.16 cm along -y, 1.1667 cm up), as in the latching box design.
+    #[test]
+    fn a_stored_curve_of_a_moved_component_projects_where_it_was_put() {
+        let mut m = IDENTITY;
+        m[1][3] = -13.16;
+        m[2][3] = 1.1667;
+        let stored = Geometry {
+            geometry_type: Some("Line3D".into()),
+            start_point: Some([-0.5, 9.96, 0.38]),
+            end_point: Some([-0.5, 10.08, 0.3]),
+            ..Geometry::default()
+        };
+        // The box's sketch at x = 0.53 cm, looking along x.
+        let f = Frame {
+            origin: [0.53, 0.0, 0.0],
+            x: [0.0, -1.0, 0.0],
+            y: [0.0, 0.0, 1.0],
+        };
+        let curve = line([0.53, -3.2, 1.5467], [0.53, -3.08, 1.4667]);
+        let at = |g: &Geometry| stored_shape(g).is_some_and(|s| projects_onto(&f, &s, &curve));
+        assert!(!at(&stored));
+        assert!(at(&placed(&stored, &m)));
     }
 }

@@ -51,8 +51,10 @@ use crate::{Importer, geom, refs, snap};
 
 /// How far (mm) a linked curve's points and radius may lie from where its
 /// source projects for the curve to be that projection: the snap put them
-/// there, so only rounding is left.
-const EXACT: f64 = 1e-6;
+/// there, or put them on the edges of the sketch's face where those edges
+/// meet (`sketch::edges::EDGE_TOLERANCE`), which can lie that far from
+/// where the edge's own curve ends; so only rounding is left.
+const EXACT: f64 = crate::sketch::edges::EDGE_TOLERANCE;
 
 /// How far (mm) a face or an edge may lie off the sketch's plane to be in
 /// it; the tolerance the sketch's own faces are found with. (A local
@@ -453,6 +455,22 @@ pub(crate) fn resolve(
 /// a projection's source edge to be that edge: the stored numbers are the
 /// file's, the replay rebuilt them.
 const STORED: f64 = 1e-3;
+
+/// The `candidates` that lie where the file stored the source (`there`),
+/// and where none does, the first of all `count` edges that does.
+fn where_stored(
+    candidates: &[usize],
+    count: usize,
+    there: impl Fn(usize) -> bool,
+) -> (Vec<usize>, Option<usize>) {
+    let kept: Vec<usize> = candidates.iter().copied().filter(|&k| there(k)).collect();
+    let elsewhere = if kept.is_empty() {
+        (0..count).find(|&k| there(k))
+    } else {
+        None
+    };
+    (kept, elsewhere)
+}
 
 /// Whether the replay's edge `edge` (in the sketch's component) is the
 /// edge the file stored as `stored` (`Line3D` or `Arc3D`, cm, in its
@@ -1265,7 +1283,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// stored_sources`) to the edge that lies where the file stored the
     /// source's edge, where several edges project onto the curve (a wall's
     /// top and bottom edges seen along it); of several bodies' edges there
-    /// (a lid's rim lying on the box's), the first. Edges of other
+    /// (a lid's rim lying on the box's), the first. Where none of the
+    /// choices lies there (the rule keeps the edges in the sketch's plane,
+    /// and the file's source is a face below it: a cavity's floor seen
+    /// through its rim), the edge of `edges` that does. Edges of other
     /// components are compared through their occurrences, as `edges` moved
     /// them.
     pub(crate) fn prefer_stored(
@@ -1275,32 +1296,34 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         target: &[OccurrenceUid],
         choices: &mut [Choice],
     ) {
-        for choice in choices.iter_mut().filter(|c| c.candidates.len() > 1) {
+        let there = |stored: &mitcad_dump::Geometry, k: usize| {
+            let t = edges[k].path.as_ref().map(|p| self.to_target(p, target));
+            same_edge(stored, t.as_ref(), &edges[k].curve)
+        };
+        for choice in choices.iter_mut() {
             let id = &parts.entities[choice.entity]["id"];
             let Some((_, stored)) = parts.stored_sources.iter().find(|(m, _)| json!(m) == *id)
             else {
                 continue;
             };
-            let kept: Vec<usize> = choice
-                .candidates
-                .iter()
-                .copied()
-                .filter(|&k| {
-                    let t = edges[k].path.as_ref().map(|p| self.to_target(p, target));
-                    same_edge(stored, t.as_ref(), &edges[k].curve)
-                })
-                .collect();
+            let (kept, elsewhere) =
+                where_stored(&choice.candidates, edges.len(), |k| there(stored, k));
             if crate::tracing() {
                 eprintln!(
-                    "import:   linked {id} follows {} edges, {} where the file stored its source",
+                    "import:   linked {id} follows {} edges, {} where the file stored its source{}",
                     choice.candidates.len(),
-                    kept.len()
+                    kept.len(),
+                    if elsewhere.is_some() {
+                        "; another edge lies there"
+                    } else {
+                        ""
+                    }
                 );
             }
             // Edges of several bodies where the file stored the source (a
-            // lid's rim on the box's) project the same: the first, as the
-            // snap takes it.
-            if let Some(&first) = kept.first() {
+            // lid's rim lying on the box's) project the same: the first, as
+            // the snap takes it.
+            if let Some(&first) = kept.first().or(elsewhere.as_ref()) {
                 choice.candidates = vec![first];
             }
         }
@@ -1848,5 +1871,17 @@ mod tests {
         };
         assert!(same_edge(&arc, None, &circle(0.0)));
         assert!(!same_edge(&arc, None, &circle(3.0)));
+    }
+
+    /// The projection rule keeps a cavity's rim (in the sketch's plane) for
+    /// a curve the file projects from the cavity's floor: the floor's edge,
+    /// where the file stored it, though the rule left it out; where a
+    /// candidate lies there, that one.
+    #[test]
+    fn a_stored_source_off_the_plane_is_found_among_all_edges() {
+        let floor = |k: usize| k == 7;
+        assert_eq!(where_stored(&[2, 3], 10, floor), (vec![], Some(7)));
+        assert_eq!(where_stored(&[3, 7], 10, floor), (vec![7], None));
+        assert_eq!(where_stored(&[2, 3], 5, floor), (vec![], None));
     }
 }

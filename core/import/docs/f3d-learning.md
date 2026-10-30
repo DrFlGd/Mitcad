@@ -922,12 +922,21 @@ linked curve gives that curve the face (or the edge) as its
 `referencedEntity`, with the one stored curve in `_f3d.curves`. The
 import then takes, among the edges whose projection the curve lies on,
 the one where the file stored it (`linked.rs`'s `prefer_stored`; of
-several bodies' edges there, a lid's rim on the box's, the first). On a
-rugged box whose ribs project faces (42 linked curves in 5 sketches) all
-42 now follow edges, 34 before; on a latching box of four components 31 of
-37 linked curves get their source and 21 follow edges, 11 before (the
-others' stored curves do not lie on the sketch component's edges: they
-are of another component). Records that name a sketch point are not
+several bodies' edges there, a lid's rim on the box's, the first). Where
+none of them lies there, the edge of the replay that does: the search
+keeps the edges in the sketch's plane, and a sketch on a box's rim that
+projects the cavity's floor follows the floor's edges, not the rim's. The
+stored curves are in the source's component's coordinates; a source in
+a component a captured position has moved is matched where the position
+put it (the placements of `_f3d.placements`). A linked curve whose
+points the import put on the edges of its face (within the file's 1e-5
+mm) is that projection within the same 1e-5 mm. On a rugged box whose
+ribs project faces (42 linked curves in 5 sketches) all 42 now follow
+edges, 34 before; on a latching box of four components 33 of 37 follow
+edges, 11 before. The other four, of the latch's first sketch, project a
+face of the lid where the lid's joint has turned it beside the box (a
+half turn about z), which the import keeps as an as-built joint: the
+replay's lid does not lie there. Records that name a sketch point are not
 read; their curves are left to the search by where they are
 ([*Sketches on other components' faces, linked curves as projections*](f3d-components.md#sketches-on-other-components-faces-linked-curves-as-projections-mitcad225),
 mitcad#225).

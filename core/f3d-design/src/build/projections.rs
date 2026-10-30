@@ -36,6 +36,20 @@ struct Shape {
     radius: Option<f64>,
     /// Points whose order does not matter (a line's or an arc's ends).
     unordered: bool,
+    /// A circle's or an arc's centre, axes and range, for its projection
+    /// seen edge on.
+    arc: Option<Arc>,
+}
+
+/// A circle or an arc in model space (cm): `centre + radius (cos t u + sin t
+/// v)` for `t` from `start` to `end`.
+struct Arc {
+    centre: [f64; 3],
+    u: [f64; 3],
+    v: [f64; 3],
+    radius: f64,
+    start: f64,
+    end: f64,
 }
 
 fn add(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
@@ -80,7 +94,16 @@ impl Frame {
     }
 
     fn to_model(&self, p: [f64; 3]) -> [f64; 3] {
-        add(self.origin, add(scale(self.x, p[0]), scale(self.y, p[1])))
+        add(self.origin, self.direction(p))
+    }
+
+    /// A sketch direction in model space.
+    fn direction(&self, d: [f64; 3]) -> [f64; 3] {
+        add(scale(self.x, d[0]), scale(self.y, d[1]))
+    }
+
+    fn normal(&self) -> [f64; 3] {
+        cross(self.x, self.y)
     }
 
     /// A model point projected along the frame's normal onto its plane.
@@ -101,13 +124,25 @@ fn shape(frame: &Frame, c: &SketchCurve) -> Option<Shape> {
             radius: None,
             kind,
             unordered: true,
+            arc: None,
         }),
-        "SketchCircle" => Some(Shape {
-            points: vec![at(g.center?)],
-            radius: Some(g.radius?),
-            kind,
-            unordered: false,
-        }),
+        "SketchCircle" => {
+            let (c, r) = (g.center?, g.radius?);
+            Some(Shape {
+                points: vec![at(c)],
+                radius: Some(r),
+                kind,
+                unordered: false,
+                arc: Some(Arc {
+                    centre: at(c),
+                    u: frame.x,
+                    v: frame.y,
+                    radius: r,
+                    start: 0.0,
+                    end: std::f64::consts::TAU,
+                }),
+            })
+        }
         "SketchArc" => {
             let (c, r) = (g.center?, g.radius?);
             let (u, n) = (g.reference_vector?, g.normal?);
@@ -118,6 +153,14 @@ fn shape(frame: &Frame, c: &SketchCurve) -> Option<Shape> {
                 radius: Some(r),
                 kind,
                 unordered: true,
+                arc: Some(Arc {
+                    centre: at(c),
+                    u: frame.direction(u),
+                    v: frame.direction(v),
+                    radius: r,
+                    start: g.start_angle?,
+                    end: g.end_angle?,
+                }),
             })
         }
         _ => None,
@@ -129,8 +172,57 @@ fn near(a: [f64; 3], b: [f64; 3]) -> bool {
     dot(d, d).sqrt() <= SAME
 }
 
-/// Whether `source`, projected onto `frame`'s plane, is `curve`.
+/// Whether `arc`, seen edge on from `frame` (its plane holds the frame's
+/// normal), projects onto the line from `a` to `b` (on the frame's plane):
+/// its centre on the line, its extremes along the line the line's ends.
+fn edge_on(frame: &Frame, arc: &Arc, a: [f64; 3], b: [f64; 3]) -> bool {
+    let n = frame.normal();
+    let axis = cross(arc.u, arc.v);
+    if dot(axis, n).abs() > 1e-9 {
+        return false;
+    }
+    let len = dot(sub(b, a), sub(b, a)).sqrt();
+    if len <= SAME {
+        return false;
+    }
+    let d = scale(sub(b, a), 1.0 / len);
+    // The arc's plane is the one through the line along the normal.
+    if dot(axis, d).abs() > 1e-9 {
+        return false;
+    }
+    let c = sub(frame.onto(arc.centre), a);
+    let off = sub(c, scale(d, dot(c, d)));
+    if dot(off, off).sqrt() > SAME {
+        return false;
+    }
+    // Along the line: dot(c, d) + r (cos t (u.d) + sin t (v.d)), whose
+    // extremes are at the range's ends or where the derivative vanishes.
+    let (p, q) = (dot(arc.u, d), dot(arc.v, d));
+    let at = |t: f64| dot(c, d) + arc.radius * (t.cos() * p + t.sin() * q);
+    let peak = q.atan2(p);
+    let mut ts = vec![arc.start, arc.end];
+    for k in -2..=2 {
+        for t in [peak, peak + std::f64::consts::PI] {
+            let t = t + k as f64 * std::f64::consts::TAU;
+            if t > arc.start && t < arc.end {
+                ts.push(t);
+            }
+        }
+    }
+    let along: Vec<f64> = ts.into_iter().map(at).collect();
+    let lo = along.iter().copied().fold(f64::INFINITY, f64::min);
+    let hi = along.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    lo.abs() <= SAME && (hi - len).abs() <= SAME
+}
+
+/// Whether `source`, projected onto `frame`'s plane, is `curve`: the same
+/// kind with the same points, or a circle or an arc seen edge on as a
+/// line.
 fn projects_onto(frame: &Frame, source: &Shape, curve: &Shape) -> bool {
+    if let (Some(arc), "SketchLine") = (&source.arc, curve.kind.as_str()) {
+        let (a, b) = (curve.points[0], curve.points[1]);
+        return edge_on(frame, arc, a, b) || edge_on(frame, arc, b, a);
+    }
     if source.kind != curve.kind || source.points.len() != curve.points.len() {
         return false;
     }
@@ -250,6 +342,7 @@ mod tests {
             points: vec![a, b],
             radius: None,
             unordered: true,
+            arc: None,
         }
     }
 
@@ -294,6 +387,7 @@ mod tests {
             points: vec![c],
             radius: Some(r),
             unordered: false,
+            arc: None,
         };
         assert!(projects_onto(
             &f,
@@ -310,6 +404,7 @@ mod tests {
             points: vec![[1.7, 0.0, 0.0], ends[0], ends[1]],
             radius: Some(1.0),
             unordered: true,
+            arc: None,
         };
         let a = arc([[1.7, 1.0, 0.0], [1.7, 0.0, 1.0]]);
         // The ends either way round, the centre first.
@@ -323,5 +418,35 @@ mod tests {
             &line([1.7, 1.0, 0.0], [1.7, 0.0, 1.0]),
             &a
         ));
+    }
+
+    #[test]
+    fn an_arc_seen_edge_on_projects_onto_a_line() {
+        // A quarter circle of radius 1 about (0, 0, 0) in the plane z = 0,
+        // from +x to +y, seen from the plane y = 5 (looking along y): the
+        // line from x = 0 to x = 1 at z = 0.
+        let f = Frame {
+            origin: [0.0, 5.0, 0.0],
+            x: [1.0, 0.0, 0.0],
+            y: [0.0, 0.0, 1.0],
+        };
+        let quarter = Shape {
+            kind: "SketchArc".into(),
+            points: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            radius: Some(1.0),
+            unordered: true,
+            arc: Some(Arc {
+                centre: [0.0; 3],
+                u: [1.0, 0.0, 0.0],
+                v: [0.0, 1.0, 0.0],
+                radius: 1.0,
+                start: 0.0,
+                end: std::f64::consts::FRAC_PI_2,
+            }),
+        };
+        let on = |a: [f64; 3], b: [f64; 3]| projects_onto(&f, &quarter, &line(a, b));
+        assert!(on([0.0, 5.0, 0.0], [1.0, 5.0, 0.0]));
+        assert!(on([1.0, 5.0, 0.0], [0.0, 5.0, 0.0]));
+        assert!(!on([-1.0, 5.0, 0.0], [1.0, 5.0, 0.0]));
     }
 }

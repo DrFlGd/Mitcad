@@ -983,9 +983,22 @@ pub fn parse_parameter(seg: &Segment, o: &Object) -> Option<ParameterEntry> {
     } else {
         None
     };
-    let gaps = match &v8_comment {
-        Some((_, gap)) => *gap..*gap + 1,
-        None => 0..24,
+    // Version 5 and earlier (writer 2.0.13881, a 2022 design): a user
+    // parameter keeps its comment as a str16 right at the start, before
+    // the number, so the gap is the comment's length (and may exceed 24).
+    let v5_comment = if version <= 6 {
+        [p, p + 1].into_iter().find_map(|start| {
+            str16_at(d, start)
+                .filter(|(c, _)| !c.is_empty() && unicode::is_printable(c))
+                .map(|(c, q)| (c, q - p))
+        })
+    } else {
+        None
+    };
+    let gaps: Vec<usize> = match (&v8_comment, &v5_comment) {
+        (Some((_, gap)), _) => vec![*gap],
+        (None, Some((_, gap))) => (*gap..*gap + 8).chain(0..24).collect(),
+        (None, None) => (0..24).collect(),
     };
     for gap in gaps {
         let q = p + gap;
@@ -1036,6 +1049,12 @@ pub fn parse_parameter(seg: &Segment, o: &Object) -> Option<ParameterEntry> {
         let role = s.next()?;
         let mut comment = if nstr == 4 { s.next() } else { None };
         if let Some((c, _)) = &v8_comment
+            && comment.as_deref().is_none_or(str::is_empty)
+        {
+            comment = Some(c.clone());
+        }
+        if let Some((c, g)) = &v5_comment
+            && *g == gap
             && comment.as_deref().is_none_or(str::is_empty)
         {
             comment = Some(c.clone());

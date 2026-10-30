@@ -9,8 +9,12 @@
 //! `link`, each the occurrence path from the root to the geometry's
 //! component and the one to the sketch's component.
 //!
-//! The file stores neither the face a sketch lies on nor the geometry a
-//! linked curve follows in a form the decoder names (`core/import/docs/f3d-learning.md`,
+//! A linked curve whose source the decoder names as a curve of an earlier
+//! sketch (its `referencedEntity`, read from the sketch feature's
+//! projection records) becomes a linked projection of that curve
+//! ([`Importer::sketch_projections`], mitcad#904). Otherwise the file
+//! stores neither the face a sketch lies on nor the geometry a linked
+//! curve follows in a form the decoder names (`core/import/docs/f3d-learning.md`,
 //! *Sketch curve flags, spline kinds and sketches without a link*): both
 //! are found in the replay by where they are. A face is the sketch's plane
 //! when it is the only planar face of the other components' bodies, seen
@@ -1195,6 +1199,46 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             f,
             note,
         ))
+    }
+
+    /// The linked curves of `parts` whose source the file names as a curve
+    /// of an earlier sketch (`SketchParts::sketch_sources`, mitcad#904): a
+    /// linked projection of that curve each, `{"source": {"sketch": "F2",
+    /// "curve": "c7"}, "entities": ["c40"], "by_geometry": true}`, and the
+    /// indices of those entities in `parts.entities`. A source whose sketch
+    /// did not come in, or whose curve it lacks, leaves its curve to the
+    /// search among the edges.
+    pub(crate) fn sketch_projections(&self, parts: &SketchParts) -> (Vec<Value>, Vec<usize>) {
+        let mut projections = Vec::new();
+        let mut entities = Vec::new();
+        for (id, source) in &parts.sketch_sources {
+            let Some(sketch) = source
+                .sketch_timeline_index
+                .flatten()
+                .and_then(|i| self.sketches.get(&i))
+            else {
+                continue;
+            };
+            let Some(curve) = source.id.clone().flatten().and_then(|c| sketch.ids.get(&c)) else {
+                continue;
+            };
+            let Some(i) = parts.entities.iter().position(|e| e["id"] == json!(id)) else {
+                continue;
+            };
+            projections.push(json!({
+                "source": {"sketch": sketch.uid.to_string(), "curve": curve},
+                "entities": [id],
+                "by_geometry": true,
+            }));
+            entities.push(i);
+        }
+        if crate::tracing() && !projections.is_empty() {
+            eprintln!(
+                "import:   {} linked curves follow curves of earlier sketches",
+                projections.len()
+            );
+        }
+        (projections, entities)
     }
 
     /// The edges a linked curve of a sketch of the item's component seen at

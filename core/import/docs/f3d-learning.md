@@ -887,13 +887,36 @@ reference dumps, 29,762 curves of 321 designs:
 A linked curve comes in as a fixed reference entity (MitCad's `fixed` and
 `reference` flags, as the model gives its own projections) and the sketch's
 import note counts them. The model has linked projections (`Projection`:
-a topological name and the entities made from it), but the curve does not
-say what it follows: no source reference was found in the curve, the
-sketch or any object that refers to the curves (the API's referenced entity
-is a face for 1,491 of 1,512 linked curves of five sampled designs, an edge
-for 20 and a sketch entity for one). Importing them as projections needs that source in the
-file and the face or edge resolved to a replayed body's name; neither is
-decoded, so the source is found in the replay by where the curve is
+a topological name or an earlier sketch's curve, and the entities made
+from it), but the curve does not say what it follows: no source reference
+was found in the curve, the sketch or any object that refers to the curves
+(the API's referenced entity is a face for 1,491 of 1,512 linked curves of
+five sampled designs, an edge for 20 and a sketch entity for one).
+
+The sketch's feature does. It lists one projection record (`F1451EC8`)
+for each entity projected into the sketch, behind its other inputs: a
+reference to an input slot (`2CA5A1CD`) whose entity input (`5A1BF548`)
+names the source, and the source's curve as it was stored next to it
+(`50AEE8B4` a line, `B0B3FA59` an arc). Where the source is a curve of
+an earlier sketch, the entity input names it by the ids sweeps' paths use
+(`E2CEFD18`: `u64 secondary id | u64 sketch | u64 primary id`, the
+curve's `crv_secondary_id`, sketch object and `crv_primary_id`). The
+record does not name the curve it made (a second reference, through
+`CA72DD8E` and `CB4F4CC2`, names the same source again), so the decoder
+gives each source to the linked curve its projection onto the sketch's
+plane is: the same kind and the same points within 1e-6 cm. The curve gets
+the source as its `referencedEntity`, a `sketch_entity` reference
+(`mitcad_f3d_design::build`'s `projection_sources`), and the import makes
+it a linked projection of that curve (mitcad#904; `linked.rs`'s
+`sketch_projections`), which follows the earlier sketch when its
+parameters change. On a design whose rib and latch sketches project two
+earlier sketches' profiles onto parallel planes (12 sketches, 250 linked
+curves), all 250 records name a curve of an earlier sketch and each lies
+on one linked curve; 228 are in the order of the curves, so the order is
+not used. Before, all of them stayed fixed: a wall's top and bottom edges
+lie on each one, and the search below takes only a single edge. Records
+whose entity input names a face, an edge or a point are not read yet (no
+example at hand); their curves are left to the search by where they are
 ([*Sketches on other components' faces, linked curves as projections*](f3d-components.md#sketches-on-other-components-faces-linked-curves-as-projections-mitcad225),
 mitcad#225).
 

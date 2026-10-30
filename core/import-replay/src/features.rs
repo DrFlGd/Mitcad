@@ -239,11 +239,19 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         // The projection rule's choice of edge per curve, made once: the
         // snap puts the curve on that edge's projection and the projection
         // follows the same edge (mitcad#227).
-        let choices = if target.is_some() {
+        // The linked curves the file says follow a curve of an earlier
+        // sketch: projections of that curve, not of an edge.
+        let (from_sketches, sketch_linked) = if copy.is_none() {
+            self.sketch_projections(&parts)
+        } else {
+            (Vec::new(), Vec::new())
+        };
+        let mut choices = if target.is_some() {
             linked::choices(&parts, &frame, &sources)
         } else {
             Vec::new()
         };
+        choices.retain(|c| !sketch_linked.contains(&c.entity));
         let snapped = if parts.linked > 0 {
             let own = owned && target.is_some();
             let edges = if own {
@@ -269,6 +277,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }),
             None => linked::Resolved::default(),
         };
+        resolved.projections.extend(from_sketches);
         // The others that are the projection of an edge of any kind, or of
         // several edges end to end (mitcad#389).
         if let Some(t) = &target

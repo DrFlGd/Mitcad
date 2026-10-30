@@ -530,7 +530,10 @@ which.
   stream decoder gives the true flags `isConstruction`, `isCenterLine`,
   `isFixed` and `isLinked` with `isReference` (always equal) and the three
   spline types (mitcad#186); for a fitted spline `fitPoints` lists the end
-  points and those between; it gives no `referencedEntity`, and a fitted
+  points and those between; it gives `referencedEntity` (a
+  `sketch_entity` reference) only for a linked curve that is the
+  projection of an earlier sketch's curve (*Sketch curve flags* in
+  `docs/f3d-learning.md`), and a fitted
   spline's tangent handle lines are no curves (a constraint on one holds
   the `sketch_entity` reference with its geometry). A whole circle the
   stored bodies hold also carries `_f3d_seam`: where the file's circle

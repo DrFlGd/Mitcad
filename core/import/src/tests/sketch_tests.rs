@@ -884,3 +884,86 @@ fn text_parameters_are_imported_and_sketch_texts_follow_them() {
         "{s}"
     );
 }
+
+/// A linked curve whose source the decoder names as a curve of an earlier
+/// sketch (`referencedEntity`) comes in as a linked projection of that
+/// curve, and follows it when the earlier sketch changes.
+#[test]
+fn a_curve_linked_to_an_earlier_sketch_follows_it() {
+    let first = rectangle_sketch(0);
+    let p = |id: &str, x: f64, y: f64| json!({"id": id, "xyz": [x, y, 0.0]});
+    let linked = |id: &str, a: &str, b: &str, source: &str| {
+        json!({"id": id, "type": "SketchLine", "startSketchPoint": a, "endSketchPoint": b,
+               "isLinked": true, "isReference": true,
+               "referencedEntity": {"kind": "sketch_entity", "objectType": "SketchLine",
+                                    "sketch": "Sketch1", "sketch_timeline_index": 0,
+                                    "id": source}})
+    };
+    let second = json!({
+        "index": 1, "name": "Sketch2", "objectType": "Sketch",
+        "detail": {
+            "referencePlane": {"kind": "construction_plane", "name": "XY", "origin": "XY"},
+            "model_frame": {"sketch_to_model": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+                                                [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]},
+            "points": [p("p0", 0.0, 0.0), p("p1", 4.0, 0.0), p("p2", 4.0, 2.0)],
+            "curves": [linked("c0", "p0", "p1", "c0"), linked("c1", "p1", "p2", "c1")]
+        }
+    });
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &timeline_dump(vec![first, second]));
+    // (The first sketch's polygon constraint is left out: partial.)
+    assert_eq!(
+        report.items[1].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    let query = |doc: &Document<MockKernel>| -> Value {
+        serde_json::from_str(&doc.query(r#"{"query": "sketch", "uid": "F2"}"#).unwrap()).unwrap()
+    };
+    let s = query(&doc);
+    let projections = s["projections"].as_array().expect("projections");
+    assert_eq!(projections.len(), 2, "{s}");
+    for p in projections {
+        assert_eq!(p["source"]["sketch"], "F1", "{p}");
+        assert!(p["source"]["curve"].is_string(), "{p}");
+    }
+    // The first sketch's width is 40 mm; at 60 mm the line linked to its
+    // bottom edge is 60 mm long and lies where that edge is.
+    let bottom = |s: &Value| -> Vec<f64> {
+        let lines: Vec<&Value> = s["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|e| e["type"] == "line")
+            .collect();
+        let horizontal = lines
+            .iter()
+            .map(|l| &l["geometry"])
+            .filter(|g| {
+                (g["start"][1].as_f64().unwrap() - g["end"][1].as_f64().unwrap()).abs() < 1e-9
+            })
+            .min_by(|a, b| {
+                a["start"][1]
+                    .as_f64()
+                    .unwrap()
+                    .total_cmp(&b["start"][1].as_f64().unwrap())
+            })
+            .expect("a horizontal line");
+        let mut xs = vec![
+            horizontal["start"][0].as_f64().unwrap(),
+            horizontal["end"][0].as_f64().unwrap(),
+            horizontal["start"][1].as_f64().unwrap(),
+        ];
+        xs[..2].sort_by(f64::total_cmp);
+        xs
+    };
+    assert_eq!(bottom(&s), vec![0.0, 40.0, 0.0]);
+    doc.set_parameter_expression("d1", "60 mm", None).unwrap();
+    let (s, first) = (query(&doc), sketch_query(&doc));
+    let (got, want) = (bottom(&s), bottom(&first));
+    assert!((want[1] - want[0] - 60.0).abs() < 1e-6, "{want:?}");
+    for (a, b) in got.iter().zip(&want) {
+        assert!((a - b).abs() < 1e-6, "{got:?} {want:?}");
+    }
+}

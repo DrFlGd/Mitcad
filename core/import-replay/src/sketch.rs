@@ -68,6 +68,10 @@ pub struct SketchParts {
     /// included). They come in as fixed reference entities; the source
     /// they follow is not stored in the curve (no linked projection).
     pub linked: usize,
+    /// Of them, those whose source the decoder names as a curve of an
+    /// earlier sketch (`referencedEntity`): the Mitcad id and the source
+    /// ([`crate::Importer::sketch_projections`]).
+    pub sketch_sources: Vec<(String, mitcad_dump::SketchEntityRef)>,
 }
 
 /// Point or curve.
@@ -161,6 +165,11 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
                 }
                 if c.is_linked == Some(true) {
                     parts.linked += 1;
+                    if let Some(Reference::SketchEntity(source)) = &c.referenced_entity
+                        && let Some(mid) = e["id"].as_str()
+                    {
+                        parts.sketch_sources.push((mid.to_owned(), source.clone()));
+                    }
                 }
                 if c.is_reference == Some(true) {
                     e["reference"] = json!(true);

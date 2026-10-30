@@ -72,6 +72,10 @@ pub struct SketchParts {
     /// earlier sketch (`referencedEntity`): the Mitcad id and the source
     /// ([`crate::Importer::sketch_projections`]).
     pub sketch_sources: Vec<(String, mitcad_dump::SketchEntityRef)>,
+    /// Of them, those the decoder names as the projection of a face's or an
+    /// edge's: the Mitcad id and the edge's curve as the file stored it
+    /// (model space, cm; [`crate::Importer::prefer_stored`]).
+    pub stored_sources: Vec<(String, Geometry)>,
 }
 
 /// Point or curve.
@@ -165,10 +169,18 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
                 }
                 if c.is_linked == Some(true) {
                     parts.linked += 1;
-                    if let Some(Reference::SketchEntity(source)) = &c.referenced_entity
-                        && let Some(mid) = e["id"].as_str()
-                    {
-                        parts.sketch_sources.push((mid.to_owned(), source.clone()));
+                    match (&c.referenced_entity, e["id"].as_str()) {
+                        (Some(Reference::SketchEntity(source)), Some(mid)) => {
+                            parts.sketch_sources.push((mid.to_owned(), source.clone()));
+                        }
+                        (Some(Reference::Face(fp) | Reference::Edge(fp)), Some(mid)) => {
+                            if let Some([g]) =
+                                fp.f3d.as_ref().and_then(|f| f.curves.clone()).as_deref()
+                            {
+                                parts.stored_sources.push((mid.to_owned(), g.clone()));
+                            }
+                        }
+                        _ => {}
                     }
                 }
                 if c.is_reference == Some(true) {

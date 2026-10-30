@@ -167,6 +167,53 @@ fn shape(frame: &Frame, c: &SketchCurve) -> Option<Shape> {
     }
 }
 
+/// A stored curve (model space, cm: a face's or an edge's input keeps
+/// them, `super::super::curve`) as a [`Shape`]: a line, or an arc or a whole
+/// circle.
+fn stored_shape(g: &Geometry) -> Option<Shape> {
+    match g.geometry_type.as_deref()? {
+        "Line3D" => Some(Shape {
+            kind: "SketchLine".into(),
+            points: vec![g.start_point?, g.end_point?],
+            radius: None,
+            unordered: true,
+            arc: None,
+        }),
+        "Arc3D" => {
+            let (c, r, u, n) = (g.center?, g.radius?, g.reference_vector?, g.normal?);
+            let (t0, t1) = (g.start_angle?, g.end_angle?);
+            let v = cross(n, u);
+            let at = |t: f64| add(c, add(scale(u, r * t.cos()), scale(v, r * t.sin())));
+            let arc = Arc {
+                centre: c,
+                u,
+                v,
+                radius: r,
+                start: t0,
+                end: t1,
+            };
+            if (t1 - t0 - std::f64::consts::TAU).abs() < 1e-9 {
+                Some(Shape {
+                    kind: "SketchCircle".into(),
+                    points: vec![c],
+                    radius: Some(r),
+                    unordered: false,
+                    arc: Some(arc),
+                })
+            } else {
+                Some(Shape {
+                    kind: "SketchArc".into(),
+                    points: vec![c, at(t0), at(t1)],
+                    radius: Some(r),
+                    unordered: true,
+                    arc: Some(arc),
+                })
+            }
+        }
+        _ => None,
+    }
+}
+
 fn near(a: [f64; 3], b: [f64; 3]) -> bool {
     let d = sub(a, b);
     dot(d, d).sqrt() <= SAME
@@ -262,8 +309,37 @@ impl Builder<'_> {
             .filter(|&e| !is_point_class(seg.guid_of(e)))
     }
 
+    /// The face or edge a projection record's input names, as a reference
+    /// without curves, and the curves the input stored (model space, cm):
+    /// a face's boundary edges, an edge's curve.
+    fn projection_geometry(&self, record: u64) -> Option<(Reference, Vec<Geometry>)> {
+        let seg = self.seg;
+        let slot = seg
+            .ref_ids(seg.data_of(record))
+            .into_iter()
+            .find(|&r| seg.guid_of(r) == Some(INPUT_SLOT))?;
+        let input = seg
+            .ref_ids(seg.data_of(slot))
+            .into_iter()
+            .find(|&r| seg.guid_of(r) == Some(FACE_REF))?;
+        let curves: Vec<Geometry> = super::super::curve::of_input(seg, input)?
+            .iter()
+            .map(super::super::curve::StoredCurve::to_geometry)
+            .collect();
+        let mut r = super::face_input(seg, input).or_else(|| super::edge_input(seg, input))?;
+        if let Reference::Face(fp) | Reference::Edge(fp) = &mut r
+            && let Some(f) = fp.f3d.as_mut()
+        {
+            f.curves = None;
+        }
+        Some((r, curves))
+    }
+
     /// Gives the linked curves of `sketches` that are projections of
-    /// earlier sketches' curves those curves as their `referencedEntity`.
+    /// earlier sketches' curves those curves as their `referencedEntity`,
+    /// and those that are projections of a face's or an edge's the face or
+    /// the edge, with the one stored curve they are the projection of
+    /// (`_f3d.curves`).
     pub(super) fn projection_sources(&self, sketches: &mut [SketchInfo]) {
         let seg = self.seg;
         let mut found: Vec<(usize, usize, Reference)> = Vec::new();
@@ -290,6 +366,30 @@ impl Builder<'_> {
             records.retain(|r| seen.insert(*r));
             let mut taken = vec![false; curves.len()];
             for record in records {
+                if let Some((r, stored)) = self.projection_geometry(record) {
+                    for g in stored {
+                        let Some(source) = stored_shape(&g) else {
+                            continue;
+                        };
+                        let hit = linked.iter().copied().find(|&i| {
+                            !taken[i]
+                                && shape(&frame, &curves[i])
+                                    .is_some_and(|c| projects_onto(&frame, &source, &c))
+                        });
+                        let Some(i) = hit else {
+                            continue;
+                        };
+                        taken[i] = true;
+                        let mut r = r.clone();
+                        if let Reference::Face(fp) | Reference::Edge(fp) = &mut r
+                            && let Some(f) = fp.f3d.as_mut()
+                        {
+                            f.curves = Some(vec![g]);
+                        }
+                        found.push((si, i, r));
+                    }
+                    continue;
+                }
                 let Some(e) = self.projection_source(record) else {
                     continue;
                 };

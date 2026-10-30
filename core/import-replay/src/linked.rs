@@ -449,6 +449,65 @@ pub(crate) fn resolve(
     out
 }
 
+/// How far (mm) an edge of the replay may lie from where the file stored
+/// a projection's source edge to be that edge: the stored numbers are the
+/// file's, the replay rebuilt them.
+const STORED: f64 = 1e-3;
+
+/// Whether the replay's edge `edge` (in the sketch's component) is the
+/// edge the file stored as `stored` (`Line3D` or `Arc3D`, cm, in its
+/// body's component; `t` moves it into the sketch's).
+fn same_edge(stored: &mitcad_dump::Geometry, t: Option<&Transform>, edge: &CurveGeometry) -> bool {
+    let at = |p: [f64; 3]| {
+        let p = p.map(|x| x * 10.0);
+        t.map_or(p, |t| t.apply_point(p))
+    };
+    let near = |a: [f64; 3], b: [f64; 3]| geom::distance(a, b) <= STORED;
+    let either = |a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]| {
+        (near(a, c) && near(b, d)) || (near(a, d) && near(b, c))
+    };
+    match (stored.geometry_type.as_deref(), edge) {
+        (Some("Line3D"), CurveGeometry::Line { start, end }) => {
+            let (Some(a), Some(b)) = (stored.start_point, stored.end_point) else {
+                return false;
+            };
+            either(at(a), at(b), *start, *end)
+        }
+        (
+            Some("Arc3D"),
+            CurveGeometry::Circle {
+                center,
+                radius,
+                start,
+                end,
+                ..
+            },
+        ) => {
+            let (Some(c), Some(r), Some(u), Some(n), Some(t0), Some(t1)) = (
+                stored.center,
+                stored.radius,
+                stored.reference_vector,
+                stored.normal,
+                stored.start_angle,
+                stored.end_angle,
+            ) else {
+                return false;
+            };
+            let v = geom::cross(n, u);
+            let on = |t: f64| {
+                geom::add(
+                    c,
+                    geom::add(geom::scale(u, r * t.cos()), geom::scale(v, r * t.sin())),
+                )
+            };
+            near(at(c), *center)
+                && (r * 10.0 - radius).abs() <= STORED
+                && either(at(on(t0)), at(on(t1)), *start, *end)
+        }
+        _ => false,
+    }
+}
+
 /// A linked curve of the sketch as a curve of the sketch's plane (sketch
 /// mm): a line, or a spline from its control points; None for other kinds.
 fn file_curve(entities: &[Value], e: &Value) -> Option<Curve2> {
@@ -1201,6 +1260,52 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         ))
     }
 
+    /// Narrows the projection rule's choices of the linked curves whose
+    /// source the file names as a face's or an edge's (`SketchParts::
+    /// stored_sources`) to the edge that lies where the file stored the
+    /// source's edge, where several edges project onto the curve (a wall's
+    /// top and bottom edges seen along it); of several bodies' edges there
+    /// (a lid's rim lying on the box's), the first. Edges of other
+    /// components are compared through their occurrences, as `edges` moved
+    /// them.
+    pub(crate) fn prefer_stored(
+        &self,
+        parts: &SketchParts,
+        edges: &[EdgeSource],
+        target: &[OccurrenceUid],
+        choices: &mut [Choice],
+    ) {
+        for choice in choices.iter_mut().filter(|c| c.candidates.len() > 1) {
+            let id = &parts.entities[choice.entity]["id"];
+            let Some((_, stored)) = parts.stored_sources.iter().find(|(m, _)| json!(m) == *id)
+            else {
+                continue;
+            };
+            let kept: Vec<usize> = choice
+                .candidates
+                .iter()
+                .copied()
+                .filter(|&k| {
+                    let t = edges[k].path.as_ref().map(|p| self.to_target(p, target));
+                    same_edge(stored, t.as_ref(), &edges[k].curve)
+                })
+                .collect();
+            if crate::tracing() {
+                eprintln!(
+                    "import:   linked {id} follows {} edges, {} where the file stored its source",
+                    choice.candidates.len(),
+                    kept.len()
+                );
+            }
+            // Edges of several bodies where the file stored the source (a
+            // lid's rim on the box's) project the same: the first, as the
+            // snap takes it.
+            if let Some(&first) = kept.first() {
+                choice.candidates = vec![first];
+            }
+        }
+    }
+
     /// The linked curves of `parts` whose source the file names as a curve
     /// of an earlier sketch (`SketchParts::sketch_sources`, mitcad#904): a
     /// linked projection of that curve each, `{"source": {"sketch": "F2",
@@ -1695,5 +1800,53 @@ mod tests {
         // Without the constraint the solved corner meets the linked line,
         // the file's does not: the regions differ.
         assert!(!regions_kept(&entities, &[], &solved));
+    }
+
+    /// The edge the file stored for a projection's source (cm) is the
+    /// replay's edge there (mm), either way round, and not the edge above
+    /// it that projects the same.
+    #[test]
+    fn a_stored_source_edge_is_the_edge_where_it_was() {
+        let stored = mitcad_dump::Geometry {
+            geometry_type: Some("Line3D".into()),
+            start_point: Some([0.0, 0.0, 0.0]),
+            end_point: Some([1.0, 0.0, 0.0]),
+            ..mitcad_dump::Geometry::default()
+        };
+        let line = |a: [f64; 3], b: [f64; 3]| CurveGeometry::Line { start: a, end: b };
+        assert!(same_edge(
+            &stored,
+            None,
+            &line([0.0, 0.0, 0.0], [10.0, 0.0, 0.0])
+        ));
+        assert!(same_edge(
+            &stored,
+            None,
+            &line([10.0, 0.0, 0.0], [0.0, 0.0, 0.0])
+        ));
+        assert!(!same_edge(
+            &stored,
+            None,
+            &line([0.0, 0.0, 5.0], [10.0, 0.0, 5.0])
+        ));
+        let arc = mitcad_dump::Geometry {
+            geometry_type: Some("Arc3D".into()),
+            center: Some([0.0, 0.0, 0.0]),
+            normal: Some([0.0, 0.0, 1.0]),
+            reference_vector: Some([1.0, 0.0, 0.0]),
+            radius: Some(1.0),
+            start_angle: Some(0.0),
+            end_angle: Some(std::f64::consts::FRAC_PI_2),
+            ..mitcad_dump::Geometry::default()
+        };
+        let circle = |z: f64| CurveGeometry::Circle {
+            center: [0.0, 0.0, z],
+            normal: [0.0, 0.0, 1.0],
+            radius: 10.0,
+            start: [10.0, 0.0, z],
+            end: [0.0, 10.0, z],
+        };
+        assert!(same_edge(&arc, None, &circle(0.0)));
+        assert!(!same_edge(&arc, None, &circle(3.0)));
     }
 }

@@ -914,9 +914,21 @@ earlier sketches' profiles onto parallel planes (12 sketches, 250 linked
 curves), all 250 records name a curve of an earlier sketch and each lies
 on one linked curve; 228 are in the order of the curves, so the order is
 not used. Before, all of them stayed fixed: a wall's top and bottom edges
-lie on each one, and the search below takes only a single edge. Records
-whose entity input names a face, an edge or a point are not read yet (no
-example at hand); their curves are left to the search by where they are
+lie on each one, and the search below takes only a single edge. A record
+whose input slot holds a face's or an edge's input (`5662F619`) instead
+stores the face's boundary edges (or the edge) as curves next to its
+recipe; each stored curve whose projection onto the sketch's plane is a
+linked curve gives that curve the face (or the edge) as its
+`referencedEntity`, with the one stored curve in `_f3d.curves`. The
+import then takes, among the edges whose projection the curve lies on,
+the one where the file stored it (`linked.rs`'s `prefer_stored`; of
+several bodies' edges there, a lid's rim on the box's, the first). On a
+rugged box whose ribs project faces (42 linked curves in 5 sketches) all
+42 now follow edges, 34 before; on a latching box of four components 31 of
+37 linked curves get their source and 21 follow edges, 11 before (the
+others' stored curves do not lie on the sketch component's edges: they
+are of another component). Records that name a sketch point are not
+read; their curves are left to the search by where they are
 ([*Sketches on other components' faces, linked curves as projections*](f3d-components.md#sketches-on-other-components-faces-linked-curves-as-projections-mitcad225),
 mitcad#225).
 

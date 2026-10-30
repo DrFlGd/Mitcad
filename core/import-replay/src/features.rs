@@ -252,6 +252,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             Vec::new()
         };
         choices.retain(|c| !sketch_linked.contains(&c.entity));
+        if let Some(t) = &target {
+            self.prefer_stored(&parts, &sources, t, &mut choices);
+        }
         let snapped = if parts.linked > 0 {
             let own = owned && target.is_some();
             let edges = if own {
